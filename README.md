@@ -1,7 +1,7 @@
 # EmoAgent MemoryCore
 
 <p align="center">
-  <em><strong>EmoAgent 陪伴系统的长期关系记忆核心。</strong></em>
+  <em><strong>EmoAgent 的长期关系记忆核心。</strong></em>
 </p>
 
 <p align="center">
