@@ -1,0 +1,46 @@
+# ── 环境变量 ──
+.env
+.env.*
+
+# ── 本地数据 ──
+data/
+*.db
+*.db-*
+
+# ── IDE / 编辑器 ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Go 构建产物 ──
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+dist/
+bin/
+vendor/
+
+# ── 测试 / 覆盖率 ──
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# ── 临时文件 ──
+tmp/
+*.tmp
+*.log
+
+# ── OS 文件 ──
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── 暂不开放 ──
+/docs/architecture/
