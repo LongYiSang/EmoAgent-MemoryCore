@@ -1,0 +1,71 @@
+case_id: C002_coexist_likes
+description: 多个 likes 可以共存，重复 likes 会 reinforce。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 我也喜欢茶。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+    - id: ep3
+      session_id: s1
+      content: 我还是喜欢咖啡。
+      occurred_at: "2026-04-28T11:00:00+08:00"
+steps:
+  - id: coffee_first
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: tea
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 茶
+        content_summary: 用户喜欢茶。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.7
+  - id: coffee_again
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep3]
+        confidence: explicit
+        importance: 0.7
+assertions:
+  - type: consolidation_result
+    step: tea
+    action: coexist
+    status: coexisted
+  - type: consolidation_result
+    step: coffee_again
+    action: reinforce
+    status: reinforced
+  - type: link_exists
+    from_node_id: $coffee_first.fact_id
+    link_type: EVIDENCED_BY
+    to_node_type: episode
+    to_node_id: ep3

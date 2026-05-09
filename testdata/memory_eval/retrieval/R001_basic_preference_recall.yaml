@@ -1,0 +1,37 @@
+case_id: R001_basic_preference_recall
+description: visible + searchable fact 可以通过 keyword 找到。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 咖啡
+assertions:
+  - type: memory_contains
+    step: retrieve
+    node_id: $fact.fact_id
+    summary: 用户喜欢咖啡。

@@ -1,0 +1,68 @@
+case_id: R002_current_vs_historical_location
+description: invalidated fact 默认不可检索，AllowHistorical=true 时可作为历史事实返回。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: shanghai
+      canonical_name: 上海
+      entity_type: place
+    - id: hangzhou
+      canonical_name: 杭州
+      entity_type: place
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我住在上海。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 我现在住在杭州。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: old_location
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: lives_in
+        object_entity_id: shanghai
+        content_summary: 用户住在上海。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: new_location
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: lives_in
+        object_entity_id: hangzhou
+        content_summary: 用户住在杭州。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.9
+  - id: current_only
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 上海
+  - id: historical
+    action: retrieve
+    retrieve:
+      query_text: 上海
+      policy:
+        allow_historical: true
+assertions:
+  - type: memory_not_contains
+    step: current_only
+    node_id: $old_location.fact_id
+  - type: memory_contains
+    step: historical
+    node_id: $old_location.fact_id
+    summary: 用户住在上海。
+    usage_guidance_contains: historical

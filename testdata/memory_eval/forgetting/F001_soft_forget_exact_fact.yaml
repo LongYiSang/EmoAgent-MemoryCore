@@ -1,0 +1,57 @@
+case_id: F001_soft_forget_exact_fact
+description: soft_forget 让 fact 从 retrieval 消失，但 content_summary 保留。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: soft_forget
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 咖啡
+assertions:
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $fact.fact_id
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: visibility_status
+    equals: hidden
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: content_summary
+    equals: 用户喜欢咖啡。
+  - type: deletion_event_safe
+    step: forget
+    forbidden_contains: [我喜欢咖啡, 用户喜欢咖啡]

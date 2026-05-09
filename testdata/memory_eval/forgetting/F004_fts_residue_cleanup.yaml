@@ -1,0 +1,45 @@
+case_id: F004_fts_residue_cleanup
+description: forget 后 SQLite fallback search 和可用 FTS 行查不到目标。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢榛子拿铁。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 榛子拿铁
+        content_summary: 用户喜欢榛子拿铁。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: soft_forget
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+assertions:
+  - type: search_absent
+    node_type: fact
+    node_id: $fact.fact_id
+    search_text: 榛子拿铁
+  - type: deletion_event_safe
+    step: forget
+    forbidden_contains: [榛子拿铁, 用户喜欢榛子拿铁]

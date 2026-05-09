@@ -1,0 +1,42 @@
+case_id: R003_hidden_fact_filtered
+description: hidden fact 不能被 retrieval 返回。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢茶。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: hidden_fact
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 茶
+        content_summary: 用户喜欢茶。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 茶
+assertions:
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $hidden_fact.fact_id
+  - type: fact_column
+    fact_id: $hidden_fact.fact_id
+    column: visibility_status
+    equals: hidden

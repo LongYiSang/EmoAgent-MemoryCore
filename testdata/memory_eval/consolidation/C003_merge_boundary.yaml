@@ -1,0 +1,51 @@
+case_id: C003_merge_boundary
+description: has_boundary 重复表达保守 reinforce，不改写原 summary。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 不要在晚上十点后提醒我工作。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 晚上十点后不要提醒我工作。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: first
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: has_boundary
+        object_literal: 晚上十点后不要提醒我工作
+        content_summary: 用户不希望晚上十点后被提醒工作。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: second
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: has_boundary
+        object_literal: 晚上十点后不要提醒我工作
+        content_summary: 用户不希望晚上十点后被提醒工作和任务。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.8
+assertions:
+  - type: consolidation_result
+    step: second
+    action: reinforce
+    status: reinforced
+  - type: fact_column
+    fact_id: $first.fact_id
+    column: content_summary
+    equals: 用户不希望晚上十点后被提醒工作。

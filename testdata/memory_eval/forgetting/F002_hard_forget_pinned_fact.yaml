@@ -1,0 +1,65 @@
+case_id: F002_hard_forget_pinned_fact
+description: hard_forget 清理语义内容，并让 pinned fact 的 pin 失效。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: hangzhou
+      canonical_name: 杭州
+      entity_type: place
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我住在杭州。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: lives_in
+        object_entity_id: hangzhou
+        content_summary: 用户住在杭州。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.9
+        pinned: true
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: hard_forget
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 杭州
+assertions:
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $fact.fact_id
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: pinned
+    equals: "0"
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: content_summary
+    equals: "[forgotten]"
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: object_literal
+    equals: ""
+  - type: deletion_event_safe
+    step: forget
+    forbidden_contains: [杭州, 用户住在杭州]

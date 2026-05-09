@@ -1,0 +1,68 @@
+case_id: C001_supersede_lives_in
+description: 新 lives_in 会 invalidated 旧 lives_in，并写 SUPERSEDES link。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: shanghai
+      canonical_name: 上海
+      entity_type: place
+    - id: hangzhou
+      canonical_name: 杭州
+      entity_type: place
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我住在上海。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 我现在住在杭州。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: first
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: lives_in
+        object_entity_id: shanghai
+        content_summary: 用户住在上海。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: second
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: lives_in
+        object_entity_id: hangzhou
+        content_summary: 用户住在杭州。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.9
+assertions:
+  - type: consolidation_result
+    step: second
+    action: supersede
+    status: superseded
+  - type: fact_column
+    fact_id: $first.fact_id
+    column: validity_status
+    equals: invalidated
+  - type: link_exists
+    from_node_id: $second.fact_id
+    link_type: SUPERSEDES
+    to_node_id: $first.fact_id
+  - type: link_exists
+    from_node_id: $second.fact_id
+    link_type: EVIDENCED_BY
+    to_node_type: episode
+    to_node_id: ep2
