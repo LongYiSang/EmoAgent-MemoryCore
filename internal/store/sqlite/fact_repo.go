@@ -61,7 +61,7 @@ SELECT id, persona_id, subject_entity_id, predicate, object_entity_id, object_li
        extraction_confidence, extraction_confidence_score, extraction_reasoning,
        importance, valence, arousal, sensitivity_level,
        validity_status, visibility_status, lifecycle_status,
-       pinned, pin_reason, pin_actor, searchable, created_at, updated_at
+       pinned, pin_reason, pin_actor, reinforcement_count, searchable, created_at, updated_at
 FROM facts
 WHERE persona_id = ? AND id = ?`, personaID, factID)
 	return scanFact(row)
@@ -101,6 +101,7 @@ func scanFact(row factScanner) (core.Fact, error) {
 		&pinned,
 		&pinReason,
 		&pinActor,
+		&fact.ReinforcementCount,
 		&searchable,
 		&createdAt,
 		&updatedAt,

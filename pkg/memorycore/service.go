@@ -22,6 +22,7 @@ type Service interface {
 	AppendEpisode(ctx context.Context, req AppendEpisodeRequest) (*Episode, error)
 	EnsureEntity(ctx context.Context, req EnsureEntityRequest) (*Entity, error)
 	AddEntityAlias(ctx context.Context, req AddEntityAliasRequest) (*EntityAlias, error)
+	ConsolidateCandidate(ctx context.Context, req ConsolidateCandidateRequest) (*ConsolidationResult, error)
 }
 
 type service struct {
@@ -30,6 +31,7 @@ type service struct {
 	store    *memsqlite.Store
 	episodes *memsqlite.EpisodeRepository
 	entities *memsqlite.EntityRepository
+	facts    *memsqlite.ConsolidationRepository
 	persona  string
 	now      func() time.Time
 }
@@ -61,6 +63,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		store:    memsqlite.NewStore(sqlDB),
 		episodes: memsqlite.NewEpisodeRepository(sqlDB),
 		entities: memsqlite.NewEntityRepository(sqlDB),
+		facts:    memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
 		persona:  defaultString(opts.PersonaID, defaultPersonaID),
 		now:      now,
 	}, nil
@@ -256,6 +259,47 @@ func (s *service) AddEntityAlias(ctx context.Context, req AddEntityAliasRequest)
 	return entityAliasFromCore(alias), nil
 }
 
+func (s *service) ConsolidateCandidate(ctx context.Context, req ConsolidateCandidateRequest) (*ConsolidationResult, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	if err := s.ensurePersona(ctx, personaID); err != nil {
+		return nil, err
+	}
+
+	result, err := s.facts.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: personaID,
+		SessionID: req.SessionID,
+		Trigger:   defaultString(req.Trigger, ConsolidationTriggerManual),
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  req.Candidate.SubjectEntityID,
+			Predicate:        req.Candidate.Predicate,
+			ObjectEntityID:   req.Candidate.ObjectEntityID,
+			ObjectLiteral:    req.Candidate.ObjectLiteral,
+			ContentSummary:   req.Candidate.ContentSummary,
+			FactType:         req.Candidate.FactType,
+			ValidFrom:        req.Candidate.ValidFrom,
+			ValidTo:          req.Candidate.ValidTo,
+			Confidence:       req.Candidate.Confidence,
+			ConfidenceScore:  req.Candidate.ConfidenceScore,
+			Importance:       req.Candidate.Importance,
+			Valence:          req.Candidate.Valence,
+			Arousal:          req.Candidate.Arousal,
+			Sensitivity:      req.Candidate.Sensitivity,
+			SourceEpisodeIDs: req.Candidate.SourceEpisodeIDs,
+			Pinned:           req.Candidate.Pinned,
+			UserRequested:    req.Candidate.UserRequested,
+		},
+		Policy: memsqlite.ConsolidationPolicy{
+			Action:                      req.Policy.Action,
+			Approved:                    req.Policy.Approved,
+			AllowManualPinWithoutSource: req.Policy.AllowManualPinWithoutSource,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return consolidationResultFromCore(result), nil
+}
+
 func (s *service) requireSession(ctx context.Context, personaID string, sessionID string) error {
 	var id string
 	err := s.sqlDB.QueryRowContext(ctx, `
@@ -347,5 +391,50 @@ func entityAliasFromCore(alias core.EntityAlias) *EntityAlias {
 		AliasType:       string(alias.AliasType),
 		Confidence:      alias.Confidence,
 		SourceEpisodeID: alias.SourceEpisodeID,
+	}
+}
+
+func consolidationResultFromCore(result memsqlite.ConsolidationResult) *ConsolidationResult {
+	return &ConsolidationResult{
+		Action:            result.Action,
+		Status:            result.Status,
+		Fact:              factFromCore(result.Fact),
+		ExistingFact:      factFromCore(result.ExistingFact),
+		SupersededFactIDs: append([]string(nil), result.SupersededFactIDs...),
+		LinkIDs:           append([]string(nil), result.LinkIDs...),
+		RejectedReason:    result.RejectedReason,
+		NeedsReviewReason: result.NeedsReviewReason,
+	}
+}
+
+func factFromCore(fact *core.Fact) *Fact {
+	if fact == nil {
+		return nil
+	}
+	return &Fact{
+		ID:                 fact.ID,
+		PersonaID:          fact.PersonaID,
+		SubjectEntityID:    fact.SubjectEntityID,
+		Predicate:          fact.Predicate,
+		ObjectEntityID:     fact.ObjectEntityID,
+		ObjectLiteral:      fact.ObjectLiteral,
+		ContentSummary:     fact.ContentSummary,
+		FactType:           string(fact.FactType),
+		ValidFrom:          fact.ValidFrom,
+		ValidTo:            fact.ValidTo,
+		Confidence:         string(fact.ExtractionConfidence),
+		ConfidenceScore:    fact.ExtractionConfidenceScore,
+		Importance:         fact.Importance,
+		Valence:            fact.Valence,
+		Arousal:            fact.Arousal,
+		Sensitivity:        string(fact.SensitivityLevel),
+		ValidityStatus:     string(fact.ValidityStatus),
+		VisibilityStatus:   string(fact.VisibilityStatus),
+		LifecycleStatus:    string(fact.LifecycleStatus),
+		Pinned:             fact.Pinned,
+		ReinforcementCount: fact.ReinforcementCount,
+		Searchable:         fact.Searchable,
+		CreatedAt:          fact.CreatedAt,
+		UpdatedAt:          fact.UpdatedAt,
 	}
 }

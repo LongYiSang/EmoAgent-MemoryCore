@@ -26,6 +26,7 @@ type Fact struct {
 	Pinned                    bool
 	PinReason                 *string
 	PinActor                  *string
+	ReinforcementCount        int
 	Searchable                bool
 	CreatedAt                 time.Time
 	UpdatedAt                 *time.Time

@@ -25,7 +25,7 @@ func (r *LinkRepository) Insert(ctx context.Context, link core.MemoryLink) error
 	}
 
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO memory_links (
+INSERT OR IGNORE INTO memory_links (
     id, persona_id, from_node_type, from_node_id, link_type,
     to_node_type, to_node_id, direction, confidence, weight,
     reasoning, created_by, visibility_status, searchable
