@@ -91,6 +91,36 @@ WHERE persona_id = ? AND id = ?`, personaID, episodeID)
 	return scanEpisode(row)
 }
 
+func (r *EpisodeRepository) ListExtractionCandidates(ctx context.Context, personaID string, sessionID string) ([]core.Episode, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, persona_id, session_id, role, content, content_hash, occurred_at,
+       source_type, source_ref, prev_episode_id, next_episode_id,
+       visibility_status, sensitivity_level, searchable
+FROM episodes
+WHERE persona_id = ?
+  AND session_id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1
+ORDER BY occurred_at ASC, ingested_at ASC`, personaID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var episodes []core.Episode
+	for rows.Next() {
+		episode, err := scanEpisode(rows)
+		if err != nil {
+			return nil, err
+		}
+		episodes = append(episodes, episode)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return episodes, nil
+}
+
 func latestEpisodeID(ctx context.Context, tx *sql.Tx, personaID string, sessionID string) (*string, error) {
 	var id string
 	err := tx.QueryRowContext(ctx, `
@@ -156,6 +186,9 @@ func normalizeEpisode(episode core.Episode) core.Episode {
 	if episode.VisibilityStatus == "" {
 		episode.VisibilityStatus = core.VisibilityVisible
 		episode.Searchable = true
+	}
+	if episode.VisibilityStatus != core.VisibilityVisible {
+		episode.Searchable = false
 	}
 	episode.SensitivityLevel = defaultSensitivity(episode.SensitivityLevel)
 	return episode

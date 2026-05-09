@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
@@ -42,14 +43,64 @@ ON CONFLICT(id) DO UPDATE SET
 	return err
 }
 
+func (r *EntityRepository) EnsureByCanonical(ctx context.Context, entity core.Entity) (core.Entity, error) {
+	entity = normalizeEntity(entity)
+	existing, err := r.GetByCanonical(ctx, entity.PersonaID, entity.CanonicalName, entity.EntityType)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return core.Entity{}, err
+	}
+	if err := r.Upsert(ctx, entity); err != nil {
+		return core.Entity{}, err
+	}
+	return r.GetByCanonical(ctx, entity.PersonaID, entity.CanonicalName, entity.EntityType)
+}
+
+func (r *EntityRepository) Get(ctx context.Context, personaID string, entityID string) (core.Entity, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, persona_id, canonical_name, entity_type, description,
+       visibility_status, sensitivity_level, searchable
+FROM entities
+WHERE persona_id = ? AND id = ?`, personaID, entityID)
+	return scanEntity(row)
+}
+
+func (r *EntityRepository) GetByCanonical(ctx context.Context, personaID string, canonicalName string, entityType core.EntityType) (core.Entity, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, persona_id, canonical_name, entity_type, description,
+       visibility_status, sensitivity_level, searchable
+FROM entities
+WHERE persona_id = ?
+  AND canonical_name = ?
+  AND entity_type = ?
+  AND visibility_status = 'visible'
+ORDER BY created_at ASC
+LIMIT 1`, personaID, canonicalName, string(entityType))
+	return scanEntity(row)
+}
+
 func (r *EntityRepository) AddAlias(ctx context.Context, alias core.EntityAlias) error {
+	_, err := r.EnsureAlias(ctx, alias)
+	return err
+}
+
+func (r *EntityRepository) EnsureAlias(ctx context.Context, alias core.EntityAlias) (core.EntityAlias, error) {
 	if alias.AliasType == "" {
 		alias.AliasType = core.AliasTypeSurface
 	}
 	if alias.Confidence == 0 {
 		alias.Confidence = 1.0
 	}
-	_, err := r.db.ExecContext(ctx, `
+	existing, err := r.GetAlias(ctx, alias.PersonaID, alias.EntityID, alias.Alias, alias.AliasType)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return core.EntityAlias{}, err
+	}
+	_, err = r.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO entity_aliases (
     id, persona_id, entity_id, alias, alias_type, confidence, source_episode_id
 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -61,7 +112,10 @@ INSERT OR IGNORE INTO entity_aliases (
 		alias.Confidence,
 		nullableString(alias.SourceEpisodeID),
 	)
-	return err
+	if err != nil {
+		return core.EntityAlias{}, err
+	}
+	return r.GetAlias(ctx, alias.PersonaID, alias.EntityID, alias.Alias, alias.AliasType)
 }
 
 func (r *EntityRepository) ResolveByAlias(ctx context.Context, personaID string, alias string) (core.Entity, error) {
@@ -79,7 +133,52 @@ LIMIT 1`, personaID, alias)
 	return scanEntity(row)
 }
 
+func (r *EntityRepository) GetAlias(ctx context.Context, personaID string, entityID string, alias string, aliasType core.AliasType) (core.EntityAlias, error) {
+	if aliasType == "" {
+		aliasType = core.AliasTypeSurface
+	}
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, persona_id, entity_id, alias, alias_type, confidence, source_episode_id
+FROM entity_aliases
+WHERE persona_id = ?
+  AND entity_id = ?
+  AND alias = ?
+  AND alias_type = ?
+ORDER BY created_at ASC
+LIMIT 1`, personaID, entityID, alias, string(aliasType))
+	return scanEntityAlias(row)
+}
+
+func (r *EntityRepository) ListAliases(ctx context.Context, personaID string, entityID string) ([]core.EntityAlias, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, persona_id, entity_id, alias, alias_type, confidence, source_episode_id
+FROM entity_aliases
+WHERE persona_id = ? AND entity_id = ?
+ORDER BY created_at ASC`, personaID, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var aliases []core.EntityAlias
+	for rows.Next() {
+		alias, err := scanEntityAlias(rows)
+		if err != nil {
+			return nil, err
+		}
+		aliases = append(aliases, alias)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return aliases, nil
+}
+
 type entityScanner interface {
+	Scan(dest ...any) error
+}
+
+type entityAliasScanner interface {
 	Scan(dest ...any) error
 }
 
@@ -102,6 +201,24 @@ func scanEntity(row entityScanner) (core.Entity, error) {
 	entity.Description = stringPtr(description)
 	entity.Searchable = intBool(searchable)
 	return entity, nil
+}
+
+func scanEntityAlias(row entityAliasScanner) (core.EntityAlias, error) {
+	var alias core.EntityAlias
+	var sourceEpisodeID sql.NullString
+	if err := row.Scan(
+		&alias.ID,
+		&alias.PersonaID,
+		&alias.EntityID,
+		&alias.Alias,
+		&alias.AliasType,
+		&alias.Confidence,
+		&sourceEpisodeID,
+	); err != nil {
+		return core.EntityAlias{}, err
+	}
+	alias.SourceEpisodeID = stringPtr(sourceEpisodeID)
+	return alias, nil
 }
 
 func normalizeEntity(entity core.Entity) core.Entity {

@@ -13,7 +13,9 @@ type Session struct {
 	PersonaID string
 	Channel   Channel
 	Title     *string
+	Summary   *string
 	StartedAt time.Time
+	EndedAt   *time.Time
 }
 
 type Episode struct {

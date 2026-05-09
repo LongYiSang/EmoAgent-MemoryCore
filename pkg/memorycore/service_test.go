@@ -106,6 +106,23 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 		t.Fatalf("third prev = %v, want %q", third.PrevEpisodeID, second.ID)
 	}
 	requireEpisodeNextID(t, dbPath, second.ID, third.ID)
+
+	endedAt := now.Add(time.Hour)
+	summary := "用户表达了会议偏好。"
+	ended, err := svc.EndSession(ctx, memorycore.EndSessionRequest{
+		SessionID: session.ID,
+		EndedAt:   endedAt,
+		Summary:   &summary,
+	})
+	if err != nil {
+		t.Fatalf("end session: %v", err)
+	}
+	if ended.EndedAt == nil || !ended.EndedAt.Equal(endedAt) {
+		t.Fatalf("ended_at = %v, want %s", ended.EndedAt, endedAt)
+	}
+	if ended.Summary == nil || *ended.Summary != summary {
+		t.Fatalf("summary = %v, want %q", ended.Summary, summary)
+	}
 }
 
 func TestServiceValidation(t *testing.T) {
@@ -131,6 +148,12 @@ func TestServiceValidation(t *testing.T) {
 	}
 	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{SessionID: "missing", Content: "hello"}); !errors.Is(err, memorycore.ErrNotFound) {
 		t.Fatalf("append missing session err = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.EndSession(ctx, memorycore.EndSessionRequest{}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("end without session err = %v, want ErrInvalidRequest", err)
+	}
+	if _, err := svc.EndSession(ctx, memorycore.EndSessionRequest{SessionID: "missing"}); !errors.Is(err, memorycore.ErrNotFound) {
+		t.Fatalf("end missing session err = %v, want ErrNotFound", err)
 	}
 }
 

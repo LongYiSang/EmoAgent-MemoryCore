@@ -20,10 +20,19 @@ type StartSessionRequest struct {
 	StartedAt time.Time
 }
 
+type EndSessionRequest struct {
+	PersonaID string
+	SessionID string
+	EndedAt   time.Time
+	Summary   *string
+}
+
 type Session struct {
 	ID        string
 	PersonaID string
 	Channel   string
 	Title     *string
+	Summary   *string
 	StartedAt time.Time
+	EndedAt   *time.Time
 }
