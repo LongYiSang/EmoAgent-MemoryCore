@@ -23,6 +23,8 @@ type Service interface {
 	EnsureEntity(ctx context.Context, req EnsureEntityRequest) (*Entity, error)
 	AddEntityAlias(ctx context.Context, req AddEntityAliasRequest) (*EntityAlias, error)
 	ConsolidateCandidate(ctx context.Context, req ConsolidateCandidateRequest) (*ConsolidationResult, error)
+	Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error)
+	RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error)
 }
 
 type service struct {
@@ -32,6 +34,8 @@ type service struct {
 	episodes *memsqlite.EpisodeRepository
 	entities *memsqlite.EntityRepository
 	facts    *memsqlite.ConsolidationRepository
+	search   *memsqlite.SearchRepository
+	retrieve *memsqlite.RetrievalRepository
 	persona  string
 	now      func() time.Time
 }
@@ -64,6 +68,8 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		episodes: memsqlite.NewEpisodeRepository(sqlDB),
 		entities: memsqlite.NewEntityRepository(sqlDB),
 		facts:    memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
+		search:   memsqlite.NewSearchRepository(sqlDB),
+		retrieve: memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
 		persona:  defaultString(opts.PersonaID, defaultPersonaID),
 		now:      now,
 	}, nil
@@ -300,6 +306,41 @@ func (s *service) ConsolidateCandidate(ctx context.Context, req ConsolidateCandi
 	return consolidationResultFromCore(result), nil
 }
 
+func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	result, err := s.retrieve.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: personaID,
+		SessionID: req.SessionID,
+		QueryText: req.QueryText,
+		Now:       req.Now,
+		Policy: memsqlite.RetrievalPolicy{
+			SensitivityPermission: req.Policy.SensitivityPermission,
+			AllowHistorical:       req.Policy.AllowHistorical,
+			AllowDeepArchive:      req.Policy.AllowDeepArchive,
+			FinalMemoryCount:      req.Policy.FinalMemoryCount,
+			ContextBudgetTokens:   req.Policy.ContextBudgetTokens,
+			UseFTS:                req.Policy.UseFTS,
+		},
+		Context: memsqlite.RetrievalAffectContext{
+			UserMoodLabel:         req.Context.UserMoodLabel,
+			RelationshipMoodLabel: req.Context.RelationshipMoodLabel,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return memoryContextFromStore(result), nil
+}
+
+func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	result, err := s.search.RebuildSearchDocuments(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	return &RebuildSearchDocumentsResult{Upserted: result.Upserted}, nil
+}
+
 func (s *service) requireSession(ctx context.Context, personaID string, sessionID string) error {
 	var id string
 	err := s.sqlDB.QueryRowContext(ctx, `
@@ -437,4 +478,36 @@ func factFromCore(fact *core.Fact) *Fact {
 		CreatedAt:          fact.CreatedAt,
 		UpdatedAt:          fact.UpdatedAt,
 	}
+}
+
+func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
+	result := &MemoryContext{
+		Blocks:        make([]MemoryBlock, 0, len(context.Blocks)),
+		DoNotMention:  make([]MemorySuppression, 0, len(context.DoNotMention)),
+		TokenEstimate: context.TokenEstimate,
+	}
+	for _, block := range context.Blocks {
+		out := MemoryBlock{
+			BlockType: block.BlockType,
+			Items:     make([]MemoryContextItem, 0, len(block.Items)),
+		}
+		for _, item := range block.Items {
+			out.Items = append(out.Items, MemoryContextItem{
+				NodeType:      item.NodeType,
+				NodeID:        item.NodeID,
+				Summary:       item.Summary,
+				Confidence:    item.Confidence,
+				UsageGuidance: item.UsageGuidance,
+			})
+		}
+		result.Blocks = append(result.Blocks, out)
+	}
+	for _, suppression := range context.DoNotMention {
+		result.DoNotMention = append(result.DoNotMention, MemorySuppression{
+			NodeType: suppression.NodeType,
+			NodeID:   suppression.NodeID,
+			Reason:   suppression.Reason,
+		})
+	}
+	return result
 }

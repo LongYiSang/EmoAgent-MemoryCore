@@ -205,6 +205,9 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	if err := insertFactTx(ctx, tx, fact); err != nil {
 		return ConsolidationResult{}, err
 	}
+	if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
+		return ConsolidationResult{}, err
+	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, req.PersonaID, fact, candidate, sources)
 	if err != nil {
 		return ConsolidationResult{}, err
@@ -218,6 +221,9 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 		invalidationTime := invalidationTimeFor(candidate, sources, r.now())
 		for _, oldFact := range existing {
 			if err := invalidateFactTx(ctx, tx, req.PersonaID, oldFact.ID, invalidationTime); err != nil {
+				return ConsolidationResult{}, err
+			}
+			if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, oldFact.ID); err != nil {
 				return ConsolidationResult{}, err
 			}
 			superseded = append(superseded, oldFact.ID)
@@ -266,6 +272,9 @@ func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.T
 		importance = candidate.Importance
 	}
 	if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance); err != nil {
+		return ConsolidationResult{}, err
+	}
+	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, fact.ID); err != nil {
 		return ConsolidationResult{}, err
 	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, personaID, fact, candidate, nil)
