@@ -25,6 +25,7 @@ type Service interface {
 	ConsolidateCandidate(ctx context.Context, req ConsolidateCandidateRequest) (*ConsolidationResult, error)
 	Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error)
 	RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error)
+	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
 }
 
 type service struct {
@@ -36,6 +37,7 @@ type service struct {
 	facts    *memsqlite.ConsolidationRepository
 	search   *memsqlite.SearchRepository
 	retrieve *memsqlite.RetrievalRepository
+	forget   *memsqlite.ForgetRepository
 	persona  string
 	now      func() time.Time
 }
@@ -70,6 +72,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		facts:    memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
 		search:   memsqlite.NewSearchRepository(sqlDB),
 		retrieve: memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
+		forget:   memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
 		persona:  defaultString(opts.PersonaID, defaultPersonaID),
 		now:      now,
 	}, nil
@@ -341,6 +344,31 @@ func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchD
 	return &RebuildSearchDocumentsResult{Upserted: result.Upserted}, nil
 }
 
+func (s *service) Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	if err := validateForgetRequest(req); err != nil {
+		return nil, err
+	}
+	result, err := s.forget.Forget(ctx, memsqlite.ForgetRequest{
+		PersonaID:  personaID,
+		Actor:      req.Actor,
+		ReasonCode: req.ReasonCode,
+		Level:      req.Level,
+		Target: memsqlite.ForgetTarget{
+			ScopeMode: req.Target.ScopeMode,
+			NodeType:  core.NodeType(req.Target.NodeType),
+			NodeID:    req.Target.NodeID,
+		},
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s %s", ErrNotFound, req.Target.NodeType, req.Target.NodeID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return forgetResultFromStore(result), nil
+}
+
 func (s *service) requireSession(ctx context.Context, personaID string, sessionID string) error {
 	var id string
 	err := s.sqlDB.QueryRowContext(ctx, `
@@ -372,6 +400,38 @@ func displayNameForPersona(personaID string) string {
 		return "Default"
 	}
 	return personaID
+}
+
+func validateForgetRequest(req ForgetRequest) error {
+	if req.Target.ScopeMode != ForgetScopeExactNode {
+		return fmt.Errorf("%w: ScopeMode must be exact_node", ErrInvalidRequest)
+	}
+	if strings.TrimSpace(req.Target.NodeID) == "" {
+		return fmt.Errorf("%w: NodeID is required", ErrInvalidRequest)
+	}
+	switch req.Actor {
+	case ForgetActorUser, ForgetActorSystem, ForgetActorAdmin:
+	default:
+		return fmt.Errorf("%w: invalid Actor", ErrInvalidRequest)
+	}
+	switch req.ReasonCode {
+	case ForgetReasonUserRequested, ForgetReasonRetentionPolicy, ForgetReasonSafety, ForgetReasonAdminPolicy:
+	default:
+		return fmt.Errorf("%w: invalid ReasonCode", ErrInvalidRequest)
+	}
+	switch req.Level {
+	case ForgetLevelSoft, ForgetLevelHard:
+		if req.Target.NodeType != ForgetNodeFact {
+			return fmt.Errorf("%w: %s only supports fact targets", ErrInvalidRequest, req.Level)
+		}
+	case ForgetLevelSourceRedact:
+		if req.Target.NodeType != ForgetNodeEpisode {
+			return fmt.Errorf("%w: source_redact only supports episode targets", ErrInvalidRequest)
+		}
+	default:
+		return fmt.Errorf("%w: invalid Level", ErrInvalidRequest)
+	}
+	return nil
 }
 
 func sessionFromCore(session core.Session) *Session {
@@ -510,4 +570,16 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		})
 	}
 	return result
+}
+
+func forgetResultFromStore(result memsqlite.ForgetResult) *ForgetResult {
+	return &ForgetResult{
+		DeletionEventID:        result.DeletionEventID,
+		TargetNodeType:         string(result.TargetNodeType),
+		TargetNodeID:           result.TargetNodeID,
+		SearchDocumentsDeleted: result.SearchDocumentsDeleted,
+		FTSRowsDeleted:         result.FTSRowsDeleted,
+		MirrorDeletesEnqueued:  result.MirrorDeletesEnqueued,
+		LinksScrubbed:          result.LinksScrubbed,
+	}
 }

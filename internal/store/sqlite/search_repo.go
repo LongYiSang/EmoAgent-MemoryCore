@@ -203,6 +203,7 @@ func scanSearchDocuments(rows *sql.Rows) ([]core.SearchDocument, error) {
 
 type sqlRunner interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
@@ -297,7 +298,10 @@ func deleteSearchDocument(ctx context.Context, runner sqlRunner, personaID strin
 	_, err := runner.ExecContext(ctx, `
 DELETE FROM memory_search_documents
 WHERE persona_id = ? AND node_type = ? AND node_id = ?`, personaID, string(nodeType), nodeID)
-	return err
+	if err != nil {
+		return err
+	}
+	return deleteSearchFTS(ctx, runner, personaID, nodeType, nodeID)
 }
 
 func upsertSearchFTS(ctx context.Context, runner sqlRunner, doc core.SearchDocument) error {
@@ -331,13 +335,60 @@ func deleteSearchFTS(ctx context.Context, runner sqlRunner, personaID string, no
 		}
 		return nil
 	}
+	return rebuildSearchFTSExcluding(ctx, runner, personaID, nodeType, nodeID)
+}
+
+func rebuildSearchFTSExcluding(ctx context.Context, runner sqlRunner, personaID string, nodeType core.NodeType, nodeID string) error {
+	for _, table := range []string{
+		"memory_search_fts",
+		"memory_search_fts_data",
+		"memory_search_fts_idx",
+		"memory_search_fts_content",
+		"memory_search_fts_docsize",
+		"memory_search_fts_config",
+	} {
+		if _, err := runner.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
+			if isMissingSearchIndex(err) {
+				return nil
+			}
+			return err
+		}
+	}
+	if _, err := runner.ExecContext(ctx, `
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts USING fts5(
+    search_text,
+    persona_id UNINDEXED,
+    node_type UNINDEXED,
+    node_id UNINDEXED,
+    tokenize = 'unicode61'
+)`); err != nil {
+		if isSearchIndexUnavailable(err) {
+			return nil
+		}
+		return err
+	}
 	_, err := runner.ExecContext(ctx, `
-DELETE FROM memory_search_fts
-WHERE persona_id = ? AND node_type = ? AND node_id = ?`, personaID, string(nodeType), nodeID)
+INSERT INTO memory_search_fts (search_text, persona_id, node_type, node_id)
+SELECT search_text, persona_id, node_type, node_id
+FROM memory_search_documents
+WHERE NOT (persona_id = ? AND node_type = ? AND node_id = ?)`,
+		personaID,
+		string(nodeType),
+		nodeID,
+	)
 	if isSearchIndexUnavailable(err) {
 		return nil
 	}
 	return err
+}
+
+func isMissingSearchIndex(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "fts5")
 }
 
 func searchFTSExists(ctx context.Context, runner sqlRunner) (bool, error) {
