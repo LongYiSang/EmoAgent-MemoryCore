@@ -8,23 +8,34 @@ import (
 	"github.com/longyisang/emoagent-memorycore/migrations"
 )
 
+type MigrateOptions struct {
+	EnableFTS bool
+}
+
 func (d *DB) Migrate(ctx context.Context) error {
+	return d.MigrateWithOptions(ctx, MigrateOptions{EnableFTS: true})
+}
+
+func (d *DB) MigrateWithOptions(ctx context.Context, opts MigrateOptions) error {
 	all, err := migrations.All()
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
 	}
 
 	for _, migration := range all {
-		if err := d.execMigration(ctx, migration); err != nil {
+		if err := d.execMigration(ctx, migration, opts); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *DB) execMigration(ctx context.Context, migration migrations.Migration) error {
+func (d *DB) execMigration(ctx context.Context, migration migrations.Migration, opts MigrateOptions) error {
 	for _, statement := range splitSQLStatements(migration.SQL) {
 		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if !opts.EnableFTS && isOptionalFTSStatement(statement) {
 			continue
 		}
 		if _, err := d.db.ExecContext(ctx, statement); err != nil {
