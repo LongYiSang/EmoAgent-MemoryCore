@@ -184,6 +184,15 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 		return rejectResult("source_episode_ids are required"), nil
 	}
 
+	if schema.ConflictPolicy == core.ConflictPolicyLLMCheck {
+		return needsReviewResult("predicate requires llm_check review"), nil
+	}
+	var reviewReason string
+	candidate, reviewReason = applyExpireByTimePolicy(candidate, schema, sources, r.now())
+	if reviewReason != "" {
+		return needsReviewResult(reviewReason), nil
+	}
+
 	existing, err := activeFactsForCandidateTx(ctx, tx, req.PersonaID, candidate)
 	if err != nil {
 		return ConsolidationResult{}, err
@@ -198,6 +207,9 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 			}, nil
 		}
 		return r.reinforceFactTx(ctx, tx, req.PersonaID, *duplicate, candidate)
+	}
+	if schema.ConflictPolicy == core.ConflictPolicyMerge && len(existing) > 0 {
+		return needsReviewResult("merge predicate has non-exact existing fact"), nil
 	}
 
 	action := insertionAction(schema, len(existing))
@@ -776,6 +788,29 @@ func insertionAction(schema core.PredicateSchema, existingCount int) string {
 	default:
 		return ConsolidationActionInsert
 	}
+}
+
+func applyExpireByTimePolicy(candidate ManualFactCandidate, schema core.PredicateSchema, sources []sourceEpisode, now time.Time) (ManualFactCandidate, string) {
+	if schema.ConflictPolicy != core.ConflictPolicyExpireByTime || candidate.ValidTo != nil {
+		return candidate, ""
+	}
+	if schema.DefaultTauDays == nil {
+		return candidate, "expire_by_time predicate has no default_tau_days"
+	}
+	base := expiryBaseTime(candidate, sources, now)
+	validTo := base.Add(time.Duration(*schema.DefaultTauDays * float64(24*time.Hour)))
+	candidate.ValidTo = &validTo
+	return candidate, ""
+}
+
+func expiryBaseTime(candidate ManualFactCandidate, sources []sourceEpisode, now time.Time) time.Time {
+	if candidate.ValidFrom != nil && !candidate.ValidFrom.IsZero() {
+		return *candidate.ValidFrom
+	}
+	if len(sources) > 0 && !sources[0].OccurredAt.IsZero() {
+		return sources[0].OccurredAt
+	}
+	return now
 }
 
 func statusForAction(action string) string {

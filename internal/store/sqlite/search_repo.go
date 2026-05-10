@@ -43,16 +43,39 @@ func (r *SearchRepository) DeleteSearchDocument(ctx context.Context, personaID s
 func (r *SearchRepository) UpsertFactDocument(ctx context.Context, personaID string, factID string) error {
 	doc, err := buildFactSearchDocument(ctx, r.db, personaID, factID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return r.DeleteSearchDocument(ctx, personaID, core.NodeTypeFact, factID)
+		}
 		return err
+	}
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return r.DeleteSearchDocument(ctx, personaID, core.NodeTypeFact, factID)
 	}
 	return r.UpsertDocument(ctx, doc)
 }
 
 func (r *SearchRepository) RebuildSearchDocuments(ctx context.Context, personaID string) (RebuildSearchDocumentsResult, error) {
+	if _, err := r.db.ExecContext(ctx, `
+DELETE FROM memory_search_documents
+WHERE persona_id = ?
+  AND node_type = 'fact'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM facts f
+      WHERE f.persona_id = memory_search_documents.persona_id
+        AND f.id = memory_search_documents.node_id
+        AND f.visibility_status = 'visible'
+        AND f.searchable = 1
+  )`, personaID); err != nil {
+		return RebuildSearchDocumentsResult{}, err
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id
 FROM facts
 WHERE persona_id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1
 ORDER BY created_at ASC`, personaID)
 	if err != nil {
 		return RebuildSearchDocumentsResult{}, err
@@ -80,6 +103,9 @@ ORDER BY created_at ASC`, personaID)
 			return RebuildSearchDocumentsResult{}, err
 		}
 		result.Upserted++
+	}
+	if err := rebuildSearchFTS(ctx, r.db, nil); err != nil {
+		return RebuildSearchDocumentsResult{}, err
 	}
 	return result, nil
 }
@@ -133,6 +159,9 @@ LIMIT ?`, personaID, ftsQuery(query), limit)
 
 func upsertSearchDocument(ctx context.Context, runner sqlRunner, doc core.SearchDocument) error {
 	doc = normalizeSearchDocument(doc)
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return deleteSearchDocument(ctx, runner, doc.PersonaID, doc.NodeType, doc.NodeID)
+	}
 	_, err := runner.ExecContext(ctx, `
 INSERT INTO memory_search_documents (
     id, persona_id, node_type, node_id, search_text, search_tier,
@@ -248,7 +277,13 @@ func normalizeSearchDocument(doc core.SearchDocument) core.SearchDocument {
 func upsertFactSearchDocumentTx(ctx context.Context, tx *sql.Tx, personaID string, factID string) error {
 	doc, err := buildFactSearchDocument(ctx, tx, personaID, factID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, factID)
+		}
 		return err
+	}
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, factID)
 	}
 	return upsertSearchDocument(ctx, tx, doc)
 }
@@ -283,7 +318,7 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 	}
 	doc.ID = fmt.Sprintf("search_%s", factID)
 	doc.NodeType = core.NodeTypeFact
-	doc.SearchTier = core.SearchTierHot
+	doc.SearchTier = searchTierForLifecycle(doc.LifecycleStatus)
 	doc.SearchText = strings.Join(nonEmptyStrings(
 		doc.SearchText,
 		predicate,
@@ -292,6 +327,23 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 	), " ")
 	doc.Searchable = intBool(searchable)
 	return doc, nil
+}
+
+func isSearchDocumentVisibleAndSearchable(doc core.SearchDocument) bool {
+	return doc.VisibilityStatus == core.VisibilityVisible && doc.Searchable
+}
+
+func searchTierForLifecycle(status core.LifecycleStatus) core.SearchTier {
+	switch status {
+	case core.LifecycleDormant, core.LifecycleConsolidated:
+		return core.SearchTierWarm
+	case core.LifecycleArchived:
+		return core.SearchTierCold
+	case core.LifecycleDeepArchived:
+		return core.SearchTierDeepCold
+	default:
+		return core.SearchTierHot
+	}
 }
 
 func deleteSearchDocument(ctx context.Context, runner sqlRunner, personaID string, nodeType core.NodeType, nodeID string) error {
@@ -305,6 +357,9 @@ WHERE persona_id = ? AND node_type = ? AND node_id = ?`, personaID, string(nodeT
 }
 
 func upsertSearchFTS(ctx context.Context, runner sqlRunner, doc core.SearchDocument) error {
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return deleteSearchFTS(ctx, runner, doc.PersonaID, doc.NodeType, doc.NodeID)
+	}
 	if ok, err := searchFTSExists(ctx, runner); err != nil || !ok {
 		if err != nil {
 			return err
@@ -335,10 +390,26 @@ func deleteSearchFTS(ctx context.Context, runner sqlRunner, personaID string, no
 		}
 		return nil
 	}
-	return rebuildSearchFTSExcluding(ctx, runner, personaID, nodeType, nodeID)
+	return rebuildSearchFTS(ctx, runner, &searchDocumentKey{
+		personaID: personaID,
+		nodeType:  nodeType,
+		nodeID:    nodeID,
+	})
 }
 
-func rebuildSearchFTSExcluding(ctx context.Context, runner sqlRunner, personaID string, nodeType core.NodeType, nodeID string) error {
+type searchDocumentKey struct {
+	personaID string
+	nodeType  core.NodeType
+	nodeID    string
+}
+
+func rebuildSearchFTS(ctx context.Context, runner sqlRunner, exclude *searchDocumentKey) error {
+	if ok, err := searchFTSExists(ctx, runner); err != nil || !ok {
+		if err != nil {
+			return err
+		}
+		return nil
+	}
 	for _, table := range []string{
 		"memory_search_fts",
 		"memory_search_fts_data",
@@ -367,15 +438,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts USING fts5(
 		}
 		return err
 	}
-	_, err := runner.ExecContext(ctx, `
+	query := `
 INSERT INTO memory_search_fts (search_text, persona_id, node_type, node_id)
 SELECT search_text, persona_id, node_type, node_id
 FROM memory_search_documents
-WHERE NOT (persona_id = ? AND node_type = ? AND node_id = ?)`,
-		personaID,
-		string(nodeType),
-		nodeID,
-	)
+WHERE visibility_status = 'visible'
+  AND searchable = 1`
+	args := []any{}
+	if exclude != nil {
+		query += `
+  AND NOT (persona_id = ? AND node_type = ? AND node_id = ?)`
+		args = append(args, exclude.personaID, string(exclude.nodeType), exclude.nodeID)
+	}
+	_, err := runner.ExecContext(ctx, query, args...)
 	if isSearchIndexUnavailable(err) {
 		return nil
 	}

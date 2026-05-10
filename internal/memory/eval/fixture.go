@@ -180,6 +180,7 @@ type Assertion struct {
 	Action                string   `yaml:"action"`
 	Status                string   `yaml:"status"`
 	FactID                string   `yaml:"fact_id"`
+	Predicate             string   `yaml:"predicate"`
 	Column                string   `yaml:"column"`
 	Equals                string   `yaml:"equals"`
 	FromNodeID            string   `yaml:"from_node_id"`
@@ -287,6 +288,7 @@ func knownAssertionType(value string) bool {
 	case "consolidation_result",
 		"memory_contains",
 		"memory_not_contains",
+		"fact_count",
 		"fact_column",
 		"link_exists",
 		"search_absent",

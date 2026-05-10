@@ -1,0 +1,35 @@
+case_id: C004_llm_check_needs_review
+description: llm_check 谓词只返回 needs_review，不写入事实。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我现在感觉可以信任 Agent。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: feeling
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: feels_about_agent
+        object_literal: 信任
+        content_summary: 用户信任 Agent。
+        source_episode_ids: [ep1]
+        confidence: ambiguous
+        importance: 0.7
+assertions:
+  - type: consolidation_result
+    step: feeling
+    action: needs_review
+    status: needs_review
+  - type: fact_count
+    predicate: feels_about_agent
+    equals: "0"

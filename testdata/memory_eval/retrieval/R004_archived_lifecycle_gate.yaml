@@ -1,0 +1,81 @@
+case_id: R004_archived_lifecycle_gate
+description: archived 需要 AllowHistorical，deep_archived 需要 AllowDeepArchive。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我以前喜欢收集旧票根，也保存过早期项目代号。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: archived_fact
+    action: consolidate
+    fact_override:
+      lifecycle_status: archived
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 旧票根
+        content_summary: 用户以前喜欢收集旧票根。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: deep_fact
+    action: consolidate
+    fact_override:
+      lifecycle_status: deep_archived
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 早期项目代号
+        content_summary: 用户保存过早期项目代号。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: archived_default
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 旧票根
+  - id: archived_historical
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 旧票根
+      policy:
+        allow_historical: true
+  - id: deep_default
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 早期项目代号
+  - id: deep_allowed
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 早期项目代号
+      policy:
+        allow_deep_archive: true
+assertions:
+  - type: memory_not_contains
+    step: archived_default
+    node_id: $archived_fact.fact_id
+  - type: memory_contains
+    step: archived_historical
+    node_id: $archived_fact.fact_id
+    summary: 用户以前喜欢收集旧票根。
+  - type: memory_not_contains
+    step: deep_default
+    node_id: $deep_fact.fact_id
+  - type: memory_contains
+    step: deep_allowed
+    node_id: $deep_fact.fact_id
+    summary: 用户保存过早期项目代号。

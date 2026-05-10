@@ -72,6 +72,205 @@ func TestSearchRepositoryRebuildSearchDocumentsBackfillsFacts(t *testing.T) {
 	requireSearchDocument(t, db.SQLDB(), "fact_pr3", "用户喜欢咖啡")
 }
 
+func TestSearchRepositoryUpsertFactDocumentDeletesInvisibleOrUnsearchableFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, tt := range []struct {
+		name       string
+		factID     string
+		visibility core.VisibilityStatus
+		searchable bool
+	}{
+		{name: "missing", factID: "fact_missing", visibility: core.VisibilityVisible, searchable: true},
+		{name: "hidden", factID: "fact_hidden", visibility: core.VisibilityHidden, searchable: true},
+		{name: "forgotten", factID: "fact_forgotten", visibility: core.VisibilityForgotten, searchable: true},
+		{name: "purged", factID: "fact_purged", visibility: core.VisibilityPurged, searchable: true},
+		{name: "unsearchable", factID: "fact_unsearchable", visibility: core.VisibilityVisible, searchable: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name != "missing" {
+				insertSearchFact(t, ctx, db.SQLDB(), tt.factID, "用户喜欢"+tt.name+"。", core.LifecycleActive)
+			}
+			if err := search.UpsertDocument(ctx, core.SearchDocument{
+				ID:               "search_" + tt.factID,
+				PersonaID:        "default",
+				NodeType:         core.NodeTypeFact,
+				NodeID:           tt.factID,
+				SearchText:       "stale private text " + tt.name,
+				SearchTier:       core.SearchTierHot,
+				VisibilityStatus: core.VisibilityVisible,
+				SensitivityLevel: core.SensitivityNormal,
+				LifecycleStatus:  core.LifecycleActive,
+				Searchable:       true,
+			}); err != nil {
+				t.Fatalf("seed stale search document: %v", err)
+			}
+			if tt.name != "missing" {
+				if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET visibility_status = ?, searchable = ?
+WHERE id = ?`, string(tt.visibility), boolIntTest(tt.searchable), tt.factID); err != nil {
+					t.Fatalf("update fact gate: %v", err)
+				}
+			}
+
+			if err := search.UpsertFactDocument(ctx, "default", tt.factID); err != nil {
+				t.Fatalf("upsert fact document: %v", err)
+			}
+
+			requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, tt.factID, 0)
+			requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, tt.factID, 0)
+		})
+	}
+}
+
+func TestSearchRepositoryUpsertDocumentDeletesInvisibleOrUnsearchableDocuments(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, tt := range []struct {
+		name       string
+		visibility core.VisibilityStatus
+		searchable bool
+	}{
+		{name: "hidden", visibility: core.VisibilityHidden, searchable: true},
+		{name: "forgotten", visibility: core.VisibilityForgotten, searchable: true},
+		{name: "purged", visibility: core.VisibilityPurged, searchable: true},
+		{name: "unsearchable", visibility: core.VisibilityVisible, searchable: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			factID := "fact_doc_" + tt.name
+			if err := search.UpsertDocument(ctx, core.SearchDocument{
+				ID:               "search_" + factID,
+				PersonaID:        "default",
+				NodeType:         core.NodeTypeFact,
+				NodeID:           factID,
+				SearchText:       "private stale text " + tt.name,
+				SearchTier:       core.SearchTierHot,
+				VisibilityStatus: core.VisibilityVisible,
+				SensitivityLevel: core.SensitivityNormal,
+				LifecycleStatus:  core.LifecycleActive,
+				Searchable:       true,
+			}); err != nil {
+				t.Fatalf("seed visible search document: %v", err)
+			}
+
+			if err := search.UpsertDocument(ctx, core.SearchDocument{
+				ID:               "search_" + factID,
+				PersonaID:        "default",
+				NodeType:         core.NodeTypeFact,
+				NodeID:           factID,
+				SearchText:       "private stale text " + tt.name,
+				SearchTier:       core.SearchTierHot,
+				VisibilityStatus: tt.visibility,
+				SensitivityLevel: core.SensitivityNormal,
+				LifecycleStatus:  core.LifecycleActive,
+				Searchable:       tt.searchable,
+			}); err != nil {
+				t.Fatalf("upsert ineligible search document: %v", err)
+			}
+
+			requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, factID, 0)
+			requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, factID, 0)
+		})
+	}
+}
+
+func TestSearchRepositoryRebuildSearchDocumentsDropsStaleAndSkipsInvisibleFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_visible", "用户喜欢咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_hidden", "用户喜欢隐藏茶。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_unsearchable", "用户喜欢隐藏果汁。", core.LifecycleActive)
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET visibility_status = 'hidden'
+WHERE id = 'fact_hidden'`); err != nil {
+		t.Fatalf("hide fact: %v", err)
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET searchable = 0
+WHERE id = 'fact_unsearchable'`); err != nil {
+		t.Fatalf("mark fact unsearchable: %v", err)
+	}
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, doc := range []core.SearchDocument{
+		{ID: "search_fact_visible", PersonaID: "default", NodeType: core.NodeTypeFact, NodeID: "fact_visible", SearchText: "old visible", VisibilityStatus: core.VisibilityVisible, Searchable: true},
+		{ID: "search_fact_hidden", PersonaID: "default", NodeType: core.NodeTypeFact, NodeID: "fact_hidden", SearchText: "stale hidden tea", VisibilityStatus: core.VisibilityVisible, Searchable: true},
+		{ID: "search_fact_unsearchable", PersonaID: "default", NodeType: core.NodeTypeFact, NodeID: "fact_unsearchable", SearchText: "stale hidden juice", VisibilityStatus: core.VisibilityVisible, Searchable: true},
+		{ID: "search_fact_deleted", PersonaID: "default", NodeType: core.NodeTypeFact, NodeID: "fact_deleted", SearchText: "deleted stale fact", VisibilityStatus: core.VisibilityVisible, Searchable: true},
+		{ID: "search_ep_visible", PersonaID: "default", NodeType: core.NodeTypeEpisode, NodeID: "ep_visible", SearchText: "episode search survives", VisibilityStatus: core.VisibilityVisible, Searchable: true},
+	} {
+		if err := search.UpsertDocument(ctx, doc); err != nil {
+			t.Fatalf("seed search document %s: %v", doc.ID, err)
+		}
+	}
+
+	result, err := search.RebuildSearchDocuments(ctx, "default")
+	if err != nil {
+		t.Fatalf("rebuild search documents: %v", err)
+	}
+	if result.Upserted != 1 {
+		t.Fatalf("rebuild upserted = %d, want 1", result.Upserted)
+	}
+
+	requireSearchDocument(t, db.SQLDB(), "fact_visible", "用户喜欢咖啡")
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_hidden", 0)
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_unsearchable", 0)
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_deleted", 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_hidden", 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_unsearchable", 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, "fact_deleted", 0)
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 1)
+}
+
+func TestSearchRepositoryBuildsFactSearchTierFromLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, tt := range []struct {
+		lifecycle core.LifecycleStatus
+		want      core.SearchTier
+	}{
+		{lifecycle: core.LifecycleActive, want: core.SearchTierHot},
+		{lifecycle: core.LifecycleDormant, want: core.SearchTierWarm},
+		{lifecycle: core.LifecycleConsolidated, want: core.SearchTierWarm},
+		{lifecycle: core.LifecycleArchived, want: core.SearchTierCold},
+		{lifecycle: core.LifecycleDeepArchived, want: core.SearchTierDeepCold},
+	} {
+		factID := "fact_" + string(tt.lifecycle)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户生命周期 "+string(tt.lifecycle), tt.lifecycle)
+		if err := search.UpsertFactDocument(ctx, "default", factID); err != nil {
+			t.Fatalf("upsert fact document %s: %v", factID, err)
+		}
+		var got string
+		if err := db.SQLDB().QueryRow(`
+SELECT search_tier
+FROM memory_search_documents
+WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&got); err != nil {
+			t.Fatalf("query search tier: %v", err)
+		}
+		if got != string(tt.want) {
+			t.Fatalf("lifecycle %s search tier = %s, want %s", tt.lifecycle, got, tt.want)
+		}
+	}
+}
+
 func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 	ctx := context.Background()
 	dbPath := t.TempDir() + "/memory.db"
@@ -167,6 +366,33 @@ WHERE node_type = 'fact' AND node_id = ? AND access_type = ? AND rank_position =
 	if count != 1 {
 		t.Fatalf("access event count = %d, want 1", count)
 	}
+}
+
+func insertSearchFact(t *testing.T, ctx context.Context, db *sql.DB, factID string, summary string, lifecycle core.LifecycleStatus) {
+	t.Helper()
+
+	object := summary
+	if err := memsqlite.NewFactRepository(db).Insert(ctx, core.Fact{
+		ID:                   factID,
+		PersonaID:            "default",
+		SubjectEntityID:      ptr("ent_user"),
+		Predicate:            "likes",
+		ObjectLiteral:        &object,
+		ContentSummary:       summary,
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		Importance:           0.7,
+		LifecycleStatus:      lifecycle,
+	}); err != nil {
+		t.Fatalf("insert fact %s: %v", factID, err)
+	}
+}
+
+func boolIntTest(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func fixedRetrievalID() string {

@@ -25,15 +25,16 @@ type Runner struct {
 }
 
 type runState struct {
-	fixture  *Fixture
-	service  memorycore.Service
-	db       *sql.DB
-	refs     map[string]string
-	steps    map[string]stepResult
-	persona  string
-	stepID   string
-	caseID   string
-	tempRoot string
+	fixture       *Fixture
+	service       memorycore.Service
+	db            *sql.DB
+	refs          map[string]string
+	steps         map[string]stepResult
+	persona       string
+	stepID        string
+	caseID        string
+	tempRoot      string
+	nextTriviumID int64
 }
 
 type stepResult struct {
@@ -96,14 +97,15 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 	defer db.Close()
 
 	state := &runState{
-		fixture:  fixture,
-		service:  svc,
-		db:       db,
-		refs:     map[string]string{},
-		steps:    map[string]stepResult{},
-		persona:  defaultPersonaID,
-		caseID:   fixture.CaseID,
-		tempRoot: tempRoot,
+		fixture:       fixture,
+		service:       svc,
+		db:            db,
+		refs:          map[string]string{},
+		steps:         map[string]stepResult{},
+		persona:       defaultPersonaID,
+		caseID:        fixture.CaseID,
+		tempRoot:      tempRoot,
+		nextTriviumID: 1,
 	}
 	if err := state.seed(ctx); err != nil {
 		report.Err = err
@@ -437,10 +439,12 @@ func (s *runState) applyMirrorStub(ctx context.Context, step Step) error {
 		return err
 	}
 	nodeType := defaultString(step.MirrorStub.IndexMappedType, "fact")
+	triviumNodeID := s.nextTriviumID
+	s.nextTriviumID++
 	_, err = s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
-VALUES (?, ?, ?, ?, ?, 'synced')`,
-		"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, "trivium_"+sanitizeFileName(nodeID))
+VALUES (?, ?, ?, ?, ?, 'indexed')`,
+		"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, triviumNodeID)
 	if err != nil {
 		return fmt.Errorf("case %s step %s mirror stub: %w", s.caseID, step.ID, err)
 	}

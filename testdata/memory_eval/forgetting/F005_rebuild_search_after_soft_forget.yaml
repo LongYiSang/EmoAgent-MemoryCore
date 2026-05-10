@@ -1,5 +1,5 @@
-case_id: F003_source_redact_recent_episode
-description: source_redact 清理 episode 原文、写 tombstone，并让依赖该证据的 fact 不再被 retrieval 返回。
+case_id: F005_rebuild_search_after_soft_forget
+description: soft forget 后重建 search 不应把隐藏 fact 的语义文本写回 fallback/FTS。
 seed:
   sessions:
     - id: s1
@@ -11,7 +11,7 @@ seed:
   episodes:
     - id: ep1
       session_id: s1
-      content: 我喜欢乌龙茶。
+      content: 我喜欢茉莉花茶。
       occurred_at: "2026-04-28T09:00:00+08:00"
 steps:
   - id: fact
@@ -20,8 +20,8 @@ steps:
       candidate:
         subject_entity_id: user
         predicate: likes
-        object_literal: 乌龙茶
-        content_summary: 用户喜欢乌龙茶。
+        object_literal: 茉莉花茶
+        content_summary: 用户喜欢茉莉花茶。
         source_episode_ids: [ep1]
         confidence: explicit
         importance: 0.7
@@ -30,30 +30,28 @@ steps:
     forget:
       actor: user
       reason_code: user_requested
-      level: source_redact
+      level: soft_forget
       target:
         scope_mode: exact_node
-        node_type: episode
-        node_id: ep1
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: rebuild
+    action: rebuild_search
+    rebuild_search: {}
   - id: retrieve
     action: retrieve
     retrieve:
       session_id: s1
-      query_text: 乌龙茶
+      query_text: 茉莉花茶
 assertions:
+  - type: search_absent
+    node_type: fact
+    node_id: $fact.fact_id
+    search_text: 茉莉花茶
   - type: memory_not_contains
     step: retrieve
     node_id: $fact.fact_id
   - type: fact_column
     fact_id: $fact.fact_id
     column: visibility_status
-    equals: visible
-  - type: fact_column
-    fact_id: $fact.fact_id
-    column: searchable
-    equals: "1"
-  - type: episode_tombstone_exists
-    episode_id: ep1
-  - type: deletion_event_safe
-    step: forget
-    forbidden_contains: [我喜欢乌龙茶, 用户喜欢乌龙茶]
+    equals: hidden

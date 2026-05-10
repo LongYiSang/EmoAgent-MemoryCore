@@ -42,6 +42,19 @@ func TestServiceForgetSoftForgetsFactFromRetrievalButKeepsSummary(t *testing.T) 
 	}
 	requireNoMemoryItem(t, retrieved, fact.ID)
 
+	rebuild, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{})
+	if err != nil {
+		t.Fatalf("rebuild search after soft forget: %v", err)
+	}
+	if rebuild.Upserted != 0 {
+		t.Fatalf("rebuild upserted = %d, want 0", rebuild.Upserted)
+	}
+	retrievedAfterRebuild, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	if err != nil {
+		t.Fatalf("retrieve after soft forget rebuild: %v", err)
+	}
+	requireNoMemoryItem(t, retrievedAfterRebuild, fact.ID)
+
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	var summary, visibility string
@@ -51,6 +64,7 @@ func TestServiceForgetSoftForgetsFactFromRetrievalButKeepsSummary(t *testing.T) 
 	if summary != "用户喜欢咖啡。" || visibility != memorycore.VisibilityHidden {
 		t.Fatalf("soft-forgotten fact summary/visibility = %q/%q", summary, visibility)
 	}
+	requireSearchDocumentCount(t, db, fact.ID, 0)
 }
 
 func TestServiceForgetHardForgetsPinnedFactAndClearsSemanticContent(t *testing.T) {
@@ -154,12 +168,35 @@ func TestServiceForgetSourceRedactEpisodeRemovesOnlyEvidenceFromRetrieval(t *tes
 	if content != memorycore.RedactedPlaceholder || visibility != memorycore.VisibilityRedacted || searchable != 0 {
 		t.Fatalf("redacted episode = %q/%q/%d", content, visibility, searchable)
 	}
+	var factVisibility string
+	var factSearchable int
+	if err := db.QueryRow(`SELECT visibility_status, searchable FROM facts WHERE id = ?`, fact.ID).Scan(&factVisibility, &factSearchable); err != nil {
+		t.Fatalf("query source-redacted derived fact: %v", err)
+	}
+	if factVisibility != memorycore.VisibilityVisible || factSearchable != 1 {
+		t.Fatalf("source-redacted derived fact visibility/searchable = %q/%d, want visible/1", factVisibility, factSearchable)
+	}
 	var tombstones int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM episode_tombstones WHERE episode_id = ?`, episode.ID).Scan(&tombstones); err != nil {
 		t.Fatalf("count tombstones: %v", err)
 	}
 	if tombstones != 1 {
 		t.Fatalf("tombstones = %d, want 1", tombstones)
+	}
+}
+
+func requireSearchDocumentCount(t *testing.T, db *sql.DB, factID string, want int) {
+	t.Helper()
+
+	var got int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM memory_search_documents
+WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&got); err != nil {
+		t.Fatalf("count search documents: %v", err)
+	}
+	if got != want {
+		t.Fatalf("search document count for %s = %d, want %d", factID, got, want)
 	}
 }
 

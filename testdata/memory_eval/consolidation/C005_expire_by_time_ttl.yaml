@@ -1,0 +1,44 @@
+case_id: C005_expire_by_time_ttl
+description: expire_by_time 谓词缺少 valid_to 时按默认 TTL 从来源时间计算，不改变生命周期/可见性。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我最近忙上线准备。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: busy
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: is_busy_with
+        object_literal: 上线准备
+        content_summary: 用户近期忙于上线准备。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.6
+assertions:
+  - type: consolidation_result
+    step: busy
+    action: insert
+    status: inserted
+  - type: fact_column
+    fact_id: $busy.fact_id
+    column: valid_to
+    equals: "2026-05-19T01:00:00Z"
+  - type: fact_column
+    fact_id: $busy.fact_id
+    column: lifecycle_status
+    equals: active
+  - type: fact_column
+    fact_id: $busy.fact_id
+    column: visibility_status
+    equals: visible

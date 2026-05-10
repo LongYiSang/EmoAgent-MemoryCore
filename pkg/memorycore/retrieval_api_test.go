@@ -121,6 +121,25 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
+	updateFactColumn(t, db, newName.Fact.ID, "lifecycle_status", "archived")
+
+	archivedDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "Yi"})
+	if err != nil {
+		t.Fatalf("retrieve archived default: %v", err)
+	}
+	requireNoMemoryItem(t, archivedDefault, newName.Fact.ID)
+
+	archivedHistorical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "Yi",
+		Policy: memorycore.RetrievalPolicy{
+			AllowHistorical: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve archived historical: %v", err)
+	}
+	requireMemoryItem(t, archivedHistorical, newName.Fact.ID, "用户偏好被称呼为 Yi。", "")
+
 	updateFactColumn(t, db, newName.Fact.ID, "lifecycle_status", "deep_archived")
 
 	deepDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "Yi"})

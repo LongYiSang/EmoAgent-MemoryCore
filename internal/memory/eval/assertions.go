@@ -17,6 +17,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertMemoryContains(assertion, true)
 	case "memory_not_contains":
 		return s.assertMemoryContains(assertion, false)
+	case "fact_count":
+		return s.assertFactCount(ctx, assertion)
 	case "fact_column":
 		return s.assertFactColumn(ctx, assertion)
 	case "link_exists":
@@ -74,6 +76,24 @@ func (s *runState) assertMemoryContains(assertion Assertion, wantPresent bool) e
 	}
 	if wantPresent {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "node " + nodeID + " present", Actual: memoryItemsDebug(result.Retrieval)}
+	}
+	return nil
+}
+
+func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) error {
+	query := `SELECT COUNT(*) FROM facts WHERE persona_id = ?`
+	args := []any{s.persona}
+	if assertion.Predicate != "" {
+		query += ` AND predicate = ?`
+		args = append(args, assertion.Predicate)
+	}
+	var got int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil {
+		return fmt.Errorf("case %s assertion %s count facts: %w", s.caseID, assertion.Type, err)
+	}
+	actual := fmt.Sprintf("%d", got)
+	if actual != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "fact_count=" + assertion.Equals, Actual: "fact_count=" + actual}
 	}
 	return nil
 }
@@ -199,7 +219,7 @@ func (s *runState) assertEpisodeTombstoneExists(ctx context.Context, assertion A
 
 func allowedFactAssertionColumn(column string) bool {
 	switch column {
-	case "validity_status", "visibility_status", "lifecycle_status", "sensitivity_level", "searchable", "pinned", "predicate", "content_summary", "object_literal":
+	case "validity_status", "visibility_status", "lifecycle_status", "sensitivity_level", "searchable", "pinned", "predicate", "content_summary", "object_literal", "valid_to":
 		return true
 	default:
 		return false

@@ -275,8 +275,15 @@ func (r *RetrievalRepository) authorityAllows(ctx context.Context, fact core.Fac
 	if fact.ValidityStatus == core.ValidityInvalidated && !policy.AllowHistorical {
 		return false, nil
 	}
-	if fact.LifecycleStatus == core.LifecycleDeepArchived && !policy.AllowDeepArchive {
-		return false, nil
+	switch fact.LifecycleStatus {
+	case core.LifecycleArchived:
+		if !policy.AllowHistorical {
+			return false, nil
+		}
+	case core.LifecycleDeepArchived:
+		if !policy.AllowDeepArchive {
+			return false, nil
+		}
 	}
 	if sensitivityRank(fact.SensitivityLevel) > sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission)) {
 		return false, nil

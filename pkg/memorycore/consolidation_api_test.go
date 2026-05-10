@@ -182,6 +182,126 @@ func TestServiceConsolidateMergeBoundaryReinforcesConservatively(t *testing.T) {
 	requireFactCount(t, db, "has_boundary", 1)
 }
 
+func TestServiceConsolidateLLMCheckNeedsReviewWithoutFact(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我现在感觉可以信任 Agent。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	feeling := "信任"
+	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+		Candidate: memorycore.ManualFactCandidate{
+			SubjectEntityID:  userID,
+			Predicate:        "feels_about_agent",
+			ObjectLiteral:    &feeling,
+			ContentSummary:   "用户信任 Agent。",
+			SourceEpisodeIDs: []string{episode.ID},
+			Confidence:       memorycore.ConfidenceAmbiguous,
+			Importance:       0.7,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate llm_check: %v", err)
+	}
+	if result.Action != memorycore.ConsolidationActionNeedsReview {
+		t.Fatalf("action = %q, want needs_review", result.Action)
+	}
+	if result.Status != memorycore.ConsolidationStatusNeedsReview {
+		t.Fatalf("status = %q, want needs_review", result.Status)
+	}
+	if result.Fact != nil {
+		t.Fatalf("fact = %#v, want nil", result.Fact)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireFactCount(t, db, "feels_about_agent", 0)
+}
+
+func TestServiceConsolidateExpireByTimeUsesCandidateValidFromForDefaultTTL(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近忙上线准备。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	busyWith := "上线准备"
+	validFrom := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
+	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+		Candidate: memorycore.ManualFactCandidate{
+			SubjectEntityID:  userID,
+			Predicate:        "is_busy_with",
+			ObjectLiteral:    &busyWith,
+			ContentSummary:   "用户近期忙于上线准备。",
+			ValidFrom:        &validFrom,
+			SourceEpisodeIDs: []string{episode.ID},
+			Confidence:       memorycore.ConfidenceExplicit,
+			Importance:       0.6,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate expire_by_time: %v", err)
+	}
+	if result.Action != memorycore.ConsolidationActionInsert || result.Fact == nil {
+		t.Fatalf("result = %#v, want inserted fact", result)
+	}
+	if result.Fact.ValidTo == nil {
+		t.Fatal("valid_to is nil, want default ttl")
+	}
+	wantValidTo := validFrom.Add(21 * 24 * time.Hour)
+	if !result.Fact.ValidTo.Equal(wantValidTo) {
+		t.Fatalf("valid_to = %s, want %s", result.Fact.ValidTo.Format(time.RFC3339Nano), wantValidTo.Format(time.RFC3339Nano))
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireFactValidTo(t, db, result.Fact.ID, wantValidTo)
+	requireFactLifecycleVisibility(t, db, result.Fact.ID, "active", "visible")
+}
+
+func TestServiceConsolidateMergeNonExactNeedsReviewWithoutInsert(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "不要在晚上十点后提醒我工作。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "周末不要讨论工作。", time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC))
+	firstBoundary := "晚上十点后不要提醒我工作"
+	secondBoundary := "不要在周末讨论工作"
+
+	first := consolidateLiteral(t, ctx, svc, userID, "has_boundary", firstBoundary, "用户不希望晚上十点后被提醒工作。", firstEpisode.ID)
+	second, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+		Candidate: memorycore.ManualFactCandidate{
+			SubjectEntityID:  userID,
+			Predicate:        "has_boundary",
+			ObjectLiteral:    &secondBoundary,
+			ContentSummary:   "用户不希望周末讨论工作。",
+			SourceEpisodeIDs: []string{secondEpisode.ID},
+			Confidence:       memorycore.ConfidenceExplicit,
+			Importance:       0.8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate non-exact boundary: %v", err)
+	}
+	if second.Action != memorycore.ConsolidationActionNeedsReview {
+		t.Fatalf("second action = %q, want needs_review", second.Action)
+	}
+	if second.Status != memorycore.ConsolidationStatusNeedsReview {
+		t.Fatalf("second status = %q, want needs_review", second.Status)
+	}
+	if second.Fact != nil {
+		t.Fatalf("second fact = %#v, want nil", second.Fact)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireFactCount(t, db, "has_boundary", 1)
+	requireFactReinforcementCount(t, db, first.Fact.ID, 0)
+}
+
 func TestServiceConsolidateRejectsUnsafeCandidates(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)
@@ -353,6 +473,33 @@ func requireFactValidity(t *testing.T, db *sql.DB, factID string, want string) {
 	}
 }
 
+func requireFactValidTo(t *testing.T, db *sql.DB, factID string, want time.Time) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`SELECT valid_to FROM facts WHERE id = ?`, factID).Scan(&got); err != nil {
+		t.Fatalf("query fact valid_to: %v", err)
+	}
+	if got != want.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("fact %s valid_to = %q, want %q", factID, got, want.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+func requireFactLifecycleVisibility(t *testing.T, db *sql.DB, factID string, wantLifecycle string, wantVisibility string) {
+	t.Helper()
+
+	var lifecycle, visibility string
+	if err := db.QueryRow(`SELECT lifecycle_status, visibility_status FROM facts WHERE id = ?`, factID).Scan(&lifecycle, &visibility); err != nil {
+		t.Fatalf("query fact lifecycle visibility: %v", err)
+	}
+	if lifecycle != wantLifecycle {
+		t.Fatalf("fact %s lifecycle = %q, want %q", factID, lifecycle, wantLifecycle)
+	}
+	if visibility != wantVisibility {
+		t.Fatalf("fact %s visibility = %q, want %q", factID, visibility, wantVisibility)
+	}
+}
+
 func requireFactCount(t *testing.T, db *sql.DB, predicate string, want int) {
 	t.Helper()
 
@@ -362,6 +509,18 @@ func requireFactCount(t *testing.T, db *sql.DB, predicate string, want int) {
 	}
 	if got != want {
 		t.Fatalf("fact count for %s = %d, want %d", predicate, got, want)
+	}
+}
+
+func requireFactReinforcementCount(t *testing.T, db *sql.DB, factID string, want int) {
+	t.Helper()
+
+	var got int
+	if err := db.QueryRow(`SELECT reinforcement_count FROM facts WHERE id = ?`, factID).Scan(&got); err != nil {
+		t.Fatalf("query fact reinforcement count: %v", err)
+	}
+	if got != want {
+		t.Fatalf("fact %s reinforcement_count = %d, want %d", factID, got, want)
 	}
 }
 

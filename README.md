@@ -107,7 +107,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 |------|------|------|
 | `soft_forget` | "别再老提这件事了" | 检索隐藏，内容保留 |
 | `hard_forget` | "忘掉这个偏好" | 清空语义内容，保留最小锚点 |
-| `source_redact` | "这段对话原文不要保留" | 删除 Episode 原文，派生事实可选保留 |
+| `source_redact` | "这段对话原文不要保留" | 隐私例外：Episode 锚点 / tombstone 保留，原文可占位脱敏；仅有脱敏证据的派生事实可保留，但普通检索不返回 |
 | `purge` | "彻底删除此事" | 全链路级联清理：事实 + 来源 + 派生 + 镜像 + 搜索 |
 
 ---
@@ -117,7 +117,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 **已完成**
 
 - [x] Phase 1 基础层：Go module、SQLite migrations / schema、基础仓储、`memoryctl init-db`、可选 FTS5。
-- [x] Phase 1.5 Core Runtime：Public API facade、deterministic consolidation、SQLite retrieval MVP、forget baseline、eval fixtures。
+- [x] Phase 1.5 Core Runtime：Public API facade、deterministic consolidation、SQLite retrieval MVP、forget baseline、eval fixtures（已实现，hardening in progress）。
 
 **后续 RoadMap**
 
@@ -232,7 +232,7 @@ EmoAgent-MemoryCore/
 
 ### Episode 是证据，不是事实
 
-Episode 是对话中不可变的、仅追加的原始事件记录，是所有上层推理的 ground truth 锚点。Episode 永远不被修改或删除——可见性变更只影响内容是否被使用，不影响记录是否存在。
+Episode 是对话中不可变的、仅追加的原始事件记录，是所有上层推理的 ground truth 锚点。Episode 永远不被删除；`source_redact` 是隐私例外：Episode 锚点与 tombstone 保留，原文内容可以替换为占位脱敏内容。只依赖已脱敏证据的派生事实可以保留用于审计 / 后续治理，但普通检索不得返回。
 
 ### Fact 是节点，不是边
 

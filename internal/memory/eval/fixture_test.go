@@ -2,6 +2,8 @@ package eval
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -56,6 +58,50 @@ assertions:
 	}
 	if !strings.Contains(report.Error(), "BAD_REF") || !strings.Contains(report.Error(), "$missing.fact_id") {
 		t.Fatalf("report error = %q, want case id and missing ref", report.Error())
+	}
+}
+
+func TestEvalRunnerMirrorStubMatchesSchema(t *testing.T) {
+	tempDir := t.TempDir()
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: MIRROR_STUB_SCHEMA
+steps:
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_node_id: fact_mirror_stub
+      index_mapped_type: fact
+    retrieve:
+      query_text: coffee
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: tempDir}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture: %v", report.Err)
+	}
+
+	db, err := sql.Open("sqlite", filepath.Join(tempDir, "MIRROR_STUB_SCHEMA.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	var status string
+	var triviumType string
+	if err := db.QueryRow(`
+SELECT index_status, typeof(trivium_node_id)
+FROM memory_index_map
+WHERE node_id = ?`, "fact_mirror_stub").Scan(&status, &triviumType); err != nil {
+		t.Fatalf("query mirror stub: %v", err)
+	}
+	if status != "indexed" {
+		t.Fatalf("index_status = %q, want indexed", status)
+	}
+	if triviumType != "integer" {
+		t.Fatalf("typeof(trivium_node_id) = %q, want integer", triviumType)
 	}
 }
 
