@@ -1,0 +1,59 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "req_example",
+  "persona_id": "default",
+  "session_id": "session_seed",
+  "trigger": "session_end",
+  "source_window": {
+    "episode_ids": ["ep_seed"],
+    "started_at": null,
+    "ended_at": null
+  },
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "f1",
+      "subject_entity_candidate_id": "user",
+      "predicate": "dislikes",
+      "object_entity_candidate_id": null,
+      "object_literal": "早上八点开会",
+      "content_summary": "用户不喜欢早上八点开会。",
+      "fact_type": "stable_preference",
+      "valid_from": null,
+      "valid_to": null,
+      "temporal_precision": "unknown",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.95,
+      "importance": 0.7,
+      "valence": -0.55,
+      "arousal": 0.35,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep_seed"],
+      "evidence_notes": "用户直接说自己不喜欢早上八点开会。",
+      "reasoning": null,
+      "operation_hint": "insert_candidate",
+      "pinned": false,
+      "user_requested": false,
+      "searchable_hint": true,
+      "quality_decision": "accept_for_consolidation",
+      "quality_reasons": ["explicit_user_statement", "stable_preference"]
+    }
+  ],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {
+    "accepted_fact_count": 1,
+    "needs_review_count": 0,
+    "rejected_count": 0,
+    "has_deletion_intent": false,
+    "has_pin_intent": false,
+    "requires_human_review": false,
+    "notes": "One explicit preference candidate."
+  }
+}
+

@@ -1,0 +1,42 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "req_example",
+  "persona_id": "default",
+  "session_id": "session_seed",
+  "trigger": "manual_forget",
+  "source_window": {
+    "episode_ids": ["ep_seed"],
+    "started_at": null,
+    "ended_at": null
+  },
+  "entities": [],
+  "facts": [],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [
+    {
+      "candidate_id": "d1",
+      "forget_level": "hard_forget",
+      "target_description": "早上八点开会",
+      "target_node_type_hint": "fact",
+      "source_episode_id": "ep_seed",
+      "confidence": 0.9,
+      "reasoning": null,
+      "requires_confirmation": true
+    }
+  ],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {
+    "accepted_fact_count": 0,
+    "needs_review_count": 0,
+    "rejected_count": 0,
+    "has_deletion_intent": true,
+    "has_pin_intent": false,
+    "requires_human_review": false,
+    "notes": "Manual forget is routed only."
+  }
+}
+

@@ -1,0 +1,70 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "req_example",
+  "persona_id": "default",
+  "session_id": "session_seed",
+  "trigger": "session_end",
+  "source_window": {
+    "episode_ids": ["ep_seed"],
+    "started_at": null,
+    "ended_at": null
+  },
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "agent_f1",
+      "subject_entity_candidate_id": "agent",
+      "predicate": "feels_about_agent",
+      "object_entity_candidate_id": null,
+      "object_literal": "Agent 依恋用户",
+      "content_summary": "Agent 依恋用户。",
+      "fact_type": "relational_state",
+      "valid_from": null,
+      "valid_to": null,
+      "temporal_precision": "unknown",
+      "extraction_confidence": "inferred",
+      "extraction_confidence_score": 0.8,
+      "importance": 0.8,
+      "valence": 0.6,
+      "arousal": 0.6,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep_seed"],
+      "evidence_notes": "Invalid agent affect leakage example.",
+      "reasoning": null,
+      "operation_hint": "insert_candidate",
+      "pinned": false,
+      "user_requested": false,
+      "searchable_hint": true,
+      "quality_decision": "accept_for_consolidation",
+      "quality_reasons": ["bad_example"]
+    }
+  ],
+  "links": [],
+  "affect_events": [
+    {
+      "candidate_id": "agent_a1",
+      "scope": "agent",
+      "label": "attachment",
+      "valence": 0.6,
+      "arousal": 0.6,
+      "source_episode_ids": ["ep_seed"],
+      "confidence": 0.8,
+      "reasoning": null
+    }
+  ],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": ["agent_affect_boundary"],
+  "gate_summary": {
+    "accepted_fact_count": 0,
+    "needs_review_count": 0,
+    "rejected_count": 1,
+    "has_deletion_intent": false,
+    "has_pin_intent": false,
+    "requires_human_review": false,
+    "notes": "Agent affect must be rejected."
+  }
+}
+

@@ -41,6 +41,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runListFacts(args[1:], stdout, stderr)
 	case "get-node":
 		return runGetNode(args[1:], stdout, stderr)
+	case "extract-request":
+		return runExtractRequest(args[1:], stdout, stderr)
+	case "extract-validate":
+		return runExtractValidate(args[1:], stdout, stderr)
+	case "extract-dry-run":
+		return runExtractDryRun(args[1:], stdout, stderr)
+	case "extract-apply":
+		return runExtractApply(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2

@@ -1,0 +1,40 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "req_example",
+  "persona_id": "default",
+  "session_id": "session_seed",
+  "trigger": "session_end",
+  "source_window": {
+    "episode_ids": ["ep_seed"],
+    "started_at": null,
+    "ended_at": null
+  },
+  "entities": [],
+  "facts": [],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [
+    {
+      "candidate_id": "c1",
+      "corrected_topic": "meeting preference",
+      "new_candidate_id": null,
+      "old_memory_ref": null,
+      "confidence": 0.8,
+      "reasoning": null
+    }
+  ],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {
+    "accepted_fact_count": 0,
+    "needs_review_count": 0,
+    "rejected_count": 0,
+    "has_deletion_intent": false,
+    "has_pin_intent": false,
+    "requires_human_review": false,
+    "notes": "Correction hint is handoff only."
+  }
+}
+
