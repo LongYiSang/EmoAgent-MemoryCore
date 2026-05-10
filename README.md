@@ -218,7 +218,6 @@ EmoAgent-MemoryCore/
 ├── testdata/
 │   └── memory_eval/           # consolidation / retrieval / forgetting fixtures
 ├── docs/
-│   ├── TODO_MEMORYCORE_HANDOFF.md
 │   └── architecture/          # 完整架构文档
 ├── go.mod
 ├── go.sum

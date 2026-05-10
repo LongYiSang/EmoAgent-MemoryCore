@@ -30,6 +30,7 @@ coverage.out
 coverage.html
 *.prof
 *.pprof
+/example/
 
 # ── 临时文件 ──
 tmp/
@@ -45,4 +46,4 @@ Desktop.ini
 # ── 暂不开放 ──
 /docs/architecture/
 EmoAgent-MemoryCore_Handoff.md
-/docs/TODO.md
+/docs/TODO/
