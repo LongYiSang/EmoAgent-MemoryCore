@@ -172,7 +172,7 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 
 func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query queryAnalysis, policy RetrievalPolicy) (map[string]retrievalCandidate, error) {
 	candidates := make(map[string]retrievalCandidate)
-	docs, err := r.search.SearchDocuments(ctx, personaID, query.Raw, policy.UseFTS, policy.FinalMemoryCount*4)
+	docs, err := r.search.SearchDocumentsForRetrieval(ctx, personaID, query.Raw, policy.UseFTS, policy.FinalMemoryCount*4, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID s
 		return nil, err
 	}
 	for _, entityID := range entityIDs {
-		factIDs, err := r.factIDsForEntity(ctx, personaID, entityID)
+		factIDs, err := r.factIDsForEntity(ctx, personaID, entityID, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -356,12 +356,23 @@ WHERE e.persona_id = ?
 	return ids, nil
 }
 
-func (r *RetrievalRepository) factIDsForEntity(ctx context.Context, personaID string, entityID string) ([]string, error) {
+func (r *RetrievalRepository) factIDsForEntity(ctx context.Context, personaID string, entityID string, policy RetrievalPolicy) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id
 FROM facts
 WHERE persona_id = ?
-  AND (subject_entity_id = ? OR object_entity_id = ?)`, personaID, entityID, entityID)
+  AND (subject_entity_id = ? OR object_entity_id = ?)
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND (validity_status != 'invalidated' OR ? = 1)
+  AND (lifecycle_status != 'archived' OR ? = 1)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)`,
+		personaID,
+		entityID,
+		entityID,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive))
 	if err != nil {
 		return nil, err
 	}

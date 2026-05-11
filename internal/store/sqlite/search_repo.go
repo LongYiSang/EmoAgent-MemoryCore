@@ -173,6 +173,19 @@ func (r *SearchRepository) SearchDocuments(ctx context.Context, personaID string
 	return r.KeywordSearch(ctx, personaID, query, limit)
 }
 
+func (r *SearchRepository) SearchDocumentsForRetrieval(ctx context.Context, personaID string, query string, useFTS bool, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+	if useFTS {
+		docs, err := r.searchFTSForRetrieval(ctx, personaID, query, limit, policy)
+		if err == nil && len(docs) > 0 {
+			return docs, nil
+		}
+		if err != nil && !isSearchIndexUnavailable(err) {
+			return nil, err
+		}
+	}
+	return r.keywordSearchForRetrieval(ctx, personaID, query, limit, policy)
+}
+
 func (r *SearchRepository) searchFTS(ctx context.Context, personaID string, query string, limit int) ([]core.SearchDocument, error) {
 	if limit <= 0 {
 		limit = 10
@@ -200,6 +213,55 @@ WHERE f.persona_id = ?
   AND d.searchable = 1
 ORDER BY d.updated_at DESC
 LIMIT ?`, personaID, ftsQuery(query), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSearchDocuments(rows)
+}
+
+func (r *SearchRepository) searchFTSForRetrieval(ctx context.Context, personaID string, query string, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if ok, err := searchFTSExists(ctx, r.db); err != nil || !ok {
+		if err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT d.id, d.persona_id, d.node_type, d.node_id, d.search_text, d.search_tier,
+       d.visibility_status, d.sensitivity_level, d.lifecycle_status, d.searchable
+FROM memory_search_fts fts
+JOIN memory_search_documents d
+  ON d.persona_id = fts.persona_id
+ AND d.node_type = fts.node_type
+ AND d.node_id = fts.node_id
+JOIN facts facts
+  ON facts.persona_id = d.persona_id
+ AND facts.id = d.node_id
+WHERE fts.persona_id = ?
+  AND memory_search_fts MATCH ?
+  AND d.node_type = 'fact'
+  AND d.visibility_status = 'visible'
+  AND d.searchable = 1
+  AND facts.visibility_status = 'visible'
+  AND facts.searchable = 1
+  AND (facts.validity_status != 'invalidated' OR ? = 1)
+  AND (facts.lifecycle_status != 'archived' OR ? = 1)
+  AND (facts.lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY d.updated_at DESC
+LIMIT ?`,
+		personaID,
+		ftsQuery(query),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+		limit)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +319,44 @@ WHERE persona_id = ?
   AND searchable = 1
 ORDER BY updated_at DESC
 LIMIT ?`, personaID, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanSearchDocuments(rows)
+}
+
+func (r *SearchRepository) keywordSearchForRetrieval(ctx context.Context, personaID string, query string, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	like := "%" + strings.TrimSpace(query) + "%"
+	rows, err := r.db.QueryContext(ctx, `
+SELECT d.id, d.persona_id, d.node_type, d.node_id, d.search_text, d.search_tier,
+       d.visibility_status, d.sensitivity_level, d.lifecycle_status, d.searchable
+FROM memory_search_documents d
+JOIN facts facts
+  ON facts.persona_id = d.persona_id
+ AND facts.id = d.node_id
+WHERE d.persona_id = ?
+  AND d.search_text LIKE ?
+  AND d.node_type = 'fact'
+  AND d.visibility_status = 'visible'
+  AND d.searchable = 1
+  AND facts.visibility_status = 'visible'
+  AND facts.searchable = 1
+  AND (facts.validity_status != 'invalidated' OR ? = 1)
+  AND (facts.lifecycle_status != 'archived' OR ? = 1)
+  AND (facts.lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY d.updated_at DESC
+LIMIT ?`,
+		personaID,
+		like,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+		limit)
 	if err != nil {
 		return nil, err
 	}

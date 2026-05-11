@@ -317,6 +317,51 @@ WHERE id IN ('fact_a_archived', 'fact_z_active')`, fixedRetrievalNow().Format(ti
 	}
 }
 
+func TestRetrievalFiltersExpiredSearchDocsBeforeCandidateLimit(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	const query = "咖啡"
+	currentID := "fact_current_coffee"
+	insertSearchFact(t, ctx, db.SQLDB(), currentID, "用户当前喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_coffee", currentID)
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertFactDocument(ctx, "default", currentID); err != nil {
+		t.Fatalf("upsert current fact document: %v", err)
+	}
+	setSearchDocumentUpdatedAt(t, db.SQLDB(), currentID, "2026-05-01T00:00:00Z")
+
+	for i := 0; i < 33; i++ {
+		factID := "fact_expired_coffee_" + strconv.Itoa(i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户过去喜欢咖啡。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_expired_coffee_"+strconv.Itoa(i), factID)
+		setFactRetrievalGate(t, db.SQLDB(), factID, string(core.ValidityInvalidated), string(core.LifecycleArchived))
+		if err := search.UpsertFactDocument(ctx, "default", factID); err != nil {
+			t.Fatalf("upsert expired fact document %s: %v", factID, err)
+		}
+		setSearchDocumentUpdatedAt(t, db.SQLDB(), factID, "2026-06-01T00:00:00Z")
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != currentID {
+		t.Fatalf("retrieval result = %#v, want only current fact %s", result, currentID)
+	}
+}
+
 func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 	ctx := context.Background()
 	dbPath := t.TempDir() + "/memory.db"
@@ -431,6 +476,28 @@ func insertSearchFact(t *testing.T, ctx context.Context, db *sql.DB, factID stri
 		LifecycleStatus:      lifecycle,
 	}); err != nil {
 		t.Fatalf("insert fact %s: %v", factID, err)
+	}
+}
+
+func setFactRetrievalGate(t *testing.T, db *sql.DB, factID string, validity string, lifecycle string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE facts
+SET validity_status = ?, lifecycle_status = ?
+WHERE id = ?`, validity, lifecycle, factID); err != nil {
+		t.Fatalf("set fact retrieval gate: %v", err)
+	}
+}
+
+func setSearchDocumentUpdatedAt(t *testing.T, db *sql.DB, factID string, updatedAt string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE memory_search_documents
+SET updated_at = ?
+WHERE node_type = 'fact' AND node_id = ?`, updatedAt, factID); err != nil {
+		t.Fatalf("set search document updated_at: %v", err)
 	}
 }
 
