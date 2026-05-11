@@ -225,7 +225,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if err != nil {
 			return nil, nil, err
 		}
-		score := 0.35*candidate.TextMatch +
+		baseScore := 0.35*candidate.TextMatch +
 			0.20*candidate.EntityMatch +
 			0.20*fact.Importance +
 			0.10*recencyScore(fact, now) +
@@ -233,6 +233,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			0.05*pinnedScore(fact) -
 			fatiguePenalty(fatigue) -
 			sensitivityPenalty(fact.SensitivityLevel)
+		score := baseScore * lifecycleScoreMultiplier(fact.LifecycleStatus)
 		item := scoredFact{
 			Fact:      fact,
 			Score:     score,
@@ -508,6 +509,23 @@ func pinnedScore(fact core.Fact) float64 {
 		return 1
 	}
 	return 0
+}
+
+func lifecycleScoreMultiplier(status core.LifecycleStatus) float64 {
+	switch status {
+	case core.LifecycleActive:
+		return 1.0
+	case core.LifecycleConsolidated:
+		return 0.92
+	case core.LifecycleDormant:
+		return 0.82
+	case core.LifecycleArchived:
+		return 0.55
+	case core.LifecycleDeepArchived:
+		return 0.35
+	default:
+		return 1.0
+	}
 }
 
 func fatiguePenalty(count int) float64 {

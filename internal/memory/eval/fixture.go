@@ -76,6 +76,7 @@ type Step struct {
 	Consolidate   *ConsolidateStep    `yaml:"consolidate"`
 	Retrieve      *RetrieveStep       `yaml:"retrieve"`
 	Forget        *ForgetStep         `yaml:"forget"`
+	RetentionRun  *RetentionRunStep   `yaml:"retention_run"`
 	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
@@ -96,6 +97,8 @@ type ManualFactCandidate struct {
 	ObjectLiteral    *string  `yaml:"object_literal"`
 	ContentSummary   string   `yaml:"content_summary"`
 	FactType         string   `yaml:"fact_type"`
+	ValidFrom        string   `yaml:"valid_from"`
+	ValidTo          string   `yaml:"valid_to"`
 	Confidence       string   `yaml:"confidence"`
 	ConfidenceScore  float64  `yaml:"confidence_score"`
 	Importance       float64  `yaml:"importance"`
@@ -148,6 +151,12 @@ type ForgetTarget struct {
 	ScopeMode string `yaml:"scope_mode"`
 	NodeType  string `yaml:"node_type"`
 	NodeID    string `yaml:"node_id"`
+}
+
+type RetentionRunStep struct {
+	PersonaID string `yaml:"persona_id"`
+	Now       string `yaml:"now"`
+	DryRun    bool   `yaml:"dry_run"`
 }
 
 type RebuildSearchStep struct {
@@ -266,6 +275,10 @@ func (f *Fixture) Validate() error {
 		case "forget":
 			if step.Forget == nil {
 				return fmt.Errorf("case %s step %s missing forget body", caseID, step.ID)
+			}
+		case "retention_run":
+			if step.RetentionRun == nil {
+				return fmt.Errorf("case %s step %s missing retention_run body", caseID, step.ID)
 			}
 		case "rebuild_search":
 			if step.RebuildSearch == nil {

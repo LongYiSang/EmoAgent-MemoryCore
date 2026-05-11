@@ -41,6 +41,7 @@ type stepResult struct {
 	Consolidation *memorycore.ConsolidationResult
 	Retrieval     *memorycore.MemoryContext
 	Forget        *memorycore.ForgetResult
+	RetentionRun  *memorycore.RunRetentionResult
 	RebuildSearch *memorycore.RebuildSearchDocumentsResult
 }
 
@@ -253,6 +254,12 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		s.steps[step.ID] = stepResult{Forget: result}
 		s.refs[step.ID+".deletion_event_id"] = result.DeletionEventID
 		s.refs[step.ID+".target_node_id"] = result.TargetNodeID
+	case "retention_run":
+		result, err := s.runRetention(ctx, step)
+		if err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{RetentionRun: result}
 	case "rebuild_search":
 		result, err := s.service.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
 			PersonaID: defaultString(step.RebuildSearch.PersonaID, s.persona),
@@ -298,6 +305,14 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 	if err != nil {
 		return nil, err
 	}
+	validFrom, err := parseOptionalTimePointer(candidate.ValidFrom)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s consolidate valid_from: %w", s.caseID, step.ID, err)
+	}
+	validTo, err := parseOptionalTimePointer(candidate.ValidTo)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s consolidate valid_to: %w", s.caseID, step.ID, err)
+	}
 	result, err := s.service.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
 		SessionID: sessionID,
@@ -309,6 +324,8 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 			ObjectLiteral:    candidate.ObjectLiteral,
 			ContentSummary:   candidate.ContentSummary,
 			FactType:         candidate.FactType,
+			ValidFrom:        validFrom,
+			ValidTo:          validTo,
 			Confidence:       candidate.Confidence,
 			ConfidenceScore:  candidate.ConfidenceScore,
 			Importance:       candidate.Importance,
@@ -391,6 +408,23 @@ func (s *runState) runForget(ctx context.Context, step Step) (*memorycore.Forget
 	})
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s forget: %w", s.caseID, step.ID, err)
+	}
+	return result, nil
+}
+
+func (s *runState) runRetention(ctx context.Context, step Step) (*memorycore.RunRetentionResult, error) {
+	body := step.RetentionRun
+	now, err := parseOptionalTime(body.Now)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s retention_run now: %w", s.caseID, step.ID, err)
+	}
+	result, err := s.service.RunRetention(ctx, memorycore.RunRetentionRequest{
+		PersonaID: defaultString(body.PersonaID, s.persona),
+		Now:       now,
+		DryRun:    body.DryRun,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s retention_run: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
 }
@@ -490,6 +524,17 @@ func parseOptionalTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid time %q", value)
+}
+
+func parseOptionalTimePointer(value string) (*time.Time, error) {
+	parsed, err := parseOptionalTime(value)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.IsZero() {
+		return nil, nil
+	}
+	return &parsed, nil
 }
 
 func allowedFactOverrideColumn(column string) bool {

@@ -1,0 +1,73 @@
+case_id: L001_valid_to_expiry_archives_fact
+description: retention_run invalidates valid_to-expired facts, archives them, and leaves them available only to historical retrieval.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: I am busy with launch prep this week.
+      occurred_at: "2026-04-20T09:00:00+08:00"
+steps:
+  - id: busy_fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: is_busy_with
+        object_literal: launch prep
+        content_summary: User is busy with launch prep this week.
+        valid_to: "2026-04-27T23:59:00+08:00"
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retain
+    action: retention_run
+    retention_run:
+      now: "2026-04-28T12:00:00+08:00"
+  - id: current_retrieval
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: launch prep
+  - id: historical_retrieval
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: launch prep
+      policy:
+        allow_historical: true
+assertions:
+  - type: consolidation_result
+    step: busy_fact
+    action: insert
+    status: inserted
+  - type: fact_column
+    fact_id: $busy_fact.fact_id
+    column: valid_to
+    equals: "2026-04-27T15:59:00Z"
+  - type: fact_column
+    fact_id: $busy_fact.fact_id
+    column: validity_status
+    equals: invalidated
+  - type: fact_column
+    fact_id: $busy_fact.fact_id
+    column: lifecycle_status
+    equals: archived
+  - type: fact_column
+    fact_id: $busy_fact.fact_id
+    column: visibility_status
+    equals: visible
+  - type: memory_not_contains
+    step: current_retrieval
+    node_id: $busy_fact.fact_id
+  - type: memory_contains
+    step: historical_retrieval
+    node_id: $busy_fact.fact_id
+    summary: User is busy with launch prep this week.
+    usage_guidance_contains: historical

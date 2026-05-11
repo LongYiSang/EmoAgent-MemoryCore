@@ -124,7 +124,9 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 
 **后续 RoadMap**
 
-- [ ] Phase 3 隐私与生命周期增强：purge 全链路级联删除、retention lifecycle jobs、自然衰减、归档、deep archive transition。
+- [x] Phase 3A Privacy / Purge MVP：exact fact / episode purge、search/FTS cleanup、safe deletion audit、purged-only evidence retrieval block。
+- [x] Phase 3B Retention Lifecycle MVP：manual `RunRetention` / `memoryctl retention-run`、`valid_to` expiry、invalidated + archived state transition、search tier sync、historical retrieval gate。
+- [ ] Phase 3C Retention 后续：scheduler、compression、deep archive transition、narrative / insight integration。
 - [ ] Phase 4 TriviumDB Retrieval Mirror：adapter / sync worker / mirror rebuild / upsert-delete node-edge；SQLite 权威过滤保持最后防线。
 - [ ] Phase 5 高级 Retrieval Activation：Hybrid Anchor、Spreading Activation、PPR、Hub suppression、MMR、Context Reconstruction、nightly eval。
 

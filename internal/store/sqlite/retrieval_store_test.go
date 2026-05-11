@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +272,51 @@ WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&got); err != nil {
 	}
 }
 
+func TestRetrievalLifecycleMultiplierRanksActiveBeforeArchived(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_a_archived", "用户喜欢咖啡。", core.LifecycleArchived)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_z_active", "用户喜欢咖啡。", core.LifecycleActive)
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET created_at = ?
+WHERE id IN ('fact_a_archived', 'fact_z_active')`, fixedRetrievalNow().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("fix fact timestamps: %v", err)
+	}
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_archived_evidence", "fact_a_archived")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_active_evidence", "fact_z_active")
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, factID := range []string{"fact_a_archived", "fact_z_active"} {
+		if err := search.UpsertFactDocument(ctx, "default", factID); err != nil {
+			t.Fatalf("upsert fact document %s: %v", factID, err)
+		}
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+		Policy: memsqlite.RetrievalPolicy{
+			AllowHistorical:  true,
+			FinalMemoryCount: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 {
+		t.Fatalf("retrieval items = %#v, want both active and archived facts", result.Blocks)
+	}
+	items := result.Blocks[0].Items
+	if items[0].NodeID != "fact_z_active" || items[1].NodeID != "fact_a_archived" {
+		t.Fatalf("retrieval order = [%s, %s], want active before archived", items[0].NodeID, items[1].NodeID)
+	}
+}
+
 func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 	ctx := context.Background()
 	dbPath := t.TempDir() + "/memory.db"
@@ -388,6 +434,22 @@ func insertSearchFact(t *testing.T, ctx context.Context, db *sql.DB, factID stri
 	}
 }
 
+func insertRetrievalEvidenceLink(t *testing.T, ctx context.Context, db *sql.DB, linkID string, factID string) {
+	t.Helper()
+
+	if err := memsqlite.NewLinkRepository(db).Insert(ctx, core.MemoryLink{
+		ID:           linkID,
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeFact,
+		FromNodeID:   factID,
+		LinkType:     core.LinkTypeEvidencedBy,
+		ToNodeType:   core.NodeTypeEpisode,
+		ToNodeID:     "ep_visible",
+	}); err != nil {
+		t.Fatalf("insert evidence link %s: %v", linkID, err)
+	}
+}
+
 func boolIntTest(value bool) int {
 	if value {
 		return 1
@@ -397,6 +459,14 @@ func boolIntTest(value bool) int {
 
 func fixedRetrievalID() string {
 	return "retrieval_event_id"
+}
+
+func fixedRetrievalIDs() func() string {
+	index := 0
+	return func() string {
+		index++
+		return "retrieval_event_id_" + strconv.Itoa(index)
+	}
 }
 
 func fixedRetrievalNow() time.Time {
