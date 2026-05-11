@@ -194,6 +194,59 @@ func TestPreFilterSkipAndSafetyDefaults(t *testing.T) {
 	}
 }
 
+func TestPreFilterRoutingHintsKeepExceptSkip(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		hint       string
+		wantKeep   bool
+		wantReview bool
+	}{
+		{name: "forget manager", hint: "forget_manager", wantKeep: true, wantReview: true},
+		{name: "pin manager", hint: "pin_manager", wantKeep: true, wantReview: true},
+		{name: "review", hint: "review", wantKeep: true, wantReview: true},
+		{name: "legacy route", hint: "route", wantKeep: true, wantReview: true},
+		{name: "skip", hint: "skip", wantKeep: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, db := seedRuntimeDB(t, ctx, "闲聊一下天气。")
+			defer svc.Close()
+			defer db.Close()
+
+			req := buildRuntimeRequest(t, ctx, db)
+			llm := &fakeExtractionLLM{
+				prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
+					req.Episodes[0].EpisodeID: {Keep: false, RoutingHint: tc.hint},
+				}),
+				extractText: validRuntimeResponse(t, req),
+			}
+			runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+			result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+				Request:      req,
+				Mode:         memorycore.ExtractionRunModeDryRun,
+				Audit:        memorycore.ExtractionAuditOff,
+				UsePreFilter: true,
+			})
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if tc.wantKeep {
+				if result.KeptEpisodeCount != 1 || llm.extractCalls != 1 || result.Status != memorycore.ExtractionRunStatusDryRun {
+					t.Fatalf("kept=%d calls=%d status=%q", result.KeptEpisodeCount, llm.extractCalls, result.Status)
+				}
+				if tc.wantReview && result.PreFilterReviewCount == 0 {
+					t.Fatalf("prefilter review count = 0 for %s", tc.hint)
+				}
+				return
+			}
+			if result.Status != memorycore.ExtractionRunStatusSkipped || result.KeptEpisodeCount != 0 || llm.extractCalls != 0 {
+				t.Fatalf("skip status=%q kept=%d calls=%d", result.Status, result.KeptEpisodeCount, llm.extractCalls)
+			}
+		})
+	}
+}
+
 func TestAuditSanitizesSensitiveTextAndSeparatesDryRunApplyFingerprints(t *testing.T) {
 	ctx := context.Background()
 	secret := "UNIQUE_PHASE2C_SECRET_9f4e5a"
@@ -234,6 +287,204 @@ func TestAuditSanitizesSensitiveTextAndSeparatesDryRunApplyFingerprints(t *testi
 	assertAuditDoesNotContain(t, db, secret)
 }
 
+func TestFingerprintIncludesRuntimeTogglesAndSkippedDryRunIsReusable(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "闲聊一下天气。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
+			req.Episodes[0].EpisodeID: {Keep: true, RoutingHint: "extract"},
+		}),
+		extractText: validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	withoutPreFilter, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request: req,
+		Mode:    memorycore.ExtractionRunModeDryRun,
+		Audit:   memorycore.ExtractionAuditOff,
+	})
+	if err != nil {
+		t.Fatalf("without prefilter: %v", err)
+	}
+	withPreFilter, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:      req,
+		Mode:         memorycore.ExtractionRunModeDryRun,
+		Audit:        memorycore.ExtractionAuditOff,
+		UsePreFilter: true,
+	})
+	if err != nil {
+		t.Fatalf("with prefilter: %v", err)
+	}
+	if withoutPreFilter.Fingerprint == withPreFilter.Fingerprint {
+		t.Fatalf("prefilter toggle did not change fingerprint: %s", withoutPreFilter.Fingerprint)
+	}
+
+	cleanGateOff, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:          req,
+		Mode:             memorycore.ExtractionRunModeDryRun,
+		Audit:            memorycore.ExtractionAuditOff,
+		RequireCleanGate: false,
+	})
+	if err != nil {
+		t.Fatalf("clean gate off: %v", err)
+	}
+	cleanGateOn, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:          req,
+		Mode:             memorycore.ExtractionRunModeDryRun,
+		Audit:            memorycore.ExtractionAuditOff,
+		RequireCleanGate: true,
+	})
+	if err != nil {
+		t.Fatalf("clean gate on: %v", err)
+	}
+	if cleanGateOff.Fingerprint == cleanGateOn.Fingerprint {
+		t.Fatalf("require-clean-gate toggle did not change fingerprint: %s", cleanGateOff.Fingerprint)
+	}
+
+	audit := extractionruntime.NewSQLiteAuditStore(db)
+	skipLLM := &fakeExtractionLLM{prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
+		req.Episodes[0].EpisodeID: {Keep: false, RoutingHint: "skip"},
+	})}
+	runner = extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: skipLLM, AuditStore: audit})
+	firstSkip, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:      req,
+		Mode:         memorycore.ExtractionRunModeDryRun,
+		Audit:        memorycore.ExtractionAuditOn,
+		UsePreFilter: true,
+	})
+	if err != nil {
+		t.Fatalf("first skip: %v", err)
+	}
+	secondSkip, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:      req,
+		Mode:         memorycore.ExtractionRunModeDryRun,
+		Audit:        memorycore.ExtractionAuditOn,
+		UsePreFilter: true,
+	})
+	if err != nil {
+		t.Fatalf("second skip: %v", err)
+	}
+	if firstSkip.Status != memorycore.ExtractionRunStatusSkipped || !secondSkip.SkippedByFingerprint {
+		t.Fatalf("skip idempotency status=%q skipped_by_fingerprint=%v", firstSkip.Status, secondSkip.SkippedByFingerprint)
+	}
+}
+
+func TestLLMRequestMetadataDoesNotContainEpisodeContent(t *testing.T) {
+	ctx := context.Background()
+	secret := "UNIQUE_METADATA_SECRET_2f3db0"
+	svc, db := seedRuntimeDB(t, ctx, "我不喜欢早上八点开会。"+secret)
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
+			req.Episodes[0].EpisodeID: {Keep: true, RoutingHint: "extract"},
+		}),
+		extractText: "{",
+		repairText:  validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:       req,
+		Mode:          memorycore.ExtractionRunModeDryRun,
+		Audit:         memorycore.ExtractionAuditOff,
+		UsePreFilter:  true,
+		RepairEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !result.Repaired {
+		t.Fatalf("run was not repaired")
+	}
+	if len(llm.requests) < 3 {
+		t.Fatalf("captured request count = %d, want prefilter/extraction/repair", len(llm.requests))
+	}
+	for _, captured := range llm.requests {
+		if _, ok := captured.Metadata["request_json"]; ok {
+			t.Fatalf("metadata contains request_json for purpose %s", captured.Purpose)
+		}
+		for key, value := range captured.Metadata {
+			if strings.Contains(value, secret) || strings.Contains(value, "早上八点") {
+				t.Fatalf("metadata %s for purpose %s leaked content: %q", key, captured.Purpose, value)
+			}
+		}
+	}
+}
+
+func TestDeterministicMockLLMParsesRequestFromUserPromptWithoutMetadata(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	llm := extractionruntime.NewDeterministicMockLLM()
+	resp, err := llm.CompleteJSON(ctx, memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeExtraction,
+		UserPrompt: string(body),
+		Metadata:   map[string]string{"request_id": req.RequestID, "prompt_version": "test"},
+	})
+	if err != nil {
+		t.Fatalf("mock complete: %v", err)
+	}
+	if !strings.Contains(resp.Text, req.RequestID) || !strings.Contains(resp.Text, "用户喜欢手冲咖啡。") {
+		t.Fatalf("mock response did not use UserPrompt request: %s", resp.Text)
+	}
+}
+
+func TestRunBatchPropagatesBuildRequestOptions(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我不喜欢早上八点开会。")
+	defer svc.Close()
+	defer db.Close()
+
+	llm := &capturingBatchLLM{t: t}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	_, err := runner.RunBatch(ctx, memorycore.ExtractionBatchRequest{
+		PersonaID:                "default",
+		SessionIDs:               []string{"session_seed"},
+		Trigger:                  memorycore.ExtractionTriggerSessionEnd,
+		Mode:                     memorycore.ExtractionRunModeDryRun,
+		Audit:                    memorycore.ExtractionAuditOff,
+		Timezone:                 "UTC",
+		AllowSensitiveExtraction: true,
+		AllowInference:           false,
+		ManualPin:                true,
+		ManualForget:             true,
+		MaxFacts:                 3,
+		MaxLinks:                 4,
+		EpisodeLimit:             1,
+	})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(llm.requests) != 1 {
+		t.Fatalf("captured requests = %d, want 1", len(llm.requests))
+	}
+	req := llm.requests[0]
+	if req.Timezone != "UTC" {
+		t.Fatalf("timezone = %q, want UTC", req.Timezone)
+	}
+	if !req.Policy.AllowSensitiveExtraction || req.Policy.AllowInference || !req.Policy.ManualPin || !req.Policy.ManualForget {
+		t.Fatalf("policy flags not propagated: %+v", req.Policy)
+	}
+	if req.Policy.MaxFacts != 3 || req.Policy.MaxLinks != 4 {
+		t.Fatalf("policy limits = %d/%d, want 3/4", req.Policy.MaxFacts, req.Policy.MaxLinks)
+	}
+	if len(req.Episodes) != 1 {
+		t.Fatalf("episode count = %d, want 1", len(req.Episodes))
+	}
+}
+
 type fakeExtractionLLM struct {
 	prefilterText  string
 	extractText    string
@@ -241,9 +492,11 @@ type fakeExtractionLLM struct {
 	prefilterCalls int
 	extractCalls   int
 	repairCalls    int
+	requests       []memorycore.ExtractionLLMRequest
 }
 
 func (f *fakeExtractionLLM) CompleteJSON(ctx context.Context, req memorycore.ExtractionLLMRequest) (memorycore.ExtractionLLMResponse, error) {
+	f.requests = append(f.requests, req)
 	switch req.Purpose {
 	case memorycore.ExtractionLLMPurposePreFilter:
 		f.prefilterCalls++
@@ -255,6 +508,20 @@ func (f *fakeExtractionLLM) CompleteJSON(ctx context.Context, req memorycore.Ext
 		f.extractCalls++
 		return memorycore.ExtractionLLMResponse{Text: f.extractText, Model: "fake"}, nil
 	}
+}
+
+type capturingBatchLLM struct {
+	t        *testing.T
+	requests []memorycore.ExtractionRequest
+}
+
+func (c *capturingBatchLLM) CompleteJSON(ctx context.Context, req memorycore.ExtractionLLMRequest) (memorycore.ExtractionLLMResponse, error) {
+	var extractReq memorycore.ExtractionRequest
+	if err := json.Unmarshal([]byte(req.UserPrompt), &extractReq); err != nil {
+		c.t.Fatalf("decode user prompt: %v", err)
+	}
+	c.requests = append(c.requests, extractReq)
+	return memorycore.ExtractionLLMResponse{Text: validRuntimeResponse(c.t, extractReq), Model: "capture"}, nil
 }
 
 func seedRuntimeDB(t *testing.T, ctx context.Context, content string) (memorycore.Service, *sql.DB) {

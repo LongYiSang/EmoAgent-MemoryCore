@@ -18,6 +18,18 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 	if batch.Trigger == "" {
 		batch.Trigger = memorycore.ExtractionTriggerSessionEnd
 	}
+	if batch.Timezone == "" {
+		batch.Timezone = "Asia/Singapore"
+	}
+	if batch.EpisodeLimit == 0 {
+		batch.EpisodeLimit = 50
+	}
+	if batch.MaxFacts == 0 {
+		batch.MaxFacts = 12
+	}
+	if batch.MaxLinks == 0 {
+		batch.MaxLinks = 20
+	}
 	personaID := batch.PersonaID
 	if strings.TrimSpace(personaID) == "" {
 		personaID = "default"
@@ -34,16 +46,19 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 	for _, sessionID := range sessionIDs {
 		sid := sessionID
 		req, err := BuildRequest(ctx, r.db, BuildRequestOptions{
-			PersonaID:      personaID,
-			SessionID:      &sid,
-			Trigger:        batch.Trigger,
-			Limit:          batch.Limit,
-			Since:          batch.Since,
-			Until:          batch.Until,
-			AllowInference: true,
-			Timezone:       "Asia/Singapore",
-			MaxFacts:       12,
-			MaxLinks:       20,
+			PersonaID:                personaID,
+			SessionID:                &sid,
+			Trigger:                  batch.Trigger,
+			Limit:                    batch.EpisodeLimit,
+			Since:                    batch.Since,
+			Until:                    batch.Until,
+			Timezone:                 batch.Timezone,
+			AllowSensitiveExtraction: batch.AllowSensitiveExtraction,
+			AllowInference:           batch.AllowInference,
+			ManualPin:                batch.ManualPin,
+			ManualForget:             batch.ManualForget,
+			MaxFacts:                 batch.MaxFacts,
+			MaxLinks:                 batch.MaxLinks,
 		})
 		if err != nil {
 			result.FailedCount++
@@ -70,7 +85,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 			Window: memorycore.ExtractionRunWindow{
 				Since: batch.Since,
 				Until: batch.Until,
-				Limit: batch.Limit,
+				Limit: batch.EpisodeLimit,
 			},
 		})
 		if run.SkippedByFingerprint {

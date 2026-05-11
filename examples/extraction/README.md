@@ -10,6 +10,8 @@ It proves:
 - manual forget responses route deletion intents only.
 - agent affect leakage is rejected by the Go gate.
 - `extract-run --mode dry-run` does not write memory, though audit is on by default unless `--audit off` is set.
+- Phase 2C prefilter uses `memory_extraction_protocol.v0.1.prefilter` and `routing_hint` values `extract`, `forget_manager`, `pin_manager`, `skip`, or `review`.
+- `extract-batch --limit` is a compatibility alias for session limit; prefer `--session-limit` plus `--episode-limit`.
 - future EmoAgent integration injects a `memorycore.ExtractionLLM` adapter; MemoryCore CLI has no `--provider emoagent`.
 
 Run:

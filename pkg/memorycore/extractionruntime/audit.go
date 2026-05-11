@@ -3,6 +3,7 @@ package extractionruntime
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,12 @@ func (s *SQLiteAuditStore) FindSuccessfulRun(ctx context.Context, fingerprint st
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
+	statuses := successfulStatusesForMode(mode)
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(statuses)), ",")
+	args := []any{fingerprint, string(mode)}
+	for _, status := range statuses {
+		args = append(args, status)
+	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, request_id, persona_id, session_id, trigger, mode, status, fingerprint,
        provider_id, provider_kind, model, prompt_version, prefilter_prompt_version,
@@ -34,9 +41,9 @@ SELECT id, request_id, persona_id, session_id, trigger, mode, status, fingerprin
 FROM extraction_runs
 WHERE fingerprint = ?
   AND mode = ?
-  AND status = ?
+  AND status IN (`+placeholders+`)
 ORDER BY created_at DESC
-LIMIT 1`, fingerprint, string(mode), successfulStatusForMode(mode))
+LIMIT 1`, args...)
 	var rec memorycore.ExtractionRunAuditRecord
 	var sessionID, model, promptHash, responseHash, repairedHash, prefilterHash, errorCode, errorMessage sql.NullString
 	var createdAt, updatedAt string
@@ -164,14 +171,14 @@ INSERT INTO extraction_runs(
 	return err
 }
 
-func successfulStatusForMode(mode memorycore.ExtractionRunMode) string {
+func successfulStatusesForMode(mode memorycore.ExtractionRunMode) []string {
 	switch mode {
 	case memorycore.ExtractionRunModeApply:
-		return string(memorycore.ExtractionRunStatusApplied)
+		return []string{string(memorycore.ExtractionRunStatusApplied)}
 	case memorycore.ExtractionRunModeValidate:
-		return string(memorycore.ExtractionRunStatusValidated)
+		return []string{string(memorycore.ExtractionRunStatusValidated), string(memorycore.ExtractionRunStatusSkipped)}
 	default:
-		return string(memorycore.ExtractionRunStatusDryRun)
+		return []string{string(memorycore.ExtractionRunStatusDryRun), string(memorycore.ExtractionRunStatusSkipped)}
 	}
 }
 

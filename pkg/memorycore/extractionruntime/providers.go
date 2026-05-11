@@ -55,8 +55,7 @@ func (m *MockLLM) CompleteJSON(ctx context.Context, req memorycore.ExtractionLLM
 }
 
 func deterministicPreFilterResponse(req memorycore.ExtractionLLMRequest) string {
-	var extractReq memorycore.ExtractionRequest
-	_ = json.Unmarshal([]byte(req.Metadata["request_json"]), &extractReq)
+	extractReq := requestFromUserPrompt(req)
 	items := make([]memorycore.ExtractionPreFilterEpisode, 0, len(extractReq.Episodes))
 	for _, episode := range extractReq.Episodes {
 		items = append(items, memorycore.ExtractionPreFilterEpisode{
@@ -80,8 +79,7 @@ func deterministicPreFilterResponse(req memorycore.ExtractionLLMRequest) string 
 }
 
 func deterministicExtractionResponse(req memorycore.ExtractionLLMRequest) string {
-	var extractReq memorycore.ExtractionRequest
-	_ = json.Unmarshal([]byte(req.Metadata["request_json"]), &extractReq)
+	extractReq := requestFromUserPrompt(req)
 	episodeIDs := make([]string, 0, len(extractReq.Episodes))
 	for _, episode := range extractReq.Episodes {
 		episodeIDs = append(episodeIDs, episode.EpisodeID)
@@ -144,6 +142,12 @@ func deterministicExtractionResponse(req memorycore.ExtractionLLMRequest) string
 	}
 	data, _ := json.Marshal(body)
 	return string(data)
+}
+
+func requestFromUserPrompt(req memorycore.ExtractionLLMRequest) memorycore.ExtractionRequest {
+	var extractReq memorycore.ExtractionRequest
+	_ = json.Unmarshal([]byte(req.UserPrompt), &extractReq)
+	return extractReq
 }
 
 func firstEpisodeContent(req memorycore.ExtractionRequest) string {

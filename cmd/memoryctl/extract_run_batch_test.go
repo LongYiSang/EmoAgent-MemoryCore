@@ -57,6 +57,49 @@ func TestRunExtractRunOpenAIProviderMissingKeyIsSanitized(t *testing.T) {
 	requireNotContains(t, stderr, "api_key")
 }
 
+func TestRunExtractOpenAIProviderValidationIsEarlyAndSanitized(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	secret := "SECRET_KEY_VALUE_SHOULD_NOT_LEAK"
+	t.Setenv("MEMORYCORE_OPENAI_VALIDATION_KEY", secret)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing base url",
+			args: []string{"extract-run", "--db", dbPath, "--session", "session_seed", "--provider", "openai-compatible", "--model", "test-model", "--api-key-env", "MEMORYCORE_OPENAI_VALIDATION_KEY"},
+			want: "--base-url is required",
+		},
+		{
+			name: "missing model",
+			args: []string{"extract-run", "--db", dbPath, "--session", "session_seed", "--provider", "openai-compatible", "--base-url", "https://example.invalid", "--api-key-env", "MEMORYCORE_OPENAI_VALIDATION_KEY"},
+			want: "--model is required",
+		},
+		{
+			name: "empty api key env",
+			args: []string{"extract-run", "--db", dbPath, "--session", "session_seed", "--provider", "openai-compatible", "--base-url", "https://example.invalid", "--model", "test-model", "--api-key-env", ""},
+			want: "--api-key-env is required",
+		},
+		{
+			name: "unset api key env",
+			args: []string{"extract-run", "--db", dbPath, "--session", "session_seed", "--provider", "openai-compatible", "--base-url", "https://example.invalid", "--model", "test-model", "--api-key-env", "MEMORYCORE_OPENAI_UNSET_KEY"},
+			want: "api key env MEMORYCORE_OPENAI_UNSET_KEY is not set",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, code := runCLI(tc.args...)
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
+			}
+			requireContains(t, stderr, tc.want)
+			requireNotContains(t, stderr, secret)
+		})
+	}
+}
+
 func TestRunExtractBatchMockSkipsSuccessfulFingerprintAndForceReruns(t *testing.T) {
 	dbPath := seedCLIBatchDB(t)
 
@@ -92,6 +135,66 @@ func TestRunExtractBatchMockSkipsSuccessfulFingerprintAndForceReruns(t *testing.
 		"--format", "json",
 	)
 	requireContains(t, forced, `"processed_count":2`)
+}
+
+func TestRunExtractBatchSessionAndEpisodeLimits(t *testing.T) {
+	dbPath := seedCLIBatchDB(t)
+	requireRunOK(t, "append-episode", "--db", dbPath, "--id", "ep_seed_extra", "--session", "session_seed", "--content", "我也喜欢手冲咖啡。", "--format", "id")
+
+	oneSession := requireRunText(t,
+		"extract-batch",
+		"--db", dbPath,
+		"--provider", "mock",
+		"--mode", "dry-run",
+		"--session-limit", "1",
+		"--episode-limit", "1",
+		"--audit", "off",
+		"--format", "json",
+	)
+	requireContains(t, oneSession, `"processed_count":1`)
+	requireContains(t, oneSession, `"original_episode_count":1`)
+
+	legacyLimit := requireRunText(t,
+		"extract-batch",
+		"--db", dbPath,
+		"--provider", "mock",
+		"--mode", "dry-run",
+		"--limit", "1",
+		"--audit", "off",
+		"--format", "json",
+	)
+	requireContains(t, legacyLimit, `"processed_count":1`)
+}
+
+func TestRunExtractBatchPartialFailureExitCode(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+
+	stdout, stderr, code := runCLI(
+		"extract-batch",
+		"--db", dbPath,
+		"--session", "missing_session",
+		"--provider", "mock",
+		"--mode", "dry-run",
+		"--format", "json",
+	)
+	if code != 1 {
+		t.Fatalf("partial failure exit code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"partial_failure"`)
+
+	stdout, stderr, code = runCLI(
+		"extract-batch",
+		"--db", dbPath,
+		"--session", "missing_session",
+		"--provider", "mock",
+		"--mode", "dry-run",
+		"--allow-partial-failure",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("allowed partial failure exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"partial_failure"`)
 }
 
 func seedCLIBatchDB(t *testing.T) string {

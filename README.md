@@ -120,7 +120,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 1.5 Core Runtime：Public API facade、deterministic consolidation、SQLite retrieval MVP、forget baseline、eval fixtures、search/privacy hardening。
 - [x] Phase 2A Operational CLI：start/end session、append-episode、ensure-entity/add-alias、consolidate-fact、retrieve、forget、rebuild-search、list-facts、get-node、smoke demo。
 - [x] Phase 2B Extraction Adapter + Dry-run Pipeline：extract-request / validate / dry-run / apply，strict JSON protocol，Go gate，accepted facts 通过 ConsolidateCandidate 写入；不接真实 LLM。
-- [x] Phase 2C 真实抽取运行时：public `ExtractionLLM` 注入接口、mock / OpenAI-compatible standalone provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit。
+- [x] Phase 2C 真实抽取运行时：public `ExtractionLLM` 注入接口、mock / OpenAI-compatible standalone provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit；runtime implemented, hardening follow-up applied。
 
 **后续 RoadMap**
 

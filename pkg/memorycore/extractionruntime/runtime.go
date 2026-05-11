@@ -326,13 +326,18 @@ func (r *Runner) fingerprint(ctx context.Context, req memorycore.ExtractionRunRe
 		"prompt_version":           r.promptVersions.Extraction,
 		"prefilter_prompt_version": r.promptVersions.PreFilter,
 		"repair_prompt_version":    r.promptVersions.Repair,
+		"use_prefilter":            req.UsePreFilter,
+		"repair_enabled":           req.RepairEnabled,
+		"require_clean_gate":       req.RequireCleanGate,
 		"provider_id":              req.ProviderID,
 		"provider_kind":            req.ProviderKind,
 		"model":                    req.Model,
-		"temperature":              req.Temperature,
-		"max_tokens":               req.MaxTokens,
-		"timeout":                  req.Timeout.String(),
-		"mode":                     req.Mode,
+		"provider_params": map[string]any{
+			"temperature": req.Temperature,
+			"max_tokens":  req.MaxTokens,
+			"timeout":     req.Timeout.String(),
+		},
+		"mode": req.Mode,
 	}
 	return hashJSON(payload), nil
 }
@@ -414,7 +419,7 @@ func (r *Runner) buildExtractionLLMRequest(req memorycore.ExtractionRequest, run
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        map[string]string{"request_json": string(requestJSON), "prompt_version": r.promptVersions.Extraction},
+		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeExtraction, req.RequestID, r.promptVersions.Extraction, memorycore.ExtractionResponseSchemaVersion),
 	}
 }
 
@@ -430,8 +435,20 @@ func (r *Runner) buildRepairLLMRequest(raw string, runReq memorycore.ExtractionR
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        map[string]string{"prompt_version": r.promptVersions.Repair},
+		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, memorycore.ExtractionResponseSchemaVersion),
 	}
+}
+
+func requestMetadata(purpose string, requestID string, promptVersion string, schemaVersion string) map[string]string {
+	metadata := map[string]string{
+		"purpose":        purpose,
+		"prompt_version": promptVersion,
+		"schema_version": schemaVersion,
+	}
+	if requestID != "" {
+		metadata["request_id"] = requestID
+	}
+	return metadata
 }
 
 func extractionSystemPrompt(version string) string {

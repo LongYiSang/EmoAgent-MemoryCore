@@ -67,12 +67,12 @@ func (r *Runner) buildPreFilterLLMRequest(req memorycore.ExtractionRequest, runR
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
 		SystemPrompt:    "MemoryCore prefilter " + r.promptVersions.PreFilter + ". Decide whether each episode should be kept for extraction.",
-		DeveloperPrompt: "Return strict JSON with keep boolean and routing_hint extract|skip|review|route. Review means keep.",
+		DeveloperPrompt: "Return strict JSON for schema " + memorycore.ExtractionPreFilterSchemaVersion + " with keep boolean and routing_hint extract|forget_manager|pin_manager|skip|review. Review and manager routes mean keep.",
 		UserPrompt:      string(requestJSON),
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        map[string]string{"request_json": string(requestJSON), "prompt_version": r.promptVersions.PreFilter},
+		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposePreFilter, req.RequestID, r.promptVersions.PreFilter, memorycore.ExtractionPreFilterSchemaVersion),
 	}
 }
 
@@ -88,7 +88,7 @@ func (r *Runner) buildPreFilterRepairLLMRequest(raw string, runReq memorycore.Ex
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        map[string]string{"prompt_version": r.promptVersions.Repair},
+		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, memorycore.ExtractionPreFilterSchemaVersion),
 	}
 }
 
@@ -105,7 +105,7 @@ func applyPreFilter(req memorycore.ExtractionRequest, resp memorycore.Extraction
 		keep := true
 		if ok {
 			keep = decision.Keep
-			if decision.RoutingHint == "review" || decision.RoutingHint == "route" {
+			if preFilterHintForcesKeep(decision.RoutingHint) {
 				keep = true
 				reviewCount++
 			}
@@ -120,6 +120,15 @@ func applyPreFilter(req memorycore.ExtractionRequest, resp memorycore.Extraction
 		}
 	}
 	return filtered, reviewCount
+}
+
+func preFilterHintForcesKeep(hint string) bool {
+	switch hint {
+	case "forget_manager", "pin_manager", "review", "route":
+		return true
+	default:
+		return false
+	}
 }
 
 func mustKeepEpisode(req memorycore.ExtractionRequest, episode memorycore.ExtractionEpisode) bool {

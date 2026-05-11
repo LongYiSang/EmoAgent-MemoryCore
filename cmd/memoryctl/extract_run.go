@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -16,33 +17,36 @@ import (
 
 type extractionRuntimeFlags struct {
 	commonOptions
-	SessionID        string
-	Trigger          string
-	SinceValue       string
-	UntilValue       string
-	Timezone         string
-	EpisodeIDs       stringList
-	Limit            int
-	MaxFacts         int
-	MaxLinks         int
-	AllowSensitive   bool
-	AllowInference   bool
-	ManualPin        bool
-	ManualForget     bool
-	Mode             string
-	Provider         string
-	BaseURL          string
-	APIKeyEnv        string
-	Model            string
-	Temperature      float64
-	MaxTokens        int
-	Timeout          time.Duration
-	UsePreFilter     bool
-	Repair           bool
-	Audit            string
-	Force            bool
-	StopOnError      bool
-	RequireCleanGate bool
+	SessionID           string
+	Trigger             string
+	SinceValue          string
+	UntilValue          string
+	Timezone            string
+	EpisodeIDs          stringList
+	Limit               int
+	SessionLimit        int
+	EpisodeLimit        int
+	MaxFacts            int
+	MaxLinks            int
+	AllowSensitive      bool
+	AllowInference      bool
+	ManualPin           bool
+	ManualForget        bool
+	Mode                string
+	Provider            string
+	BaseURL             string
+	APIKeyEnv           string
+	Model               string
+	Temperature         float64
+	MaxTokens           int
+	Timeout             time.Duration
+	UsePreFilter        bool
+	Repair              bool
+	Audit               string
+	Force               bool
+	StopOnError         bool
+	AllowPartialFailure bool
+	RequireCleanGate    bool
 }
 
 func runExtractRun(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -134,35 +138,48 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 	if strings.TrimSpace(flags.SessionID) != "" {
 		sessionIDs = append(sessionIDs, flags.SessionID)
 	}
+	sessionLimit := flags.Limit
+	if flags.SessionLimit > 0 {
+		sessionLimit = flags.SessionLimit
+	}
 	audit := extractionruntime.NewSQLiteAuditStore(db.SQLDB())
 	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db.SQLDB(), Service: svc, LLM: llm, AuditStore: audit})
 	result, err := runner.RunBatch(ctx, memorycore.ExtractionBatchRequest{
-		PersonaID:        flags.PersonaID,
-		SessionIDs:       sessionIDs,
-		Trigger:          flags.Trigger,
-		Mode:             memorycore.ExtractionRunMode(flags.Mode),
-		ProviderID:       flags.Provider,
-		ProviderKind:     flags.Provider,
-		Model:            flags.Model,
-		Temperature:      flags.Temperature,
-		MaxTokens:        flags.MaxTokens,
-		Timeout:          flags.Timeout,
-		Limit:            flags.Limit,
-		Since:            since,
-		Until:            until,
-		UsePreFilter:     flags.UsePreFilter,
-		RepairEnabled:    flags.Repair,
-		RequireCleanGate: flags.RequireCleanGate,
-		Audit:            flags.Audit,
-		Force:            flags.Force,
-		StopOnError:      flags.StopOnError,
+		PersonaID:                flags.PersonaID,
+		SessionIDs:               sessionIDs,
+		Trigger:                  flags.Trigger,
+		Mode:                     memorycore.ExtractionRunMode(flags.Mode),
+		ProviderID:               flags.Provider,
+		ProviderKind:             flags.Provider,
+		Model:                    flags.Model,
+		Temperature:              flags.Temperature,
+		MaxTokens:                flags.MaxTokens,
+		Timeout:                  flags.Timeout,
+		Limit:                    sessionLimit,
+		EpisodeLimit:             flags.EpisodeLimit,
+		Timezone:                 flags.Timezone,
+		AllowSensitiveExtraction: flags.AllowSensitive,
+		AllowInference:           flags.AllowInference,
+		ManualPin:                flags.ManualPin,
+		ManualForget:             flags.ManualForget,
+		MaxFacts:                 flags.MaxFacts,
+		MaxLinks:                 flags.MaxLinks,
+		Since:                    since,
+		Until:                    until,
+		UsePreFilter:             flags.UsePreFilter,
+		RepairEnabled:            flags.Repair,
+		RequireCleanGate:         flags.RequireCleanGate,
+		Audit:                    flags.Audit,
+		Force:                    flags.Force,
+		StopOnError:              flags.StopOnError,
+		AllowPartialFailure:      flags.AllowPartialFailure,
 	})
 	if flags.Format == formatJSON {
 		writeJSON(stdout, result, flags.Pretty)
 	} else {
 		fmt.Fprintf(stdout, "status=%s processed_count=%d skipped_count=%d failed_count=%d\n", result.Status, result.ProcessedCount, result.SkippedCount, result.FailedCount)
 	}
-	if err != nil || result.Status == "failed" {
+	if err != nil || result.Status == "failed" || (result.Status == "partial_failure" && !flags.AllowPartialFailure) {
 		if err != nil {
 			fmt.Fprintln(stderr, err.Error())
 		}
@@ -172,12 +189,14 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extractionRuntimeFlags {
-	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096}
+	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096}
 	addCommonFlags(fs, &flags.commonOptions, defaultFormat)
 	fs.StringVar(&flags.SessionID, "session", "", "session id")
 	fs.Var(&flags.EpisodeIDs, "episode", "episode id; repeatable")
 	fs.StringVar(&flags.Trigger, "trigger", memorycore.ExtractionTriggerSessionEnd, "extraction trigger")
-	fs.IntVar(&flags.Limit, "limit", 50, "maximum episodes or sessions")
+	fs.IntVar(&flags.Limit, "limit", 50, "single-run episode limit; batch compatibility alias for session limit")
+	fs.IntVar(&flags.SessionLimit, "session-limit", 0, "maximum sessions for extract-batch; overrides --limit")
+	fs.IntVar(&flags.EpisodeLimit, "episode-limit", 50, "maximum episodes per session for extract-batch")
 	fs.StringVar(&flags.SinceValue, "since", "", "RFC3339 lower occurrence bound")
 	fs.StringVar(&flags.UntilValue, "until", "", "RFC3339 upper occurrence bound")
 	fs.StringVar(&flags.Timezone, "timezone", "Asia/Singapore", "request timezone")
@@ -200,6 +219,7 @@ func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extrac
 	fs.StringVar(&flags.Audit, "audit", memorycore.ExtractionAuditOn, "on|off; dry-run does not write memory but may write audit rows")
 	fs.BoolVar(&flags.Force, "force", false, "rerun even if the fingerprint already succeeded")
 	fs.BoolVar(&flags.StopOnError, "stop-on-error", false, "stop batch at first error")
+	fs.BoolVar(&flags.AllowPartialFailure, "allow-partial-failure", false, "return zero for extract-batch partial_failure")
 	fs.BoolVar(&flags.RequireCleanGate, "require-clean-gate", false, "apply only if gate has no review or rejected candidates")
 	return flags
 }
@@ -216,6 +236,20 @@ func validateExtractionRuntimeFlags(stderr io.Writer, fs *flag.FlagSet, flags *e
 	}
 	if err := validateOneOf("--provider", flags.Provider, "mock", "openai-compatible"); err != nil {
 		return usageError(stderr, fs, err.Error())
+	}
+	if flags.Provider == "openai-compatible" {
+		if strings.TrimSpace(flags.BaseURL) == "" {
+			return usageError(stderr, fs, "--base-url is required")
+		}
+		if strings.TrimSpace(flags.Model) == "" {
+			return usageError(stderr, fs, "--model is required")
+		}
+		if strings.TrimSpace(flags.APIKeyEnv) == "" {
+			return usageError(stderr, fs, "--api-key-env is required")
+		}
+		if strings.TrimSpace(os.Getenv(flags.APIKeyEnv)) == "" {
+			return usageError(stderr, fs, fmt.Sprintf("api key env %s is not set", flags.APIKeyEnv))
+		}
 	}
 	if err := validateOneOf("--audit", flags.Audit, memorycore.ExtractionAuditOn, memorycore.ExtractionAuditOff); err != nil {
 		return usageError(stderr, fs, err.Error())

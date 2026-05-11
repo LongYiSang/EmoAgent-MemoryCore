@@ -58,7 +58,7 @@ func ParsePreFilterResponse(r io.Reader) (memorycore.ExtractionPreFilterResponse
 	if err := strictDecode(r, &resp); err != nil {
 		return memorycore.ExtractionPreFilterResponse{}, err
 	}
-	if resp.SchemaVersion != memorycore.ExtractionPreFilterSchemaVersion {
+	if !validPreFilterSchemaVersion(resp.SchemaVersion) {
 		return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("schema_version must be %s", memorycore.ExtractionPreFilterSchemaVersion)
 	}
 	if strings.TrimSpace(resp.RequestID) == "" {
@@ -75,12 +75,21 @@ func ParsePreFilterResponse(r io.Reader) (memorycore.ExtractionPreFilterResponse
 			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("episode_id is required")
 		}
 		switch episode.RoutingHint {
-		case "extract", "skip", "review", "route":
+		case "extract", "forget_manager", "pin_manager", "skip", "review", "route":
 		default:
 			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("routing_hint is invalid")
 		}
 	}
 	return resp, nil
+}
+
+func validPreFilterSchemaVersion(version string) bool {
+	switch version {
+	case memorycore.ExtractionPreFilterSchemaVersion, "memory_extraction_prefilter.v0.1":
+		return true
+	default:
+		return false
+	}
 }
 
 func strictDecode(r io.Reader, out any) error {

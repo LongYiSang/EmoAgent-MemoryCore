@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestStrictParsersRejectUnknownFieldsCodeFenceTrailingGarbageAndSchemaMismatch(t *testing.T) {
@@ -40,6 +41,24 @@ func TestStrictParsersRejectUnknownFieldsCodeFenceTrailingGarbageAndSchemaMismat
 			t.Fatalf("ParseResponse accepted mismatched schema_version")
 		}
 	})
+}
+
+func TestParsePreFilterResponseAcceptsProtocolRoutingHints(t *testing.T) {
+	for _, hint := range []string{"extract", "forget_manager", "pin_manager", "skip", "review", "route"} {
+		t.Run(hint, func(t *testing.T) {
+			body := validPreFilterJSON(hint)
+			resp, err := extraction.ParsePreFilterResponse(strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("ParsePreFilterResponse(%s): %v", hint, err)
+			}
+			if resp.SchemaVersion != memorycore.ExtractionPreFilterSchemaVersion {
+				t.Fatalf("schema_version = %q", resp.SchemaVersion)
+			}
+			if resp.Episodes[0].RoutingHint != hint {
+				t.Fatalf("routing_hint = %q, want %q", resp.Episodes[0].RoutingHint, hint)
+			}
+		})
+	}
 }
 
 func validRequestJSON() string {
@@ -160,5 +179,24 @@ func validResponseJSON() string {
     "requires_human_review": false,
     "notes": "One explicit preference candidate."
   }
+}`
+}
+
+func validPreFilterJSON(routingHint string) string {
+	return `{
+  "schema_version": "memory_extraction_protocol.v0.1.prefilter",
+  "request_id": "req_test",
+  "persona_id": "default",
+  "session_id": "session_seed",
+  "trigger": "session_end",
+  "episodes": [
+    {
+      "episode_id": "ep_seed",
+      "keep": false,
+      "routing_hint": "` + routingHint + `",
+      "reason_codes": ["test"]
+    }
+  ],
+  "quality_flags": []
 }`
 }
