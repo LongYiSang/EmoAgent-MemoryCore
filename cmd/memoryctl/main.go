@@ -49,6 +49,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runExtractDryRun(args[1:], stdout, stderr)
 	case "extract-apply":
 		return runExtractApply(args[1:], stdout, stderr)
+	case "extract-run":
+		return runExtractRun(args[1:], stdout, stderr)
+	case "extract-batch":
+		return runExtractBatch(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2

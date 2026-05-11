@@ -120,10 +120,10 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 1.5 Core Runtime：Public API facade、deterministic consolidation、SQLite retrieval MVP、forget baseline、eval fixtures、search/privacy hardening。
 - [x] Phase 2A Operational CLI：start/end session、append-episode、ensure-entity/add-alias、consolidate-fact、retrieve、forget、rebuild-search、list-facts、get-node、smoke demo。
 - [x] Phase 2B Extraction Adapter + Dry-run Pipeline：extract-request / validate / dry-run / apply，strict JSON protocol，Go gate，accepted facts 通过 ConsolidateCandidate 写入；不接真实 LLM。
+- [x] Phase 2C 真实抽取运行时：public `ExtractionLLM` 注入接口、mock / OpenAI-compatible standalone provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit。
 
 **后续 RoadMap**
 
-- [ ] Phase 2C 真实抽取接入：预过滤、LLM extractor adapter、repair prompt、batch/scheduling。
 - [ ] Phase 3 隐私与生命周期增强：purge 全链路级联删除、retention lifecycle jobs、自然衰减、归档、deep archive transition。
 - [ ] Phase 4 TriviumDB Retrieval Mirror：adapter / sync worker / mirror rebuild / upsert-delete node-edge；SQLite 权威过滤保持最后防线。
 - [ ] Phase 5 高级 Retrieval Activation：Hybrid Anchor、Spreading Activation、PPR、Hub suppression、MMR、Context Reconstruction、nightly eval。

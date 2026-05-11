@@ -53,6 +53,36 @@ func ParseResponse(r io.Reader) (memorycore.ExtractionResponse, error) {
 	return resp, nil
 }
 
+func ParsePreFilterResponse(r io.Reader) (memorycore.ExtractionPreFilterResponse, error) {
+	var resp memorycore.ExtractionPreFilterResponse
+	if err := strictDecode(r, &resp); err != nil {
+		return memorycore.ExtractionPreFilterResponse{}, err
+	}
+	if resp.SchemaVersion != memorycore.ExtractionPreFilterSchemaVersion {
+		return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("schema_version must be %s", memorycore.ExtractionPreFilterSchemaVersion)
+	}
+	if strings.TrimSpace(resp.RequestID) == "" {
+		return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("request_id is required")
+	}
+	if strings.TrimSpace(resp.PersonaID) == "" {
+		return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("persona_id is required")
+	}
+	if !validExtractionTrigger(resp.Trigger) {
+		return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("trigger is invalid")
+	}
+	for _, episode := range resp.Episodes {
+		if strings.TrimSpace(episode.EpisodeID) == "" {
+			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("episode_id is required")
+		}
+		switch episode.RoutingHint {
+		case "extract", "skip", "review", "route":
+		default:
+			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("routing_hint is invalid")
+		}
+	}
+	return resp, nil
+}
+
 func strictDecode(r io.Reader, out any) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
