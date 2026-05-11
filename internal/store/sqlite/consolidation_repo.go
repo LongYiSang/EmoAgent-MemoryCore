@@ -217,11 +217,11 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	if err := insertFactTx(ctx, tx, fact); err != nil {
 		return ConsolidationResult{}, err
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
-		return ConsolidationResult{}, err
-	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, req.PersonaID, fact, candidate, sources)
 	if err != nil {
+		return ConsolidationResult{}, err
+	}
+	if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
 		return ConsolidationResult{}, err
 	}
 	if err := r.enqueueIndexSyncTx(ctx, tx, req.PersonaID, string(core.NodeTypeFact), fact.ID, "upsert_node"); err != nil {
@@ -286,11 +286,11 @@ func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.T
 	if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance); err != nil {
 		return ConsolidationResult{}, err
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, fact.ID); err != nil {
-		return ConsolidationResult{}, err
-	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, personaID, fact, candidate, nil)
 	if err != nil {
+		return ConsolidationResult{}, err
+	}
+	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, fact.ID); err != nil {
 		return ConsolidationResult{}, err
 	}
 	if err := r.enqueueIndexSyncTx(ctx, tx, personaID, string(core.NodeTypeFact), fact.ID, "upsert_node"); err != nil {

@@ -1,0 +1,62 @@
+case_id: F007_purge_source_episode_no_residue
+description: purge source episode 清理原文、写 tombstone，并阻断只依赖该证据的 fact 检索。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我对薄荷过敏。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: has_boundary
+        object_literal: 薄荷过敏
+        content_summary: 用户对薄荷过敏。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.9
+  - id: purge
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: episode
+        node_id: ep1
+  - id: rebuild
+    action: rebuild_search
+    rebuild_search: {}
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 薄荷过敏
+assertions:
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $fact.fact_id
+  - type: episode_tombstone_exists
+    episode_id: ep1
+  - type: search_absent
+    node_type: episode
+    node_id: ep1
+    search_text: 薄荷过敏
+  - type: search_absent
+    node_type: fact
+    node_id: $fact.fact_id
+    search_text: 薄荷过敏
+  - type: deletion_event_safe
+    step: purge
+    forbidden_contains: [我对薄荷过敏, 用户对薄荷过敏, 薄荷过敏]

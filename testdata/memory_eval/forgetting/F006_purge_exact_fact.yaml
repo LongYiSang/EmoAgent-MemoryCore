@@ -1,0 +1,66 @@
+case_id: F006_purge_exact_fact
+description: purge exact fact 清理语义内容、搜索索引和普通检索。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢榛果拿铁。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 榛果拿铁
+        content_summary: 用户喜欢榛果拿铁。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+        pinned: true
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 榛果拿铁
+assertions:
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $fact.fact_id
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: visibility_status
+    equals: purged
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: searchable
+    equals: "0"
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: pinned
+    equals: "0"
+  - type: search_absent
+    node_type: fact
+    node_id: $fact.fact_id
+    search_text: 榛果拿铁
+  - type: deletion_event_safe
+    step: forget
+    forbidden_contains: [我喜欢榛果拿铁, 用户喜欢榛果拿铁, 榛果拿铁]

@@ -27,6 +27,7 @@ const (
 	ForgetLevelSoft         = "soft_forget"
 	ForgetLevelHard         = "hard_forget"
 	ForgetLevelSourceRedact = "source_redact"
+	ForgetLevelPurge        = "purge"
 
 	ForgottenPlaceholder = "[forgotten]"
 	RedactedPlaceholder  = "[redacted]"
@@ -107,6 +108,15 @@ func (r *ForgetRepository) Forget(ctx context.Context, req ForgetRequest) (Forge
 		result, err = r.hardForgetFactTx(ctx, tx, req)
 	case ForgetLevelSourceRedact:
 		result, err = r.sourceRedactEpisodeTx(ctx, tx, req)
+	case ForgetLevelPurge:
+		switch req.Target.NodeType {
+		case core.NodeTypeFact:
+			result, err = r.purgeFactTx(ctx, tx, req)
+		case core.NodeTypeEpisode:
+			result, err = r.purgeEpisodeTx(ctx, tx, req)
+		default:
+			err = fmt.Errorf("purge only supports fact or episode targets")
+		}
 	default:
 		err = fmt.Errorf("unsupported forget level %q", req.Level)
 	}
@@ -248,6 +258,195 @@ WHERE persona_id = ? AND id = ?`,
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
 
+func (r *ForgetRepository) purgeFactTx(ctx context.Context, tx *sql.Tx, req ForgetRequest) (ForgetResult, error) {
+	if err := requireFactExistsTx(ctx, tx, req.PersonaID, req.Target.NodeID); err != nil {
+		return ForgetResult{}, err
+	}
+	_, err := tx.ExecContext(ctx, `
+UPDATE facts
+SET subject_entity_id = NULL,
+    predicate = ?,
+    object_entity_id = NULL,
+    object_literal = NULL,
+    content_summary = ?,
+    extraction_reasoning = NULL,
+    visibility_status = 'purged',
+    searchable = 0,
+    pinned = 0,
+    pin_reason = NULL,
+    pin_actor = NULL,
+    pinned_at = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE persona_id = ? AND id = ?`,
+		ForgottenPlaceholder,
+		ForgottenPlaceholder,
+		req.PersonaID,
+		req.Target.NodeID,
+	)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	linkResult, err := tx.ExecContext(ctx, `
+UPDATE memory_links
+SET reasoning = NULL,
+    visibility_status = CASE
+        WHEN visibility_status = 'visible' THEN 'purged'
+        ELSE visibility_status
+    END,
+    searchable = 0
+WHERE persona_id = ?
+  AND (
+      (from_node_type = 'fact' AND from_node_id = ?)
+      OR (to_node_type = 'fact' AND to_node_id = ?)
+  )`, req.PersonaID, req.Target.NodeID, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+
+	counts, err := r.removeSearchAndMirrorTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.LinksScrubbed = rowsAffected(linkResult)
+	return r.completeForgetTx(ctx, tx, req, counts)
+}
+
+func (r *ForgetRepository) purgeEpisodeTx(ctx context.Context, tx *sql.Tx, req ForgetRequest) (ForgetResult, error) {
+	episode, err := loadEpisodeRedactionAnchorTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	sourceRefHash := sql.NullString{}
+	if episode.SourceRef.Valid {
+		sourceRefHash = sql.NullString{String: hashContent(episode.SourceRef.String), Valid: true}
+	}
+	tombstone, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO episode_tombstones (
+    episode_id, persona_id, session_id, occurred_at, redacted_at,
+    redaction_level, redaction_actor, redaction_reason_code,
+    source_type, source_ref_hash, content_hash_before_redaction
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Target.NodeID,
+		req.PersonaID,
+		nullableStringValue(episode.SessionID),
+		nullableStringValue(episode.OccurredAt),
+		formatTime(r.now()),
+		req.Level,
+		req.Actor,
+		req.ReasonCode,
+		nullableStringValue(episode.SourceType),
+		sourceRefHash,
+		nullableStringValue(episode.ContentHash),
+	)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
+UPDATE episodes
+SET content = ?,
+    content_hash = ?,
+    source_ref = NULL,
+    visibility_status = 'purged',
+    searchable = 0
+WHERE persona_id = ? AND id = ?`,
+		RedactedPlaceholder,
+		hashContent(RedactedPlaceholder),
+		req.PersonaID,
+		req.Target.NodeID,
+	)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	linkResult, err := tx.ExecContext(ctx, `
+UPDATE memory_links
+SET reasoning = NULL,
+    visibility_status = CASE
+        WHEN visibility_status = 'visible' THEN 'purged'
+        ELSE visibility_status
+    END,
+    searchable = 0
+WHERE persona_id = ?
+  AND (
+      (from_node_type = 'episode' AND from_node_id = ?)
+      OR (to_node_type = 'episode' AND to_node_id = ?)
+  )`, req.PersonaID, req.Target.NodeID, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts, err := r.removeSearchAndMirrorTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	dependentCounts, err := r.removeBlockedFactSearchForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.SearchDocumentsDeleted += dependentCounts.SearchDocumentsDeleted
+	counts.FTSRowsDeleted += dependentCounts.FTSRowsDeleted
+	counts.TombstonesWritten = rowsAffected(tombstone)
+	counts.LinksScrubbed = rowsAffected(linkResult)
+	return r.completeForgetTx(ctx, tx, req, counts)
+}
+
+func (r *ForgetRepository) removeBlockedFactSearchForEpisodeTx(ctx context.Context, tx *sql.Tx, personaID string, episodeID string) (forgetCounts, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT l.from_node_id
+FROM memory_links l
+WHERE l.persona_id = ?
+  AND l.from_node_type = 'fact'
+  AND l.link_type = 'EVIDENCED_BY'
+  AND l.to_node_type = 'episode'
+  AND l.to_node_id = ?
+  AND NOT EXISTS (
+      SELECT 1
+      FROM memory_links visible_l
+      JOIN episodes e
+        ON e.persona_id = visible_l.persona_id
+       AND e.id = visible_l.to_node_id
+      WHERE visible_l.persona_id = l.persona_id
+        AND visible_l.from_node_type = 'fact'
+        AND visible_l.from_node_id = l.from_node_id
+        AND visible_l.link_type = 'EVIDENCED_BY'
+        AND visible_l.to_node_type = 'episode'
+        AND e.visibility_status = 'visible'
+        AND e.searchable = 1
+  )`, personaID, episodeID)
+	if err != nil {
+		return forgetCounts{}, err
+	}
+	defer rows.Close()
+
+	var factIDs []string
+	for rows.Next() {
+		var factID string
+		if err := rows.Scan(&factID); err != nil {
+			return forgetCounts{}, err
+		}
+		factIDs = append(factIDs, factID)
+	}
+	if err := rows.Err(); err != nil {
+		return forgetCounts{}, err
+	}
+
+	var counts forgetCounts
+	for _, factID := range factIDs {
+		searchRows, err := countSearchDocumentsTx(ctx, tx, personaID, core.NodeTypeFact, factID)
+		if err != nil {
+			return forgetCounts{}, err
+		}
+		ftsRows, err := countSearchFTSRowsTx(ctx, tx, personaID, core.NodeTypeFact, factID)
+		if err != nil {
+			return forgetCounts{}, err
+		}
+		if err := deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, factID); err != nil {
+			return forgetCounts{}, err
+		}
+		counts.SearchDocumentsDeleted += searchRows
+		counts.FTSRowsDeleted += ftsRows
+	}
+	return counts, nil
+}
+
 func (r *ForgetRepository) removeSearchAndMirrorTx(ctx context.Context, tx *sql.Tx, personaID string, nodeType core.NodeType, nodeID string) (forgetCounts, error) {
 	searchRows, err := countSearchDocumentsTx(ctx, tx, personaID, nodeType, nodeID)
 	if err != nil {
@@ -379,6 +578,10 @@ func validateSQLiteForgetRequest(req ForgetRequest) error {
 	case ForgetLevelSourceRedact:
 		if req.Target.NodeType != core.NodeTypeEpisode {
 			return errors.New("source_redact only supports episode targets")
+		}
+	case ForgetLevelPurge:
+		if req.Target.NodeType != core.NodeTypeFact && req.Target.NodeType != core.NodeTypeEpisode {
+			return errors.New("purge only supports fact or episode targets")
 		}
 	default:
 		return fmt.Errorf("invalid forget level %q", req.Level)

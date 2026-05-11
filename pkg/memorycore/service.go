@@ -428,6 +428,10 @@ func validateForgetRequest(req ForgetRequest) error {
 		if req.Target.NodeType != ForgetNodeEpisode {
 			return fmt.Errorf("%w: source_redact only supports episode targets", ErrInvalidRequest)
 		}
+	case ForgetLevelPurge:
+		if req.Target.NodeType != ForgetNodeFact && req.Target.NodeType != ForgetNodeEpisode {
+			return fmt.Errorf("%w: purge only supports fact or episode targets", ErrInvalidRequest)
+		}
 	default:
 		return fmt.Errorf("%w: invalid Level", ErrInvalidRequest)
 	}

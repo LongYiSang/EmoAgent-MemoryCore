@@ -66,16 +66,66 @@ WHERE persona_id = ?
         AND f.id = memory_search_documents.node_id
         AND f.visibility_status = 'visible'
         AND f.searchable = 1
+        AND (
+            EXISTS (
+                SELECT 1
+                FROM memory_links l
+                JOIN episodes e
+                  ON e.persona_id = l.persona_id
+                 AND e.id = l.to_node_id
+                WHERE l.persona_id = f.persona_id
+                  AND l.from_node_type = 'fact'
+                  AND l.from_node_id = f.id
+                  AND l.link_type = 'EVIDENCED_BY'
+                  AND l.to_node_type = 'episode'
+                  AND e.visibility_status = 'visible'
+                  AND e.searchable = 1
+            )
+            OR NOT EXISTS (
+                SELECT 1
+                FROM memory_links l
+                WHERE l.persona_id = f.persona_id
+                  AND l.from_node_type = 'fact'
+                  AND l.from_node_id = f.id
+                  AND l.link_type = 'EVIDENCED_BY'
+                  AND l.to_node_type = 'episode'
+            )
+        )
   )`, personaID); err != nil {
 		return RebuildSearchDocumentsResult{}, err
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id
-FROM facts
-WHERE persona_id = ?
-  AND visibility_status = 'visible'
-  AND searchable = 1
+FROM facts f
+WHERE f.persona_id = ?
+  AND f.visibility_status = 'visible'
+  AND f.searchable = 1
+  AND (
+      EXISTS (
+          SELECT 1
+          FROM memory_links l
+          JOIN episodes e
+            ON e.persona_id = l.persona_id
+           AND e.id = l.to_node_id
+          WHERE l.persona_id = f.persona_id
+            AND l.from_node_type = 'fact'
+            AND l.from_node_id = f.id
+            AND l.link_type = 'EVIDENCED_BY'
+            AND l.to_node_type = 'episode'
+            AND e.visibility_status = 'visible'
+            AND e.searchable = 1
+      )
+      OR NOT EXISTS (
+          SELECT 1
+          FROM memory_links l
+          WHERE l.persona_id = f.persona_id
+            AND l.from_node_type = 'fact'
+            AND l.from_node_id = f.id
+            AND l.link_type = 'EVIDENCED_BY'
+            AND l.to_node_type = 'episode'
+      )
+  )
 ORDER BY created_at ASC`, personaID)
 	if err != nil {
 		return RebuildSearchDocumentsResult{}, err
@@ -316,6 +366,13 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 	if err != nil {
 		return core.SearchDocument{}, err
 	}
+	eligible, err := factSearchEvidenceEligible(ctx, runner, personaID, factID)
+	if err != nil {
+		return core.SearchDocument{}, err
+	}
+	if !eligible {
+		return core.SearchDocument{}, sql.ErrNoRows
+	}
 	doc.ID = fmt.Sprintf("search_%s", factID)
 	doc.NodeType = core.NodeTypeFact
 	doc.SearchTier = searchTierForLifecycle(doc.LifecycleStatus)
@@ -327,6 +384,27 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 	), " ")
 	doc.Searchable = intBool(searchable)
 	return doc, nil
+}
+
+func factSearchEvidenceEligible(ctx context.Context, runner sqlRunner, personaID string, factID string) (bool, error) {
+	var evidenceCount int
+	var visibleEvidenceCount int
+	err := runner.QueryRowContext(ctx, `
+SELECT COUNT(*),
+       COALESCE(SUM(CASE WHEN e.visibility_status = 'visible' AND e.searchable = 1 THEN 1 ELSE 0 END), 0)
+FROM memory_links l
+JOIN episodes e
+  ON e.persona_id = l.persona_id
+ AND e.id = l.to_node_id
+WHERE l.persona_id = ?
+  AND l.from_node_type = 'fact'
+  AND l.from_node_id = ?
+  AND l.link_type = 'EVIDENCED_BY'
+  AND l.to_node_type = 'episode'`, personaID, factID).Scan(&evidenceCount, &visibleEvidenceCount)
+	if err != nil {
+		return false, err
+	}
+	return evidenceCount == 0 || visibleEvidenceCount > 0, nil
 }
 
 func isSearchDocumentVisibleAndSearchable(doc core.SearchDocument) bool {

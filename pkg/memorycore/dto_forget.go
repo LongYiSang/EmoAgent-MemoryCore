@@ -18,6 +18,7 @@ const (
 	ForgetLevelSoft         = "soft_forget"
 	ForgetLevelHard         = "hard_forget"
 	ForgetLevelSourceRedact = "source_redact"
+	ForgetLevelPurge        = "purge"
 
 	ForgottenPlaceholder = "[forgotten]"
 	RedactedPlaceholder  = "[redacted]"

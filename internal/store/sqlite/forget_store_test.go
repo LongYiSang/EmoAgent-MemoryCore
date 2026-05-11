@@ -146,6 +146,101 @@ WHERE (from_node_id = ? OR to_node_id = ?) AND reasoning IS NOT NULL`, fact.ID, 
 	requireSafeDeletionEvent(t, db.SQLDB(), result.DeletionEventID, memsqlite.ForgetLevelHard, fact.ID, "杭州", "用户住在")
 }
 
+func TestForgetRepositoryPurgeFactScrubsSemanticAndLinkResidue(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertForgetFact(t, ctx, db.SQLDB(), "fact_purge", "银行卡密码123", "用户银行卡密码是123。", true)
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET extraction_reasoning = ?
+WHERE id = ?`, "secret reasoning: 银行卡密码123", fact.ID); err != nil {
+		t.Fatalf("seed extraction reasoning: %v", err)
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE memory_links
+SET reasoning = ?
+WHERE from_node_type = 'fact' AND from_node_id = ?`, "secret link reasoning: 银行卡密码123", fact.ID); err != nil {
+		t.Fatalf("seed link reasoning: %v", err)
+	}
+	insertIndexMap(t, db.SQLDB(), core.NodeTypeFact, fact.ID)
+
+	repo := memsqlite.NewForgetRepository(db.SQLDB(), fixedForgetIDs(), fixedForgetNow)
+	result, err := repo.Forget(ctx, memsqlite.ForgetRequest{
+		PersonaID:  "default",
+		Actor:      memsqlite.ForgetActorUser,
+		ReasonCode: memsqlite.ForgetReasonUserRequested,
+		Level:      memsqlite.ForgetLevelPurge,
+		Target: memsqlite.ForgetTarget{
+			ScopeMode: memsqlite.ForgetScopeExactNode,
+			NodeType:  core.NodeTypeFact,
+			NodeID:    fact.ID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("purge fact: %v", err)
+	}
+	if result.FTSRowsDeleted < 1 {
+		t.Fatalf("reported fts rows deleted = %d, want at least 1", result.FTSRowsDeleted)
+	}
+
+	var visibility, predicate, summary string
+	var searchable, pinned int
+	var objectLiteral, reasoning sql.NullString
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT visibility_status, searchable, pinned, predicate, object_literal, content_summary, extraction_reasoning
+FROM facts
+WHERE id = ?`, fact.ID).Scan(&visibility, &searchable, &pinned, &predicate, &objectLiteral, &summary, &reasoning); err != nil {
+		t.Fatalf("query purged fact: %v", err)
+	}
+	if visibility != string(core.VisibilityPurged) || searchable != 0 || pinned != 0 {
+		t.Fatalf("purged fact visibility/searchable/pinned = %s/%d/%d", visibility, searchable, pinned)
+	}
+	if objectLiteral.Valid || reasoning.Valid {
+		t.Fatalf("purge left nullable semantic fields: object_literal=%v extraction_reasoning=%v", objectLiteral, reasoning)
+	}
+	if predicate == "likes" || summary == "用户银行卡密码是123。" {
+		t.Fatalf("purge left original semantic text: predicate=%q summary=%q", predicate, summary)
+	}
+	if strings.Contains(predicate, "银行卡密码") || strings.Contains(summary, "银行卡密码") || strings.Contains(summary, "123") {
+		t.Fatalf("purge leaked secret text in fact fields: predicate=%q summary=%q", predicate, summary)
+	}
+
+	var linkReasoningCount int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = 'default'
+  AND ((from_node_type = 'fact' AND from_node_id = ?) OR (to_node_type = 'fact' AND to_node_id = ?))
+  AND reasoning IS NOT NULL`, fact.ID, fact.ID).Scan(&linkReasoningCount); err != nil {
+		t.Fatalf("count link reasoning: %v", err)
+	}
+	if linkReasoningCount != 0 {
+		t.Fatalf("link reasoning count = %d, want 0", linkReasoningCount)
+	}
+
+	var visibleSearchableLinks int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = 'default'
+  AND ((from_node_type = 'fact' AND from_node_id = ?) OR (to_node_type = 'fact' AND to_node_id = ?))
+  AND visibility_status = 'visible'
+  AND searchable = 1`, fact.ID, fact.ID).Scan(&visibleSearchableLinks); err != nil {
+		t.Fatalf("count visible/searchable links: %v", err)
+	}
+	if visibleSearchableLinks != 0 {
+		t.Fatalf("visible/searchable links count = %d, want 0", visibleSearchableLinks)
+	}
+
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+	requireSafeDeletionEvent(t, db.SQLDB(), result.DeletionEventID, memsqlite.ForgetLevelPurge, fact.ID, "银行卡密码123", "用户银行卡密码")
+}
+
 func TestForgetRepositorySourceRedactsEpisodeAndTombstonesWithoutRawContent(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -223,6 +318,173 @@ WHERE episode_id = 'ep_visible'`).Scan(&tombstoneHash, &level, &actor, &reason);
 	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 0)
 	requireQueueCount(t, db.SQLDB(), "episode", "ep_visible", "delete_node", 1)
 	requireSafeDeletionEvent(t, db.SQLDB(), result.DeletionEventID, memsqlite.ForgetLevelSourceRedact, "ep_visible", "我喜欢咖啡", "咖啡")
+}
+
+func TestForgetRepositoryPurgeEpisodeScrubsSourceAndEvidenceLinks(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	secretContent := "secret: card 4111"
+	secretRef := "secret://source/4111"
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE episodes
+SET content = ?, source_ref = ?, content_hash = ?, visibility_status = 'visible', searchable = 1
+WHERE id = 'ep_visible'`, secretContent, secretRef, sha256HexForgetting(secretContent)); err != nil {
+		t.Fatalf("seed episode secret content/source_ref: %v", err)
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE memory_links
+SET reasoning = ?, visibility_status = 'visible', searchable = 1
+WHERE persona_id = 'default'
+  AND (
+      (from_node_type = 'episode' AND from_node_id = 'ep_visible')
+      OR (to_node_type = 'episode' AND to_node_id = 'ep_visible')
+  )`, "secret evidence reasoning 4111"); err != nil {
+		t.Fatalf("seed episode link reasoning: %v", err)
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `
+INSERT OR IGNORE INTO memory_links (
+    id, persona_id, from_node_type, from_node_id, link_type, to_node_type, to_node_id,
+    direction, confidence, weight, reasoning, created_by, visibility_status, searchable
+) VALUES (?, 'default', 'episode', 'ep_visible', 'TEMPORAL_NEXT', 'episode', 'ep_hidden',
+          'forward', 1.0, 1.0, ?, 'system', 'visible', 1)`,
+		"link_ep_visible_touch",
+		"secret evidence reasoning 4111",
+	); err != nil {
+		t.Fatalf("insert touching episode link: %v", err)
+	}
+	fact := insertForgetFact(t, ctx, db.SQLDB(), "fact_only_purged_ep", "card 4111", "secret fact card 4111", false)
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 1)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 1)
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertDocument(ctx, core.SearchDocument{
+		ID:               "search_ep_visible_purge",
+		PersonaID:        "default",
+		NodeType:         core.NodeTypeEpisode,
+		NodeID:           "ep_visible",
+		SearchText:       secretContent,
+		SearchTier:       core.SearchTierHot,
+		VisibilityStatus: core.VisibilityVisible,
+		SensitivityLevel: core.SensitivityNormal,
+		LifecycleStatus:  core.LifecycleActive,
+		Searchable:       true,
+	}); err != nil {
+		t.Fatalf("upsert episode search document: %v", err)
+	}
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 1)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 1)
+	insertIndexMap(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible")
+
+	var touchingLinks int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = 'default'
+  AND (
+      (from_node_type = 'episode' AND from_node_id = 'ep_visible')
+      OR (to_node_type = 'episode' AND to_node_id = 'ep_visible')
+  )`).Scan(&touchingLinks); err != nil {
+		t.Fatalf("count touching links before purge: %v", err)
+	}
+	if touchingLinks == 0 {
+		t.Fatal("expected at least one link touching ep_visible")
+	}
+
+	repo := memsqlite.NewForgetRepository(db.SQLDB(), fixedForgetIDs(), fixedForgetNow)
+	result, err := repo.Forget(ctx, memsqlite.ForgetRequest{
+		PersonaID:  "default",
+		Actor:      memsqlite.ForgetActorUser,
+		ReasonCode: memsqlite.ForgetReasonUserRequested,
+		Level:      memsqlite.ForgetLevelPurge,
+		Target: memsqlite.ForgetTarget{
+			ScopeMode: memsqlite.ForgetScopeExactNode,
+			NodeType:  core.NodeTypeEpisode,
+			NodeID:    "ep_visible",
+		},
+	})
+	if err != nil {
+		t.Fatalf("purge episode: %v", err)
+	}
+	if result.FTSRowsDeleted < 1 {
+		t.Fatalf("reported fts rows deleted = %d, want at least 1", result.FTSRowsDeleted)
+	}
+
+	var content, sourceRef, visibility string
+	var searchable int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT content, COALESCE(source_ref, ''), visibility_status, searchable
+FROM episodes
+WHERE id = 'ep_visible'`).Scan(&content, &sourceRef, &visibility, &searchable); err != nil {
+		t.Fatalf("query purged episode: %v", err)
+	}
+	if visibility != string(core.VisibilityPurged) || searchable != 0 {
+		t.Fatalf("purged episode visibility/searchable = %s/%d", visibility, searchable)
+	}
+	if sourceRef != "" {
+		t.Fatalf("purged episode source_ref = %q, want NULL/empty", sourceRef)
+	}
+	if strings.Contains(content, "4111") || strings.Contains(content, secretContent) {
+		t.Fatalf("purged episode content leaked secret: %q", content)
+	}
+
+	var level string
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT redaction_level
+FROM episode_tombstones
+WHERE episode_id = 'ep_visible'`).Scan(&level); err != nil {
+		t.Fatalf("query purge episode tombstone: %v", err)
+	}
+	if level != memsqlite.ForgetLevelPurge {
+		t.Fatalf("episode tombstone level = %q, want %q", level, memsqlite.ForgetLevelPurge)
+	}
+
+	var linkReasoningCount int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = 'default'
+  AND (
+      (from_node_type = 'episode' AND from_node_id = 'ep_visible')
+      OR (to_node_type = 'episode' AND to_node_id = 'ep_visible')
+  )
+  AND reasoning IS NOT NULL`).Scan(&linkReasoningCount); err != nil {
+		t.Fatalf("count episode link reasoning after purge: %v", err)
+	}
+	if linkReasoningCount != 0 {
+		t.Fatalf("episode link reasoning count = %d, want 0", linkReasoningCount)
+	}
+
+	var visibleSearchableLinks int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = 'default'
+  AND (
+      (from_node_type = 'episode' AND from_node_id = 'ep_visible')
+      OR (to_node_type = 'episode' AND to_node_id = 'ep_visible')
+  )
+  AND visibility_status = 'visible'
+  AND searchable = 1`).Scan(&visibleSearchableLinks); err != nil {
+		t.Fatalf("count visible/searchable episode links after purge: %v", err)
+	}
+	if visibleSearchableLinks != 0 {
+		t.Fatalf("visible/searchable episode links count = %d, want 0", visibleSearchableLinks)
+	}
+
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 0)
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	if err := search.UpsertFactDocument(ctx, "default", fact.ID); err != nil {
+		t.Fatalf("upsert fact document after purge episode: %v", err)
+	}
+	requireSearchRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	requireFTSRowCount(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 0)
+	requireQueueCount(t, db.SQLDB(), "episode", "ep_visible", "delete_node", 1)
+	requireSafeDeletionEvent(t, db.SQLDB(), result.DeletionEventID, memsqlite.ForgetLevelPurge, "ep_visible", "4111", secretRef, secretContent)
 }
 
 func insertForgetFact(t *testing.T, ctx context.Context, db *sql.DB, factID string, object string, summary string, pinned bool) core.Fact {

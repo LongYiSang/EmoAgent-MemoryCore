@@ -71,7 +71,7 @@ func runForget(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func validateForgetFlags(level string, nodeType string, nodeID string, scope string, actor string, reason string) error {
-	if err := validateOneOf("--level", level, memorycore.ForgetLevelSoft, memorycore.ForgetLevelHard, memorycore.ForgetLevelSourceRedact); err != nil {
+	if err := validateOneOf("--level", level, memorycore.ForgetLevelSoft, memorycore.ForgetLevelHard, memorycore.ForgetLevelSourceRedact, memorycore.ForgetLevelPurge); err != nil {
 		return err
 	}
 	if err := validateOneOf("--node-type", nodeType, memorycore.ForgetNodeFact, memorycore.ForgetNodeEpisode); err != nil {
@@ -101,6 +101,10 @@ func validateForgetFlags(level string, nodeType string, nodeID string, scope str
 	case memorycore.ForgetLevelSourceRedact:
 		if nodeType != memorycore.ForgetNodeEpisode {
 			return fmt.Errorf("source_redact only supports episode targets")
+		}
+	case memorycore.ForgetLevelPurge:
+		if nodeType != memorycore.ForgetNodeFact && nodeType != memorycore.ForgetNodeEpisode {
+			return fmt.Errorf("purge only supports fact or episode targets")
 		}
 	}
 	return nil
