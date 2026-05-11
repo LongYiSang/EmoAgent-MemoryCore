@@ -79,6 +79,47 @@ func TestServiceRunRetentionDryRunReportsCountsWithoutChangingRetrieval(t *testi
 	requireMemoryItem(t, current, fact.ID, "用户喜欢咖啡。", "")
 }
 
+func TestServiceRunRetentionDeepArchivesFactAndKeepsDeepArchiveRetrievalGated(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我以前参与过旧项目。", time.Date(2025, 1, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "旧项目", "用户以前参与过旧项目。", episode.ID).Fact
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	retentionNow := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	setServiceFactArchivedAt(t, db, fact.ID, retentionNow.AddDate(0, 0, -181))
+
+	result, err := svc.RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow, DeepArchiveAfterDays: 180})
+	if err != nil {
+		t.Fatalf("run deep archive retention: %v", err)
+	}
+	if result.EvaluatedFacts != 1 || result.ExpiredFacts != 0 || result.ArchivedFacts != 0 || result.DeepArchivedFacts != 1 || result.SearchDocumentsSynced != 1 {
+		t.Fatalf("deep archive result = %#v", result)
+	}
+
+	current, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "旧项目"})
+	if err != nil {
+		t.Fatalf("retrieve current only: %v", err)
+	}
+	requireNoMemoryItem(t, current, fact.ID)
+
+	deepArchive, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "旧项目",
+		Policy: memorycore.RetrievalPolicy{
+			AllowDeepArchive: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve deep archive: %v", err)
+	}
+	requireMemoryItem(t, deepArchive, fact.ID, "用户以前参与过旧项目。", "")
+}
+
 func setServiceFactValidTo(t *testing.T, db *sql.DB, factID string, validTo time.Time) {
 	t.Helper()
 
@@ -87,5 +128,17 @@ UPDATE facts
 SET valid_to = ?
 WHERE id = ?`, validTo.UTC().Format(time.RFC3339Nano), factID); err != nil {
 		t.Fatalf("set fact valid_to: %v", err)
+	}
+}
+
+func setServiceFactArchivedAt(t *testing.T, db *sql.DB, factID string, archivedAt time.Time) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE facts
+SET lifecycle_status = 'archived',
+    updated_at = ?
+WHERE id = ?`, archivedAt.UTC().Format(time.RFC3339Nano), factID); err != nil {
+		t.Fatalf("set fact archived_at proxy: %v", err)
 	}
 }

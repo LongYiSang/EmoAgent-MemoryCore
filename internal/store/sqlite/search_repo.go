@@ -54,6 +54,14 @@ func (r *SearchRepository) UpsertFactDocument(ctx context.Context, personaID str
 	return r.UpsertDocument(ctx, doc)
 }
 
+func (r *SearchRepository) UpsertNarrativeDocument(ctx context.Context, personaID string, narrativeID string) error {
+	return upsertNarrativeSearchDocumentTx(ctx, r.db, personaID, narrativeID)
+}
+
+func (r *SearchRepository) UpsertInsightDocument(ctx context.Context, personaID string, insightID string) error {
+	return upsertInsightSearchDocumentTx(ctx, r.db, personaID, insightID)
+}
+
 func (r *SearchRepository) RebuildSearchDocuments(ctx context.Context, personaID string) (RebuildSearchDocumentsResult, error) {
 	if _, err := r.db.ExecContext(ctx, `
 DELETE FROM memory_search_documents
@@ -438,6 +446,34 @@ func upsertFactSearchDocumentTx(ctx context.Context, tx *sql.Tx, personaID strin
 	return upsertSearchDocument(ctx, tx, doc)
 }
 
+func upsertNarrativeSearchDocumentTx(ctx context.Context, runner sqlRunner, personaID string, narrativeID string) error {
+	doc, err := buildNarrativeSearchDocument(ctx, runner, personaID, narrativeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeNarrative, narrativeID)
+		}
+		return err
+	}
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeNarrative, narrativeID)
+	}
+	return upsertSearchDocument(ctx, runner, doc)
+}
+
+func upsertInsightSearchDocumentTx(ctx context.Context, runner sqlRunner, personaID string, insightID string) error {
+	doc, err := buildInsightSearchDocument(ctx, runner, personaID, insightID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeInsight, insightID)
+		}
+		return err
+	}
+	if !isSearchDocumentVisibleAndSearchable(doc) {
+		return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeInsight, insightID)
+	}
+	return upsertSearchDocument(ctx, runner, doc)
+}
+
 func buildFactSearchDocument(ctx context.Context, runner sqlRunner, personaID string, factID string) (core.SearchDocument, error) {
 	var doc core.SearchDocument
 	var objectLiteral, objectEntityName sql.NullString
@@ -482,6 +518,72 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 		stringPtrValue(objectLiteral),
 		stringPtrValue(objectEntityName),
 	), " ")
+	doc.Searchable = intBool(searchable)
+	return doc, nil
+}
+
+func buildNarrativeSearchDocument(ctx context.Context, runner sqlRunner, personaID string, narrativeID string) (core.SearchDocument, error) {
+	var doc core.SearchDocument
+	var scope string
+	var scopeRef, emotionalTone sql.NullString
+	var searchable int
+	err := runner.QueryRowContext(ctx, `
+SELECT persona_id, id, summary, scope, scope_ref, emotional_tone,
+       visibility_status, sensitivity_level, lifecycle_status, searchable
+FROM narratives
+WHERE persona_id = ? AND id = ?`, personaID, narrativeID).Scan(
+		&doc.PersonaID,
+		&doc.NodeID,
+		&doc.SearchText,
+		&scope,
+		&scopeRef,
+		&emotionalTone,
+		&doc.VisibilityStatus,
+		&doc.SensitivityLevel,
+		&doc.LifecycleStatus,
+		&searchable,
+	)
+	if err != nil {
+		return core.SearchDocument{}, err
+	}
+	doc.ID = fmt.Sprintf("search_narrative_%s", narrativeID)
+	doc.NodeType = core.NodeTypeNarrative
+	doc.SearchTier = searchTierForLifecycle(doc.LifecycleStatus)
+	doc.SearchText = strings.Join(nonEmptyStrings(
+		doc.SearchText,
+		scope,
+		stringPtrValue(scopeRef),
+		stringPtrValue(emotionalTone),
+	), " ")
+	doc.Searchable = intBool(searchable)
+	return doc, nil
+}
+
+func buildInsightSearchDocument(ctx context.Context, runner sqlRunner, personaID string, insightID string) (core.SearchDocument, error) {
+	var doc core.SearchDocument
+	var insightType string
+	var searchable int
+	err := runner.QueryRowContext(ctx, `
+SELECT persona_id, id, content, insight_type,
+       visibility_status, sensitivity_level, lifecycle_status, searchable
+FROM insights
+WHERE persona_id = ? AND id = ?`, personaID, insightID).Scan(
+		&doc.PersonaID,
+		&doc.NodeID,
+		&doc.SearchText,
+		&insightType,
+		&doc.VisibilityStatus,
+		&doc.SensitivityLevel,
+		&doc.LifecycleStatus,
+		&searchable,
+	)
+	if err != nil {
+		return core.SearchDocument{}, err
+	}
+	doc.ID = fmt.Sprintf("search_insight_%s", insightID)
+	doc.NodeType = core.NodeTypeInsight
+	doc.SearchTier = searchTierForLifecycle(doc.LifecycleStatus)
+	doc.SearchText = strings.Join(nonEmptyStrings(doc.SearchText, insightType), " ")
 	doc.Searchable = intBool(searchable)
 	return doc, nil
 }

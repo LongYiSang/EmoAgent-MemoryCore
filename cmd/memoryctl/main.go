@@ -39,6 +39,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRebuildSearch(args[1:], stdout, stderr)
 	case "retention-run":
 		return runRetention(args[1:], stdout, stderr)
+	case "retention-jobs-run":
+		return runRetentionJobs(args[1:], stdout, stderr)
+	case "compression-apply":
+		return runCompressionApply(args[1:], stdout, stderr)
 	case "list-facts":
 		return runListFacts(args[1:], stdout, stderr)
 	case "get-node":

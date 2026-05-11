@@ -23,6 +23,12 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertFactColumn(ctx, assertion)
 	case "link_exists":
 		return s.assertLinkExists(ctx, assertion)
+	case "narrative_exists":
+		return s.assertNarrativeExists(ctx, assertion)
+	case "insight_exists":
+		return s.assertInsightExists(ctx, assertion)
+	case "derived_link_count":
+		return s.assertDerivedLinkCount(ctx, assertion)
 	case "search_absent":
 		return s.assertSearchAbsent(ctx, assertion)
 	case "deletion_event_safe":
@@ -140,6 +146,60 @@ WHERE from_node_type = ? AND from_node_id = ?
 	}
 	if count != 1 {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "one link", Actual: fmt.Sprintf("count=%d", count)}
+	}
+	return nil
+}
+
+func (s *runState) assertNarrativeExists(ctx context.Context, assertion Assertion) error {
+	narrativeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	var summary string
+	err = s.db.QueryRowContext(ctx, `SELECT summary FROM narratives WHERE id = ?`, narrativeID).Scan(&summary)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s narrative %s: %w", s.caseID, assertion.Type, narrativeID, err)
+	}
+	if assertion.Summary != "" && summary != assertion.Summary {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "summary=" + assertion.Summary, Actual: "summary=" + summary}
+	}
+	return nil
+}
+
+func (s *runState) assertInsightExists(ctx context.Context, assertion Assertion) error {
+	insightID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	var content string
+	err = s.db.QueryRowContext(ctx, `SELECT content FROM insights WHERE id = ?`, insightID).Scan(&content)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s insight %s: %w", s.caseID, assertion.Type, insightID, err)
+	}
+	if assertion.Content != "" && content != assertion.Content {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "content=" + assertion.Content, Actual: "content=" + content}
+	}
+	return nil
+}
+
+func (s *runState) assertDerivedLinkCount(ctx context.Context, assertion Assertion) error {
+	query := `SELECT COUNT(*) FROM memory_links WHERE link_type = 'DERIVED_FROM'`
+	args := []any{}
+	if assertion.FromNodeID != "" {
+		fromID, err := s.resolveString(assertion.FromNodeID)
+		if err != nil {
+			return err
+		}
+		query += ` AND from_node_id = ?`
+		args = append(args, fromID)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return fmt.Errorf("case %s assertion %s derived links: %w", s.caseID, assertion.Type, err)
+	}
+	actual := fmt.Sprintf("%d", count)
+	if actual != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "derived_link_count=" + assertion.Equals, Actual: "derived_link_count=" + actual}
 	}
 	return nil
 }

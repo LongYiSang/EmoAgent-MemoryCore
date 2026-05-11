@@ -18,15 +18,18 @@ type RetentionRepository struct {
 }
 
 type RetentionRequest struct {
-	PersonaID string
-	Now       time.Time
-	DryRun    bool
+	PersonaID            string
+	Now                  time.Time
+	DryRun               bool
+	DeepArchiveAfterDays int
+	SkipExpiredFacts     bool
 }
 
 type RetentionResult struct {
 	EvaluatedFacts        int
 	ExpiredFacts          int
 	ArchivedFacts         int
+	DeepArchivedFacts     int
 	SearchDocumentsSynced int
 	MirrorUpdatesEnqueued int
 }
@@ -36,6 +39,10 @@ type retentionFact struct {
 	Pinned          bool
 	LifecycleStatus core.LifecycleStatus
 	FactType        core.FactType
+}
+
+type deepArchiveFact struct {
+	ID string
 }
 
 func NewRetentionRepository(db *sql.DB, newID func() string, now func() time.Time) *RetentionRepository {
@@ -61,12 +68,22 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 		now = r.now()
 	}
 
-	facts, err := r.expiredFacts(ctx, req.PersonaID, now)
+	var facts []retentionFact
+	if !req.SkipExpiredFacts {
+		var err error
+		facts, err = r.expiredFacts(ctx, req.PersonaID, now)
+		if err != nil {
+			return RetentionResult{}, err
+		}
+	}
+	deepArchiveFacts, err := r.deepArchiveFacts(ctx, req.PersonaID, now, req.DeepArchiveAfterDays)
 	if err != nil {
 		return RetentionResult{}, err
 	}
 	result := retentionCounts(facts)
-	if req.DryRun || len(facts) == 0 {
+	result.EvaluatedFacts += len(deepArchiveFacts)
+	result.DeepArchivedFacts = len(deepArchiveFacts)
+	if req.DryRun || (len(facts) == 0 && len(deepArchiveFacts) == 0) {
 		return result, nil
 	}
 
@@ -82,6 +99,7 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 
 	result.SearchDocumentsSynced = 0
 	result.MirrorUpdatesEnqueued = 0
+	result.DeepArchivedFacts = 0
 	updatedAt := formatTime(now)
 	for _, fact := range facts {
 		var updated bool
@@ -92,6 +110,32 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 		if !updated {
 			continue
 		}
+		if err = upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
+			return RetentionResult{}, err
+		}
+		result.SearchDocumentsSynced++
+
+		mapped, err := factIndexMapExistsTx(ctx, tx, req.PersonaID, fact.ID)
+		if err != nil {
+			return RetentionResult{}, err
+		}
+		if mapped {
+			if err = enqueueRetentionIndexSyncTx(ctx, tx, r.newID(), req.PersonaID, fact.ID); err != nil {
+				return RetentionResult{}, err
+			}
+			result.MirrorUpdatesEnqueued++
+		}
+	}
+	for _, fact := range deepArchiveFacts {
+		var updated bool
+		updated, err = updateDeepArchivedFactTx(ctx, tx, req.PersonaID, fact.ID, updatedAt)
+		if err != nil {
+			return RetentionResult{}, err
+		}
+		if !updated {
+			continue
+		}
+		result.DeepArchivedFacts++
 		if err = upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
 			return RetentionResult{}, err
 		}
@@ -146,6 +190,40 @@ ORDER BY valid_to ASC, id ASC`, personaID, formatTime(now))
 	return facts, nil
 }
 
+func (r *RetentionRepository) deepArchiveFacts(ctx context.Context, personaID string, now time.Time, afterDays int) ([]deepArchiveFact, error) {
+	if afterDays <= 0 {
+		return nil, nil
+	}
+	cutoff := now.AddDate(0, 0, -afterDays)
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id
+FROM facts
+WHERE persona_id = ?
+  AND visibility_status = 'visible'
+  AND lifecycle_status = 'archived'
+  AND pinned = 0
+  AND fact_type NOT IN ('core_identity', 'commitment')
+  AND COALESCE(updated_at, valid_to, valid_from, created_at) <= ?
+ORDER BY COALESCE(updated_at, valid_to, valid_from, created_at) ASC, id ASC`, personaID, formatTime(cutoff))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var facts []deepArchiveFact
+	for rows.Next() {
+		var fact deepArchiveFact
+		if err := rows.Scan(&fact.ID); err != nil {
+			return nil, err
+		}
+		facts = append(facts, fact)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return facts, nil
+}
+
 func retentionCounts(facts []retentionFact) RetentionResult {
 	result := RetentionResult{
 		EvaluatedFacts: len(facts),
@@ -176,6 +254,31 @@ WHERE persona_id = ?
 		updatedAt,
 		personaID,
 		fact.ID,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+func updateDeepArchivedFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, updatedAt string) (bool, error) {
+	result, err := tx.ExecContext(ctx, `
+UPDATE facts
+SET lifecycle_status = 'deep_archived',
+    updated_at = ?
+WHERE persona_id = ?
+  AND id = ?
+  AND visibility_status = 'visible'
+  AND lifecycle_status = 'archived'
+  AND pinned = 0
+  AND fact_type NOT IN ('core_identity', 'commitment')`,
+		updatedAt,
+		personaID,
+		factID,
 	)
 	if err != nil {
 		return false, err

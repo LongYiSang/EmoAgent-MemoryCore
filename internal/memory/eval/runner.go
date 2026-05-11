@@ -42,6 +42,7 @@ type stepResult struct {
 	Retrieval     *memorycore.MemoryContext
 	Forget        *memorycore.ForgetResult
 	RetentionRun  *memorycore.RunRetentionResult
+	Compression   *memorycore.ApplyCompressionResult
 	RebuildSearch *memorycore.RebuildSearchDocumentsResult
 }
 
@@ -260,6 +261,21 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			return err
 		}
 		s.steps[step.ID] = stepResult{RetentionRun: result}
+	case "compression_apply":
+		result, err := s.runCompressionApply(ctx, step)
+		if err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{Compression: result}
+		if result.NarrativeID != "" {
+			s.refs[step.ID+".narrative_id"] = result.NarrativeID
+		}
+		for index, insightID := range result.InsightIDs {
+			if index == 0 {
+				s.refs[step.ID+".insight_id"] = insightID
+			}
+			s.refs[fmt.Sprintf("%s.insight_id_%d", step.ID, index)] = insightID
+		}
 	case "rebuild_search":
 		result, err := s.service.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
 			PersonaID: defaultString(step.RebuildSearch.PersonaID, s.persona),
@@ -419,12 +435,78 @@ func (s *runState) runRetention(ctx context.Context, step Step) (*memorycore.Run
 		return nil, fmt.Errorf("case %s step %s retention_run now: %w", s.caseID, step.ID, err)
 	}
 	result, err := s.service.RunRetention(ctx, memorycore.RunRetentionRequest{
-		PersonaID: defaultString(body.PersonaID, s.persona),
-		Now:       now,
-		DryRun:    body.DryRun,
+		PersonaID:            defaultString(body.PersonaID, s.persona),
+		Now:                  now,
+		DryRun:               body.DryRun,
+		DeepArchiveAfterDays: body.DeepArchiveAfterDays,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s retention_run: %w", s.caseID, step.ID, err)
+	}
+	return result, nil
+}
+
+func (s *runState) runCompressionApply(ctx context.Context, step Step) (*memorycore.ApplyCompressionResult, error) {
+	body := step.Compression
+	now, err := parseOptionalTime(body.Now)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s compression_apply now: %w", s.caseID, step.ID, err)
+	}
+	sourceIDs := make([]string, 0, len(body.SourceFactIDs))
+	for _, sourceID := range body.SourceFactIDs {
+		resolved, err := s.resolveString(sourceID)
+		if err != nil {
+			return nil, err
+		}
+		sourceIDs = append(sourceIDs, resolved)
+	}
+	var narrative *memorycore.NarrativeDraft
+	if body.Narrative != nil {
+		validFrom, err := parseOptionalTimePointer(body.Narrative.ValidFrom)
+		if err != nil {
+			return nil, fmt.Errorf("case %s step %s compression_apply narrative valid_from: %w", s.caseID, step.ID, err)
+		}
+		validTo, err := parseOptionalTimePointer(body.Narrative.ValidTo)
+		if err != nil {
+			return nil, fmt.Errorf("case %s step %s compression_apply narrative valid_to: %w", s.caseID, step.ID, err)
+		}
+		narrative = &memorycore.NarrativeDraft{
+			ID:               body.Narrative.ID,
+			Scope:            body.Narrative.Scope,
+			ScopeRef:         body.Narrative.ScopeRef,
+			Summary:          body.Narrative.Summary,
+			EmotionalTone:    body.Narrative.EmotionalTone,
+			ValenceAvg:       body.Narrative.ValenceAvg,
+			ArousalAvg:       body.Narrative.ArousalAvg,
+			Importance:       body.Narrative.Importance,
+			ValidFrom:        validFrom,
+			ValidTo:          validTo,
+			SensitivityLevel: body.Narrative.SensitivityLevel,
+		}
+	}
+	insights := make([]memorycore.InsightDraft, 0, len(body.Insights))
+	for _, insight := range body.Insights {
+		insights = append(insights, memorycore.InsightDraft{
+			ID:               insight.ID,
+			InsightType:      insight.InsightType,
+			Content:          insight.Content,
+			Confidence:       insight.Confidence,
+			Importance:       insight.Importance,
+			Valence:          insight.Valence,
+			Arousal:          insight.Arousal,
+			SensitivityLevel: insight.SensitivityLevel,
+		})
+	}
+	result, err := s.service.ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
+		PersonaID:     defaultString(body.PersonaID, s.persona),
+		SourceFactIDs: sourceIDs,
+		Narrative:     narrative,
+		Insights:      insights,
+		Now:           now,
+		DryRun:        body.DryRun,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s compression_apply: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
 }
@@ -446,6 +528,13 @@ func (s *runState) applyFactOverride(ctx context.Context, override FactOverride)
 	}
 	if override.SensitivityLevel != "" {
 		columns["sensitivity_level"] = override.SensitivityLevel
+	}
+	if override.UpdatedAt != "" {
+		updatedAt, err := parseOptionalTime(override.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("case %s step %s override updated_at: %w", s.caseID, s.stepID, err)
+		}
+		columns["updated_at"] = updatedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if override.Searchable != nil {
 		columns["searchable"] = boolToInt(*override.Searchable)
@@ -539,7 +628,7 @@ func parseOptionalTimePointer(value string) (*time.Time, error) {
 
 func allowedFactOverrideColumn(column string) bool {
 	switch column {
-	case "visibility_status", "validity_status", "lifecycle_status", "sensitivity_level", "searchable", "pinned":
+	case "visibility_status", "validity_status", "lifecycle_status", "sensitivity_level", "updated_at", "searchable", "pinned":
 		return true
 	default:
 		return false

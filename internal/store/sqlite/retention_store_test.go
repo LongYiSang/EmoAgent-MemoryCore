@@ -154,6 +154,110 @@ func TestRetentionRepositoryEnqueuesMirrorUpsertForMappedFact(t *testing.T) {
 	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 1)
 }
 
+func TestRetentionRepositoryDeepArchivesOldArchivedFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_deep_archive", "旧项目", "用户以前参与过旧项目。", false)
+	now := fixedRetentionNow()
+	archivedAt := now.AddDate(0, 0, -181)
+	setFactArchivedAt(t, db.SQLDB(), fact.ID, archivedAt)
+
+	repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+	result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DeepArchiveAfterDays: 180})
+	if err != nil {
+		t.Fatalf("run deep archive retention: %v", err)
+	}
+	if result.EvaluatedFacts != 1 || result.ExpiredFacts != 0 || result.ArchivedFacts != 0 || result.DeepArchivedFacts != 1 || result.SearchDocumentsSynced != 1 || result.MirrorUpdatesEnqueued != 0 {
+		t.Fatalf("deep archive result = %#v", result)
+	}
+	requireFactRetentionState(t, db.SQLDB(), fact.ID, string(core.ValidityValid), string(core.LifecycleDeepArchived), now)
+	requireSearchDocumentLifecycle(t, db.SQLDB(), fact.ID, string(core.LifecycleDeepArchived), string(core.SearchTierDeepCold))
+}
+
+func TestRetentionRepositoryDeepArchiveDryRunDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_deep_archive_dry_run", "旧项目", "用户以前参与过旧项目。", false)
+	now := fixedRetentionNow()
+	setFactArchivedAt(t, db.SQLDB(), fact.ID, now.AddDate(0, 0, -181))
+
+	repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+	result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DeepArchiveAfterDays: 180, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry-run deep archive retention: %v", err)
+	}
+	if result.EvaluatedFacts != 1 || result.ExpiredFacts != 0 || result.ArchivedFacts != 0 || result.DeepArchivedFacts != 1 || result.SearchDocumentsSynced != 0 || result.MirrorUpdatesEnqueued != 0 {
+		t.Fatalf("dry-run deep archive result = %#v", result)
+	}
+	requireFactRetentionState(t, db.SQLDB(), fact.ID, string(core.ValidityValid), string(core.LifecycleArchived), now.AddDate(0, 0, -181))
+	requireSearchDocumentLifecycle(t, db.SQLDB(), fact.ID, string(core.LifecycleArchived), string(core.SearchTierCold))
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 0)
+}
+
+func TestRetentionRepositoryDeepArchiveSkipsPinnedCoreAndCommitmentFacts(t *testing.T) {
+	tests := []struct {
+		name     string
+		pinned   bool
+		factType core.FactType
+	}{
+		{name: "pinned", pinned: true, factType: core.FactTypeStablePreference},
+		{name: "core_identity", factType: core.FactTypeCoreIdentity},
+		{name: "commitment", factType: core.FactTypeCommitment},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := openMigratedDB(t, ctx)
+			defer db.Close()
+			seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+			fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_deep_archive_"+tt.name, "Long", "用户偏好被称呼为 Long。", tt.pinned)
+			now := fixedRetentionNow()
+			setFactType(t, db.SQLDB(), fact.ID, string(tt.factType))
+			setFactArchivedAt(t, db.SQLDB(), fact.ID, now.AddDate(0, 0, -181))
+
+			repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+			result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DeepArchiveAfterDays: 180})
+			if err != nil {
+				t.Fatalf("run deep archive retention: %v", err)
+			}
+			if result.DeepArchivedFacts != 0 || result.SearchDocumentsSynced != 0 || result.MirrorUpdatesEnqueued != 0 {
+				t.Fatalf("deep archive protected result = %#v", result)
+			}
+			requireFactRetentionState(t, db.SQLDB(), fact.ID, string(core.ValidityValid), string(core.LifecycleArchived), now.AddDate(0, 0, -181))
+			requireSearchDocumentLifecycle(t, db.SQLDB(), fact.ID, string(core.LifecycleArchived), string(core.SearchTierCold))
+		})
+	}
+}
+
+func TestRetentionRepositoryDeepArchiveEnqueuesMirrorUpsertForMappedFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_deep_archive_mapped", "旧项目", "用户以前参与过旧项目。", false)
+	now := fixedRetentionNow()
+	setFactArchivedAt(t, db.SQLDB(), fact.ID, now.AddDate(0, 0, -181))
+	insertIndexMap(t, db.SQLDB(), core.NodeTypeFact, fact.ID)
+
+	repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+	result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DeepArchiveAfterDays: 180})
+	if err != nil {
+		t.Fatalf("run deep archive retention: %v", err)
+	}
+	if result.EvaluatedFacts != 1 || result.ExpiredFacts != 0 || result.ArchivedFacts != 0 || result.DeepArchivedFacts != 1 || result.MirrorUpdatesEnqueued != 1 {
+		t.Fatalf("deep archive mapped result = %#v", result)
+	}
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 1)
+}
+
 func setFactValidTo(t *testing.T, db *sql.DB, factID string, validTo time.Time) {
 	t.Helper()
 
@@ -162,6 +266,21 @@ UPDATE facts
 SET valid_to = ?
 WHERE id = ?`, validTo.UTC().Format(time.RFC3339Nano), factID); err != nil {
 		t.Fatalf("set fact valid_to: %v", err)
+	}
+}
+
+func setFactArchivedAt(t *testing.T, db *sql.DB, factID string, archivedAt time.Time) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE facts
+SET lifecycle_status = 'archived',
+    updated_at = ?
+WHERE id = ?`, archivedAt.UTC().Format(time.RFC3339Nano), factID); err != nil {
+		t.Fatalf("set fact archived_at proxy: %v", err)
+	}
+	if err := memsqlite.NewSearchRepository(db).UpsertFactDocument(context.Background(), "default", factID); err != nil {
+		t.Fatalf("refresh fact search document: %v", err)
 	}
 }
 

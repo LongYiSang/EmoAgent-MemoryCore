@@ -26,6 +26,8 @@ type Service interface {
 	Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error)
 	RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error)
 	RunRetention(ctx context.Context, req RunRetentionRequest) (*RunRetentionResult, error)
+	RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error)
+	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
 }
 
@@ -39,6 +41,7 @@ type service struct {
 	search    *memsqlite.SearchRepository
 	retrieve  *memsqlite.RetrievalRepository
 	retention *memsqlite.RetentionRepository
+	compress  *memsqlite.CompressionRepository
 	forget    *memsqlite.ForgetRepository
 	persona   string
 	now       func() time.Time
@@ -75,6 +78,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		search:    memsqlite.NewSearchRepository(sqlDB),
 		retrieve:  memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
 		retention: memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
+		compress:  memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
 		forget:    memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
 		persona:   defaultString(opts.PersonaID, defaultPersonaID),
 		now:       now,
@@ -350,20 +354,76 @@ func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchD
 func (s *service) RunRetention(ctx context.Context, req RunRetentionRequest) (*RunRetentionResult, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	result, err := s.retention.Run(ctx, memsqlite.RetentionRequest{
-		PersonaID: personaID,
-		Now:       req.Now,
-		DryRun:    req.DryRun,
+		PersonaID:            personaID,
+		Now:                  req.Now,
+		DryRun:               req.DryRun,
+		DeepArchiveAfterDays: req.DeepArchiveAfterDays,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &RunRetentionResult{
-		EvaluatedFacts:        result.EvaluatedFacts,
-		ExpiredFacts:          result.ExpiredFacts,
-		ArchivedFacts:         result.ArchivedFacts,
-		SearchDocumentsSynced: result.SearchDocumentsSynced,
-		MirrorUpdatesEnqueued: result.MirrorUpdatesEnqueued,
-	}, nil
+	return retentionResultFromStore(result), nil
+}
+
+func (s *service) RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	jobs := normalizeRetentionJobs(req.Jobs)
+	if err := validateRetentionJobs(jobs, req.DeepArchiveAfterDays); err != nil {
+		return nil, err
+	}
+
+	result := &RunRetentionJobsResult{
+		Jobs: make([]RetentionJobResult, 0, len(jobs)),
+	}
+	for _, job := range jobs {
+		retention, err := s.runRetentionJob(ctx, personaID, req, job)
+		if err != nil {
+			return nil, err
+		}
+		result.Jobs = append(result.Jobs, RetentionJobResult{Name: job})
+		addRetentionResult(&result.Retention, *retention)
+	}
+	return result, nil
+}
+
+func (s *service) runRetentionJob(ctx context.Context, personaID string, req RunRetentionJobsRequest, job RetentionJobName) (*RunRetentionResult, error) {
+	if job == RetentionJobMonthlyDeepArchive {
+		result, err := s.retention.Run(ctx, memsqlite.RetentionRequest{
+			PersonaID:            personaID,
+			Now:                  req.Now,
+			DryRun:               req.DryRun,
+			DeepArchiveAfterDays: req.DeepArchiveAfterDays,
+			SkipExpiredFacts:     true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return retentionResultFromStore(result), nil
+	}
+	return s.RunRetention(ctx, RunRetentionRequest{
+		PersonaID: personaID,
+		Now:       req.Now,
+		DryRun:    req.DryRun,
+	})
+}
+
+func (s *service) ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error) {
+	personaID := defaultString(req.PersonaID, s.persona)
+	result, err := s.compress.Apply(ctx, memsqlite.CompressionRequest{
+		PersonaID:     personaID,
+		SourceFactIDs: req.SourceFactIDs,
+		Narrative:     narrativeDraftToStore(req.Narrative),
+		Insights:      insightDraftsToStore(req.Insights),
+		Now:           req.Now,
+		DryRun:        req.DryRun,
+	})
+	if errors.Is(err, memsqlite.ErrInvalidCompressionRequest) {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return compressionResultFromStore(result), nil
 }
 
 func (s *service) Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error) {
@@ -401,6 +461,48 @@ WHERE persona_id = ? AND id = ?`, personaID, sessionID).Scan(&id)
 		return fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
 	}
 	return err
+}
+
+func normalizeRetentionJobs(jobs []RetentionJobName) []RetentionJobName {
+	if len(jobs) == 0 {
+		return []RetentionJobName{RetentionJobDailyTTLExpiry}
+	}
+	return append([]RetentionJobName(nil), jobs...)
+}
+
+func validateRetentionJobs(jobs []RetentionJobName, deepArchiveAfterDays int) error {
+	for _, job := range jobs {
+		switch job {
+		case RetentionJobDailyTTLExpiry:
+		case RetentionJobMonthlyDeepArchive:
+			if deepArchiveAfterDays <= 0 {
+				return fmt.Errorf("%w: monthly_deep_archive requires DeepArchiveAfterDays > 0", ErrInvalidRequest)
+			}
+		default:
+			return fmt.Errorf("%w: unknown retention job %q", ErrInvalidRequest, job)
+		}
+	}
+	return nil
+}
+
+func addRetentionResult(total *RunRetentionResult, next RunRetentionResult) {
+	total.EvaluatedFacts += next.EvaluatedFacts
+	total.ExpiredFacts += next.ExpiredFacts
+	total.ArchivedFacts += next.ArchivedFacts
+	total.DeepArchivedFacts += next.DeepArchivedFacts
+	total.SearchDocumentsSynced += next.SearchDocumentsSynced
+	total.MirrorUpdatesEnqueued += next.MirrorUpdatesEnqueued
+}
+
+func retentionResultFromStore(result memsqlite.RetentionResult) *RunRetentionResult {
+	return &RunRetentionResult{
+		EvaluatedFacts:        result.EvaluatedFacts,
+		ExpiredFacts:          result.ExpiredFacts,
+		ArchivedFacts:         result.ArchivedFacts,
+		DeepArchivedFacts:     result.DeepArchivedFacts,
+		SearchDocumentsSynced: result.SearchDocumentsSynced,
+		MirrorUpdatesEnqueued: result.MirrorUpdatesEnqueued,
+	}
 }
 
 func (s *service) ensurePersona(ctx context.Context, personaID string) error {
@@ -596,6 +698,57 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		})
 	}
 	return result
+}
+
+func narrativeDraftToStore(draft *NarrativeDraft) *memsqlite.NarrativeDraft {
+	if draft == nil {
+		return nil
+	}
+	return &memsqlite.NarrativeDraft{
+		ID:               draft.ID,
+		Scope:            draft.Scope,
+		ScopeRef:         draft.ScopeRef,
+		Summary:          draft.Summary,
+		EmotionalTone:    draft.EmotionalTone,
+		ValenceAvg:       draft.ValenceAvg,
+		ArousalAvg:       draft.ArousalAvg,
+		Importance:       draft.Importance,
+		ValidFrom:        draft.ValidFrom,
+		ValidTo:          draft.ValidTo,
+		SensitivityLevel: draft.SensitivityLevel,
+	}
+}
+
+func insightDraftsToStore(drafts []InsightDraft) []memsqlite.InsightDraft {
+	if len(drafts) == 0 {
+		return nil
+	}
+	result := make([]memsqlite.InsightDraft, 0, len(drafts))
+	for _, draft := range drafts {
+		result = append(result, memsqlite.InsightDraft{
+			ID:               draft.ID,
+			InsightType:      draft.InsightType,
+			Content:          draft.Content,
+			Confidence:       draft.Confidence,
+			Importance:       draft.Importance,
+			Valence:          draft.Valence,
+			Arousal:          draft.Arousal,
+			SensitivityLevel: draft.SensitivityLevel,
+		})
+	}
+	return result
+}
+
+func compressionResultFromStore(result memsqlite.CompressionResult) *ApplyCompressionResult {
+	return &ApplyCompressionResult{
+		NarrativeID:             result.NarrativeID,
+		InsightIDs:              append([]string(nil), result.InsightIDs...),
+		SourceFactsConsolidated: result.SourceFactsConsolidated,
+		DerivedLinkIDs:          append([]string(nil), result.DerivedLinkIDs...),
+		SearchDocumentsSynced:   result.SearchDocumentsSynced,
+		MirrorUpdatesEnqueued:   result.MirrorUpdatesEnqueued,
+		DryRun:                  result.DryRun,
+	}
 }
 
 func forgetResultFromStore(result memsqlite.ForgetResult) *ForgetResult {

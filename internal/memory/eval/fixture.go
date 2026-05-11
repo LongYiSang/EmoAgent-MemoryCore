@@ -77,6 +77,7 @@ type Step struct {
 	Retrieve      *RetrieveStep       `yaml:"retrieve"`
 	Forget        *ForgetStep         `yaml:"forget"`
 	RetentionRun  *RetentionRunStep   `yaml:"retention_run"`
+	Compression   *CompressionStep    `yaml:"compression_apply"`
 	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
@@ -154,9 +155,44 @@ type ForgetTarget struct {
 }
 
 type RetentionRunStep struct {
-	PersonaID string `yaml:"persona_id"`
-	Now       string `yaml:"now"`
-	DryRun    bool   `yaml:"dry_run"`
+	PersonaID            string `yaml:"persona_id"`
+	Now                  string `yaml:"now"`
+	DryRun               bool   `yaml:"dry_run"`
+	DeepArchiveAfterDays int    `yaml:"deep_archive_after_days"`
+}
+
+type CompressionStep struct {
+	PersonaID     string                     `yaml:"persona_id"`
+	SourceFactIDs []string                   `yaml:"source_fact_ids"`
+	Narrative     *CompressionNarrativeDraft `yaml:"narrative"`
+	Insights      []CompressionInsightDraft  `yaml:"insights"`
+	Now           string                     `yaml:"now"`
+	DryRun        bool                       `yaml:"dry_run"`
+}
+
+type CompressionNarrativeDraft struct {
+	ID               string   `yaml:"id"`
+	Scope            string   `yaml:"scope"`
+	ScopeRef         string   `yaml:"scope_ref"`
+	Summary          string   `yaml:"summary"`
+	EmotionalTone    string   `yaml:"emotional_tone"`
+	ValenceAvg       *float64 `yaml:"valence_avg"`
+	ArousalAvg       *float64 `yaml:"arousal_avg"`
+	Importance       float64  `yaml:"importance"`
+	ValidFrom        string   `yaml:"valid_from"`
+	ValidTo          string   `yaml:"valid_to"`
+	SensitivityLevel string   `yaml:"sensitivity_level"`
+}
+
+type CompressionInsightDraft struct {
+	ID               string  `yaml:"id"`
+	InsightType      string  `yaml:"insight_type"`
+	Content          string  `yaml:"content"`
+	Confidence       float64 `yaml:"confidence"`
+	Importance       float64 `yaml:"importance"`
+	Valence          float64 `yaml:"valence"`
+	Arousal          float64 `yaml:"arousal"`
+	SensitivityLevel string  `yaml:"sensitivity_level"`
 }
 
 type RebuildSearchStep struct {
@@ -169,6 +205,7 @@ type FactOverride struct {
 	ValidityStatus   string `yaml:"validity_status"`
 	LifecycleStatus  string `yaml:"lifecycle_status"`
 	SensitivityLevel string `yaml:"sensitivity_level"`
+	UpdatedAt        string `yaml:"updated_at"`
 	Searchable       *bool  `yaml:"searchable"`
 	Pinned           *bool  `yaml:"pinned"`
 }
@@ -188,6 +225,7 @@ type Assertion struct {
 	UsageGuidanceContains string   `yaml:"usage_guidance_contains"`
 	Action                string   `yaml:"action"`
 	Status                string   `yaml:"status"`
+	Content               string   `yaml:"content"`
 	FactID                string   `yaml:"fact_id"`
 	Predicate             string   `yaml:"predicate"`
 	Column                string   `yaml:"column"`
@@ -280,6 +318,10 @@ func (f *Fixture) Validate() error {
 			if step.RetentionRun == nil {
 				return fmt.Errorf("case %s step %s missing retention_run body", caseID, step.ID)
 			}
+		case "compression_apply":
+			if step.Compression == nil {
+				return fmt.Errorf("case %s step %s missing compression_apply body", caseID, step.ID)
+			}
 		case "rebuild_search":
 			if step.RebuildSearch == nil {
 				return fmt.Errorf("case %s step %s missing rebuild_search body", caseID, step.ID)
@@ -304,6 +346,9 @@ func knownAssertionType(value string) bool {
 		"fact_count",
 		"fact_column",
 		"link_exists",
+		"narrative_exists",
+		"insight_exists",
+		"derived_link_count",
 		"search_absent",
 		"deletion_event_safe",
 		"episode_tombstone_exists":

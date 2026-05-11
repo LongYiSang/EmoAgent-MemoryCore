@@ -1,0 +1,104 @@
+case_id: L003_compression_writes_narrative_insight
+description: Compression apply writes generated narrative and insight rows with DERIVED_FROM provenance.
+seed:
+  personas:
+    - id: default
+      display_name: Default
+  sessions:
+    - id: s1
+      persona_id: default
+      channel: api
+      started_at: "2026-05-12T09:00:00Z"
+  entities:
+    - id: ent_user
+      persona_id: default
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_stress
+      persona_id: default
+      session_id: s1
+      role: user
+      content: 我压力大的时候希望你先理解我。
+      occurred_at: "2026-05-12T09:10:00Z"
+      source_type: chat
+    - id: ep_advice
+      persona_id: default
+      session_id: s1
+      role: user
+      content: 压力大时不要直接给建议。
+      occurred_at: "2026-05-12T09:20:00Z"
+      source_type: chat
+steps:
+  - id: fact_one
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: ent_user
+        predicate: likes
+        object_literal: 先理解
+        content_summary: 用户压力大时希望先被理解。
+        fact_type: stable_preference
+        confidence: explicit
+        importance: 0.7
+        source_episode_ids:
+          - ep_stress
+  - id: fact_two
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: ent_user
+        predicate: likes
+        object_literal: 不要直接建议
+        content_summary: 用户压力大时不喜欢直接给建议。
+        fact_type: stable_preference
+        confidence: explicit
+        importance: 0.7
+        source_episode_ids:
+          - ep_advice
+  - id: compress
+    action: compression_apply
+    compression_apply:
+      now: "2026-05-12T10:30:00Z"
+      source_fact_ids:
+        - $fact_one.fact_id
+        - $fact_two.fact_id
+      narrative:
+        id: narrative_fixture
+        scope: topic
+        scope_ref: stress_support
+        summary: 用户在压力场景中更需要先被情绪承接。
+        emotional_tone: stressed
+        importance: 0.72
+        sensitivity_level: normal
+      insights:
+        - id: insight_fixture
+          insight_type: coping_strategy
+          content: 压力场景中先共情，再提供建议。
+          confidence: 0.82
+          importance: 0.76
+          valence: 0.1
+          arousal: 0.3
+          sensitivity_level: normal
+assertions:
+  - type: fact_column
+    name: first source consolidated
+    fact_id: $fact_one.fact_id
+    column: lifecycle_status
+    equals: consolidated
+  - type: fact_column
+    name: second source consolidated
+    fact_id: $fact_two.fact_id
+    column: lifecycle_status
+    equals: consolidated
+  - type: narrative_exists
+    name: narrative row written
+    node_id: narrative_fixture
+    summary: 用户在压力场景中更需要先被情绪承接。
+  - type: insight_exists
+    name: insight row written
+    node_id: insight_fixture
+    content: 压力场景中先共情，再提供建议。
+  - type: derived_link_count
+    name: generated nodes link to every source fact
+    equals: "4"
