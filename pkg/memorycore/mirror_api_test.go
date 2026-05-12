@@ -221,6 +221,7 @@ func TestServiceRebuildMirrorClearsNamespaceAndReindexesEligibleNodes(t *testing
 	if len(adapter.cleared) != 1 || adapter.cleared[0] != "default" {
 		t.Fatalf("cleared namespaces = %#v, want default", adapter.cleared)
 	}
+	requireMirrorPersonaState(t, db, "default", "ready")
 	requireMirrorIndexForFact(t, db, fact.ID, "indexed")
 
 	updateFactColumn(t, db, fact.ID, "visibility_status", memorycore.VisibilityPurged)
@@ -258,7 +259,27 @@ func TestServiceRebuildMirrorRecordsFailedExistingNode(t *testing.T) {
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
+	requireMirrorPersonaState(t, db, "default", "degraded")
 	requireMirrorIndexForFactStatusOnly(t, db, fact.ID, "failed")
+}
+
+func TestServiceRebuildMirrorMarksPersonaDegradedWhenClearFails(t *testing.T) {
+	ctx := context.Background()
+	adapter := &rebuildPublicMirrorAdapter{clearErr: errors.New("sidecar unavailable")}
+	svc, dbPath := openMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	if _, err := svc.StartSession(ctx, memorycore.StartSessionRequest{}); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	if _, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err == nil {
+		t.Fatalf("rebuild err = nil, want clear namespace failure")
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireMirrorPersonaState(t, db, "default", "degraded")
 }
 
 func prioritizeMirrorQueueRow(t *testing.T, db *sql.DB, nodeType string, nodeID string, operation string) {
@@ -300,13 +321,14 @@ type failingPublicMirrorAdapter struct {
 type rebuildPublicMirrorAdapter struct {
 	nodeMirrorID int64
 	failNodeID   string
+	clearErr     error
 	cleared      []string
 	nextOffset   int64
 }
 
 func (f *rebuildPublicMirrorAdapter) ClearNamespace(ctx context.Context, personaID string) error {
 	f.cleared = append(f.cleared, personaID)
-	return nil
+	return f.clearErr
 }
 
 func (f *rebuildPublicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
@@ -403,6 +425,21 @@ WHERE persona_id = 'default' AND node_type = 'fact' AND node_id = ?`, factID).Sc
 	}
 	if status != wantStatus {
 		t.Fatalf("mirror index status = %q, want %q", status, wantStatus)
+	}
+}
+
+func requireMirrorPersonaState(t *testing.T, db *sql.DB, personaID string, wantState string) {
+	t.Helper()
+
+	var state string
+	if err := db.QueryRow(`
+SELECT state
+FROM mirror_persona_state
+WHERE persona_id = ?`, personaID).Scan(&state); err != nil {
+		t.Fatalf("query mirror persona state: %v", err)
+	}
+	if state != wantState {
+		t.Fatalf("mirror persona state = %q, want %q", state, wantState)
 	}
 }
 

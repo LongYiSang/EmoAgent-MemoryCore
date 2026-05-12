@@ -152,6 +152,11 @@ WHERE persona_id = ? AND id = ?`, req.PersonaID, req.Target.NodeID)
 	if err != nil {
 		return ForgetResult{}, err
 	}
+	edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID, nil)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.MirrorDeletesEnqueued += edgeDeletes
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
 
@@ -200,6 +205,11 @@ WHERE persona_id = ?
 	if err != nil {
 		return ForgetResult{}, err
 	}
+	edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID, nil)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.MirrorDeletesEnqueued += edgeDeletes
 	counts.LinksScrubbed = rowsAffected(linkResult)
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
@@ -254,7 +264,13 @@ WHERE persona_id = ? AND id = ?`,
 	if err != nil {
 		return ForgetResult{}, err
 	}
-	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	edgeDeleteSeen := map[string]struct{}{}
+	edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID, edgeDeleteSeen)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.MirrorDeletesEnqueued += edgeDeletes
+	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID, edgeDeleteSeen)
 	if err != nil {
 		return ForgetResult{}, err
 	}
@@ -314,6 +330,11 @@ WHERE persona_id = ?
 	if err != nil {
 		return ForgetResult{}, err
 	}
+	edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID, nil)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.MirrorDeletesEnqueued += edgeDeletes
 	counts.LinksScrubbed = rowsAffected(linkResult)
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
@@ -384,7 +405,13 @@ WHERE persona_id = ?
 	if err != nil {
 		return ForgetResult{}, err
 	}
-	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	edgeDeleteSeen := map[string]struct{}{}
+	edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, req.PersonaID, req.Target.NodeType, req.Target.NodeID, edgeDeleteSeen)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.MirrorDeletesEnqueued += edgeDeletes
+	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID, edgeDeleteSeen)
 	if err != nil {
 		return ForgetResult{}, err
 	}
@@ -396,7 +423,7 @@ WHERE persona_id = ?
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
 
-func (r *ForgetRepository) removeBlockedFactSearchAndMirrorForEpisodeTx(ctx context.Context, tx *sql.Tx, personaID string, episodeID string) (forgetCounts, error) {
+func (r *ForgetRepository) removeBlockedFactSearchAndMirrorForEpisodeTx(ctx context.Context, tx *sql.Tx, personaID string, episodeID string, edgeDeleteSeen map[string]struct{}) (forgetCounts, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT l.from_node_id
 FROM memory_links l
@@ -453,9 +480,13 @@ WHERE l.persona_id = ?
 		if err != nil {
 			return forgetCounts{}, err
 		}
+		edgeDeletes, err := r.enqueueMirrorEdgeDeletesForNodeTx(ctx, tx, personaID, core.NodeTypeFact, factID, edgeDeleteSeen)
+		if err != nil {
+			return forgetCounts{}, err
+		}
 		counts.SearchDocumentsDeleted += searchRows
 		counts.FTSRowsDeleted += ftsRows
-		counts.MirrorDeletesEnqueued += mirrorDeletes
+		counts.MirrorDeletesEnqueued += mirrorDeletes + edgeDeletes
 	}
 	return counts, nil
 }
@@ -561,6 +592,66 @@ VALUES (?, ?, ?, ?, 'delete_node')`,
 		return 0, err
 	}
 	return 1, nil
+}
+
+func (r *ForgetRepository) enqueueMirrorEdgeDeletesForNodeTx(ctx context.Context, tx *sql.Tx, personaID string, nodeType core.NodeType, nodeID string, seen map[string]struct{}) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id
+FROM memory_links
+WHERE persona_id = ?
+  AND (
+      (from_node_type = ? AND from_node_id = ?)
+      OR (to_node_type = ? AND to_node_id = ?)
+  )
+ORDER BY id`,
+		personaID,
+		string(nodeType),
+		nodeID,
+		string(nodeType),
+		nodeID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var linkIDs []string
+	for rows.Next() {
+		var linkID string
+		if err := rows.Scan(&linkID); err != nil {
+			return 0, err
+		}
+		linkIDs = append(linkIDs, linkID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return r.enqueueMirrorEdgeDeletesTx(ctx, tx, personaID, linkIDs, seen)
+}
+
+func (r *ForgetRepository) enqueueMirrorEdgeDeletesTx(ctx context.Context, tx *sql.Tx, personaID string, linkIDs []string, seen map[string]struct{}) (int64, error) {
+	if seen == nil {
+		seen = map[string]struct{}{}
+	}
+	var enqueued int64
+	for _, linkID := range linkIDs {
+		if _, ok := seen[linkID]; ok {
+			continue
+		}
+		seen[linkID] = struct{}{}
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
+VALUES (?, ?, 'memory_link', ?, 'delete_edge')`,
+			r.newID(),
+			personaID,
+			linkID,
+		)
+		if err != nil {
+			return 0, err
+		}
+		enqueued++
+	}
+	return enqueued, nil
 }
 
 func validateSQLiteForgetRequest(req ForgetRequest) error {

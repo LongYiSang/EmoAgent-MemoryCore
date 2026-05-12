@@ -37,6 +37,10 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertEpisodeTombstoneExists(ctx, assertion)
 	case "mirror_index_status":
 		return s.assertMirrorIndexStatus(ctx, assertion)
+	case "queue_count":
+		return s.assertQueueCount(ctx, assertion)
+	case "queue_status":
+		return s.assertQueueStatus(ctx, assertion)
 	default:
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "known assertion type", Actual: assertion.Type}
 	}
@@ -296,6 +300,66 @@ WHERE persona_id = ?
 	}
 	if actual != assertion.Equals {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "mirror_index_status=" + assertion.Equals, Actual: "mirror_index_status=" + actual}
+	}
+	return nil
+}
+
+func (s *runState) assertQueueCount(ctx context.Context, assertion Assertion) error {
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	query := `
+SELECT COUNT(*)
+FROM index_sync_queue
+WHERE persona_id = ?
+  AND node_type = ?
+  AND node_id = ?`
+	args := []any{s.persona, defaultString(assertion.NodeType, "fact"), nodeID}
+	if assertion.Action != "" {
+		query += ` AND operation = ?`
+		args = append(args, assertion.Action)
+	}
+	if assertion.Status != "" {
+		query += ` AND status = ?`
+		args = append(args, assertion.Status)
+	}
+	var got int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil {
+		return fmt.Errorf("case %s assertion %s queue count: %w", s.caseID, assertion.Type, err)
+	}
+	actual := fmt.Sprintf("%d", got)
+	if actual != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "queue_count=" + assertion.Equals, Actual: "queue_count=" + actual}
+	}
+	return nil
+}
+
+func (s *runState) assertQueueStatus(ctx context.Context, assertion Assertion) error {
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	query := `
+SELECT status
+FROM index_sync_queue
+WHERE persona_id = ?
+  AND node_type = ?
+  AND node_id = ?`
+	args := []any{s.persona, defaultString(assertion.NodeType, "fact"), nodeID}
+	if assertion.Action != "" {
+		query += ` AND operation = ?`
+		args = append(args, assertion.Action)
+	}
+	query += `
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1`
+	actual, err := queryScalarString(ctx, s.db, query, args...)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s queue status: %w", s.caseID, assertion.Type, err)
+	}
+	if actual != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "queue_status=" + assertion.Status, Actual: "queue_status=" + actual}
 	}
 	return nil
 }

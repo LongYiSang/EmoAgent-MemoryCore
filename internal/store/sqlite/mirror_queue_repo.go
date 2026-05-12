@@ -28,6 +28,11 @@ const (
 	MirrorQueueOperationRebuildPersona MirrorQueueOperation = "rebuild_persona"
 )
 
+const (
+	mirrorQueueLeaseDuration       = 15 * time.Minute
+	mirrorQueueLeaseExpiredMessage = "mirror queue lease expired"
+)
+
 type MirrorQueueRow struct {
 	ID           string
 	PersonaID    string
@@ -72,6 +77,11 @@ func (r *MirrorQueueRepository) claim(ctx context.Context, personaID string, lim
 		rollbackUnlessCommitted(tx)
 	}()
 
+	now := time.Now().UTC()
+	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID); err != nil {
+		return nil, err
+	}
+
 	query := `
 SELECT id, persona_id, node_type, node_id, operation, priority, COALESCE(payload_json, ''),
        status, attempts, created_at, COALESCE(updated_at, ''), COALESCE(error_message, '')
@@ -107,7 +117,7 @@ LIMIT ?`
 		return nil, err
 	}
 
-	now := formatTime(time.Now().UTC())
+	nowText := formatTime(now)
 	for i := range claimed {
 		result, err := tx.ExecContext(ctx, `
 UPDATE index_sync_queue
@@ -117,7 +127,7 @@ SET status = ?,
 WHERE id = ?
   AND status IN (?, ?)`,
 			string(MirrorQueueStatusProcessing),
-			now,
+			nowText,
 			claimed[i].ID,
 			string(MirrorQueueStatusPending),
 			string(MirrorQueueStatusFailed),
@@ -133,7 +143,7 @@ WHERE id = ?
 			return nil, fmt.Errorf("claim queue row %s: %w", claimed[i].ID, sql.ErrNoRows)
 		}
 		claimed[i].Status = MirrorQueueStatusProcessing
-		claimed[i].UpdatedAt = parseTime(now)
+		claimed[i].UpdatedAt = parseTime(nowText)
 		claimed[i].ErrorMessage = ""
 	}
 
@@ -142,6 +152,30 @@ WHERE id = ?
 	}
 	tx = nil
 	return claimed, nil
+}
+
+func expireStaleMirrorQueueLeases(ctx context.Context, tx *sql.Tx, now time.Time, personaID string) error {
+	query := `
+UPDATE index_sync_queue
+SET status = ?,
+    attempts = attempts + 1,
+    error_message = ?,
+    updated_at = ?
+WHERE status = ?
+  AND datetime(replace(replace(COALESCE(updated_at, created_at), 'T', ' '), 'Z', '')) < datetime(replace(replace(?, 'T', ' '), 'Z', ''))`
+	args := []any{
+		string(MirrorQueueStatusFailed),
+		mirrorQueueLeaseExpiredMessage,
+		formatTime(now),
+		string(MirrorQueueStatusProcessing),
+		formatTime(now.Add(-mirrorQueueLeaseDuration)),
+	}
+	if personaID != "" {
+		query += ` AND persona_id = ?`
+		args = append(args, personaID)
+	}
+	_, err := tx.ExecContext(ctx, query, args...)
+	return err
 }
 
 func (r *MirrorQueueRepository) Complete(ctx context.Context, id string) error {

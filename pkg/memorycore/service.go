@@ -50,6 +50,7 @@ type service struct {
 	mirrorPayload *memsqlite.MirrorPayloadRepository
 	mirrorIndex   *memsqlite.MirrorIndexRepository
 	mirrorMap     *memsqlite.MirrorCandidateRepository
+	mirrorState   *memsqlite.MirrorPersonaStateRepository
 	persona       string
 	now           func() time.Time
 }
@@ -92,6 +93,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		mirrorPayload: memsqlite.NewMirrorPayloadRepository(sqlDB),
 		mirrorIndex:   memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
 		mirrorMap:     memsqlite.NewMirrorCandidateRepository(sqlDB),
+		mirrorState:   memsqlite.NewMirrorPersonaStateRepository(sqlDB),
 		persona:       defaultString(opts.PersonaID, defaultPersonaID),
 		now:           now,
 	}, nil
@@ -363,6 +365,13 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 
 func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, error) {
 	if !policy.UseMirror {
+		return nil, nil
+	}
+	ready, err := s.mirrorState.IsReady(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
 		return nil, nil
 	}
 	candidateAdapter, ok := s.mirrorAdapter.(MirrorCandidateAdapter)

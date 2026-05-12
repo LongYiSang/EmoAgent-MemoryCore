@@ -1,0 +1,69 @@
+case_id: M002_delete_retry_keeps_sqlite_authority
+description: mirror delete 失败保持 retryable failed queue，stale mirror candidate 仍被 SQLite authority 过滤。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢桂花拿铁。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 桂花拿铁
+        content_summary: 用户喜欢桂花拿铁。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: sync_upsert
+    action: mirror_sync
+    mirror_sync:
+      persona_id: default
+      limit: 10
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: sync_delete_failed
+    action: mirror_sync
+    mirror_stub:
+      unavailable: true
+    mirror_sync:
+      persona_id: default
+      limit: 10
+  - id: retrieve_stale_candidate
+    action: retrieve
+    mirror_stub:
+      candidate_node_id: $fact.fact_id
+      candidate_score: 0.95
+    retrieve:
+      session_id: s1
+      query_text: no-sqlite-match
+      policy:
+        use_mirror: true
+assertions:
+  - type: queue_count
+    node_id: $fact.fact_id
+    node_type: fact
+    action: delete_node
+    status: failed
+    equals: "1"
+  - type: memory_not_contains
+    step: retrieve_stale_candidate
+    node_id: $fact.fact_id

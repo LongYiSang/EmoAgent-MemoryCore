@@ -487,6 +487,125 @@ WHERE persona_id = 'default'
 	requireSafeDeletionEvent(t, db.SQLDB(), result.DeletionEventID, memsqlite.ForgetLevelPurge, "ep_visible", "4111", secretRef, secretContent)
 }
 
+func TestForgetRepositoryEnqueuesMirrorDeleteEdgesForFactTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level string
+	}{
+		{name: "soft forget", level: memsqlite.ForgetLevelSoft},
+		{name: "hard forget", level: memsqlite.ForgetLevelHard},
+		{name: "purge", level: memsqlite.ForgetLevelPurge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := openMigratedDB(t, ctx)
+			defer db.Close()
+			seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+			fact := insertForgetFact(t, ctx, db.SQLDB(), "fact_edge_"+strings.ReplaceAll(tc.level, "_", ""), "咖啡", "用户喜欢咖啡。", false)
+			insertIndexMap(t, db.SQLDB(), core.NodeTypeFact, fact.ID)
+			linkIDs := linkIDsTouchingNode(t, ctx, db.SQLDB(), core.NodeTypeFact, fact.ID)
+			if len(linkIDs) == 0 {
+				t.Fatal("expected links touching forget target fact")
+			}
+
+			repo := memsqlite.NewForgetRepository(db.SQLDB(), fixedForgetIDs(), fixedForgetNow)
+			result, err := repo.Forget(ctx, memsqlite.ForgetRequest{
+				PersonaID:  "default",
+				Actor:      memsqlite.ForgetActorUser,
+				ReasonCode: memsqlite.ForgetReasonUserRequested,
+				Level:      tc.level,
+				Target: memsqlite.ForgetTarget{
+					ScopeMode: memsqlite.ForgetScopeExactNode,
+					NodeType:  core.NodeTypeFact,
+					NodeID:    fact.ID,
+				},
+			})
+			if err != nil {
+				t.Fatalf("forget fact: %v", err)
+			}
+
+			wantDeletes := int64(1 + len(linkIDs))
+			if result.MirrorDeletesEnqueued != wantDeletes {
+				t.Fatalf("mirror deletes enqueued = %d, want %d", result.MirrorDeletesEnqueued, wantDeletes)
+			}
+			requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+			for _, linkID := range linkIDs {
+				requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "delete_edge", 1)
+			}
+		})
+	}
+}
+
+func TestForgetRepositoryEnqueuesMirrorDeleteEdgesForEpisodeTargetsAndDependentFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level string
+	}{
+		{name: "source redact", level: memsqlite.ForgetLevelSourceRedact},
+		{name: "purge", level: memsqlite.ForgetLevelPurge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := openMigratedDB(t, ctx)
+			defer db.Close()
+			seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+			fact := insertForgetFact(t, ctx, db.SQLDB(), "fact_dep_"+strings.ReplaceAll(tc.level, "_", ""), "咖啡", "用户喜欢咖啡。", false)
+			search := memsqlite.NewSearchRepository(db.SQLDB())
+			if err := search.UpsertDocument(ctx, core.SearchDocument{
+				ID:               "search_ep_visible_" + strings.ReplaceAll(tc.level, "_", ""),
+				PersonaID:        "default",
+				NodeType:         core.NodeTypeEpisode,
+				NodeID:           "ep_visible",
+				SearchText:       "我喜欢咖啡。",
+				SearchTier:       core.SearchTierHot,
+				VisibilityStatus: core.VisibilityVisible,
+				SensitivityLevel: core.SensitivityNormal,
+				LifecycleStatus:  core.LifecycleActive,
+				Searchable:       true,
+			}); err != nil {
+				t.Fatalf("upsert episode search document: %v", err)
+			}
+			insertIndexMapWithTriviumID(t, db.SQLDB(), core.NodeTypeEpisode, "ep_visible", 2001)
+			insertIndexMapWithTriviumID(t, db.SQLDB(), core.NodeTypeFact, fact.ID, 2002)
+
+			episodeLinks := linkIDsTouchingNode(t, ctx, db.SQLDB(), core.NodeTypeEpisode, "ep_visible")
+			factLinks := linkIDsTouchingNode(t, ctx, db.SQLDB(), core.NodeTypeFact, fact.ID)
+			linkIDs := uniqueStrings(append(episodeLinks, factLinks...))
+			if len(linkIDs) == 0 {
+				t.Fatal("expected links touching episode or dependent fact")
+			}
+
+			repo := memsqlite.NewForgetRepository(db.SQLDB(), fixedForgetIDs(), fixedForgetNow)
+			result, err := repo.Forget(ctx, memsqlite.ForgetRequest{
+				PersonaID:  "default",
+				Actor:      memsqlite.ForgetActorUser,
+				ReasonCode: memsqlite.ForgetReasonUserRequested,
+				Level:      tc.level,
+				Target: memsqlite.ForgetTarget{
+					ScopeMode: memsqlite.ForgetScopeExactNode,
+					NodeType:  core.NodeTypeEpisode,
+					NodeID:    "ep_visible",
+				},
+			})
+			if err != nil {
+				t.Fatalf("forget episode: %v", err)
+			}
+
+			wantDeletes := int64(2 + len(linkIDs))
+			if result.MirrorDeletesEnqueued != wantDeletes {
+				t.Fatalf("mirror deletes enqueued = %d, want %d", result.MirrorDeletesEnqueued, wantDeletes)
+			}
+			requireQueueCount(t, db.SQLDB(), "episode", "ep_visible", "delete_node", 1)
+			requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+			for _, linkID := range linkIDs {
+				requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "delete_edge", 1)
+			}
+		})
+	}
+}
+
 func insertForgetFact(t *testing.T, ctx context.Context, db *sql.DB, factID string, object string, summary string, pinned bool) core.Fact {
 	t.Helper()
 
@@ -530,16 +649,67 @@ func insertForgetFact(t *testing.T, ctx context.Context, db *sql.DB, factID stri
 func insertIndexMap(t *testing.T, db *sql.DB, nodeType core.NodeType, nodeID string) {
 	t.Helper()
 
+	insertIndexMapWithTriviumID(t, db, nodeType, nodeID, 1001)
+}
+
+func insertIndexMapWithTriviumID(t *testing.T, db *sql.DB, nodeType core.NodeType, nodeID string, triviumID int64) {
+	t.Helper()
+
 	if _, err := db.Exec(`
 INSERT INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status, indexed_at)
-VALUES (?, 'default', ?, ?, 1001, 'indexed', ?)`,
+VALUES (?, 'default', ?, ?, ?, 'indexed', ?)`,
 		"index_"+nodeID,
 		string(nodeType),
 		nodeID,
+		triviumID,
 		fixedForgetNow().Format(time.RFC3339Nano),
 	); err != nil {
 		t.Fatalf("insert index map: %v", err)
 	}
+}
+
+func linkIDsTouchingNode(t *testing.T, ctx context.Context, db *sql.DB, nodeType core.NodeType, nodeID string) []string {
+	t.Helper()
+
+	rows, err := db.QueryContext(ctx, `
+SELECT id
+FROM memory_links
+WHERE persona_id = 'default'
+  AND (
+      (from_node_type = ? AND from_node_id = ?)
+      OR (to_node_type = ? AND to_node_id = ?)
+  )
+ORDER BY id`, string(nodeType), nodeID, string(nodeType), nodeID)
+	if err != nil {
+		t.Fatalf("query touching links: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan touching link: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate touching links: %v", err)
+	}
+	return ids
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	var out []string
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func requireSearchRowCount(t *testing.T, db *sql.DB, nodeType core.NodeType, nodeID string, want int) {

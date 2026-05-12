@@ -80,6 +80,7 @@ type Step struct {
 	Compression   *CompressionStep    `yaml:"compression_apply"`
 	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
 	MirrorRebuild *MirrorRebuildStep  `yaml:"mirror_rebuild"`
+	MirrorSync    *MirrorSyncStep     `yaml:"mirror_sync"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
 }
@@ -203,6 +204,11 @@ type RebuildSearchStep struct {
 
 type MirrorRebuildStep struct {
 	PersonaID string `yaml:"persona_id"`
+}
+
+type MirrorSyncStep struct {
+	PersonaID string `yaml:"persona_id"`
+	Limit     int    `yaml:"limit"`
 }
 
 type FactOverride struct {
@@ -340,6 +346,10 @@ func (f *Fixture) Validate() error {
 			if step.MirrorRebuild == nil {
 				return fmt.Errorf("case %s step %s missing mirror_rebuild body", caseID, step.ID)
 			}
+		case "mirror_sync":
+			if step.MirrorSync == nil {
+				return fmt.Errorf("case %s step %s missing mirror_sync body", caseID, step.ID)
+			}
 		default:
 			return fmt.Errorf("case %s step %s unknown action %q", caseID, step.ID, step.Action)
 		}
@@ -366,7 +376,9 @@ func knownAssertionType(value string) bool {
 		"search_absent",
 		"deletion_event_safe",
 		"episode_tombstone_exists",
-		"mirror_index_status":
+		"mirror_index_status",
+		"queue_count",
+		"queue_status":
 		return true
 	default:
 		return false

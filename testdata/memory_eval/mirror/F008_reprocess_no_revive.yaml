@@ -1,0 +1,77 @@
+case_id: F008_reprocess_no_revive
+description: purge 后 rebuild_search 与 mirror_rebuild 不会让已删除内容重新进入检索索引。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢雪顶可可。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 雪顶可可
+        content_summary: 用户喜欢雪顶可可。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: map
+    action: retrieve
+    mirror_stub:
+      index_mapped_node_id: $fact.fact_id
+      index_mapped_type: fact
+    retrieve:
+      session_id: s1
+      query_text: 雪顶可可
+      policy:
+        use_mirror: true
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search:
+      persona_id: default
+  - id: rebuild_mirror
+    action: mirror_rebuild
+    mirror_rebuild:
+      persona_id: default
+  - id: retrieve_after_rebuild
+    action: retrieve
+    mirror_stub:
+      candidate_node_id: $fact.fact_id
+      candidate_score: 0.94
+    retrieve:
+      session_id: s1
+      query_text: 雪顶可可
+      policy:
+        use_mirror: true
+assertions:
+  - type: memory_not_contains
+    step: retrieve_after_rebuild
+    node_id: $fact.fact_id
+  - type: search_absent
+    node_id: $fact.fact_id
+    node_type: fact
+    search_text: 雪顶可可
+  - type: mirror_index_status
+    node_id: $fact.fact_id
+    node_type: fact
+    equals: deleted

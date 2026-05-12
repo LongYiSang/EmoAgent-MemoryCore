@@ -49,6 +49,12 @@ func (s *service) RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (
 		return nil, fmt.Errorf("%w: MirrorAdapter must support ClearNamespace", ErrInvalidOptions)
 	}
 	personaID := defaultString(req.PersonaID, s.persona)
+	if err := s.ensurePersona(ctx, personaID); err != nil {
+		return nil, err
+	}
+	if err := s.mirrorState.MarkRebuilding(ctx, personaID); err != nil {
+		return nil, err
+	}
 	rebuilder := internalmirror.NewRebuilder(internalmirror.RebuilderOptions{
 		Source:    mirrorPayloadBridge{repo: s.mirrorPayload},
 		Adapter:   mirrorAdapterBridge{adapter: s.mirrorAdapter},
@@ -57,6 +63,16 @@ func (s *service) RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (
 	})
 	result, err := rebuilder.Rebuild(ctx, personaID)
 	if err != nil {
+		if markErr := s.mirrorState.MarkDegraded(ctx, personaID, "rebuild failed"); markErr != nil {
+			return nil, markErr
+		}
+		return nil, err
+	}
+	if result.Failed > 0 {
+		if err := s.mirrorState.MarkDegraded(ctx, personaID, "rebuild completed with failed nodes"); err != nil {
+			return nil, err
+		}
+	} else if err := s.mirrorState.MarkReady(ctx, personaID); err != nil {
 		return nil, err
 	}
 	return &RebuildMirrorResult{

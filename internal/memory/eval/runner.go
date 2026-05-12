@@ -46,6 +46,7 @@ type stepResult struct {
 	Compression   *memorycore.ApplyCompressionResult
 	RebuildSearch *memorycore.RebuildSearchDocumentsResult
 	MirrorRebuild *memorycore.RebuildMirrorResult
+	MirrorSync    *memorycore.RunMirrorSyncResult
 }
 
 func NewRunner(opts RunnerOptions) *Runner {
@@ -298,6 +299,15 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			return fmt.Errorf("case %s step %s mirror rebuild: %w", s.caseID, step.ID, err)
 		}
 		s.steps[step.ID] = stepResult{MirrorRebuild: result}
+	case "mirror_sync":
+		result, err := s.service.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
+			PersonaID: defaultString(step.MirrorSync.PersonaID, s.persona),
+			Limit:     step.MirrorSync.Limit,
+		})
+		if err != nil {
+			return fmt.Errorf("case %s step %s mirror sync: %w", s.caseID, step.ID, err)
+		}
+		s.steps[step.ID] = stepResult{MirrorSync: result}
 	default:
 		return fmt.Errorf("case %s step %s unknown action %q", s.caseID, step.ID, step.Action)
 	}

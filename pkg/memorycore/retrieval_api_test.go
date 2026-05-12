@@ -322,13 +322,52 @@ func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
 	requireNoMemoryItem(t, contextResult, fact.ID)
 }
 
+func TestServiceRetrieveUseMirrorFallsBackWhenPersonaMirrorStateNotReady(t *testing.T) {
+	for _, state := range []string{"rebuilding", "degraded"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			adapter := &retrievalMirrorAdapter{}
+			svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+			defer svc.Close()
+
+			sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+			episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡和乌龙茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+			coffee := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+			tea := consolidateLiteral(t, ctx, svc, userID, "likes", "乌龙茶", "用户喜欢乌龙茶。", episode.ID).Fact
+			db := openSQLDB(t, dbPath)
+			defer db.Close()
+			insertMirrorMapForFact(t, db, tea.ID, 7002, "indexed")
+			setMirrorPersonaState(t, db, "default", state)
+			adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7002, Score: 0.99, Source: "mirror_only"}}
+
+			contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+				SessionID: &sessionID,
+				QueryText: "咖啡",
+				Policy: memorycore.RetrievalPolicy{
+					UseMirror: true,
+				},
+			})
+			if err != nil {
+				t.Fatalf("retrieve with %s persona mirror state: %v", state, err)
+			}
+			if adapter.calls != 0 {
+				t.Fatalf("mirror adapter calls = %d, want 0 for state %s", adapter.calls, state)
+			}
+			requireMemoryItem(t, contextResult, coffee.ID, "用户喜欢咖啡。", "")
+			requireNoMemoryItem(t, contextResult, tea.ID)
+		})
+	}
+}
+
 type retrievalMirrorAdapter struct {
 	candidates []memorycore.MirrorCandidate
 	err        error
 	degraded   bool
+	calls      int
 }
 
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+	a.calls++
 	if a.err != nil {
 		return nil, a.err
 	}
@@ -374,6 +413,19 @@ func insertMirrorMapForFact(t *testing.T, db *sql.DB, factID string, triviumNode
 INSERT INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
 VALUES (?, 'default', 'fact', ?, ?, ?)`, "map_"+factID, factID, triviumNodeID, status); err != nil {
 		t.Fatalf("insert mirror map: %v", err)
+	}
+}
+
+func setMirrorPersonaState(t *testing.T, db *sql.DB, personaID string, state string) {
+	t.Helper()
+	if _, err := db.Exec(`
+INSERT INTO mirror_persona_state (persona_id, state, reason, updated_at)
+VALUES (?, ?, 'test state', CURRENT_TIMESTAMP)
+ON CONFLICT(persona_id) DO UPDATE SET
+    state = excluded.state,
+    reason = excluded.reason,
+    updated_at = excluded.updated_at`, personaID, state); err != nil {
+		t.Fatalf("set mirror persona state: %v", err)
 	}
 }
 
