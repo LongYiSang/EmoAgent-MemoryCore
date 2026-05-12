@@ -1,0 +1,41 @@
+case_id: R008_trivium_unavailable_fallback
+description: mirror sidecar 不可用时，UseMirror 检索降级到 SQLite fallback。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢手冲咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 手冲咖啡
+        content_summary: 用户喜欢手冲咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      unavailable: true
+    retrieve:
+      session_id: s1
+      query_text: 手冲咖啡
+      policy:
+        use_mirror: true
+assertions:
+  - type: memory_contains
+    step: retrieve
+    node_id: $fact.fact_id
+    summary: 用户喜欢手冲咖啡。

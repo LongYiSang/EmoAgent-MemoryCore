@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
+	internalmirror "github.com/longyisang/emoagent-memorycore/internal/mirror"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := newFlagSet("retrieve", stderr)
 	var opts commonOptions
-	var query, sessionID, now, sensitivity, userMood, relationshipMood string
-	var allowHistorical, allowDeepArchive, useFTS bool
+	var query, sessionID, now, sensitivity, userMood, relationshipMood, sidecarURL string
+	var allowHistorical, allowDeepArchive, useFTS, useMirror bool
 	var finalCount, budget int
 	addCommonFlags(fs, &opts, formatText)
 	fs.StringVar(&query, "query", "", "query text")
@@ -25,6 +27,8 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs.IntVar(&finalCount, "final-count", 8, "final memory count")
 	fs.IntVar(&budget, "budget", 1500, "context budget tokens")
 	fs.BoolVar(&useFTS, "use-fts", false, "use FTS")
+	fs.BoolVar(&useMirror, "use-mirror", false, "use Python sidecar mirror candidates")
+	fs.StringVar(&sidecarURL, "sidecar-url", "", "loopback HTTP URL for the Python mirror sidecar")
 	fs.StringVar(&userMood, "user-mood", "", "user mood label")
 	fs.StringVar(&relationshipMood, "relationship-mood", "", "relationship mood label")
 	if !parseFlags(fs, args) {
@@ -48,13 +52,31 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	if budget <= 0 {
 		return usageError(stderr, fs, "--budget must be positive")
 	}
+	sidecarURL = strings.TrimSpace(sidecarURL)
+	if useMirror && sidecarURL == "" {
+		return usageError(stderr, fs, "--sidecar-url is required when --use-mirror is set")
+	}
+	if useMirror {
+		if err := internalmirror.ValidateLoopbackURL(sidecarURL); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
+	}
 	parsedNow, err := parseOptionalTime(now, "--now")
 	if err != nil {
 		return usageError(stderr, fs, err.Error())
 	}
 
 	ctx := context.Background()
-	svc, err := openService(ctx, opts)
+	openOpts := memorycore.Options{
+		DBPath:      opts.DBPath,
+		PersonaID:   opts.PersonaID,
+		AutoMigrate: opts.AutoMigrate,
+		EnableFTS:   opts.EnableFTS,
+	}
+	if useMirror {
+		openOpts.MirrorAdapter = memorycore.NewSidecarMirrorAdapter(sidecarURL)
+	}
+	svc, err := memorycore.Open(ctx, openOpts)
 	if err != nil {
 		return runtimeError(stderr, "open memorycore: %v", err)
 	}
@@ -72,6 +94,7 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 			FinalMemoryCount:      finalCount,
 			ContextBudgetTokens:   budget,
 			UseFTS:                useFTS,
+			UseMirror:             useMirror,
 		},
 		Context: memorycore.RetrievalAffectContext{
 			UserMoodLabel:         userMood,

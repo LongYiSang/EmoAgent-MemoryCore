@@ -79,6 +79,7 @@ type Step struct {
 	RetentionRun  *RetentionRunStep   `yaml:"retention_run"`
 	Compression   *CompressionStep    `yaml:"compression_apply"`
 	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
+	MirrorRebuild *MirrorRebuildStep  `yaml:"mirror_rebuild"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
 }
@@ -133,6 +134,7 @@ type RetrievalPolicy struct {
 	FinalMemoryCount      int    `yaml:"final_memory_count"`
 	ContextBudgetTokens   int    `yaml:"context_budget_tokens"`
 	UseFTS                *bool  `yaml:"use_fts"`
+	UseMirror             *bool  `yaml:"use_mirror"`
 }
 
 type RetrievalAffectContext struct {
@@ -199,6 +201,10 @@ type RebuildSearchStep struct {
 	PersonaID string `yaml:"persona_id"`
 }
 
+type MirrorRebuildStep struct {
+	PersonaID string `yaml:"persona_id"`
+}
+
 type FactOverride struct {
 	FactID           string `yaml:"fact_id"`
 	VisibilityStatus string `yaml:"visibility_status"`
@@ -211,8 +217,12 @@ type FactOverride struct {
 }
 
 type MirrorStubSettings struct {
-	IndexMappedNodeID string `yaml:"index_mapped_node_id"`
-	IndexMappedType   string `yaml:"index_mapped_type"`
+	IndexMappedNodeID string  `yaml:"index_mapped_node_id"`
+	IndexMappedType   string  `yaml:"index_mapped_type"`
+	CandidateNodeID   string  `yaml:"candidate_node_id"`
+	CandidateNodeType string  `yaml:"candidate_node_type"`
+	CandidateScore    float64 `yaml:"candidate_score"`
+	Unavailable       bool    `yaml:"unavailable"`
 }
 
 type Assertion struct {
@@ -326,6 +336,10 @@ func (f *Fixture) Validate() error {
 			if step.RebuildSearch == nil {
 				return fmt.Errorf("case %s step %s missing rebuild_search body", caseID, step.ID)
 			}
+		case "mirror_rebuild":
+			if step.MirrorRebuild == nil {
+				return fmt.Errorf("case %s step %s missing mirror_rebuild body", caseID, step.ID)
+			}
 		default:
 			return fmt.Errorf("case %s step %s unknown action %q", caseID, step.ID, step.Action)
 		}
@@ -351,7 +365,8 @@ func knownAssertionType(value string) bool {
 		"derived_link_count",
 		"search_absent",
 		"deletion_event_safe",
-		"episode_tombstone_exists":
+		"episode_tombstone_exists",
+		"mirror_index_status":
 		return true
 	default:
 		return false

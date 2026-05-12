@@ -1,0 +1,73 @@
+case_id: M001_rebuild_excludes_deleted_nodes
+description: mirror rebuild 清空 namespace 后只重建 eligible 节点，已 purge 的旧 map 保持 deleted。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 我喜欢红茶。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: coffee
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: tea
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 红茶
+        content_summary: 用户喜欢红茶。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.7
+  - id: map_deleted
+    action: retrieve
+    mirror_stub:
+      index_mapped_node_id: $tea.fact_id
+      index_mapped_type: fact
+    retrieve:
+      session_id: s1
+      query_text: 红茶
+  - id: forget_tea
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $tea.fact_id
+  - id: rebuild
+    action: mirror_rebuild
+    mirror_rebuild:
+      persona_id: default
+assertions:
+  - type: mirror_index_status
+    node_id: $coffee.fact_id
+    node_type: fact
+    equals: indexed
+  - type: mirror_index_status
+    node_id: $tea.fact_id
+    node_type: fact
+    equals: deleted

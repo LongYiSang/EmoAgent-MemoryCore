@@ -198,3 +198,67 @@ func TestMirrorPayloadRepositoryBuildsVisibleSearchableEdgePayload(t *testing.T)
 		t.Fatalf("hidden edge payload ok = true, want false")
 	}
 }
+
+func TestMirrorPayloadRepositoryListsOnlyEligibleRebuildRefs(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedMirrorPayloadFixture(t, ctx, db.SQLDB())
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts SET visibility_status = 'purged' WHERE id = 'fact_visible';
+INSERT INTO facts (
+    id, persona_id, subject_entity_id, predicate, object_literal, content_summary,
+    fact_type, extraction_confidence, extraction_confidence_score, extraction_reasoning,
+    importance, valence, arousal, sensitivity_level, validity_status,
+    visibility_status, lifecycle_status, searchable
+) VALUES (
+    'fact_rebuild', 'default', 'ent_user', 'likes', '茶', '用户喜欢茶。',
+    'stable_preference', 'explicit', 0.95, 'private extraction reasoning',
+    0.7, 0.4, 0.2, 'normal', 'valid',
+    'visible', 'active', 1
+)`); err != nil {
+		t.Fatalf("prepare rebuild fixture: %v", err)
+	}
+
+	repo := memsqlite.NewMirrorPayloadRepository(db.SQLDB())
+	nodeRefs, err := repo.ListRebuildNodeRefs(ctx, "default")
+	if err != nil {
+		t.Fatalf("list rebuild node refs: %v", err)
+	}
+	gotNodes := make([]string, 0, len(nodeRefs))
+	for _, ref := range nodeRefs {
+		gotNodes = append(gotNodes, ref.NodeType+":"+ref.SQLiteNodeID)
+	}
+	assertStringSet(t, gotNodes, []string{
+		"entity:ent_user",
+		"fact:fact_rebuild",
+		"narrative:narrative_week",
+		"insight:insight_pref",
+	})
+
+	edgeRefs, err := repo.ListRebuildEdgeRefs(ctx, "default")
+	if err != nil {
+		t.Fatalf("list rebuild edge refs: %v", err)
+	}
+	gotEdges := make([]string, 0, len(edgeRefs))
+	for _, ref := range edgeRefs {
+		gotEdges = append(gotEdges, ref.SQLiteEdgeID)
+	}
+	assertStringSet(t, gotEdges, nil)
+}
+
+func assertStringSet(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("set length = %d, want %d; got %#v want %#v", len(got), len(want), got, want)
+	}
+	seen := make(map[string]int, len(got))
+	for _, item := range got {
+		seen[item]++
+	}
+	for _, item := range want {
+		if seen[item] != 1 {
+			t.Fatalf("set missing %q; got %#v want %#v", item, got, want)
+		}
+	}
+}

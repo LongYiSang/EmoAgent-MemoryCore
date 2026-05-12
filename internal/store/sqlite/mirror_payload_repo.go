@@ -33,8 +33,93 @@ type MirrorEdgePayload struct {
 	Payload      map[string]any
 }
 
+type MirrorNodeRef struct {
+	PersonaID    string
+	NodeType     string
+	SQLiteNodeID string
+}
+
+type MirrorEdgeRef struct {
+	PersonaID    string
+	SQLiteEdgeID string
+}
+
 func NewMirrorPayloadRepository(db *sql.DB) *MirrorPayloadRepository {
 	return &MirrorPayloadRepository{db: db}
+}
+
+func (r *MirrorPayloadRepository) ListRebuildNodeRefs(ctx context.Context, personaID string) ([]MirrorNodeRef, error) {
+	queries := []struct {
+		nodeType string
+		query    string
+	}{
+		{nodeType: "entity", query: `SELECT id FROM entities WHERE persona_id = ? AND visibility_status = 'visible' AND searchable = 1 ORDER BY id`},
+		{nodeType: "fact", query: `SELECT id FROM facts WHERE persona_id = ? AND visibility_status = 'visible' AND searchable = 1 ORDER BY id`},
+		{nodeType: "narrative", query: `SELECT id FROM narratives WHERE persona_id = ? AND visibility_status = 'visible' AND searchable = 1 ORDER BY id`},
+		{nodeType: "insight", query: `SELECT id FROM insights WHERE persona_id = ? AND visibility_status = 'visible' AND searchable = 1 ORDER BY id`},
+	}
+	var refs []MirrorNodeRef
+	for _, item := range queries {
+		rows, err := r.db.QueryContext(ctx, item.query, personaID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			refs = append(refs, MirrorNodeRef{PersonaID: personaID, NodeType: item.nodeType, SQLiteNodeID: id})
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return refs, nil
+}
+
+func (r *MirrorPayloadRepository) ListRebuildEdgeRefs(ctx context.Context, personaID string) ([]MirrorEdgeRef, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id
+FROM memory_links
+WHERE persona_id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1
+ORDER BY id`, personaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var edgeIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		edgeIDs = append(edgeIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var refs []MirrorEdgeRef
+	for _, id := range edgeIDs {
+		if _, ok, err := r.BuildEdgePayload(ctx, personaID, id); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		refs = append(refs, MirrorEdgeRef{PersonaID: personaID, SQLiteEdgeID: id})
+	}
+	return refs, nil
 }
 
 func (r *MirrorPayloadRepository) BuildNodePayload(ctx context.Context, personaID string, nodeType string, nodeID string) (MirrorNodePayload, bool, error) {
@@ -84,12 +169,70 @@ WHERE persona_id = ? AND id = ?`, personaID, edgeID).Scan(
 	if visibility != "visible" || searchable != 1 || !isMirrorEligibleLinkType(payload.LinkType) {
 		return MirrorEdgePayload{}, false, nil
 	}
+	fromOK, err := r.nodeMirrorEligible(ctx, personaID, payload.FromNodeType, payload.FromNodeID)
+	if err != nil {
+		return MirrorEdgePayload{}, false, err
+	}
+	if !fromOK {
+		return MirrorEdgePayload{}, false, nil
+	}
+	toOK, err := r.nodeMirrorEligible(ctx, personaID, payload.ToNodeType, payload.ToNodeID)
+	if err != nil {
+		return MirrorEdgePayload{}, false, err
+	}
+	if !toOK {
+		return MirrorEdgePayload{}, false, nil
+	}
 	payload.Payload = map[string]any{
 		"direction":  payload.Direction,
 		"confidence": payload.Confidence,
 		"weight":     payload.Weight,
 	}
 	return payload, true, nil
+}
+
+func (r *MirrorPayloadRepository) nodeMirrorEligible(ctx context.Context, personaID string, nodeType string, nodeID string) (bool, error) {
+	switch nodeType {
+	case "entity":
+		return r.rowVisibleSearchable(ctx, `
+SELECT visibility_status, searchable
+FROM entities
+WHERE persona_id = ? AND id = ?`, personaID, nodeID)
+	case "fact":
+		ok, err := r.rowVisibleSearchable(ctx, `
+SELECT visibility_status, searchable
+FROM facts
+WHERE persona_id = ? AND id = ?`, personaID, nodeID)
+		if err != nil || !ok {
+			return ok, err
+		}
+		return factSearchEvidenceEligible(ctx, r.db, personaID, nodeID)
+	case "narrative":
+		return r.rowVisibleSearchable(ctx, `
+SELECT visibility_status, searchable
+FROM narratives
+WHERE persona_id = ? AND id = ?`, personaID, nodeID)
+	case "insight":
+		return r.rowVisibleSearchable(ctx, `
+SELECT visibility_status, searchable
+FROM insights
+WHERE persona_id = ? AND id = ?`, personaID, nodeID)
+	default:
+		return false, nil
+	}
+}
+
+func (r *MirrorPayloadRepository) rowVisibleSearchable(ctx context.Context, query string, personaID string, nodeID string) (bool, error) {
+	var visibility string
+	var searchable int
+	err := r.db.QueryRowContext(ctx, query, personaID, nodeID).Scan(&visibility, &searchable)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return visibility == "visible" && searchable == 1, nil
 }
 
 func (r *MirrorPayloadRepository) buildEntityPayload(ctx context.Context, personaID string, nodeType string, nodeID string) (MirrorNodePayload, bool, error) {

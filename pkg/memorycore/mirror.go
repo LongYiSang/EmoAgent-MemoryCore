@@ -40,6 +40,33 @@ func (s *service) RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (
 	}, nil
 }
 
+func (s *service) RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (*RebuildMirrorResult, error) {
+	if s.mirrorAdapter == nil {
+		return nil, fmt.Errorf("%w: MirrorAdapter is required", ErrInvalidOptions)
+	}
+	namespace, ok := s.mirrorAdapter.(MirrorNamespaceAdapter)
+	if !ok {
+		return nil, fmt.Errorf("%w: MirrorAdapter must support ClearNamespace", ErrInvalidOptions)
+	}
+	personaID := defaultString(req.PersonaID, s.persona)
+	rebuilder := internalmirror.NewRebuilder(internalmirror.RebuilderOptions{
+		Source:    mirrorPayloadBridge{repo: s.mirrorPayload},
+		Adapter:   mirrorAdapterBridge{adapter: s.mirrorAdapter},
+		Namespace: mirrorNamespaceBridge{namespace: namespace},
+		IndexMap:  mirrorIndexBridge{repo: s.mirrorIndex},
+	})
+	result, err := rebuilder.Rebuild(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	return &RebuildMirrorResult{
+		NodesUpserted: result.NodesUpserted,
+		EdgesUpserted: result.EdgesUpserted,
+		Failed:        result.Failed,
+		Skipped:       result.Skipped,
+	}, nil
+}
+
 type mirrorQueueBridge struct {
 	repo      *memsqlite.MirrorQueueRepository
 	personaID string
@@ -73,6 +100,37 @@ func (b mirrorQueueBridge) Fail(ctx context.Context, id string, message string) 
 
 type mirrorPayloadBridge struct {
 	repo *memsqlite.MirrorPayloadRepository
+}
+
+func (b mirrorPayloadBridge) ListRebuildNodeRefs(ctx context.Context, personaID string) ([]internalmirror.NodeRef, error) {
+	refs, err := b.repo.ListRebuildNodeRefs(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]internalmirror.NodeRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, internalmirror.NodeRef{
+			PersonaID:    ref.PersonaID,
+			NodeType:     ref.NodeType,
+			SQLiteNodeID: ref.SQLiteNodeID,
+		})
+	}
+	return out, nil
+}
+
+func (b mirrorPayloadBridge) ListRebuildEdgeRefs(ctx context.Context, personaID string) ([]internalmirror.EdgeRef, error) {
+	refs, err := b.repo.ListRebuildEdgeRefs(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]internalmirror.EdgeRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, internalmirror.EdgeRef{
+			PersonaID:    ref.PersonaID,
+			SQLiteEdgeID: ref.SQLiteEdgeID,
+		})
+	}
+	return out, nil
 }
 
 func (b mirrorPayloadBridge) BuildNodePayload(ctx context.Context, personaID string, nodeType string, nodeID string) (internalmirror.NodePayload, bool, error) {
@@ -159,6 +217,10 @@ type mirrorIndexBridge struct {
 	repo *memsqlite.MirrorIndexRepository
 }
 
+func (b mirrorIndexBridge) MarkPersonaDeleted(ctx context.Context, personaID string) error {
+	return b.repo.MarkPersonaDeleted(ctx, personaID)
+}
+
 func (b mirrorIndexBridge) MarkNodeIndexed(ctx context.Context, payload internalmirror.NodePayload, result internalmirror.NodeUpsertResult) error {
 	return b.repo.RecordNodeIndexed(ctx, memsqlite.MirrorIndexedNode{
 		PersonaID:     payload.PersonaID,
@@ -170,6 +232,18 @@ func (b mirrorIndexBridge) MarkNodeIndexed(ctx context.Context, payload internal
 
 func (b mirrorIndexBridge) MarkNodeDeleted(ctx context.Context, ref internalmirror.NodeRef) error {
 	return b.repo.MarkNodeDeleted(ctx, ref.PersonaID, ref.NodeType, ref.SQLiteNodeID)
+}
+
+func (b mirrorIndexBridge) MarkNodeFailed(ctx context.Context, ref internalmirror.NodeRef, message string) error {
+	return b.repo.MarkNodeFailed(ctx, ref.PersonaID, ref.NodeType, ref.SQLiteNodeID, message)
+}
+
+type mirrorNamespaceBridge struct {
+	namespace MirrorNamespaceAdapter
+}
+
+func (b mirrorNamespaceBridge) ClearNamespace(ctx context.Context, personaID string) error {
+	return b.namespace.ClearNamespace(ctx, personaID)
 }
 
 type fakeMirrorAdapter struct{}
@@ -194,6 +268,10 @@ func (fakeMirrorAdapter) DeleteEdge(ctx context.Context, ref MirrorEdgeRef) erro
 	return nil
 }
 
+func (fakeMirrorAdapter) ClearNamespace(ctx context.Context, personaID string) error {
+	return nil
+}
+
 func stableFakeMirrorID(parts ...string) int64 {
 	hash := sha256.New()
 	for _, part := range parts {
@@ -207,4 +285,86 @@ func stableFakeMirrorID(parts ...string) int64 {
 		return 1
 	}
 	return id
+}
+
+type sidecarMirrorAdapter struct {
+	client *internalmirror.SidecarClient
+}
+
+func NewSidecarMirrorAdapter(baseURL string) MirrorAdapter {
+	return sidecarMirrorAdapter{
+		client: internalmirror.NewSidecarClient(internalmirror.SidecarClientOptions{
+			BaseURL: baseURL,
+		}),
+	}
+}
+
+func (a sidecarMirrorAdapter) UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error) {
+	result, err := a.client.UpsertNode(ctx, internalmirror.NodePayload{
+		PersonaID:      payload.PersonaID,
+		NodeType:       payload.NodeType,
+		SQLiteNodeID:   payload.SQLiteNodeID,
+		SearchableText: payload.SearchableText,
+		Payload:        payload.Payload,
+	})
+	return MirrorNodeUpsertResult{MirrorNodeID: result.MirrorNodeID}, err
+}
+
+func (a sidecarMirrorAdapter) DeleteNode(ctx context.Context, ref MirrorNodeRef) error {
+	return a.client.DeleteNode(ctx, internalmirror.NodeRef{
+		PersonaID:    ref.PersonaID,
+		NodeType:     ref.NodeType,
+		SQLiteNodeID: ref.SQLiteNodeID,
+	})
+}
+
+func (a sidecarMirrorAdapter) UpsertEdge(ctx context.Context, payload MirrorEdgePayload) error {
+	return a.client.UpsertEdge(ctx, internalmirror.EdgePayload{
+		PersonaID:    payload.PersonaID,
+		SQLiteEdgeID: payload.SQLiteEdgeID,
+		LinkType:     payload.LinkType,
+		FromNodeType: payload.FromNodeType,
+		FromNodeID:   payload.FromNodeID,
+		ToNodeType:   payload.ToNodeType,
+		ToNodeID:     payload.ToNodeID,
+		Direction:    payload.Direction,
+		Confidence:   payload.Confidence,
+		Weight:       payload.Weight,
+		Payload:      payload.Payload,
+	})
+}
+
+func (a sidecarMirrorAdapter) DeleteEdge(ctx context.Context, ref MirrorEdgeRef) error {
+	return a.client.DeleteEdge(ctx, internalmirror.EdgeRef{
+		PersonaID:    ref.PersonaID,
+		SQLiteEdgeID: ref.SQLiteEdgeID,
+	})
+}
+
+func (a sidecarMirrorAdapter) ClearNamespace(ctx context.Context, personaID string) error {
+	return a.client.ClearNamespace(ctx, personaID)
+}
+
+func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCandidateRequest) (*MirrorCandidateResult, error) {
+	result, err := a.client.FindCandidates(ctx, internalmirror.CandidateRequest{
+		PersonaID: req.PersonaID,
+		QueryText: req.QueryText,
+		Limit:     req.Limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &MirrorCandidateResult{
+		Candidates:     make([]MirrorCandidate, 0, len(result.Candidates)),
+		Degraded:       result.Degraded,
+		FallbackReason: result.FallbackReason,
+	}
+	for _, candidate := range result.Candidates {
+		out.Candidates = append(out.Candidates, MirrorCandidate{
+			TriviumNodeID: candidate.TriviumNodeID,
+			Score:         candidate.Score,
+			Source:        candidate.Source,
+		})
+	}
+	return out, nil
 }

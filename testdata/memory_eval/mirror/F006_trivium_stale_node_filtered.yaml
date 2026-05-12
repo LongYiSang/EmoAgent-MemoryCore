@@ -1,0 +1,67 @@
+case_id: F006_trivium_stale_node_filtered
+description: stale mirror candidate 指向已 purge fact 时，SQLite authority 过滤最终结果。
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢榛果拿铁。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 榛果拿铁
+        content_summary: 用户喜欢榛果拿铁。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: map
+    action: retrieve
+    mirror_stub:
+      index_mapped_node_id: $fact.fact_id
+      index_mapped_type: fact
+      candidate_node_id: $fact.fact_id
+      candidate_score: 0.93
+    retrieve:
+      session_id: s1
+      query_text: no-sqlite-match
+      policy:
+        use_mirror: true
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $fact.fact_id
+  - id: retrieve_after_purge
+    action: retrieve
+    mirror_stub:
+      candidate_node_id: $fact.fact_id
+      candidate_score: 0.93
+    retrieve:
+      session_id: s1
+      query_text: no-sqlite-match
+      policy:
+        use_mirror: true
+assertions:
+  - type: memory_not_contains
+    step: retrieve_after_purge
+    node_id: $fact.fact_id
+  - type: fact_column
+    fact_id: $fact.fact_id
+    column: visibility_status
+    equals: purged

@@ -44,11 +44,11 @@ WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&status); err != nil {
 	}
 }
 
-func TestRunMirrorSyncRejectsWithoutFakeAdapterInPhase4A(t *testing.T) {
+func TestRunMirrorSyncRejectsWithoutAdapterChoice(t *testing.T) {
 	dbPath := seedCLIConsolidationDB(t)
 	_, stderr, code := runCLI("mirror-sync-run", "--db", dbPath)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
 	}
-	requireContains(t, stderr, "--fake-adapter is required in Phase 4A")
+	requireContains(t, stderr, "--fake-adapter or --sidecar-url is required")
 }

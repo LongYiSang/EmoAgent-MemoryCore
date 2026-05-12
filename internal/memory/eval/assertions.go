@@ -35,6 +35,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertDeletionEventSafe(ctx, assertion)
 	case "episode_tombstone_exists":
 		return s.assertEpisodeTombstoneExists(ctx, assertion)
+	case "mirror_index_status":
+		return s.assertMirrorIndexStatus(ctx, assertion)
 	default:
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "known assertion type", Actual: assertion.Type}
 	}
@@ -273,6 +275,27 @@ func (s *runState) assertEpisodeTombstoneExists(ctx context.Context, assertion A
 	}
 	if count != 1 {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "one tombstone for " + episodeID, Actual: fmt.Sprintf("count=%d", count)}
+	}
+	return nil
+}
+
+func (s *runState) assertMirrorIndexStatus(ctx context.Context, assertion Assertion) error {
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	nodeType := defaultString(assertion.NodeType, "fact")
+	actual, err := queryScalarString(ctx, s.db, `
+SELECT index_status
+FROM memory_index_map
+WHERE persona_id = ?
+  AND node_type = ?
+	AND node_id = ?`, s.persona, nodeType, nodeID)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s query mirror index %s/%s: %w", s.caseID, assertion.Type, nodeType, nodeID, err)
+	}
+	if actual != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "mirror_index_status=" + assertion.Equals, Actual: "mirror_index_status=" + actual}
 	}
 	return nil
 }

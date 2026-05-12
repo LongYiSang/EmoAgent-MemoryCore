@@ -32,6 +32,7 @@ type RetrievalRequest struct {
 	Now       time.Time
 	Policy    RetrievalPolicy
 	Context   RetrievalAffectContext
+	Mirror    []RetrievalMirrorCandidate
 }
 
 type RetrievalPolicy struct {
@@ -41,6 +42,7 @@ type RetrievalPolicy struct {
 	FinalMemoryCount      int
 	ContextBudgetTokens   int
 	UseFTS                bool
+	UseMirror             bool
 }
 
 type RetrievalAffectContext struct {
@@ -77,6 +79,7 @@ type retrievalCandidate struct {
 	FactID      string
 	TextMatch   float64
 	EntityMatch float64
+	MirrorMatch float64
 }
 
 type scoredFact struct {
@@ -117,7 +120,7 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	}
 	query := analyzeQuery(req.QueryText)
 
-	candidates, err := r.collectCandidates(ctx, req.PersonaID, query, policy)
+	candidates, err := r.collectCandidates(ctx, req.PersonaID, query, policy, req.Mirror)
 	if err != nil {
 		return MemoryContext{}, err
 	}
@@ -170,8 +173,17 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	return contextResult, nil
 }
 
-func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query queryAnalysis, policy RetrievalPolicy) (map[string]retrievalCandidate, error) {
+func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query queryAnalysis, policy RetrievalPolicy, mirrorCandidates []RetrievalMirrorCandidate) (map[string]retrievalCandidate, error) {
 	candidates := make(map[string]retrievalCandidate)
+	for _, mirrorCandidate := range mirrorCandidates {
+		if mirrorCandidate.FactID == "" {
+			continue
+		}
+		candidate := candidates[mirrorCandidate.FactID]
+		candidate.FactID = mirrorCandidate.FactID
+		candidate.MirrorMatch = math.Max(candidate.MirrorMatch, mirrorCandidate.Score)
+		candidates[mirrorCandidate.FactID] = candidate
+	}
 	docs, err := r.search.SearchDocumentsForRetrieval(ctx, personaID, query.Raw, policy.UseFTS, policy.FinalMemoryCount*4, policy)
 	if err != nil {
 		return nil, err
@@ -226,6 +238,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			return nil, nil, err
 		}
 		baseScore := 0.35*candidate.TextMatch +
+			0.25*candidate.MirrorMatch +
 			0.20*candidate.EntityMatch +
 			0.20*fact.Importance +
 			0.10*recencyScore(fact, now) +
@@ -248,7 +261,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 				Reason:   MemorySuppressionReasonFatigue,
 			})
 		}
-		if len(query.Terms) == 0 && candidate.EntityMatch == 0 && candidate.TextMatch == 0 {
+		if len(query.Terms) == 0 && candidate.EntityMatch == 0 && candidate.TextMatch == 0 && candidate.MirrorMatch == 0 {
 			continue
 		}
 		scored = append(scored, item)
@@ -467,7 +480,8 @@ func isZeroRetrievalPolicy(policy RetrievalPolicy) bool {
 		!policy.AllowDeepArchive &&
 		policy.FinalMemoryCount == 8 &&
 		policy.ContextBudgetTokens == 1200 &&
-		!policy.UseFTS
+		!policy.UseFTS &&
+		!policy.UseMirror
 }
 
 func textMatchScore(query queryAnalysis, searchText string) float64 {

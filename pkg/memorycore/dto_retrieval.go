@@ -24,6 +24,7 @@ type RetrievalPolicy struct {
 	FinalMemoryCount      int
 	ContextBudgetTokens   int
 	UseFTS                bool
+	UseMirror             bool
 }
 
 type RetrievalAffectContext struct {

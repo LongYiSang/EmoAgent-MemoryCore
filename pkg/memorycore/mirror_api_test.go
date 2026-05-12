@@ -199,6 +199,68 @@ func TestServiceRunMirrorSyncRequiresExplicitAdapter(t *testing.T) {
 	}
 }
 
+func TestServiceRebuildMirrorClearsNamespaceAndReindexesEligibleNodes(t *testing.T) {
+	ctx := context.Background()
+	adapter := &rebuildPublicMirrorAdapter{nodeMirrorID: 9001}
+	svc, dbPath := openMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+
+	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	if err != nil {
+		t.Fatalf("rebuild mirror: %v", err)
+	}
+	if result.NodesUpserted != 2 || result.EdgesUpserted != 1 || result.Failed != 0 {
+		t.Fatalf("rebuild result = %#v", result)
+	}
+	if len(adapter.cleared) != 1 || adapter.cleared[0] != "default" {
+		t.Fatalf("cleared namespaces = %#v, want default", adapter.cleared)
+	}
+	requireMirrorIndexForFact(t, db, fact.ID, "indexed")
+
+	updateFactColumn(t, db, fact.ID, "visibility_status", memorycore.VisibilityPurged)
+	result, err = svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	if err != nil {
+		t.Fatalf("rebuild after purge: %v", err)
+	}
+	if result.NodesUpserted != 1 || result.Failed != 0 {
+		t.Fatalf("rebuild after purge result = %#v", result)
+	}
+	requireMirrorIndexForFactStatusOnly(t, db, fact.ID, "deleted")
+}
+
+func TestServiceRebuildMirrorRecordsFailedExistingNode(t *testing.T) {
+	ctx := context.Background()
+	adapter := &rebuildPublicMirrorAdapter{nodeMirrorID: 9001}
+	svc, dbPath := openMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	if _, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+
+	adapter.failNodeID = fact.ID
+	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	if err != nil {
+		t.Fatalf("failing rebuild: %v", err)
+	}
+	if result.Failed != 1 {
+		t.Fatalf("rebuild failed count = %d, want 1", result.Failed)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireMirrorIndexForFactStatusOnly(t, db, fact.ID, "failed")
+}
+
 func prioritizeMirrorQueueRow(t *testing.T, db *sql.DB, nodeType string, nodeID string, operation string) {
 	t.Helper()
 
@@ -233,6 +295,38 @@ func openMirrorService(t *testing.T, ctx context.Context, adapter memorycore.Mir
 
 type failingPublicMirrorAdapter struct {
 	err error
+}
+
+type rebuildPublicMirrorAdapter struct {
+	nodeMirrorID int64
+	failNodeID   string
+	cleared      []string
+	nextOffset   int64
+}
+
+func (f *rebuildPublicMirrorAdapter) ClearNamespace(ctx context.Context, personaID string) error {
+	f.cleared = append(f.cleared, personaID)
+	return nil
+}
+
+func (f *rebuildPublicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+	if payload.SQLiteNodeID == f.failNodeID {
+		return memorycore.MirrorNodeUpsertResult{}, errors.New("sidecar unavailable")
+	}
+	f.nextOffset++
+	return memorycore.MirrorNodeUpsertResult{MirrorNodeID: f.nodeMirrorID + f.nextOffset}, nil
+}
+
+func (f *rebuildPublicMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+	return nil
+}
+
+func (f *rebuildPublicMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+	return nil
+}
+
+func (f *rebuildPublicMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+	return nil
 }
 
 func (f failingPublicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {

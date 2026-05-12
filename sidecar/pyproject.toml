@@ -1,0 +1,16 @@
+[project]
+name = "memorycore-sidecar"
+version = "0.1.0"
+description = "Loopback HTTP sidecar protocol for EmoAgent MemoryCore mirror operations."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

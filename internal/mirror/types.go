@@ -79,6 +79,23 @@ type IndexMap interface {
 	MarkNodeDeleted(ctx context.Context, ref NodeRef) error
 }
 
+type RebuildSource interface {
+	ListRebuildNodeRefs(ctx context.Context, personaID string) ([]NodeRef, error)
+	ListRebuildEdgeRefs(ctx context.Context, personaID string) ([]EdgeRef, error)
+	BuildNodePayload(ctx context.Context, personaID string, nodeType string, nodeID string) (NodePayload, bool, error)
+	BuildEdgePayload(ctx context.Context, personaID string, edgeID string) (EdgePayload, bool, error)
+}
+
+type NamespaceClearer interface {
+	ClearNamespace(ctx context.Context, personaID string) error
+}
+
+type RebuildIndexMap interface {
+	MarkPersonaDeleted(ctx context.Context, personaID string) error
+	MarkNodeIndexed(ctx context.Context, payload NodePayload, result NodeUpsertResult) error
+	MarkNodeFailed(ctx context.Context, ref NodeRef, message string) error
+}
+
 type WorkerOptions struct {
 	Queue    Queue
 	Payloads PayloadBuilder
@@ -91,4 +108,11 @@ type Result struct {
 	Completed int
 	Failed    int
 	Skipped   int
+}
+
+type RebuildResult struct {
+	NodesUpserted int
+	EdgesUpserted int
+	Failed        int
+	Skipped       int
 }

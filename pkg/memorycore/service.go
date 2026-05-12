@@ -30,6 +30,7 @@ type Service interface {
 	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
 	RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
+	RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (*RebuildMirrorResult, error)
 }
 
 type service struct {
@@ -48,6 +49,7 @@ type service struct {
 	mirrorQueue   *memsqlite.MirrorQueueRepository
 	mirrorPayload *memsqlite.MirrorPayloadRepository
 	mirrorIndex   *memsqlite.MirrorIndexRepository
+	mirrorMap     *memsqlite.MirrorCandidateRepository
 	persona       string
 	now           func() time.Time
 }
@@ -89,6 +91,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		mirrorQueue:   memsqlite.NewMirrorQueueRepository(sqlDB),
 		mirrorPayload: memsqlite.NewMirrorPayloadRepository(sqlDB),
 		mirrorIndex:   memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
+		mirrorMap:     memsqlite.NewMirrorCandidateRepository(sqlDB),
 		persona:       defaultString(opts.PersonaID, defaultPersonaID),
 		now:           now,
 	}, nil
@@ -327,28 +330,69 @@ func (s *service) ConsolidateCandidate(ctx context.Context, req ConsolidateCandi
 
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
+	policy := req.Policy
+	mirrorCandidates, err := s.mirrorFactCandidates(ctx, personaID, req.QueryText, policy)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.retrieve.Retrieve(ctx, memsqlite.RetrievalRequest{
 		PersonaID: personaID,
 		SessionID: req.SessionID,
 		QueryText: req.QueryText,
 		Now:       req.Now,
 		Policy: memsqlite.RetrievalPolicy{
-			SensitivityPermission: req.Policy.SensitivityPermission,
-			AllowHistorical:       req.Policy.AllowHistorical,
-			AllowDeepArchive:      req.Policy.AllowDeepArchive,
-			FinalMemoryCount:      req.Policy.FinalMemoryCount,
-			ContextBudgetTokens:   req.Policy.ContextBudgetTokens,
-			UseFTS:                req.Policy.UseFTS,
+			SensitivityPermission: policy.SensitivityPermission,
+			AllowHistorical:       policy.AllowHistorical,
+			AllowDeepArchive:      policy.AllowDeepArchive,
+			FinalMemoryCount:      policy.FinalMemoryCount,
+			ContextBudgetTokens:   policy.ContextBudgetTokens,
+			UseFTS:                policy.UseFTS,
+			UseMirror:             policy.UseMirror,
 		},
 		Context: memsqlite.RetrievalAffectContext{
 			UserMoodLabel:         req.Context.UserMoodLabel,
 			RelationshipMoodLabel: req.Context.RelationshipMoodLabel,
 		},
+		Mirror: mirrorCandidates,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return memoryContextFromStore(result), nil
+}
+
+func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, error) {
+	if !policy.UseMirror {
+		return nil, nil
+	}
+	candidateAdapter, ok := s.mirrorAdapter.(MirrorCandidateAdapter)
+	if !ok || candidateAdapter == nil {
+		return nil, nil
+	}
+	limit := policy.FinalMemoryCount
+	if limit <= 0 {
+		limit = 8
+	}
+	result, err := candidateAdapter.FindCandidates(ctx, MirrorCandidateRequest{
+		PersonaID: personaID,
+		QueryText: queryText,
+		Limit:     limit * 4,
+	})
+	if err != nil || result == nil {
+		return nil, nil
+	}
+	if result.Degraded {
+		return nil, nil
+	}
+	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
+	for _, candidate := range result.Candidates {
+		candidates = append(candidates, memsqlite.MirrorCandidate{
+			TriviumNodeID: candidate.TriviumNodeID,
+			Score:         candidate.Score,
+			Source:        candidate.Source,
+		})
+	}
+	return s.mirrorMap.MapFactCandidates(ctx, personaID, candidates)
 }
 
 func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error) {

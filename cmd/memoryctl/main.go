@@ -45,6 +45,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runCompressionApply(args[1:], stdout, stderr)
 	case "mirror-sync-run":
 		return runMirrorSync(args[1:], stdout, stderr)
+	case "mirror-rebuild":
+		return runMirrorRebuild(args[1:], stdout, stderr)
 	case "list-facts":
 		return runListFacts(args[1:], stdout, stderr)
 	case "get-node":

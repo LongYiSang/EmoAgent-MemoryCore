@@ -14,6 +14,17 @@ type RunMirrorSyncResult struct {
 	Skipped   int `json:"skipped"`
 }
 
+type RebuildMirrorRequest struct {
+	PersonaID string
+}
+
+type RebuildMirrorResult struct {
+	NodesUpserted int `json:"nodes_upserted"`
+	EdgesUpserted int `json:"edges_upserted"`
+	Failed        int `json:"failed"`
+	Skipped       int `json:"skipped"`
+}
+
 type MirrorNodeRef struct {
 	PersonaID    string `json:"persona_id"`
 	NodeType     string `json:"node_type"`
@@ -51,9 +62,35 @@ type MirrorNodeUpsertResult struct {
 	MirrorNodeID int64 `json:"mirror_node_id"`
 }
 
+type MirrorCandidateRequest struct {
+	PersonaID string `json:"persona_id"`
+	QueryText string `json:"query_text"`
+	Limit     int    `json:"limit"`
+}
+
+type MirrorCandidate struct {
+	TriviumNodeID int64   `json:"trivium_node_id"`
+	Score         float64 `json:"score"`
+	Source        string  `json:"source"`
+}
+
+type MirrorCandidateResult struct {
+	Candidates     []MirrorCandidate `json:"candidates"`
+	Degraded       bool              `json:"degraded"`
+	FallbackReason string            `json:"fallback_reason,omitempty"`
+}
+
 type MirrorAdapter interface {
 	UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error)
 	DeleteNode(ctx context.Context, ref MirrorNodeRef) error
 	UpsertEdge(ctx context.Context, payload MirrorEdgePayload) error
 	DeleteEdge(ctx context.Context, ref MirrorEdgeRef) error
+}
+
+type MirrorNamespaceAdapter interface {
+	ClearNamespace(ctx context.Context, personaID string) error
+}
+
+type MirrorCandidateAdapter interface {
+	FindCandidates(ctx context.Context, req MirrorCandidateRequest) (*MirrorCandidateResult, error)
 }

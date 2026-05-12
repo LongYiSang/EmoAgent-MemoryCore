@@ -31,6 +31,9 @@ coverage.html
 *.prof
 *.pprof
 /example/
+__pycache__/
+.pytest_cache/
+.venv/
 
 # ── 临时文件 ──
 tmp/

@@ -3,6 +3,7 @@ package memorycore_test
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,166 @@ func TestServiceRetrieveFatigueSuppression(t *testing.T) {
 	requireNoMemoryItem(t, second, fact.ID)
 	if len(second.DoNotMention) != 1 || second.DoNotMention[0].NodeID != fact.ID {
 		t.Fatalf("suppression = %#v, want fact %s", second.DoNotMention, fact.ID)
+	}
+}
+
+func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "fake_sparse"}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "espresso-only",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with mirror: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+}
+
+func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
+	updateFactColumn(t, db, fact.ID, "visibility_status", memorycore.VisibilityPurged)
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "stale"}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "espresso-only",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with stale mirror: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, fact.ID)
+}
+
+func TestServiceRetrieveUseMirrorFallsBackWhenAdapterFails(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{err: sql.ErrConnDone}
+	svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with failing mirror: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+}
+
+func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{degraded: true}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "degraded"}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "espresso-only",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with degraded mirror: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, fact.ID)
+}
+
+type retrievalMirrorAdapter struct {
+	candidates []memorycore.MirrorCandidate
+	err        error
+	degraded   bool
+}
+
+func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	return &memorycore.MirrorCandidateResult{Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded}, nil
+}
+
+func (a *retrievalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+	return memorycore.MirrorNodeUpsertResult{}, nil
+}
+
+func (a *retrievalMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+	return nil
+}
+
+func (a *retrievalMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+	return nil
+}
+
+func (a *retrievalMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+	return nil
+}
+
+func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter) (memorycore.Service, string) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	svc, err := memorycore.Open(ctx, memorycore.Options{
+		DBPath:        dbPath,
+		AutoMigrate:   true,
+		MirrorAdapter: adapter,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	return svc, dbPath
+}
+
+func insertMirrorMapForFact(t *testing.T, db *sql.DB, factID string, triviumNodeID int64, status string) {
+	t.Helper()
+	if _, err := db.Exec(`
+INSERT INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
+VALUES (?, 'default', 'fact', ?, ?, ?)`, "map_"+factID, factID, triviumNodeID, status); err != nil {
+		t.Fatalf("insert mirror map: %v", err)
 	}
 }
 

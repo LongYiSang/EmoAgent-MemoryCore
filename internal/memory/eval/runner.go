@@ -35,6 +35,7 @@ type runState struct {
 	caseID        string
 	tempRoot      string
 	nextTriviumID int64
+	mirror        *evalMirrorAdapter
 }
 
 type stepResult struct {
@@ -44,6 +45,7 @@ type stepResult struct {
 	RetentionRun  *memorycore.RunRetentionResult
 	Compression   *memorycore.ApplyCompressionResult
 	RebuildSearch *memorycore.RebuildSearchDocumentsResult
+	MirrorRebuild *memorycore.RebuildMirrorResult
 }
 
 func NewRunner(opts RunnerOptions) *Runner {
@@ -76,11 +78,13 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 	}
 
 	dbPath := filepath.Join(tempRoot, sanitizeFileName(fixture.CaseID)+".db")
+	mirror := &evalMirrorAdapter{nextID: 1000}
 	svc, err := memorycore.Open(ctx, memorycore.Options{
-		DBPath:      dbPath,
-		PersonaID:   defaultPersonaID,
-		AutoMigrate: true,
-		EnableFTS:   true,
+		DBPath:        dbPath,
+		PersonaID:     defaultPersonaID,
+		AutoMigrate:   true,
+		EnableFTS:     true,
+		MirrorAdapter: mirror,
 		Now: func() time.Time {
 			return fixedNow
 		},
@@ -108,6 +112,7 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		caseID:        fixture.CaseID,
 		tempRoot:      tempRoot,
 		nextTriviumID: 1,
+		mirror:        mirror,
 	}
 	if err := state.seed(ctx); err != nil {
 		report.Err = err
@@ -217,6 +222,7 @@ VALUES (?, ?)`, id, displayName); err != nil {
 }
 
 func (s *runState) runStep(ctx context.Context, step Step) error {
+	s.mirror.resetForStep()
 	if err := s.applyMirrorStub(ctx, step); err != nil {
 		return err
 	}
@@ -284,6 +290,14 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			return fmt.Errorf("case %s step %s rebuild search: %w", s.caseID, step.ID, err)
 		}
 		s.steps[step.ID] = stepResult{RebuildSearch: result}
+	case "mirror_rebuild":
+		result, err := s.service.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{
+			PersonaID: defaultString(step.MirrorRebuild.PersonaID, s.persona),
+		})
+		if err != nil {
+			return fmt.Errorf("case %s step %s mirror rebuild: %w", s.caseID, step.ID, err)
+		}
+		s.steps[step.ID] = stepResult{MirrorRebuild: result}
 	default:
 		return fmt.Errorf("case %s step %s unknown action %q", s.caseID, step.ID, step.Action)
 	}
@@ -387,6 +401,9 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	}
 	if body.Policy.UseFTS != nil {
 		policy.UseFTS = *body.Policy.UseFTS
+	}
+	if body.Policy.UseMirror != nil {
+		policy.UseMirror = *body.Policy.UseMirror
 	}
 	result, err := s.service.Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
@@ -554,22 +571,53 @@ func (s *runState) applyFactOverride(ctx context.Context, override FactOverride)
 }
 
 func (s *runState) applyMirrorStub(ctx context.Context, step Step) error {
-	if step.MirrorStub == nil || step.MirrorStub.IndexMappedNodeID == "" {
+	if step.MirrorStub == nil {
 		return nil
 	}
-	nodeID, err := s.resolveString(step.MirrorStub.IndexMappedNodeID)
-	if err != nil {
-		return err
+	if step.MirrorStub.Unavailable {
+		s.mirror.unavailable = true
 	}
-	nodeType := defaultString(step.MirrorStub.IndexMappedType, "fact")
-	triviumNodeID := s.nextTriviumID
-	s.nextTriviumID++
-	_, err = s.db.ExecContext(ctx, `
+	if step.MirrorStub.IndexMappedNodeID != "" {
+		nodeID, err := s.resolveString(step.MirrorStub.IndexMappedNodeID)
+		if err != nil {
+			return err
+		}
+		nodeType := defaultString(step.MirrorStub.IndexMappedType, "fact")
+		triviumNodeID := s.nextTriviumID
+		s.nextTriviumID++
+		_, err = s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
 VALUES (?, ?, ?, ?, ?, 'indexed')`,
-		"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, triviumNodeID)
-	if err != nil {
-		return fmt.Errorf("case %s step %s mirror stub: %w", s.caseID, step.ID, err)
+			"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, triviumNodeID)
+		if err != nil {
+			return fmt.Errorf("case %s step %s mirror stub: %w", s.caseID, step.ID, err)
+		}
+	}
+	if step.MirrorStub.CandidateNodeID != "" {
+		nodeID, err := s.resolveString(step.MirrorStub.CandidateNodeID)
+		if err != nil {
+			return err
+		}
+		nodeType := defaultString(step.MirrorStub.CandidateNodeType, "fact")
+		score := step.MirrorStub.CandidateScore
+		if score == 0 {
+			score = 0.8
+		}
+		var triviumNodeID int64
+		err = s.db.QueryRowContext(ctx, `
+SELECT trivium_node_id
+FROM memory_index_map
+WHERE persona_id = ?
+  AND node_type = ?
+  AND node_id = ?`, s.persona, nodeType, nodeID).Scan(&triviumNodeID)
+		if err != nil {
+			return fmt.Errorf("case %s step %s mirror candidate map: %w", s.caseID, step.ID, err)
+		}
+		s.mirror.candidates = append(s.mirror.candidates, memorycore.MirrorCandidate{
+			TriviumNodeID: triviumNodeID,
+			Score:         score,
+			Source:        "eval_stub",
+		})
 	}
 	return nil
 }
