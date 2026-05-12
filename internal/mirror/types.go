@@ -1,0 +1,94 @@
+package mirror
+
+import "context"
+
+type Operation string
+
+const (
+	OperationUpsertNode Operation = "upsert_node"
+	OperationDeleteNode Operation = "delete_node"
+	OperationUpsertEdge Operation = "upsert_edge"
+	OperationDeleteEdge Operation = "delete_edge"
+)
+
+type QueueRow struct {
+	ID        string
+	PersonaID string
+	NodeType  string
+	NodeID    string
+	Operation Operation
+}
+
+type NodeRef struct {
+	PersonaID    string
+	NodeType     string
+	SQLiteNodeID string
+}
+
+type EdgeRef struct {
+	PersonaID    string
+	SQLiteEdgeID string
+}
+
+type NodePayload struct {
+	PersonaID      string
+	NodeType       string
+	SQLiteNodeID   string
+	SearchableText string
+	Payload        map[string]any
+}
+
+type EdgePayload struct {
+	PersonaID    string
+	SQLiteEdgeID string
+	LinkType     string
+	FromNodeType string
+	FromNodeID   string
+	ToNodeType   string
+	ToNodeID     string
+	Direction    string
+	Confidence   float64
+	Weight       float64
+	Payload      map[string]any
+}
+
+type NodeUpsertResult struct {
+	MirrorNodeID int64
+}
+
+type Queue interface {
+	Claim(ctx context.Context, limit int) ([]QueueRow, error)
+	Complete(ctx context.Context, id string) error
+	Fail(ctx context.Context, id string, message string) error
+}
+
+type PayloadBuilder interface {
+	BuildNodePayload(ctx context.Context, personaID string, nodeType string, nodeID string) (NodePayload, bool, error)
+	BuildEdgePayload(ctx context.Context, personaID string, edgeID string) (EdgePayload, bool, error)
+}
+
+type MirrorAdapter interface {
+	UpsertNode(ctx context.Context, payload NodePayload) (NodeUpsertResult, error)
+	DeleteNode(ctx context.Context, ref NodeRef) error
+	UpsertEdge(ctx context.Context, payload EdgePayload) error
+	DeleteEdge(ctx context.Context, ref EdgeRef) error
+}
+
+type IndexMap interface {
+	MarkNodeIndexed(ctx context.Context, payload NodePayload, result NodeUpsertResult) error
+	MarkNodeDeleted(ctx context.Context, ref NodeRef) error
+}
+
+type WorkerOptions struct {
+	Queue    Queue
+	Payloads PayloadBuilder
+	Adapter  MirrorAdapter
+	IndexMap IndexMap
+}
+
+type Result struct {
+	Claimed   int
+	Completed int
+	Failed    int
+	Skipped   int
+}

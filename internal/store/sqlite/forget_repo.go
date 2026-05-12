@@ -254,6 +254,13 @@ WHERE persona_id = ? AND id = ?`,
 	if err != nil {
 		return ForgetResult{}, err
 	}
+	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	counts.SearchDocumentsDeleted += dependentCounts.SearchDocumentsDeleted
+	counts.FTSRowsDeleted += dependentCounts.FTSRowsDeleted
+	counts.MirrorDeletesEnqueued += dependentCounts.MirrorDeletesEnqueued
 	counts.TombstonesWritten = rowsAffected(tombstone)
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
@@ -377,18 +384,19 @@ WHERE persona_id = ?
 	if err != nil {
 		return ForgetResult{}, err
 	}
-	dependentCounts, err := r.removeBlockedFactSearchForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
+	dependentCounts, err := r.removeBlockedFactSearchAndMirrorForEpisodeTx(ctx, tx, req.PersonaID, req.Target.NodeID)
 	if err != nil {
 		return ForgetResult{}, err
 	}
 	counts.SearchDocumentsDeleted += dependentCounts.SearchDocumentsDeleted
 	counts.FTSRowsDeleted += dependentCounts.FTSRowsDeleted
+	counts.MirrorDeletesEnqueued += dependentCounts.MirrorDeletesEnqueued
 	counts.TombstonesWritten = rowsAffected(tombstone)
 	counts.LinksScrubbed = rowsAffected(linkResult)
 	return r.completeForgetTx(ctx, tx, req, counts)
 }
 
-func (r *ForgetRepository) removeBlockedFactSearchForEpisodeTx(ctx context.Context, tx *sql.Tx, personaID string, episodeID string) (forgetCounts, error) {
+func (r *ForgetRepository) removeBlockedFactSearchAndMirrorForEpisodeTx(ctx context.Context, tx *sql.Tx, personaID string, episodeID string) (forgetCounts, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT l.from_node_id
 FROM memory_links l
@@ -441,8 +449,13 @@ WHERE l.persona_id = ?
 		if err := deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, factID); err != nil {
 			return forgetCounts{}, err
 		}
+		mirrorDeletes, err := r.enqueueMirrorDeleteIfMappedTx(ctx, tx, personaID, core.NodeTypeFact, factID)
+		if err != nil {
+			return forgetCounts{}, err
+		}
 		counts.SearchDocumentsDeleted += searchRows
 		counts.FTSRowsDeleted += ftsRows
+		counts.MirrorDeletesEnqueued += mirrorDeletes
 	}
 	return counts, nil
 }

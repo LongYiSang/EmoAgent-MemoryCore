@@ -29,22 +29,27 @@ type Service interface {
 	RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error)
 	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
+	RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
 }
 
 type service struct {
-	db        *memsqlite.DB
-	sqlDB     *sql.DB
-	store     *memsqlite.Store
-	episodes  *memsqlite.EpisodeRepository
-	entities  *memsqlite.EntityRepository
-	facts     *memsqlite.ConsolidationRepository
-	search    *memsqlite.SearchRepository
-	retrieve  *memsqlite.RetrievalRepository
-	retention *memsqlite.RetentionRepository
-	compress  *memsqlite.CompressionRepository
-	forget    *memsqlite.ForgetRepository
-	persona   string
-	now       func() time.Time
+	db            *memsqlite.DB
+	sqlDB         *sql.DB
+	store         *memsqlite.Store
+	episodes      *memsqlite.EpisodeRepository
+	entities      *memsqlite.EntityRepository
+	facts         *memsqlite.ConsolidationRepository
+	search        *memsqlite.SearchRepository
+	retrieve      *memsqlite.RetrievalRepository
+	retention     *memsqlite.RetentionRepository
+	compress      *memsqlite.CompressionRepository
+	forget        *memsqlite.ForgetRepository
+	mirrorAdapter MirrorAdapter
+	mirrorQueue   *memsqlite.MirrorQueueRepository
+	mirrorPayload *memsqlite.MirrorPayloadRepository
+	mirrorIndex   *memsqlite.MirrorIndexRepository
+	persona       string
+	now           func() time.Time
 }
 
 func Open(ctx context.Context, opts Options) (Service, error) {
@@ -69,19 +74,23 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	}
 	sqlDB := db.SQLDB()
 	return &service{
-		db:        db,
-		sqlDB:     sqlDB,
-		store:     memsqlite.NewStore(sqlDB),
-		episodes:  memsqlite.NewEpisodeRepository(sqlDB),
-		entities:  memsqlite.NewEntityRepository(sqlDB),
-		facts:     memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
-		search:    memsqlite.NewSearchRepository(sqlDB),
-		retrieve:  memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
-		retention: memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
-		compress:  memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
-		forget:    memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
-		persona:   defaultString(opts.PersonaID, defaultPersonaID),
-		now:       now,
+		db:            db,
+		sqlDB:         sqlDB,
+		store:         memsqlite.NewStore(sqlDB),
+		episodes:      memsqlite.NewEpisodeRepository(sqlDB),
+		entities:      memsqlite.NewEntityRepository(sqlDB),
+		facts:         memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
+		search:        memsqlite.NewSearchRepository(sqlDB),
+		retrieve:      memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
+		retention:     memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
+		compress:      memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
+		forget:        memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
+		mirrorAdapter: opts.MirrorAdapter,
+		mirrorQueue:   memsqlite.NewMirrorQueueRepository(sqlDB),
+		mirrorPayload: memsqlite.NewMirrorPayloadRepository(sqlDB),
+		mirrorIndex:   memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
+		persona:       defaultString(opts.PersonaID, defaultPersonaID),
+		now:           now,
 	}, nil
 }
 
