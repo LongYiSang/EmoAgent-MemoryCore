@@ -4,11 +4,13 @@ import argparse
 import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from pathlib import Path
+from typing import Any, Mapping
 
 from .adapters.base import MirrorAdapter
 from .adapters.fake import FakeMirrorAdapter
 from .adapters.trivium import TriviumAdapter
+from .config import load_config
 from .protocol import (
     build_clear_namespace_result,
     build_candidates_result,
@@ -18,6 +20,25 @@ from .protocol import (
     parse_clear_namespace_request,
     parse_operation_request,
 )
+
+
+class AdapterClosingHTTPServer(ThreadingHTTPServer):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        handler: type[BaseHTTPRequestHandler],
+        adapter: MirrorAdapter,
+    ) -> None:
+        super().__init__(address, handler)
+        self._adapter = adapter
+
+    def server_close(self) -> None:
+        try:
+            close = getattr(self._adapter, "close", None)
+            if callable(close):
+                close()
+        finally:
+            super().server_close()
 
 
 def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> ThreadingHTTPServer:
@@ -78,22 +99,30 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
             self.end_headers()
             self.wfile.write(data)
 
-    return ThreadingHTTPServer(address, Handler)
+    return AdapterClosingHTTPServer(address, Handler, adapter)
+
+
+def create_adapter(
+    adapter_name: str,
+    config_path: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> MirrorAdapter:
+    if adapter_name == "fake":
+        return FakeMirrorAdapter()
+    if adapter_name == "trivium":
+        return TriviumAdapter(load_config(config_path, env=env))
+    raise ValueError(f"unsupported adapter: {adapter_name}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--adapter", choices=("fake", "trivium"), default="fake")
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
 
-    adapter: MirrorAdapter
-    if args.adapter == "fake":
-        adapter = FakeMirrorAdapter()
-    else:
-        adapter = TriviumAdapter()
-
+    adapter = create_adapter(args.adapter, args.config)
     server = create_server((args.host, args.port), adapter)
     try:
         server.serve_forever()

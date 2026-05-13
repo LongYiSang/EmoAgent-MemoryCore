@@ -1,0 +1,13 @@
+[trivium]
+dir = "../data/trivium"
+dtype = "f32"
+sync_mode = "normal"
+
+[embedding]
+provider = "openai-compatible"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "text-embedding-v4"
+dimensions = 1024
+timeout_seconds = 30
+encoding_format = "float"

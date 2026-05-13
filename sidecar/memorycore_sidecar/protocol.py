@@ -22,9 +22,16 @@ _PAYLOAD_KEYS = {
 }
 
 _REQUIRED_FIELDS = {
-    "upsert_node": ("persona_id", "node_type", "sqlite_node_id"),
+    "upsert_node": ("persona_id", "node_type", "sqlite_node_id", "searchable_text"),
     "delete_node": ("persona_id", "node_type", "sqlite_node_id"),
-    "upsert_edge": ("persona_id", "sqlite_edge_id"),
+    "upsert_edge": (
+        "persona_id",
+        "sqlite_edge_id",
+        "from_node_type",
+        "from_node_id",
+        "to_node_type",
+        "to_node_id",
+    ),
     "delete_edge": ("persona_id", "sqlite_edge_id"),
 }
 
@@ -62,7 +69,11 @@ def parse_operation_request(data: Any) -> MirrorOperation:
     if not isinstance(payload, dict):
         raise ProtocolError(f"{payload_key} payload must be a JSON object")
 
-    missing = [field for field in _REQUIRED_FIELDS[operation] if not payload.get(field)]
+    missing = [
+        field
+        for field in _REQUIRED_FIELDS[operation]
+        if _is_blank_required_value(payload.get(field))
+    ]
     if missing:
         raise ProtocolError(f"{payload_key} payload missing fields: {', '.join(missing)}")
 
@@ -72,6 +83,12 @@ def parse_operation_request(data: Any) -> MirrorOperation:
         operation=operation,
         payload=payload,
     )
+
+
+def _is_blank_required_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return not value.strip()
+    return not value
 
 
 def parse_clear_namespace_request(data: Any) -> str:

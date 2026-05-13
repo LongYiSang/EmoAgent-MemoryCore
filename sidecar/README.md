@@ -1,33 +1,91 @@
 # MemoryCore Python Sidecar
 
-Phase 4B provides a loopback HTTP protocol for mirror operations that Go can call
-without importing Python or TriviumDB directly.
+Loopback HTTP sidecar for the disposable TriviumDB retrieval mirror. SQLite
+remains the authoritative memory store; TriviumDB can be cleared and rebuilt
+from SQLite at any time. Phase 5 activation, PPR, and MMR are not part of this
+sidecar.
+
+## Setup
+
+Use Python 3.12 with uv from this directory:
+
+```powershell
+cd sidecar
+uv python pin 3.12
+uv sync
+```
+
+`pyproject.toml` pins the runtime dependency to `triviumdb==0.7.1`.
+
+## Config
+
+Copy `config.example.toml` when you need a local config:
+
+```powershell
+Copy-Item config.example.toml config.toml
+```
+
+The example defaults to Bailian/DashScope OpenAI-compatible embeddings:
+
+```toml
+[embedding]
+provider = "openai-compatible"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "text-embedding-v4"
+dimensions = 1024
+```
+
+Do not put plaintext API keys in config. Set the environment variable named by
+`api_key_env` instead.
+
+TriviumDB files default to `../data/trivium`, relative to `sidecar/`. The real
+adapter initializes one sanitized `.tdb` file per persona under that directory.
+
+## Run Fake Adapter
+
+The fake adapter has no embedding or TriviumDB dependency and returns
+deterministic positive `trivium_node_id` values.
+
+```powershell
+cd sidecar
+uv run python -m memorycore_sidecar.server --adapter fake --host 127.0.0.1 --port 8765
+```
+
+## Run Real Trivium Adapter
+
+```powershell
+cd sidecar
+$env:DASHSCOPE_API_KEY = "<dashscope-api-key>"
+uv run python -m memorycore_sidecar.server --adapter trivium --config config.toml --host 127.0.0.1 --port 8765
+```
+
+`--config` is optional; without it the built-in defaults match
+`config.example.toml`.
+
+## Manual Smoke
+
+Start either sidecar server above, then run these from the repo root in another
+terminal. Replace `./data/memory.db` and the query with a database that already
+contains memory data.
+
+```powershell
+go run ./cmd/memoryctl mirror-sync-run --db ./data/memory.db --sidecar-url http://127.0.0.1:8765 --limit 100
+go run ./cmd/memoryctl mirror-rebuild --db ./data/memory.db --sidecar-url http://127.0.0.1:8765
+go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference" --use-mirror --sidecar-url http://127.0.0.1:8765
+```
 
 ## Protocol
 
 - `GET /health` returns `{"status":"ok"}`.
 - `POST /mirror/operation` accepts `schema_version` `memory_mirror_operation.v0.1`.
-- Responses use `schema_version` `memory_mirror_operation_result.v0.1`.
-- Supported operations are `upsert_node`, `delete_node`, `upsert_edge`, and
-  `delete_edge`.
-
-The fake adapter has no TriviumDB dependency and returns deterministic positive
-`trivium_node_id` values for node upserts.
-
-## Run
-
-```powershell
-uv run python -m memorycore_sidecar.server --adapter fake --host 127.0.0.1 --port 8765
-```
-
-Then point the Go CLI at it:
-
-```powershell
-memoryctl mirror-sync-run --db memory.db --sidecar-url http://127.0.0.1:8765
-```
+- `POST /mirror/clear-namespace` clears one persona namespace.
+- `POST /retrieval/candidates` returns mirror candidates for Go to map back
+  through SQLite before prompt use.
 
 ## Test
 
 ```powershell
-uv run python -m pytest
+cd sidecar
+uv run pytest
 ```
