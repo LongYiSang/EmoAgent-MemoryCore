@@ -198,19 +198,20 @@ def test_trivium_adapter_upsert_edge_links_existing_nodes_without_duplicates(
     assert matching[0].weight == pytest.approx(0.75)
 
 
-def test_trivium_adapter_upsert_edge_noops_when_endpoint_missing(tmp_path: Path):
+def test_trivium_adapter_upsert_edge_fails_when_endpoint_missing(tmp_path: Path):
     adapter = TriviumAdapter(_config(tmp_path), FakeEmbeddingProvider())
 
-    assert adapter.upsert_edge(
-        {
-            "persona_id": "alice",
-            "sqlite_edge_id": "edge-1",
-            "from_node_type": "fact",
-            "from_node_id": "missing-source",
-            "to_node_type": "entity",
-            "to_node_id": "missing-target",
-        }
-    ) == {}
+    with pytest.raises(RuntimeError, match="upsert_edge endpoint is not indexed"):
+        adapter.upsert_edge(
+            {
+                "persona_id": "alice",
+                "sqlite_edge_id": "edge-1",
+                "from_node_type": "fact",
+                "from_node_id": "missing-source",
+                "to_node_type": "entity",
+                "to_node_id": "missing-target",
+            }
+        )
     edge = {
         "persona_id": "alice",
         "sqlite_edge_id": "edge-1",

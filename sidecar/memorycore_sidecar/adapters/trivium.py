@@ -92,7 +92,7 @@ class TriviumAdapter(MirrorAdapter):
         with self._lock:
             db = self._db_for_persona(persona_id)
             if db.get(source_id) is None or db.get(target_id) is None:
-                return {}
+                raise RuntimeError("upsert_edge endpoint is not indexed in mirror")
 
             label = _edge_label(edge)
             for existing in db.get_edges(source_id):
