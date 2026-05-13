@@ -104,6 +104,25 @@ class TriviumAdapter(MirrorAdapter):
         return {}
 
     def delete_edge(self, edge: dict[str, Any]) -> dict[str, Any]:
+        persona_id = str(edge["persona_id"])
+        source_id = _edge_endpoint_id(edge, persona_id, "from")
+        target_id = _edge_endpoint_id(edge, persona_id, "to")
+        label = _edge_label(edge)
+        if source_id is None or target_id is None:
+            return {}
+
+        with self._lock:
+            db = self._db_for_persona(persona_id)
+            unlink = _resolve_unlink(db)
+            if unlink is None:
+                raise RuntimeError(
+                    "delete_edge requires mirror rebuild: TriviumDB adapter has no unlink API"
+                )
+            if db.get(source_id) is None or db.get(target_id) is None:
+                return {}
+
+            _call_unlink(unlink, source_id, target_id, label)
+            db.flush()
         return {}
 
     def clear_namespace(self, persona_id: str) -> dict[str, Any]:
@@ -225,3 +244,28 @@ def _edge_weight(edge: dict[str, Any]) -> float:
     if not math.isfinite(weight):
         raise ValueError("edge weight must be a finite float")
     return weight
+
+
+def _resolve_unlink(db: Any) -> Any | None:
+    for name in ("unlink", "delete_edge", "remove_edge"):
+        method = getattr(db, name, None)
+        if callable(method):
+            return method
+    return None
+
+
+def _call_unlink(unlink: Any, source_id: int, target_id: int, label: str) -> None:
+    attempts = (
+        ((source_id, target_id), {"label": label}),
+        ((source_id, target_id, label), {}),
+        ((source_id, target_id), {}),
+    )
+    last_error: TypeError | None = None
+    for args, kwargs in attempts:
+        try:
+            unlink(*args, **kwargs)
+            return
+        except TypeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error

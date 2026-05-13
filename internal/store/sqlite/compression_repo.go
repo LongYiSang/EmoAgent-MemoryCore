@@ -123,14 +123,25 @@ func (r *CompressionRepository) Apply(ctx context.Context, req CompressionReques
 		if err = insertNarrativeTx(ctx, tx, prepared.PersonaID, *prepared.Narrative, prepared.Now); err != nil {
 			return CompressionResult{}, err
 		}
+		if err = enqueueCompressionNodeSyncTx(ctx, tx, r.newID(), prepared.PersonaID, "narrative", prepared.Narrative.ID); err != nil {
+			return CompressionResult{}, err
+		}
 	}
 	for _, insight := range prepared.Insights {
 		if err = insertInsightTx(ctx, tx, prepared.PersonaID, insight, prepared.Now); err != nil {
 			return CompressionResult{}, err
 		}
+		if err = enqueueCompressionNodeSyncTx(ctx, tx, r.newID(), prepared.PersonaID, "insight", insight.ID); err != nil {
+			return CompressionResult{}, err
+		}
 	}
 	if err = insertDerivedLinksTx(ctx, tx, prepared, result.DerivedLinkIDs); err != nil {
 		return CompressionResult{}, err
+	}
+	for _, linkID := range result.DerivedLinkIDs {
+		if err = enqueueCompressionEdgeSyncTx(ctx, tx, r.newID(), prepared.PersonaID, linkID); err != nil {
+			return CompressionResult{}, err
+		}
 	}
 	if err = consolidateCompressionSourcesTx(ctx, tx, prepared.PersonaID, prepared.SourceFactIDs, prepared.Now); err != nil {
 		return CompressionResult{}, err
@@ -573,6 +584,20 @@ func enqueueCompressionIndexSyncTx(ctx context.Context, tx *sql.Tx, id string, p
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
 VALUES (?, ?, 'fact', ?, 'upsert_node')`, id, personaID, factID)
+	return err
+}
+
+func enqueueCompressionNodeSyncTx(ctx context.Context, tx *sql.Tx, id string, personaID string, nodeType string, nodeID string) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
+VALUES (?, ?, ?, ?, 'upsert_node')`, id, personaID, nodeType, nodeID)
+	return err
+}
+
+func enqueueCompressionEdgeSyncTx(ctx context.Context, tx *sql.Tx, id string, personaID string, linkID string) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
+VALUES (?, ?, 'memory_link', ?, 'upsert_edge')`, id, personaID, linkID)
 	return err
 }
 

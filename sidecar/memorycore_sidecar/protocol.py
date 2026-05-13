@@ -32,7 +32,15 @@ _REQUIRED_FIELDS = {
         "to_node_type",
         "to_node_id",
     ),
-    "delete_edge": ("persona_id", "sqlite_edge_id"),
+    "delete_edge": (
+        "persona_id",
+        "sqlite_edge_id",
+        "link_type",
+        "from_node_type",
+        "from_node_id",
+        "to_node_type",
+        "to_node_id",
+    ),
 }
 
 

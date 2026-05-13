@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	internalmirror "github.com/longyisang/emoagent-memorycore/internal/mirror"
@@ -11,12 +12,20 @@ import (
 )
 
 const defaultMirrorSyncLimit = 100
+const mirrorRebuildSupersedeReason = "superseded by mirror rebuild"
 
 func (s *service) RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error) {
 	if s.mirrorAdapter == nil {
 		return nil, fmt.Errorf("%w: MirrorAdapter is required", ErrInvalidOptions)
 	}
 	personaID := defaultString(req.PersonaID, s.persona)
+	ready, err := s.mirrorState.IsReady(ctx, personaID)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return nil, fmt.Errorf("%w: mirror sync blocked for persona %q because mirror state is not ready", ErrInvalidRequest, personaID)
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = defaultMirrorSyncLimit
@@ -50,6 +59,12 @@ func (s *service) RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (
 	}
 	personaID := defaultString(req.PersonaID, s.persona)
 	if err := s.ensurePersona(ctx, personaID); err != nil {
+		return nil, err
+	}
+	if _, err := s.mirrorQueue.PrepareForPersonaRebuild(ctx, personaID, mirrorRebuildSupersedeReason); err != nil {
+		if errors.Is(err, memsqlite.ErrMirrorQueuePersonaProcessingActive) {
+			return nil, fmt.Errorf("%w: mirror rebuild blocked for persona %q because processing queue rows remain", ErrInvalidRequest, personaID)
+		}
 		return nil, err
 	}
 	if err := s.mirrorState.MarkRebuilding(ctx, personaID); err != nil {
@@ -96,11 +111,12 @@ func (b mirrorQueueBridge) Claim(ctx context.Context, limit int) ([]internalmirr
 	result := make([]internalmirror.QueueRow, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, internalmirror.QueueRow{
-			ID:        row.ID,
-			PersonaID: row.PersonaID,
-			NodeType:  row.NodeType,
-			NodeID:    row.NodeID,
-			Operation: internalmirror.Operation(row.Operation),
+			ID:          row.ID,
+			PersonaID:   row.PersonaID,
+			NodeType:    row.NodeType,
+			NodeID:      row.NodeID,
+			Operation:   internalmirror.Operation(row.Operation),
+			PayloadJSON: row.PayloadJSON,
 		})
 	}
 	return result, nil
@@ -224,8 +240,15 @@ func (b mirrorAdapterBridge) UpsertEdge(ctx context.Context, payload internalmir
 
 func (b mirrorAdapterBridge) DeleteEdge(ctx context.Context, ref internalmirror.EdgeRef) error {
 	return b.adapter.DeleteEdge(ctx, MirrorEdgeRef{
-		PersonaID:    ref.PersonaID,
-		SQLiteEdgeID: ref.SQLiteEdgeID,
+		PersonaID:        ref.PersonaID,
+		SQLiteEdgeID:     ref.SQLiteEdgeID,
+		LinkType:         ref.LinkType,
+		FromNodeType:     ref.FromNodeType,
+		FromNodeID:       ref.FromNodeID,
+		ToNodeType:       ref.ToNodeType,
+		ToNodeID:         ref.ToNodeID,
+		FromMirrorNodeID: ref.FromMirrorNodeID,
+		ToMirrorNodeID:   ref.ToMirrorNodeID,
 	})
 }
 
@@ -352,8 +375,15 @@ func (a sidecarMirrorAdapter) UpsertEdge(ctx context.Context, payload MirrorEdge
 
 func (a sidecarMirrorAdapter) DeleteEdge(ctx context.Context, ref MirrorEdgeRef) error {
 	return a.client.DeleteEdge(ctx, internalmirror.EdgeRef{
-		PersonaID:    ref.PersonaID,
-		SQLiteEdgeID: ref.SQLiteEdgeID,
+		PersonaID:        ref.PersonaID,
+		SQLiteEdgeID:     ref.SQLiteEdgeID,
+		LinkType:         ref.LinkType,
+		FromNodeType:     ref.FromNodeType,
+		FromNodeID:       ref.FromNodeID,
+		ToNodeType:       ref.ToNodeType,
+		ToNodeID:         ref.ToNodeID,
+		FromMirrorNodeID: ref.FromMirrorNodeID,
+		ToMirrorNodeID:   ref.ToMirrorNodeID,
 	})
 }
 

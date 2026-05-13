@@ -211,7 +211,65 @@ def test_trivium_adapter_upsert_edge_noops_when_endpoint_missing(tmp_path: Path)
             "to_node_id": "missing-target",
         }
     ) == {}
-    assert adapter.delete_edge({"persona_id": "alice", "sqlite_edge_id": "edge-1"}) == {}
+    edge = {
+        "persona_id": "alice",
+        "sqlite_edge_id": "edge-1",
+        "link_type": "ABOUT_ENTITY",
+        "from_node_type": "fact",
+        "from_node_id": "missing-source",
+        "to_node_type": "entity",
+        "to_node_id": "missing-target",
+    }
+    db = adapter._db_for_persona("alice")
+    has_unlink_api = any(
+        callable(getattr(db, name, None))
+        for name in ("unlink", "delete_edge", "remove_edge")
+    )
+    if has_unlink_api:
+        assert adapter.delete_edge(edge) == {}
+    else:
+        with pytest.raises(
+            RuntimeError,
+            match="delete_edge requires mirror rebuild: TriviumDB adapter has no unlink API",
+        ):
+            adapter.delete_edge(edge)
+
+
+def test_trivium_adapter_delete_edge_uses_unlink_when_supported():
+    calls: list[tuple[int, int, str]] = []
+    flushed: list[bool] = []
+
+    class UnlinkDB:
+        def get(self, node_id: int):
+            return {"id": node_id}
+
+        def unlink(self, source_id: int, target_id: int, label: str):
+            calls.append((source_id, target_id, label))
+            return True
+
+        def flush(self):
+            flushed.append(True)
+
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter._lock = threading.RLock()
+    adapter._dbs = {"alice": UnlinkDB()}
+
+    assert (
+        adapter.delete_edge(
+            {
+                "persona_id": "alice",
+                "sqlite_edge_id": "edge-1",
+                "link_type": "ABOUT_ENTITY",
+                "from_node_type": "fact",
+                "from_node_id": "fact-1",
+                "to_node_type": "entity",
+                "to_node_id": "entity-1",
+            }
+        )
+        == {}
+    )
+    assert calls and calls[0][2] == "ABOUT_ENTITY"
+    assert flushed == [True]
 
 
 def _config(tmp_path: Path) -> SidecarConfig:

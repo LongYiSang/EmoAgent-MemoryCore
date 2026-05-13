@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +14,14 @@ func TestWorkerProcessesAllSupportedOperations(t *testing.T) {
 		{ID: "q1", PersonaID: "p1", NodeType: "fact", NodeID: "fact-1", Operation: OperationUpsertNode},
 		{ID: "q2", PersonaID: "p1", NodeType: "fact", NodeID: "fact-1", Operation: OperationDeleteNode},
 		{ID: "q3", PersonaID: "p1", NodeType: "edge", NodeID: "edge-1", Operation: OperationUpsertEdge},
-		{ID: "q4", PersonaID: "p1", NodeType: "edge", NodeID: "edge-1", Operation: OperationDeleteEdge},
+		{
+			ID:          "q4",
+			PersonaID:   "p1",
+			NodeType:    "edge",
+			NodeID:      "edge-1",
+			Operation:   OperationDeleteEdge,
+			PayloadJSON: `{"persona_id":"p1","sqlite_edge_id":"edge-1","link_type":"ABOUT_ENTITY","from_node_type":"fact","from_node_id":"fact-1","to_node_type":"entity","to_node_id":"entity-1"}`,
+		},
 	}}
 	payloads := &fakePayloadBuilder{
 		nodes: map[string]fakeNodePayloadResult{
@@ -75,6 +83,13 @@ func TestWorkerProcessesAllSupportedOperations(t *testing.T) {
 		"indexed:p1:fact:fact-1:1001",
 		"deleted:p1:fact:fact-1",
 	})
+	if len(adapter.deleteEdgeRefs) != 1 {
+		t.Fatalf("delete edge refs = %d, want 1", len(adapter.deleteEdgeRefs))
+	}
+	ref := adapter.deleteEdgeRefs[0]
+	if ref.LinkType != "ABOUT_ENTITY" || ref.FromNodeType != "fact" || ref.FromNodeID != "fact-1" || ref.ToNodeType != "entity" || ref.ToNodeID != "entity-1" {
+		t.Fatalf("delete edge ref = %#v", ref)
+	}
 }
 
 func TestWorkerFailsRowWhenAdapterFails(t *testing.T) {
@@ -141,6 +156,34 @@ func TestWorkerCompletesIneligibleNodeWithoutAdapterCall(t *testing.T) {
 	assertStrings(t, queue.failed, nil)
 }
 
+func TestWorkerFailsDeleteEdgeRowWithoutRichPayload(t *testing.T) {
+	ctx := context.Background()
+	queue := &fakeQueue{rows: []QueueRow{
+		{ID: "q1", PersonaID: "p1", NodeType: "memory_link", NodeID: "edge-1", Operation: OperationDeleteEdge},
+	}}
+	adapter := &fakeMirrorAdapter{}
+
+	result, err := NewWorker(WorkerOptions{
+		Queue:    queue,
+		Payloads: &fakePayloadBuilder{},
+		Adapter:  adapter,
+	}).RunOnce(ctx, 1)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if result.Claimed != 1 || result.Completed != 0 || result.Failed != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(queue.failed) != 1 {
+		t.Fatalf("failed rows = %#v, want one row failure", queue.failed)
+	}
+	if !strings.Contains(queue.failed[0], "payload_json") {
+		t.Fatalf("failed row message = %q, want payload_json validation error", queue.failed[0])
+	}
+	assertStrings(t, queue.completed, nil)
+	assertStrings(t, adapter.calls, nil)
+}
+
 type fakeQueue struct {
 	rows      []QueueRow
 	completed []string
@@ -192,9 +235,10 @@ func (f *fakePayloadBuilder) BuildEdgePayload(ctx context.Context, personaID str
 }
 
 type fakeMirrorAdapter struct {
-	nodeMirrorID int64
-	err          error
-	calls        []string
+	nodeMirrorID   int64
+	err            error
+	calls          []string
+	deleteEdgeRefs []EdgeRef
 }
 
 func (f *fakeMirrorAdapter) UpsertNode(ctx context.Context, payload NodePayload) (NodeUpsertResult, error) {
@@ -217,6 +261,7 @@ func (f *fakeMirrorAdapter) UpsertEdge(ctx context.Context, payload EdgePayload)
 
 func (f *fakeMirrorAdapter) DeleteEdge(ctx context.Context, ref EdgeRef) error {
 	f.calls = append(f.calls, "delete_edge:"+ref.PersonaID+":"+ref.SQLiteEdgeID)
+	f.deleteEdgeRefs = append(f.deleteEdgeRefs, ref)
 	return f.err
 }
 

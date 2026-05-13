@@ -36,6 +36,7 @@ type MemoryContext struct {
 	Blocks        []MemoryBlock
 	DoNotMention  []MemorySuppression
 	TokenEstimate int
+	Mirror        *MirrorRetrievalDiagnostics
 }
 
 type MemoryBlock struct {
@@ -55,6 +56,22 @@ type MemorySuppression struct {
 	NodeType string
 	NodeID   string
 	Reason   string
+}
+
+type MirrorRetrievalDiagnostics struct {
+	Status                string                       `json:"status"`
+	SidecarCandidateCount int                          `json:"sidecar_candidate_count"`
+	MappedCandidateCount  int                          `json:"mapped_candidate_count"`
+	DroppedCandidateCount int                          `json:"dropped_candidate_count"`
+	Candidates            []MirrorCandidateDiagnostics `json:"candidates,omitempty"`
+}
+
+type MirrorCandidateDiagnostics struct {
+	TriviumNodeID int64   `json:"trivium_node_id,omitempty"`
+	SQLiteFactID  string  `json:"sqlite_fact_id,omitempty"`
+	Score         float64 `json:"score,omitempty"`
+	Source        string  `json:"source,omitempty"`
+	DropReason    string  `json:"drop_reason,omitempty"`
 }
 
 type RebuildSearchDocumentsRequest struct {

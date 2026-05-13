@@ -13,6 +13,7 @@ import (
 
 func TestSidecarClientPostsAllOperationsAndReturnsMirrorID(t *testing.T) {
 	var operations []string
+	var deleteEdge map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mirror/operation" {
 			t.Fatalf("path = %s, want /mirror/operation", r.URL.Path)
@@ -33,7 +34,15 @@ func TestSidecarClientPostsAllOperationsAndReturnsMirrorID(t *testing.T) {
 		if request["persona_id"] != "default" {
 			t.Fatalf("persona_id = %v, want default", request["persona_id"])
 		}
-		operations = append(operations, request["operation"].(string))
+		operation := request["operation"].(string)
+		operations = append(operations, operation)
+		if operation == string(OperationDeleteEdge) {
+			edge, ok := request["edge"].(map[string]any)
+			if !ok {
+				t.Fatalf("delete edge payload type = %T, want map", request["edge"])
+			}
+			deleteEdge = edge
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"schema_version":  "memory_mirror_operation_result.v0.1",
 			"operation_id":    request["operation_id"],
@@ -64,11 +73,33 @@ func TestSidecarClientPostsAllOperationsAndReturnsMirrorID(t *testing.T) {
 	if err := client.UpsertEdge(ctx, EdgePayload{PersonaID: "default", SQLiteEdgeID: "edge-1", LinkType: "ABOUT_ENTITY"}); err != nil {
 		t.Fatalf("upsert edge: %v", err)
 	}
-	if err := client.DeleteEdge(ctx, EdgeRef{PersonaID: "default", SQLiteEdgeID: "edge-1"}); err != nil {
+	if err := client.DeleteEdge(ctx, EdgeRef{
+		PersonaID:        "default",
+		SQLiteEdgeID:     "edge-1",
+		LinkType:         "ABOUT_ENTITY",
+		FromNodeType:     "fact",
+		FromNodeID:       "fact-1",
+		ToNodeType:       "entity",
+		ToNodeID:         "entity-1",
+		FromMirrorNodeID: ptrInt64(101),
+		ToMirrorNodeID:   ptrInt64(202),
+	}); err != nil {
 		t.Fatalf("delete edge: %v", err)
 	}
 
 	assertStrings(t, operations, []string{"upsert_node", "delete_node", "upsert_edge", "delete_edge"})
+	if deleteEdge == nil {
+		t.Fatal("delete_edge payload not captured")
+	}
+	assertMapStringField(t, deleteEdge, "persona_id", "default")
+	assertMapStringField(t, deleteEdge, "sqlite_edge_id", "edge-1")
+	assertMapStringField(t, deleteEdge, "link_type", "ABOUT_ENTITY")
+	assertMapStringField(t, deleteEdge, "from_node_type", "fact")
+	assertMapStringField(t, deleteEdge, "from_node_id", "fact-1")
+	assertMapStringField(t, deleteEdge, "to_node_type", "entity")
+	assertMapStringField(t, deleteEdge, "to_node_id", "entity-1")
+	assertMapFloatField(t, deleteEdge, "from_mirror_node_id", 101)
+	assertMapFloatField(t, deleteEdge, "to_mirror_node_id", 202)
 }
 
 func TestSidecarClientReturnsErrorForHTTPFailure(t *testing.T) {
@@ -228,5 +259,25 @@ func TestSidecarClientFindCandidatesCapsAndSanitizesResponse(t *testing.T) {
 	}
 	if result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 1 {
 		t.Fatalf("candidate = %#v, want id 42 score clamped to 1", result.Candidates[0])
+	}
+}
+
+func ptrInt64(v int64) *int64 {
+	return &v
+}
+
+func assertMapStringField(t *testing.T, value map[string]any, field string, want string) {
+	t.Helper()
+	got, ok := value[field].(string)
+	if !ok || got != want {
+		t.Fatalf("%s = %#v, want %q", field, value[field], want)
+	}
+}
+
+func assertMapFloatField(t *testing.T, value map[string]any, field string, want float64) {
+	t.Helper()
+	got, ok := value[field].(float64)
+	if !ok || got != want {
+		t.Fatalf("%s = %#v, want %v", field, value[field], want)
 	}
 }

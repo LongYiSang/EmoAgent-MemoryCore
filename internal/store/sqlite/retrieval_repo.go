@@ -26,13 +26,14 @@ type RetrievalRepository struct {
 }
 
 type RetrievalRequest struct {
-	PersonaID string
-	SessionID *string
-	QueryText string
-	Now       time.Time
-	Policy    RetrievalPolicy
-	Context   RetrievalAffectContext
-	Mirror    []RetrievalMirrorCandidate
+	PersonaID         string
+	SessionID         *string
+	QueryText         string
+	Now               time.Time
+	Policy            RetrievalPolicy
+	Context           RetrievalAffectContext
+	Mirror            []RetrievalMirrorCandidate
+	MirrorDiagnostics *MirrorDiagnostics
 }
 
 type RetrievalPolicy struct {
@@ -54,6 +55,15 @@ type MemoryContext struct {
 	Blocks        []MemoryBlock
 	DoNotMention  []MemorySuppression
 	TokenEstimate int
+	Mirror        *MirrorDiagnostics
+}
+
+type MirrorDiagnostics struct {
+	Status                string
+	SidecarCandidateCount int
+	MappedCandidateCount  int
+	DroppedCandidateCount int
+	Candidates            []MirrorCandidateDiagnostic
 }
 
 type MemoryBlock struct {
@@ -138,6 +148,7 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 
 	contextResult := MemoryContext{
 		DoNotMention: suppressions,
+		Mirror:       req.MirrorDiagnostics,
 	}
 	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
 	for _, candidate := range scored {
@@ -220,6 +231,21 @@ func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID s
 func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req RetrievalRequest, query queryAnalysis, policy RetrievalPolicy, now time.Time, candidates map[string]retrievalCandidate) ([]scoredFact, []MemorySuppression, error) {
 	scored := make([]scoredFact, 0, len(candidates))
 	var suppressions []MemorySuppression
+	mirrorByFact := map[string]RetrievalMirrorCandidate{}
+	for _, mirror := range req.Mirror {
+		if mirror.FactID == "" {
+			continue
+		}
+		mirrorByFact[mirror.FactID] = mirror
+	}
+	candidateIndexByFact := map[string]int{}
+	if req.MirrorDiagnostics != nil {
+		for idx, item := range req.MirrorDiagnostics.Candidates {
+			if item.SQLiteFactID != "" {
+				candidateIndexByFact[item.SQLiteFactID] = idx
+			}
+		}
+	}
 	for _, candidate := range candidates {
 		fact, err := r.getFact(ctx, req.PersonaID, candidate.FactID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -231,6 +257,23 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if ok, err := r.authorityAllows(ctx, fact, policy); err != nil {
 			return nil, nil, err
 		} else if !ok {
+			if req.MirrorDiagnostics != nil {
+				if idx, ok := candidateIndexByFact[fact.ID]; ok {
+					if req.MirrorDiagnostics.Candidates[idx].DropReason == "" {
+						req.MirrorDiagnostics.Candidates[idx].DropReason = "dropped_by_authority_filter"
+						req.MirrorDiagnostics.DroppedCandidateCount++
+					}
+				} else if mirror, ok := mirrorByFact[fact.ID]; ok {
+					req.MirrorDiagnostics.Candidates = append(req.MirrorDiagnostics.Candidates, MirrorCandidateDiagnostic{
+						TriviumNodeID: mirror.TriviumNodeID,
+						SQLiteFactID:  fact.ID,
+						Score:         mirror.Score,
+						Source:        mirror.Source,
+						DropReason:    "dropped_by_authority_filter",
+					})
+					req.MirrorDiagnostics.DroppedCandidateCount++
+				}
+			}
 			continue
 		}
 		fatigue, err := r.fatigueCount(ctx, req.SessionID, fact.ID)

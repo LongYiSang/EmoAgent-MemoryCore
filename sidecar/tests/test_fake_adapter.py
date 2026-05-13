@@ -24,22 +24,50 @@ def test_fake_adapter_delete_and_edge_operations_return_ok_payloads():
     assert adapter.delete_node(
         {"persona_id": "default", "node_type": "fact", "sqlite_node_id": "fact-1"}
     ) == {}
-    assert adapter.upsert_edge(
-        {
-            "persona_id": "default",
-            "sqlite_edge_id": "edge-1",
-            "link_type": "ABOUT_ENTITY",
-            "from_node_type": "fact",
-            "from_node_id": "fact-1",
-            "to_node_type": "entity",
-            "to_node_id": "entity-1",
-            "direction": "out",
-            "confidence": 0.9,
-            "weight": 1.0,
-            "payload": {"direction": "out"},
-        }
-    ) == {}
-    assert adapter.delete_edge({"persona_id": "default", "sqlite_edge_id": "edge-1"}) == {}
+    edge = {
+        "persona_id": "default",
+        "sqlite_edge_id": "edge-1",
+        "link_type": "ABOUT_ENTITY",
+        "from_node_type": "fact",
+        "from_node_id": "fact-1",
+        "to_node_type": "entity",
+        "to_node_id": "entity-1",
+        "direction": "out",
+        "confidence": 0.9,
+        "weight": 1.0,
+        "payload": {"direction": "out"},
+    }
+    assert adapter.upsert_edge(edge) == {}
+    assert adapter.delete_edge(edge) == {}
+
+
+def test_fake_adapter_tracks_edges_and_clear_namespace_clears_persona_edges():
+    adapter = FakeMirrorAdapter()
+    alice_edge = {
+        "persona_id": "alice",
+        "sqlite_edge_id": "edge-1",
+        "link_type": "ABOUT_ENTITY",
+        "from_node_type": "fact",
+        "from_node_id": "fact-1",
+        "to_node_type": "entity",
+        "to_node_id": "entity-1",
+    }
+    bob_edge = {
+        "persona_id": "bob",
+        "sqlite_edge_id": "edge-1",
+        "link_type": "ABOUT_ENTITY",
+        "from_node_type": "fact",
+        "from_node_id": "fact-1",
+        "to_node_type": "entity",
+        "to_node_id": "entity-1",
+    }
+
+    assert adapter.upsert_edge(alice_edge) == {}
+    assert adapter.upsert_edge(bob_edge) == {}
+    assert adapter.delete_edge(alice_edge) == {}
+    assert adapter.delete_edge(alice_edge) == {}
+    assert adapter.clear_namespace("bob") == {}
+    assert adapter.delete_edge(bob_edge) == {}
 
 
 def test_fake_adapter_returns_upserted_nodes_as_candidates():

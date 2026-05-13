@@ -242,6 +242,12 @@ func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 		t.Fatalf("retrieve with mirror: %v", err)
 	}
 	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	if contextResult.Mirror == nil || contextResult.Mirror.Status != "used" {
+		t.Fatalf("mirror diagnostics = %#v, want used", contextResult.Mirror)
+	}
+	if contextResult.Mirror.SidecarCandidateCount != 1 || contextResult.Mirror.MappedCandidateCount != 1 || contextResult.Mirror.DroppedCandidateCount != 0 {
+		t.Fatalf("mirror counts = %#v", contextResult.Mirror)
+	}
 }
 
 func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
@@ -270,6 +276,21 @@ func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
 		t.Fatalf("retrieve with stale mirror: %v", err)
 	}
 	requireNoMemoryItem(t, contextResult, fact.ID)
+	if contextResult.Mirror == nil || contextResult.Mirror.Status != "used" {
+		t.Fatalf("mirror diagnostics = %#v, want used", contextResult.Mirror)
+	}
+	if contextResult.Mirror.DroppedCandidateCount == 0 {
+		t.Fatalf("mirror dropped count = %#v, want > 0", contextResult.Mirror)
+	}
+	var sawAuthorityDrop bool
+	for _, candidate := range contextResult.Mirror.Candidates {
+		if candidate.SQLiteFactID == fact.ID && candidate.DropReason == "dropped_by_authority_filter" {
+			sawAuthorityDrop = true
+		}
+	}
+	if !sawAuthorityDrop {
+		t.Fatalf("mirror candidates = %#v, want dropped_by_authority_filter for %s", contextResult.Mirror.Candidates, fact.ID)
+	}
 }
 
 func TestServiceRetrieveUseMirrorFallsBackWhenAdapterFails(t *testing.T) {
@@ -353,10 +374,104 @@ func TestServiceRetrieveUseMirrorFallsBackWhenPersonaMirrorStateNotReady(t *test
 			if adapter.calls != 0 {
 				t.Fatalf("mirror adapter calls = %d, want 0 for state %s", adapter.calls, state)
 			}
+			if contextResult.Mirror == nil || contextResult.Mirror.Status != "persona_not_ready" {
+				t.Fatalf("mirror diagnostics = %#v, want persona_not_ready", contextResult.Mirror)
+			}
 			requireMemoryItem(t, contextResult, coffee.ID, "用户喜欢咖啡。", "")
 			requireNoMemoryItem(t, contextResult, tea.ID)
 		})
 	}
+}
+
+func TestServiceRetrieveMirrorDiagnosticsDisabledByConfig(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "coffee"})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if result.Mirror == nil || result.Mirror.Status != "disabled_by_config" {
+		t.Fatalf("mirror diagnostics = %#v, want disabled_by_config", result.Mirror)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("adapter calls = %d, want 0", adapter.calls)
+	}
+}
+
+func TestServiceRetrieveMirrorDiagnosticsAdapterMissing(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openRetrievalMirrorService(t, ctx, nil)
+	defer svc.Close()
+
+	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "coffee",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if result.Mirror == nil || result.Mirror.Status != "adapter_missing" {
+		t.Fatalf("mirror diagnostics = %#v, want adapter_missing", result.Mirror)
+	}
+}
+
+func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(t *testing.T) {
+	t.Run("sidecar_error", func(t *testing.T) {
+		ctx := context.Background()
+		adapter := &retrievalMirrorAdapter{err: sql.ErrConnDone}
+		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+		defer svc.Close()
+
+		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			QueryText: "coffee",
+			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+		})
+		if err != nil {
+			t.Fatalf("retrieve: %v", err)
+		}
+		if result.Mirror == nil || result.Mirror.Status != "sidecar_error" {
+			t.Fatalf("mirror diagnostics = %#v, want sidecar_error", result.Mirror)
+		}
+	})
+
+	t.Run("sidecar_degraded", func(t *testing.T) {
+		ctx := context.Background()
+		adapter := &retrievalMirrorAdapter{degraded: true}
+		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+		defer svc.Close()
+
+		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			QueryText: "coffee",
+			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+		})
+		if err != nil {
+			t.Fatalf("retrieve: %v", err)
+		}
+		if result.Mirror == nil || result.Mirror.Status != "sidecar_degraded" {
+			t.Fatalf("mirror diagnostics = %#v, want sidecar_degraded", result.Mirror)
+		}
+	})
+
+	t.Run("no_candidates", func(t *testing.T) {
+		ctx := context.Background()
+		adapter := &retrievalMirrorAdapter{}
+		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+		defer svc.Close()
+
+		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			QueryText: "coffee",
+			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+		})
+		if err != nil {
+			t.Fatalf("retrieve: %v", err)
+		}
+		if result.Mirror == nil || result.Mirror.Status != "no_candidates" {
+			t.Fatalf("mirror diagnostics = %#v, want no_candidates", result.Mirror)
+		}
+	})
 }
 
 type retrievalMirrorAdapter struct {

@@ -333,7 +333,7 @@ func (s *service) ConsolidateCandidate(ctx context.Context, req ConsolidateCandi
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	policy := req.Policy
-	mirrorCandidates, err := s.mirrorFactCandidates(ctx, personaID, req.QueryText, policy)
+	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, personaID, req.QueryText, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +355,8 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 			UserMoodLabel:         req.Context.UserMoodLabel,
 			RelationshipMoodLabel: req.Context.RelationshipMoodLabel,
 		},
-		Mirror: mirrorCandidates,
+		Mirror:            mirrorCandidates,
+		MirrorDiagnostics: mirrorDiagnostics,
 	})
 	if err != nil {
 		return nil, err
@@ -363,20 +364,23 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	return memoryContextFromStore(result), nil
 }
 
-func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, error) {
+func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
+	diagnostics := &memsqlite.MirrorDiagnostics{Status: "disabled_by_config"}
 	if !policy.UseMirror {
-		return nil, nil
+		return nil, diagnostics, nil
 	}
+	diagnostics.Status = "persona_not_ready"
 	ready, err := s.mirrorState.IsReady(ctx, personaID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !ready {
-		return nil, nil
+		return nil, diagnostics, nil
 	}
+	diagnostics.Status = "adapter_missing"
 	candidateAdapter, ok := s.mirrorAdapter.(MirrorCandidateAdapter)
 	if !ok || candidateAdapter == nil {
-		return nil, nil
+		return nil, diagnostics, nil
 	}
 	limit := policy.FinalMemoryCount
 	if limit <= 0 {
@@ -388,10 +392,17 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 		Limit:     limit * 4,
 	})
 	if err != nil || result == nil {
-		return nil, nil
+		diagnostics.Status = "sidecar_error"
+		return nil, diagnostics, nil
 	}
 	if result.Degraded {
-		return nil, nil
+		diagnostics.Status = "sidecar_degraded"
+		return nil, diagnostics, nil
+	}
+	diagnostics.SidecarCandidateCount = len(result.Candidates)
+	if len(result.Candidates) == 0 {
+		diagnostics.Status = "no_candidates"
+		return nil, diagnostics, nil
 	}
 	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
 	for _, candidate := range result.Candidates {
@@ -401,7 +412,29 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 			Source:        candidate.Source,
 		})
 	}
-	return s.mirrorMap.MapFactCandidates(ctx, personaID, candidates)
+	report, err := s.mirrorMap.MapFactCandidatesWithDiagnostics(ctx, personaID, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
+	diagnostics.SidecarCandidateCount = report.SidecarCandidateCount
+	diagnostics.MappedCandidateCount = report.MappedCandidateCount
+	diagnostics.DroppedCandidateCount = report.DroppedCandidateCount
+	diagnostics.Candidates = make([]memsqlite.MirrorCandidateDiagnostic, 0, len(report.Diagnostics))
+	for _, item := range report.Diagnostics {
+		diagnostics.Candidates = append(diagnostics.Candidates, memsqlite.MirrorCandidateDiagnostic{
+			TriviumNodeID: item.TriviumNodeID,
+			SQLiteFactID:  item.SQLiteFactID,
+			Score:         item.Score,
+			Source:        item.Source,
+			DropReason:    item.DropReason,
+		})
+	}
+	if diagnostics.MappedCandidateCount == 0 && diagnostics.SidecarCandidateCount > 0 {
+		diagnostics.Status = "candidates_unmapped_or_stale"
+	} else {
+		diagnostics.Status = "used"
+	}
+	return report.Mapped, diagnostics, nil
 }
 
 func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error) {
@@ -735,6 +768,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		Blocks:        make([]MemoryBlock, 0, len(context.Blocks)),
 		DoNotMention:  make([]MemorySuppression, 0, len(context.DoNotMention)),
 		TokenEstimate: context.TokenEstimate,
+		Mirror:        mirrorDiagnosticsFromStore(context.Mirror),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -757,6 +791,29 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 			NodeType: suppression.NodeType,
 			NodeID:   suppression.NodeID,
 			Reason:   suppression.Reason,
+		})
+	}
+	return result
+}
+
+func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetrievalDiagnostics {
+	if value == nil {
+		return nil
+	}
+	result := &MirrorRetrievalDiagnostics{
+		Status:                value.Status,
+		SidecarCandidateCount: value.SidecarCandidateCount,
+		MappedCandidateCount:  value.MappedCandidateCount,
+		DroppedCandidateCount: value.DroppedCandidateCount,
+		Candidates:            make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
+	}
+	for _, item := range value.Candidates {
+		result.Candidates = append(result.Candidates, MirrorCandidateDiagnostics{
+			TriviumNodeID: item.TriviumNodeID,
+			SQLiteFactID:  item.SQLiteFactID,
+			Score:         item.Score,
+			Source:        item.Source,
+			DropReason:    item.DropReason,
 		})
 	}
 	return result

@@ -5,6 +5,8 @@ remains the authoritative memory store; TriviumDB can be cleared and rebuilt
 from SQLite at any time. Phase 5 activation, PPR, and MMR are not part of this
 sidecar.
 
+Phase 4 operator notes live in `docs/operations/phase4_retrieval_mirror.md`.
+
 ## Setup
 
 Use Python 3.12 with uv from this directory:
@@ -52,6 +54,8 @@ cd sidecar
 uv run python -m memorycore_sidecar.server --adapter fake --host 127.0.0.1 --port 8765
 ```
 
+Use this for fast sync smoke tests with `go run ./cmd/memoryctl mirror-sync-run --fake-adapter`.
+
 ## Run Real Trivium Adapter
 
 ```powershell
@@ -62,6 +66,9 @@ uv run python -m memorycore_sidecar.server --adapter trivium --config config.tom
 
 `--config` is optional; without it the built-in defaults match
 `config.example.toml`.
+
+The real adapter needs an embedding provider and a TriviumDB install. Keep API
+keys in env vars only.
 
 ## Manual Smoke
 
@@ -74,6 +81,20 @@ go run ./cmd/memoryctl mirror-sync-run --db ./data/memory.db --sidecar-url http:
 go run ./cmd/memoryctl mirror-rebuild --db ./data/memory.db --sidecar-url http://127.0.0.1:8765
 go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference" --use-mirror --sidecar-url http://127.0.0.1:8765
 ```
+
+`mirror-sync-run` processes queued `upsert_node`, `delete_node`, `upsert_edge`,
+and `delete_edge` rows. `rebuild_persona` is not worker-supported in this pass;
+use explicit rebuild instead.
+
+`delete_edge` rows are valid only when the queue payload carries the real link
+endpoint identity. Thin edge-id-only deletes are rejected. If the adapter has
+no unlink API, rebuild the persona namespace.
+
+For health checks, call `GET /health` on the sidecar and inspect
+`index_sync_queue` for pending/failed rows.
+
+If the sidecar is down or the mirror is degraded, stop using `--use-mirror` and
+let retrieval fall back to SQLite. SQLite stays authoritative.
 
 ## Protocol
 

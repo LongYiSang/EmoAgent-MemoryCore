@@ -142,7 +142,8 @@ func TestRetentionRepositoryEnqueuesMirrorUpsertForMappedFact(t *testing.T) {
 	if result.MirrorUpdatesEnqueued != 1 {
 		t.Fatalf("mirror updates enqueued = %d, want 1", result.MirrorUpdatesEnqueued)
 	}
-	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 0)
 
 	second, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", Now: now})
 	if err != nil {
@@ -151,7 +152,8 @@ func TestRetentionRepositoryEnqueuesMirrorUpsertForMappedFact(t *testing.T) {
 	if second.MirrorUpdatesEnqueued != 0 {
 		t.Fatalf("second mirror updates enqueued = %d, want 0", second.MirrorUpdatesEnqueued)
 	}
-	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 0)
 }
 
 func TestRetentionRepositoryDeepArchivesOldArchivedFacts(t *testing.T) {
@@ -255,7 +257,8 @@ func TestRetentionRepositoryDeepArchiveEnqueuesMirrorUpsertForMappedFact(t *test
 	if result.EvaluatedFacts != 1 || result.ExpiredFacts != 0 || result.ArchivedFacts != 0 || result.DeepArchivedFacts != 1 || result.MirrorUpdatesEnqueued != 1 {
 		t.Fatalf("deep archive mapped result = %#v", result)
 	}
-	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
+	requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "upsert_node", 0)
 }
 
 func setFactValidTo(t *testing.T, db *sql.DB, factID string, validTo time.Time) {

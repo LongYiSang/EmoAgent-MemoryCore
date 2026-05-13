@@ -120,7 +120,11 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 			return RetentionResult{}, err
 		}
 		if mapped {
-			if err = enqueueRetentionIndexSyncTx(ctx, tx, r.newID(), req.PersonaID, fact.ID); err != nil {
+			operation, operationErr := retentionMirrorOperationTx(ctx, tx, req.PersonaID, fact.ID)
+			if operationErr != nil {
+				return RetentionResult{}, operationErr
+			}
+			if err = enqueueRetentionIndexSyncTx(ctx, tx, r.newID(), req.PersonaID, fact.ID, operation); err != nil {
 				return RetentionResult{}, err
 			}
 			result.MirrorUpdatesEnqueued++
@@ -146,7 +150,11 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 			return RetentionResult{}, err
 		}
 		if mapped {
-			if err = enqueueRetentionIndexSyncTx(ctx, tx, r.newID(), req.PersonaID, fact.ID); err != nil {
+			operation, operationErr := retentionMirrorOperationTx(ctx, tx, req.PersonaID, fact.ID)
+			if operationErr != nil {
+				return RetentionResult{}, operationErr
+			}
+			if err = enqueueRetentionIndexSyncTx(ctx, tx, r.newID(), req.PersonaID, fact.ID, operation); err != nil {
 				return RetentionResult{}, err
 			}
 			result.MirrorUpdatesEnqueued++
@@ -315,9 +323,30 @@ WHERE persona_id = ?
 	return count > 0, nil
 }
 
-func enqueueRetentionIndexSyncTx(ctx context.Context, tx *sql.Tx, id string, personaID string, factID string) error {
+func enqueueRetentionIndexSyncTx(ctx context.Context, tx *sql.Tx, id string, personaID string, factID string, operation string) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
-VALUES (?, ?, 'fact', ?, 'upsert_node')`, id, personaID, factID)
+VALUES (?, ?, 'fact', ?, ?)`, id, personaID, factID, operation)
 	return err
+}
+
+func retentionMirrorOperationTx(ctx context.Context, tx *sql.Tx, personaID string, factID string) (string, error) {
+	var visibility, validity, lifecycle string
+	var searchable int
+	err := tx.QueryRowContext(ctx, `
+SELECT visibility_status, searchable, validity_status, lifecycle_status
+FROM facts
+WHERE persona_id = ? AND id = ?`, personaID, factID).Scan(&visibility, &searchable, &validity, &lifecycle)
+	if err != nil {
+		return "", err
+	}
+	retrievable := visibility == string(core.VisibilityVisible) &&
+		searchable == 1 &&
+		validity == string(core.ValidityValid) &&
+		lifecycle != string(core.LifecycleArchived) &&
+		lifecycle != string(core.LifecycleDeepArchived)
+	if retrievable {
+		return "upsert_node", nil
+	}
+	return "delete_node", nil
 }

@@ -12,11 +12,12 @@ const (
 )
 
 type QueueRow struct {
-	ID        string
-	PersonaID string
-	NodeType  string
-	NodeID    string
-	Operation Operation
+	ID          string
+	PersonaID   string
+	NodeType    string
+	NodeID      string
+	Operation   Operation
+	PayloadJSON string
 }
 
 type NodeRef struct {
@@ -26,8 +27,15 @@ type NodeRef struct {
 }
 
 type EdgeRef struct {
-	PersonaID    string
-	SQLiteEdgeID string
+	PersonaID        string
+	SQLiteEdgeID     string
+	LinkType         string
+	FromNodeType     string
+	FromNodeID       string
+	ToNodeType       string
+	ToNodeID         string
+	FromMirrorNodeID *int64
+	ToMirrorNodeID   *int64
 }
 
 type NodePayload struct {

@@ -109,3 +109,112 @@ WHERE persona_id = 'default' AND entity_id = ? AND alias = 'Longy' AND alias_typ
 		t.Fatalf("alias count = %d, want 1", count)
 	}
 }
+
+func TestEntityRepositoryUpsertEnqueuesMirrorNodeForMirrorableEntity(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	store := memsqlite.NewStore(db.SQLDB())
+	if err := store.EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		t.Fatalf("ensure persona: %v", err)
+	}
+
+	entities := memsqlite.NewEntityRepository(db.SQLDB())
+	entity := core.Entity{
+		ID:            "entity_mirror_01",
+		PersonaID:     "default",
+		CanonicalName: "Mirrorable Entity",
+		EntityType:    core.EntityTypeConcept,
+		Searchable:    true,
+	}
+	if err := entities.Upsert(ctx, entity); err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 1)
+
+	entity.CanonicalName = "Mirrorable Entity Updated"
+	if err := entities.Upsert(ctx, entity); err != nil {
+		t.Fatalf("update entity: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 2)
+}
+
+func TestEntityRepositoryUpsertEnqueuesMirrorDeleteWhenEntityBecomesUnsearchable(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	store := memsqlite.NewStore(db.SQLDB())
+	if err := store.EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		t.Fatalf("ensure persona: %v", err)
+	}
+
+	entities := memsqlite.NewEntityRepository(db.SQLDB())
+	entity := core.Entity{
+		ID:            "entity_mirror_delete_01",
+		PersonaID:     "default",
+		CanonicalName: "Mirror Delete Target",
+		EntityType:    core.EntityTypeConcept,
+		Searchable:    true,
+	}
+	if err := entities.Upsert(ctx, entity); err != nil {
+		t.Fatalf("upsert visible entity: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "delete_node", 0)
+
+	entity.Searchable = false
+	entity.VisibilityStatus = core.VisibilityVisible
+	if err := entities.Upsert(ctx, entity); err != nil {
+		t.Fatalf("upsert unsearchable entity: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "delete_node", 1)
+}
+
+func TestEntityRepositoryEnsureAliasInsertEnqueuesEntityUpsertNode(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	store := memsqlite.NewStore(db.SQLDB())
+	if err := store.EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		t.Fatalf("ensure persona: %v", err)
+	}
+
+	entities := memsqlite.NewEntityRepository(db.SQLDB())
+	entity := core.Entity{
+		ID:            "entity_alias_enqueue",
+		PersonaID:     "default",
+		CanonicalName: "Alias Target",
+		EntityType:    core.EntityTypeUser,
+		Searchable:    true,
+	}
+	if err := entities.Upsert(ctx, entity); err != nil {
+		t.Fatalf("upsert entity: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 1)
+
+	if _, err := entities.EnsureAlias(ctx, core.EntityAlias{
+		ID:        "alias_enqueue_01",
+		PersonaID: "default",
+		EntityID:  entity.ID,
+		Alias:     "Alias One",
+		AliasType: core.AliasTypeSurface,
+	}); err != nil {
+		t.Fatalf("insert alias: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 2)
+
+	if _, err := entities.EnsureAlias(ctx, core.EntityAlias{
+		ID:        "alias_enqueue_02",
+		PersonaID: "default",
+		EntityID:  entity.ID,
+		Alias:     "Alias One",
+		AliasType: core.AliasTypeSurface,
+	}); err != nil {
+		t.Fatalf("insert duplicate alias: %v", err)
+	}
+	requireQueueCount(t, db.SQLDB(), "entity", entity.ID, "upsert_node", 2)
+}

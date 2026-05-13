@@ -21,7 +21,7 @@ func TestRunMirrorSyncWithFakeAdapter(t *testing.T) {
 	)
 
 	out := requireRunOK(t, "mirror-sync-run", "--db", dbPath, "--limit", "10", "--fake-adapter", "--format", "text")
-	want := "claimed=3\ncompleted=3\nfailed=0\nskipped=1\n"
+	want := "claimed=4\ncompleted=4\nfailed=0\nskipped=1\n"
 	if out != want {
 		t.Fatalf("mirror sync output = %q, want %q", out, want)
 	}

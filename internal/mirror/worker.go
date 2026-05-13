@@ -2,8 +2,10 @@ package mirror
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type Worker struct {
@@ -148,9 +150,9 @@ func (w *Worker) processUpsertEdge(ctx context.Context, row QueueRow) (bool, boo
 }
 
 func (w *Worker) processDeleteEdge(ctx context.Context, row QueueRow) (bool, bool, error) {
-	ref := EdgeRef{
-		PersonaID:    row.PersonaID,
-		SQLiteEdgeID: row.NodeID,
+	ref, err := deleteEdgeRefFromQueueRow(row)
+	if err != nil {
+		return false, false, err
 	}
 	if err := w.adapter.DeleteEdge(ctx, ref); err != nil {
 		return false, false, err
@@ -159,4 +161,53 @@ func (w *Worker) processDeleteEdge(ctx context.Context, row QueueRow) (bool, boo
 		return false, false, err
 	}
 	return true, false, nil
+}
+
+type deleteEdgePayload struct {
+	PersonaID        string `json:"persona_id"`
+	SQLiteEdgeID     string `json:"sqlite_edge_id"`
+	LinkType         string `json:"link_type"`
+	FromNodeType     string `json:"from_node_type"`
+	FromNodeID       string `json:"from_node_id"`
+	ToNodeType       string `json:"to_node_type"`
+	ToNodeID         string `json:"to_node_id"`
+	FromMirrorNodeID *int64 `json:"from_mirror_node_id,omitempty"`
+	ToMirrorNodeID   *int64 `json:"to_mirror_node_id,omitempty"`
+}
+
+func deleteEdgeRefFromQueueRow(row QueueRow) (EdgeRef, error) {
+	payloadJSON := strings.TrimSpace(row.PayloadJSON)
+	if payloadJSON == "" {
+		return EdgeRef{}, fmt.Errorf("delete_edge row %s missing payload_json", row.ID)
+	}
+	var payload deleteEdgePayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return EdgeRef{}, fmt.Errorf("delete_edge row %s invalid payload_json: %w", row.ID, err)
+	}
+	if strings.TrimSpace(payload.PersonaID) == "" ||
+		strings.TrimSpace(payload.SQLiteEdgeID) == "" ||
+		strings.TrimSpace(payload.LinkType) == "" ||
+		strings.TrimSpace(payload.FromNodeType) == "" ||
+		strings.TrimSpace(payload.FromNodeID) == "" ||
+		strings.TrimSpace(payload.ToNodeType) == "" ||
+		strings.TrimSpace(payload.ToNodeID) == "" {
+		return EdgeRef{}, fmt.Errorf("delete_edge row %s payload_json missing required fields", row.ID)
+	}
+	if payload.PersonaID != row.PersonaID {
+		return EdgeRef{}, fmt.Errorf("delete_edge row %s payload_json persona_id mismatch", row.ID)
+	}
+	if payload.SQLiteEdgeID != row.NodeID {
+		return EdgeRef{}, fmt.Errorf("delete_edge row %s payload_json sqlite_edge_id mismatch", row.ID)
+	}
+	return EdgeRef{
+		PersonaID:        payload.PersonaID,
+		SQLiteEdgeID:     payload.SQLiteEdgeID,
+		LinkType:         payload.LinkType,
+		FromNodeType:     payload.FromNodeType,
+		FromNodeID:       payload.FromNodeID,
+		ToNodeType:       payload.ToNodeType,
+		ToNodeID:         payload.ToNodeID,
+		FromMirrorNodeID: payload.FromMirrorNodeID,
+		ToMirrorNodeID:   payload.ToMirrorNodeID,
+	}, nil
 }

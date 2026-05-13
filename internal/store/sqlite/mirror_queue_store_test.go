@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -461,6 +462,126 @@ func TestMirrorQueueClaimForPersonaCanClaimExpiredProcessingRows(t *testing.T) {
 		t.Fatalf("claimed other ids = %#v, want %#v", got, want)
 	}
 	requireMirrorQueueState(t, ctx, db, "q_other_expired_processing", "processing", 3, "")
+}
+
+func TestMirrorQueuePrepareForPersonaRebuildBlocksWhenFreshProcessingRemains(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	ensureMirrorQueuePersona(t, ctx, db)
+
+	now := time.Now().UTC()
+	staleUpdatedAt := now.Add(-20 * time.Minute)
+	freshUpdatedAt := now.Add(-5 * time.Minute)
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:           "q_stale_processing",
+		nodeType:     "fact",
+		nodeID:       "fact_stale_processing",
+		operation:    "upsert_node",
+		priority:     1,
+		status:       "processing",
+		attempts:     2,
+		createdAt:    now.Add(-time.Hour),
+		updatedAt:    &staleUpdatedAt,
+		errorMessage: "worker interrupted",
+	})
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:           "q_fresh_processing",
+		nodeType:     "fact",
+		nodeID:       "fact_fresh_processing",
+		operation:    "upsert_node",
+		priority:     2,
+		status:       "processing",
+		attempts:     1,
+		createdAt:    now.Add(-time.Hour),
+		updatedAt:    &freshUpdatedAt,
+		errorMessage: "still leased",
+	})
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:        "q_pending",
+		nodeType:  "fact",
+		nodeID:    "fact_pending",
+		operation: "upsert_node",
+		priority:  3,
+		status:    "pending",
+		createdAt: now.Add(-time.Minute),
+	})
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:           "q_failed",
+		nodeType:     "fact",
+		nodeID:       "fact_failed",
+		operation:    "delete_node",
+		priority:     4,
+		status:       "failed",
+		attempts:     4,
+		createdAt:    now.Add(-time.Minute),
+		errorMessage: "previous failure",
+	})
+
+	repo := memsqlite.NewMirrorQueueRepository(db.SQLDB())
+	_, err := repo.PrepareForPersonaRebuild(ctx, "default", "superseded by mirror rebuild")
+	if !errors.Is(err, memsqlite.ErrMirrorQueuePersonaProcessingActive) {
+		t.Fatalf("prepare rebuild err = %v, want ErrMirrorQueuePersonaProcessingActive", err)
+	}
+
+	requireMirrorQueueState(t, ctx, db, "q_stale_processing", "failed", 3, "mirror queue lease expired")
+	requireMirrorQueueState(t, ctx, db, "q_fresh_processing", "processing", 1, "still leased")
+	requireMirrorQueueState(t, ctx, db, "q_pending", "pending", 0, "")
+	requireMirrorQueueState(t, ctx, db, "q_failed", "failed", 4, "previous failure")
+}
+
+func TestMirrorQueuePrepareForPersonaRebuildSupersedesPendingFailedRows(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	ensureMirrorQueuePersona(t, ctx, db)
+
+	now := time.Now().UTC()
+	staleUpdatedAt := now.Add(-20 * time.Minute)
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:           "q_stale_processing",
+		nodeType:     "fact",
+		nodeID:       "fact_stale_processing",
+		operation:    "upsert_node",
+		priority:     1,
+		status:       "processing",
+		attempts:     1,
+		createdAt:    now.Add(-time.Hour),
+		updatedAt:    &staleUpdatedAt,
+		errorMessage: "worker interrupted",
+	})
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:        "q_pending",
+		nodeType:  "fact",
+		nodeID:    "fact_pending",
+		operation: "upsert_node",
+		priority:  2,
+		status:    "pending",
+		createdAt: now.Add(-time.Minute),
+	})
+	insertMirrorQueueRow(t, ctx, db, mirrorQueueSeed{
+		id:           "q_failed",
+		nodeType:     "fact",
+		nodeID:       "fact_failed",
+		operation:    "delete_node",
+		priority:     3,
+		status:       "failed",
+		attempts:     2,
+		createdAt:    now.Add(-time.Minute),
+		errorMessage: "previous failure",
+	})
+
+	repo := memsqlite.NewMirrorQueueRepository(db.SQLDB())
+	superseded, err := repo.PrepareForPersonaRebuild(ctx, "default", "superseded by mirror rebuild")
+	if err != nil {
+		t.Fatalf("prepare rebuild: %v", err)
+	}
+	if superseded != 3 {
+		t.Fatalf("superseded rows = %d, want 3", superseded)
+	}
+	requireMirrorQueueState(t, ctx, db, "q_stale_processing", "done", 2, "superseded by mirror rebuild")
+	requireMirrorQueueState(t, ctx, db, "q_pending", "done", 0, "superseded by mirror rebuild")
+	requireMirrorQueueState(t, ctx, db, "q_failed", "done", 2, "superseded by mirror rebuild")
 }
 
 type mirrorQueueSeed struct {

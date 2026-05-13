@@ -38,3 +38,43 @@ VALUES
 		t.Fatalf("mapped candidate = %#v", mapped[0])
 	}
 }
+
+func TestMirrorCandidateRepositoryMapFactCandidatesWithDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedMirrorPayloadFixture(t, ctx, db.SQLDB())
+	mustExecMirrorPayload(t, ctx, db.SQLDB(), `
+INSERT INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
+VALUES
+  ('map_indexed', 'default', 'fact', 'fact_visible', 1001, 'indexed'),
+  ('map_deleted', 'default', 'fact', 'fact_deleted', 1002, 'deleted')`)
+
+	repo := memsqlite.NewMirrorCandidateRepository(db.SQLDB())
+	report, err := repo.MapFactCandidatesWithDiagnostics(ctx, "default", []memsqlite.MirrorCandidate{
+		{TriviumNodeID: 1001, Score: 0.8, Source: "mirror_sparse"},
+		{TriviumNodeID: 1002, Score: 0.9, Source: "mirror_stale"},
+		{TriviumNodeID: 9999, Score: 0.5, Source: "mirror_missing"},
+	})
+	if err != nil {
+		t.Fatalf("MapFactCandidatesWithDiagnostics: %v", err)
+	}
+	if len(report.Mapped) != 1 || report.Mapped[0].FactID != "fact_visible" {
+		t.Fatalf("mapped = %#v", report.Mapped)
+	}
+	if report.SidecarCandidateCount != 3 || report.MappedCandidateCount != 1 || report.DroppedCandidateCount != 2 {
+		t.Fatalf("counts = %#v", report)
+	}
+	var deletedSeen, unmappedSeen bool
+	for _, d := range report.Diagnostics {
+		if d.TriviumNodeID == 1002 && d.DropReason == "stale_mapping_status_deleted" {
+			deletedSeen = true
+		}
+		if d.TriviumNodeID == 9999 && d.DropReason == "unmapped_trivium_node" {
+			unmappedSeen = true
+		}
+	}
+	if !deletedSeen || !unmappedSeen {
+		t.Fatalf("diagnostics = %#v", report.Diagnostics)
+	}
+}

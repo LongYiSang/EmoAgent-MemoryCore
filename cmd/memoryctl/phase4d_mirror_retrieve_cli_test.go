@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -55,6 +56,29 @@ VALUES ('map_cli_mirror', 'default', 'fact', ?, 5001, 'indexed')`, factID); err 
 	out := requireRunOK(t, "retrieve", "--db", dbPath, "--query", "espresso-only", "--use-mirror", "--sidecar-url", server.URL)
 	requireContains(t, out, factID)
 	requireContains(t, out, "用户喜欢咖啡。")
+	requireContains(t, out, "mirror_status=used")
+	requireContains(t, out, "mirror_candidates sidecar=1 mapped=1 dropped=0")
+
+	jsonOut := requireRunText(t, "retrieve", "--db", dbPath, "--query", "espresso-only", "--use-mirror", "--sidecar-url", server.URL, "--format", "json")
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, jsonOut)
+	}
+	mirror, ok := decoded["Mirror"].(map[string]any)
+	if !ok {
+		t.Fatalf("json mirror missing: %v", decoded)
+	}
+	if mirror["status"] != "used" {
+		t.Fatalf("mirror status = %v, want used", mirror["status"])
+	}
+	mirrorJSON, err := json.Marshal(mirror)
+	if err != nil {
+		t.Fatalf("marshal mirror: %v", err)
+	}
+	mirrorText := string(mirrorJSON)
+	if strings.Contains(mirrorText, "query_text") || strings.Contains(mirrorText, "summary") || strings.Contains(mirrorText, "search_text") {
+		t.Fatalf("mirror diagnostics leaked payload fields: %s", mirrorText)
+	}
 }
 
 func TestRunRetrieveUseMirrorRequiresSidecarURL(t *testing.T) {

@@ -26,7 +26,7 @@ func TestServiceRunMirrorSyncProcessesQueuedFactAndEdges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
-	if result.Claimed != 3 || result.Completed != 3 || result.Failed != 0 || result.Skipped != 1 {
+	if result.Claimed != 4 || result.Completed != 4 || result.Failed != 0 || result.Skipped != 1 {
 		t.Fatalf("mirror sync result = %#v", result)
 	}
 
@@ -189,6 +189,82 @@ func TestServiceRunMirrorSyncDeleteNodeMarksMapDeletedIdempotently(t *testing.T)
 	}
 }
 
+func TestServiceRunMirrorSyncFailsThinDeleteEdgeQueueRow(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	defer svc.Close()
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	enqueueThinDeleteEdge(t, db, "delete_edge_thin_01", "link_missing_payload")
+
+	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("run mirror sync: %v", err)
+	}
+	if result.Claimed != 1 || result.Completed != 0 || result.Failed != 1 {
+		t.Fatalf("mirror sync result = %#v", result)
+	}
+
+	var status, errorMessage string
+	var attempts int
+	if err := db.QueryRow(`
+SELECT status, attempts, COALESCE(error_message, '')
+FROM index_sync_queue
+WHERE id = 'delete_edge_thin_01'`).Scan(&status, &attempts, &errorMessage); err != nil {
+		t.Fatalf("query queue row: %v", err)
+	}
+	if status != "failed" || attempts != 1 {
+		t.Fatalf("queue status/attempts = %s/%d, want failed/1", status, attempts)
+	}
+	if strings.TrimSpace(errorMessage) == "" {
+		t.Fatal("thin delete_edge row should keep an explicit failure message")
+	}
+}
+
+func TestServiceRunMirrorSyncFailsUnsupportedLegacyRebuildPersonaRow(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	defer svc.Close()
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	if _, err := db.Exec(`
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority)
+VALUES ('legacy_rebuild_persona_01', 'default', 'persona', 'default', 'rebuild_persona', 0)`); err != nil {
+		t.Fatalf("insert legacy rebuild_persona row: %v", err)
+	}
+
+	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("run mirror sync: %v", err)
+	}
+	if result.Claimed != 1 || result.Completed != 0 || result.Failed != 1 {
+		t.Fatalf("mirror sync result = %#v", result)
+	}
+	requireMirrorQueueRowStateByID(t, db, "legacy_rebuild_persona_01", "failed", 1, "mirror queue operation failed")
+}
+
+func TestServiceRunMirrorSyncBlocksWhenPersonaMirrorStateNotReady(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢黑咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	_ = consolidateLiteral(t, ctx, svc, userID, "likes", "黑咖啡", "用户喜欢黑咖啡。", episode.ID)
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	setMirrorPersonaStateForMirrorTest(t, db, "default", "rebuilding")
+
+	_, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 10})
+	if !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("run mirror sync err = %v, want ErrInvalidRequest", err)
+	}
+	requireMirrorQueueNoClaimedRows(t, db)
+}
+
 func TestServiceRunMirrorSyncRequiresExplicitAdapter(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := openMirrorService(t, ctx, nil)
@@ -280,6 +356,85 @@ func TestServiceRebuildMirrorMarksPersonaDegradedWhenClearFails(t *testing.T) {
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	requireMirrorPersonaState(t, db, "default", "degraded")
+}
+
+func TestServiceRebuildMirrorRefusesWhenActiveProcessingRowsRemain(t *testing.T) {
+	ctx := context.Background()
+	adapter := &rebuildPublicMirrorAdapter{nodeMirrorID: 9001}
+	svc, dbPath := openMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢绿茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	_ = consolidateLiteral(t, ctx, svc, userID, "likes", "绿茶", "用户喜欢绿茶。", episode.ID)
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	staleUpdatedAt := now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
+	freshUpdatedAt := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority, status, attempts, created_at, updated_at, error_message)
+VALUES
+('q_stale_processing', 'default', 'fact', 'fact_stale_processing', 'upsert_node', 0, 'processing', 2, ?, ?, 'worker interrupted'),
+('q_fresh_processing', 'default', 'fact', 'fact_fresh_processing', 'upsert_node', 1, 'processing', 1, ?, ?, 'still leased')`,
+		now.Add(-time.Hour).Format(time.RFC3339Nano), staleUpdatedAt,
+		now.Add(-time.Hour).Format(time.RFC3339Nano), freshUpdatedAt,
+	); err != nil {
+		t.Fatalf("insert processing queue rows: %v", err)
+	}
+
+	_, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	if err == nil {
+		t.Fatal("rebuild err = nil, want refusal when active processing rows remain")
+	}
+	if !strings.Contains(err.Error(), "processing") {
+		t.Fatalf("rebuild err = %v, want explicit processing refusal", err)
+	}
+	if len(adapter.cleared) != 0 {
+		t.Fatalf("clear namespace called unexpectedly: %#v", adapter.cleared)
+	}
+
+	requireMirrorQueueRowStateByID(t, db, "q_stale_processing", "failed", 3, "mirror queue lease expired")
+	requireMirrorQueueRowStateByID(t, db, "q_fresh_processing", "processing", 1, "still leased")
+	requireNoMirrorPersonaState(t, db, "default")
+}
+
+func TestServiceRebuildMirrorSupersedesPendingAndFailedRows(t *testing.T) {
+	ctx := context.Background()
+	adapter := &rebuildPublicMirrorAdapter{nodeMirrorID: 9001}
+	svc, dbPath := openMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢茉莉花茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	_ = consolidateLiteral(t, ctx, svc, userID, "likes", "茉莉花茶", "用户喜欢茉莉花茶。", episode.ID)
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority, status, attempts, created_at, updated_at, error_message)
+VALUES
+('q_pending_old', 'default', 'fact', 'fact_pending_old', 'upsert_node', 5, 'pending', 0, ?, ?, NULL),
+('q_failed_old', 'default', 'fact', 'fact_failed_old', 'delete_node', 6, 'failed', 3, ?, ?, 'previous failure')`,
+		now, now, now, now,
+	); err != nil {
+		t.Fatalf("insert pending/failed queue rows: %v", err)
+	}
+
+	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	if err != nil {
+		t.Fatalf("rebuild mirror: %v", err)
+	}
+	if result.Failed != 0 {
+		t.Fatalf("rebuild failed count = %d, want 0", result.Failed)
+	}
+
+	requireMirrorQueueRowStateByID(t, db, "q_pending_old", "done", 0, "superseded by mirror rebuild")
+	requireMirrorQueueRowStateByID(t, db, "q_failed_old", "done", 3, "superseded by mirror rebuild")
 }
 
 func prioritizeMirrorQueueRow(t *testing.T, db *sql.DB, nodeType string, nodeID string, operation string) {
@@ -443,6 +598,50 @@ WHERE persona_id = ?`, personaID).Scan(&state); err != nil {
 	}
 }
 
+func requireNoMirrorPersonaState(t *testing.T, db *sql.DB, personaID string) {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM mirror_persona_state
+WHERE persona_id = ?`, personaID).Scan(&count); err != nil {
+		t.Fatalf("count mirror persona state: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("mirror persona state row count = %d, want 0", count)
+	}
+}
+
+func setMirrorPersonaStateForMirrorTest(t *testing.T, db *sql.DB, personaID string, state string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+INSERT INTO mirror_persona_state (persona_id, state, reason, updated_at)
+VALUES (?, ?, 'test state', CURRENT_TIMESTAMP)
+ON CONFLICT(persona_id) DO UPDATE SET state = excluded.state, reason = excluded.reason, updated_at = excluded.updated_at`,
+		personaID,
+		state,
+	); err != nil {
+		t.Fatalf("set mirror persona state: %v", err)
+	}
+}
+
+func requireMirrorQueueNoClaimedRows(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM index_sync_queue
+WHERE status <> 'pending'`).Scan(&count); err != nil {
+		t.Fatalf("count claimed mirror queue rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("claimed mirror queue row count = %d, want 0", count)
+	}
+}
+
 func enqueueMirrorDeleteForFact(t *testing.T, db *sql.DB, factID string, queueID string) {
 	t.Helper()
 
@@ -450,6 +649,16 @@ func enqueueMirrorDeleteForFact(t *testing.T, db *sql.DB, factID string, queueID
 INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority)
 VALUES (?, 'default', 'fact', ?, 'delete_node', 0)`, queueID, factID); err != nil {
 		t.Fatalf("enqueue mirror delete: %v", err)
+	}
+}
+
+func enqueueThinDeleteEdge(t *testing.T, db *sql.DB, queueID string, edgeID string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority)
+VALUES (?, 'default', 'memory_link', ?, 'delete_edge', 0)`, queueID, edgeID); err != nil {
+		t.Fatalf("enqueue thin delete_edge row: %v", err)
 	}
 }
 
@@ -465,5 +674,21 @@ WHERE persona_id = 'default' AND node_type = 'fact' AND node_id = ?`, factID).Sc
 	}
 	if count != want {
 		t.Fatalf("mirror index map count = %d, want %d", count, want)
+	}
+}
+
+func requireMirrorQueueRowStateByID(t *testing.T, db *sql.DB, queueID string, wantStatus string, wantAttempts int, wantErrorMessage string) {
+	t.Helper()
+
+	var status, errorMessage string
+	var attempts int
+	if err := db.QueryRow(`
+SELECT status, attempts, COALESCE(error_message, '')
+FROM index_sync_queue
+WHERE id = ?`, queueID).Scan(&status, &attempts, &errorMessage); err != nil {
+		t.Fatalf("query queue row %s: %v", queueID, err)
+	}
+	if status != wantStatus || attempts != wantAttempts || errorMessage != wantErrorMessage {
+		t.Fatalf("queue row %s = (%s,%d,%q), want (%s,%d,%q)", queueID, status, attempts, errorMessage, wantStatus, wantAttempts, wantErrorMessage)
 	}
 }

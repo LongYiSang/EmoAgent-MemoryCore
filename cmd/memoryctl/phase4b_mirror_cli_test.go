@@ -29,19 +29,27 @@ func TestRunMirrorSyncWithSidecarURL(t *testing.T) {
 		}
 		var request struct {
 			OperationID string `json:"operation_id"`
+			Node        struct {
+				NodeType     string `json:"node_type"`
+				SQLiteNodeID string `json:"sqlite_node_id"`
+			} `json:"node"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&request)
+		triviumID := int64(12345)
+		if request.Node.NodeType == "entity" {
+			triviumID = 22345
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"schema_version":  "memory_mirror_operation_result.v0.1",
 			"operation_id":    request.OperationID,
 			"status":          "ok",
-			"trivium_node_id": 12345,
+			"trivium_node_id": triviumID,
 		})
 	}))
 	defer server.Close()
 
 	out := requireRunOK(t, "mirror-sync-run", "--db", dbPath, "--limit", "10", "--sidecar-url", server.URL, "--format", "text")
-	want := "claimed=3\ncompleted=3\nfailed=0\nskipped=1\n"
+	want := "claimed=4\ncompleted=4\nfailed=0\nskipped=1\n"
 	if out != want {
 		t.Fatalf("mirror sync output = %q, want %q", out, want)
 	}

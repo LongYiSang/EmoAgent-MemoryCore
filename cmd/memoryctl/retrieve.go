@@ -123,6 +123,14 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "- %s %s reason=%s\n", item.NodeType, item.NodeID, item.Reason)
 		}
 	}
+	if result.Mirror != nil {
+		fmt.Fprintf(stdout, "mirror_status=%s\n", result.Mirror.Status)
+		fmt.Fprintf(stdout, "mirror_candidates sidecar=%d mapped=%d dropped=%d\n",
+			result.Mirror.SidecarCandidateCount,
+			result.Mirror.MappedCandidateCount,
+			result.Mirror.DroppedCandidateCount,
+		)
+	}
 	fmt.Fprintf(stdout, "token_estimate=%d\n", result.TokenEstimate)
 	return 0
 }

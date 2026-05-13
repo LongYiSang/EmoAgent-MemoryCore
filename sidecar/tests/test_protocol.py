@@ -91,6 +91,25 @@ def test_parse_operation_request_requires_upsert_edge_endpoints():
         )
 
 
+def test_parse_operation_request_requires_delete_edge_endpoints_and_link_type():
+    with pytest.raises(
+        ProtocolError,
+        match="link_type, from_node_type, from_node_id, to_node_type, to_node_id",
+    ):
+        parse_operation_request(
+            {
+                "schema_version": REQUEST_SCHEMA_VERSION,
+                "operation_id": "queue-1",
+                "persona_id": "default",
+                "operation": "delete_edge",
+                "edge": {
+                    "persona_id": "default",
+                    "sqlite_edge_id": "edge-1",
+                },
+            }
+        )
+
+
 def test_build_result_uses_result_schema():
     result = build_result("queue-1", trivium_node_id=42)
 

@@ -127,7 +127,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 3A Privacy / Purge MVP：exact fact / episode purge、search/FTS cleanup、safe deletion audit、purged-only evidence retrieval block。
 - [x] Phase 3B Retention Lifecycle MVP：manual `RunRetention` / `memoryctl retention-run`、`valid_to` expiry、invalidated + archived state transition、search tier sync、historical retrieval gate。
 - [x] Phase 3C Retention 后续：SQLite-only deep archive transition、retention job runner、compression storage contract、narrative / insight provenance integration。
-- [ ] Phase 4 TriviumDB Retrieval Mirror：adapter / sync worker / mirror rebuild / upsert-delete node-edge；SQLite 权威过滤保持最后防线。
+- [ ] Phase 4 TriviumDB Retrieval Mirror：adapter / sync worker / mirror rebuild / upsert-delete node-edge；SQLite 权威过滤保持最后防线。运维说明见 `docs/operations/phase4_retrieval_mirror.md`。
 - [ ] Phase 5 高级 Retrieval Activation：Hybrid Anchor、Spreading Activation、PPR、Hub suppression、MMR、Context Reconstruction、nightly eval。
 
 ---
@@ -188,6 +188,19 @@ func main() {
 
 ```bash
 go test ./...
+```
+
+### Phase 4 侧车烟雾测试
+
+```bash
+cd sidecar
+uv run python -m memorycore_sidecar.server --adapter fake --host 127.0.0.1 --port 8765
+```
+
+```bash
+go run ./cmd/memoryctl mirror-sync-run --db ./data/memory.db --fake-adapter --limit 100
+go run ./cmd/memoryctl mirror-rebuild --db ./data/memory.db --sidecar-url http://127.0.0.1:8765
+go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference" --use-mirror --sidecar-url http://127.0.0.1:8765
 ```
 
 ---

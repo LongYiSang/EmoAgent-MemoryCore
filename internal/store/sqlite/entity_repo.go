@@ -18,7 +18,16 @@ func NewEntityRepository(db *sql.DB) *EntityRepository {
 
 func (r *EntityRepository) Upsert(ctx context.Context, entity core.Entity) error {
 	entity = normalizeEntity(entity)
-	_, err := r.db.ExecContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO entities (
     id, persona_id, canonical_name, entity_type, description,
     visibility_status, sensitivity_level, searchable
@@ -40,7 +49,22 @@ ON CONFLICT(id) DO UPDATE SET
 		string(entity.SensitivityLevel),
 		boolInt(entity.Searchable),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if entity.VisibilityStatus == core.VisibilityVisible && entity.Searchable {
+		if err = enqueueEntityUpsertTx(ctx, tx, entity.PersonaID, entity.ID); err != nil {
+			return err
+		}
+	} else {
+		if err = enqueueEntityDeleteTx(ctx, tx, entity.PersonaID, entity.ID); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *EntityRepository) EnsureByCanonical(ctx context.Context, entity core.Entity) (core.Entity, error) {
@@ -100,7 +124,14 @@ func (r *EntityRepository) EnsureAlias(ctx context.Context, alias core.EntityAli
 	if !errors.Is(err, sql.ErrNoRows) {
 		return core.EntityAlias{}, err
 	}
-	_, err = r.db.ExecContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.EntityAlias{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO entity_aliases (
     id, persona_id, entity_id, alias, alias_type, confidence, source_episode_id
 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -113,6 +144,22 @@ INSERT OR IGNORE INTO entity_aliases (
 		nullableString(alias.SourceEpisodeID),
 	)
 	if err != nil {
+		return core.EntityAlias{}, err
+	}
+	if rows, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return core.EntityAlias{}, rowsErr
+	} else if rows > 0 {
+		mirrorable, mirrorErr := entityMirrorEligibleTx(ctx, tx, alias.PersonaID, alias.EntityID)
+		if mirrorErr != nil {
+			return core.EntityAlias{}, mirrorErr
+		}
+		if mirrorable {
+			if err = enqueueEntityUpsertTx(ctx, tx, alias.PersonaID, alias.EntityID); err != nil {
+				return core.EntityAlias{}, err
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
 		return core.EntityAlias{}, err
 	}
 	return r.GetAlias(ctx, alias.PersonaID, alias.EntityID, alias.Alias, alias.AliasType)
@@ -231,4 +278,40 @@ func normalizeEntity(entity core.Entity) core.Entity {
 	}
 	entity.SensitivityLevel = defaultSensitivity(entity.SensitivityLevel)
 	return entity
+}
+
+func entityMirrorEligibleTx(ctx context.Context, tx *sql.Tx, personaID string, entityID string) (bool, error) {
+	var visibility string
+	var searchable int
+	err := tx.QueryRowContext(ctx, `
+SELECT visibility_status, searchable
+FROM entities
+WHERE persona_id = ? AND id = ?`, personaID, entityID).Scan(&visibility, &searchable)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return visibility == string(core.VisibilityVisible) && searchable == 1, nil
+}
+
+func enqueueEntityUpsertTx(ctx context.Context, tx *sql.Tx, personaID string, entityID string) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
+VALUES (lower(hex(randomblob(16))), ?, 'entity', ?, 'upsert_node')`,
+		personaID,
+		entityID,
+	)
+	return err
+}
+
+func enqueueEntityDeleteTx(ctx context.Context, tx *sql.Tx, personaID string, entityID string) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
+VALUES (lower(hex(randomblob(16))), ?, 'entity', ?, 'delete_node')`,
+		personaID,
+		entityID,
+	)
+	return err
 }

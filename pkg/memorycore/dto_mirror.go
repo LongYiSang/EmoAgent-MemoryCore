@@ -32,8 +32,15 @@ type MirrorNodeRef struct {
 }
 
 type MirrorEdgeRef struct {
-	PersonaID    string `json:"persona_id"`
-	SQLiteEdgeID string `json:"sqlite_edge_id"`
+	PersonaID        string `json:"persona_id"`
+	SQLiteEdgeID     string `json:"sqlite_edge_id"`
+	LinkType         string `json:"link_type"`
+	FromNodeType     string `json:"from_node_type"`
+	FromNodeID       string `json:"from_node_id"`
+	ToNodeType       string `json:"to_node_type"`
+	ToNodeID         string `json:"to_node_id"`
+	FromMirrorNodeID *int64 `json:"from_mirror_node_id,omitempty"`
+	ToMirrorNodeID   *int64 `json:"to_mirror_node_id,omitempty"`
 }
 
 type MirrorNodePayload struct {

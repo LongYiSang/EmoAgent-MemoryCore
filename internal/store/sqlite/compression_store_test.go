@@ -266,7 +266,52 @@ func TestCompressionRepositoryEnqueuesMappedSourceFactsOnly(t *testing.T) {
 	}
 	requireQueueCount(t, db.SQLDB(), "fact", mapped.ID, "upsert_node", 1)
 	requireQueueCount(t, db.SQLDB(), "fact", unmapped.ID, "upsert_node", 0)
-	requireQueueCount(t, db.SQLDB(), "narrative", "narrative_mapped", "upsert_node", 0)
+	requireQueueCount(t, db.SQLDB(), "narrative", "narrative_mapped", "upsert_node", 1)
+	for _, linkID := range result.DerivedLinkIDs {
+		requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "upsert_edge", 1)
+	}
+}
+
+func TestCompressionRepositoryEnqueuesMirrorUpsertsForGeneratedNodes(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	first := insertCompressionFact(t, ctx, db.SQLDB(), "fact_compression_generated_one", "first source")
+	second := insertCompressionFact(t, ctx, db.SQLDB(), "fact_compression_generated_two", "second source")
+	repo := memsqlite.NewCompressionRepository(db.SQLDB(), fixedCompressionIDs(), fixedCompressionNow)
+
+	result, err := repo.Apply(ctx, memsqlite.CompressionRequest{
+		PersonaID:     "default",
+		SourceFactIDs: []string{first.ID, second.ID},
+		Narrative: &memsqlite.NarrativeDraft{
+			ID:               "narrative_generated",
+			Scope:            "topic",
+			Summary:          "generated narrative",
+			Importance:       0.7,
+			SensitivityLevel: string(core.SensitivityNormal),
+		},
+		Insights: []memsqlite.InsightDraft{
+			{
+				ID:               "insight_generated",
+				InsightType:      "pattern",
+				Content:          "generated insight",
+				Confidence:       0.8,
+				Importance:       0.8,
+				SensitivityLevel: string(core.SensitivityNormal),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply compression: %v", err)
+	}
+
+	requireQueueCount(t, db.SQLDB(), "narrative", "narrative_generated", "upsert_node", 1)
+	requireQueueCount(t, db.SQLDB(), "insight", "insight_generated", "upsert_node", 1)
+	for _, linkID := range result.DerivedLinkIDs {
+		requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "upsert_edge", 1)
+	}
 }
 
 func insertCompressionFact(t *testing.T, ctx context.Context, db *sql.DB, factID string, summary string) core.Fact {

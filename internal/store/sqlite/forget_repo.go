@@ -71,6 +71,18 @@ type forgetCounts struct {
 	TombstonesWritten      int64 `json:"tombstones_written,omitempty"`
 }
 
+type mirrorDeleteEdgePayload struct {
+	PersonaID        string `json:"persona_id"`
+	SQLiteEdgeID     string `json:"sqlite_edge_id"`
+	LinkType         string `json:"link_type"`
+	FromNodeType     string `json:"from_node_type"`
+	FromNodeID       string `json:"from_node_id"`
+	ToNodeType       string `json:"to_node_type"`
+	ToNodeID         string `json:"to_node_id"`
+	FromMirrorNodeID *int64 `json:"from_mirror_node_id,omitempty"`
+	ToMirrorNodeID   *int64 `json:"to_mirror_node_id,omitempty"`
+}
+
 func NewForgetRepository(db *sql.DB, newID func() string, now func() time.Time) *ForgetRepository {
 	if newID == nil {
 		counter := 0
@@ -639,12 +651,17 @@ func (r *ForgetRepository) enqueueMirrorEdgeDeletesTx(ctx context.Context, tx *s
 			continue
 		}
 		seen[linkID] = struct{}{}
-		_, err := tx.ExecContext(ctx, `
-INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation)
-VALUES (?, ?, 'memory_link', ?, 'delete_edge')`,
+		payloadJSON, err := loadDeleteEdgePayloadJSONTx(ctx, tx, personaID, linkID)
+		if err != nil {
+			return 0, err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, payload_json)
+VALUES (?, ?, 'memory_link', ?, 'delete_edge', ?)`,
 			r.newID(),
 			personaID,
 			linkID,
+			payloadJSON,
 		)
 		if err != nil {
 			return 0, err
@@ -652,6 +669,61 @@ VALUES (?, ?, 'memory_link', ?, 'delete_edge')`,
 		enqueued++
 	}
 	return enqueued, nil
+}
+
+func loadDeleteEdgePayloadJSONTx(ctx context.Context, tx *sql.Tx, personaID string, linkID string) (string, error) {
+	var payload mirrorDeleteEdgePayload
+	var fromMirrorNodeID sql.NullInt64
+	var toMirrorNodeID sql.NullInt64
+	err := tx.QueryRowContext(ctx, `
+SELECT l.link_type,
+       l.from_node_type,
+       l.from_node_id,
+       l.to_node_type,
+       l.to_node_id,
+       src.trivium_node_id,
+       dst.trivium_node_id
+FROM memory_links l
+LEFT JOIN memory_index_map src
+  ON src.persona_id = l.persona_id
+ AND src.node_type = l.from_node_type
+ AND src.node_id = l.from_node_id
+ AND src.index_status = 'indexed'
+LEFT JOIN memory_index_map dst
+  ON dst.persona_id = l.persona_id
+ AND dst.node_type = l.to_node_type
+ AND dst.node_id = l.to_node_id
+ AND dst.index_status = 'indexed'
+WHERE l.persona_id = ? AND l.id = ?`,
+		personaID,
+		linkID,
+	).Scan(
+		&payload.LinkType,
+		&payload.FromNodeType,
+		&payload.FromNodeID,
+		&payload.ToNodeType,
+		&payload.ToNodeID,
+		&fromMirrorNodeID,
+		&toMirrorNodeID,
+	)
+	if err != nil {
+		return "", err
+	}
+	payload.PersonaID = personaID
+	payload.SQLiteEdgeID = linkID
+	if fromMirrorNodeID.Valid {
+		id := fromMirrorNodeID.Int64
+		payload.FromMirrorNodeID = &id
+	}
+	if toMirrorNodeID.Valid {
+		id := toMirrorNodeID.Int64
+		payload.ToMirrorNodeID = &id
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func validateSQLiteForgetRequest(req ForgetRequest) error {

@@ -17,9 +17,26 @@ type MirrorCandidate struct {
 }
 
 type RetrievalMirrorCandidate struct {
-	FactID string
-	Score  float64
-	Source string
+	FactID        string
+	TriviumNodeID int64
+	Score         float64
+	Source        string
+}
+
+type MirrorCandidateDiagnostic struct {
+	TriviumNodeID int64
+	SQLiteFactID  string
+	Score         float64
+	Source        string
+	DropReason    string
+}
+
+type MirrorCandidateMappingReport struct {
+	Mapped                []RetrievalMirrorCandidate
+	Diagnostics           []MirrorCandidateDiagnostic
+	SidecarCandidateCount int
+	MappedCandidateCount  int
+	DroppedCandidateCount int
 }
 
 func NewMirrorCandidateRepository(db *sql.DB) *MirrorCandidateRepository {
@@ -27,17 +44,35 @@ func NewMirrorCandidateRepository(db *sql.DB) *MirrorCandidateRepository {
 }
 
 func (r *MirrorCandidateRepository) MapFactCandidates(ctx context.Context, personaID string, candidates []MirrorCandidate) ([]RetrievalMirrorCandidate, error) {
+	report, err := r.MapFactCandidatesWithDiagnostics(ctx, personaID, candidates)
+	if err != nil {
+		return nil, err
+	}
+	return report.Mapped, nil
+}
+
+func (r *MirrorCandidateRepository) MapFactCandidatesWithDiagnostics(ctx context.Context, personaID string, candidates []MirrorCandidate) (MirrorCandidateMappingReport, error) {
+	report := MirrorCandidateMappingReport{
+		SidecarCandidateCount: len(candidates),
+	}
 	normalized := make([]MirrorCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		score, ok := normalizeMirrorCandidateScore(candidate.Score)
 		if candidate.TriviumNodeID <= 0 || !ok {
+			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
+				TriviumNodeID: candidate.TriviumNodeID,
+				Score:         candidate.Score,
+				Source:        candidate.Source,
+				DropReason:    "invalid_candidate",
+			})
+			report.DroppedCandidateCount++
 			continue
 		}
 		candidate.Score = score
 		normalized = append(normalized, candidate)
 	}
 	if len(normalized) == 0 {
-		return nil, nil
+		return report, nil
 	}
 
 	placeholders := make([]string, 0, len(normalized))
@@ -48,50 +83,81 @@ func (r *MirrorCandidateRepository) MapFactCandidates(ctx context.Context, perso
 		args = append(args, candidate.TriviumNodeID)
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT trivium_node_id, node_id
+SELECT trivium_node_id, node_id, index_status
 FROM memory_index_map
 WHERE persona_id = ?
   AND node_type = 'fact'
-  AND index_status = 'indexed'
   AND trivium_node_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
-		return nil, err
+		return MirrorCandidateMappingReport{}, err
 	}
 	defer rows.Close()
 
-	mappedIDs := map[int64]string{}
+	type mirrorMapRow struct {
+		factID string
+		status string
+	}
+	mappedIDs := map[int64]mirrorMapRow{}
 	for rows.Next() {
 		var triviumNodeID int64
 		var factID string
-		if err := rows.Scan(&triviumNodeID, &factID); err != nil {
-			return nil, err
+		var status string
+		if err := rows.Scan(&triviumNodeID, &factID, &status); err != nil {
+			return MirrorCandidateMappingReport{}, err
 		}
-		mappedIDs[triviumNodeID] = factID
+		mappedIDs[triviumNodeID] = mirrorMapRow{factID: factID, status: status}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return MirrorCandidateMappingReport{}, err
 	}
 
 	best := map[string]RetrievalMirrorCandidate{}
 	for _, candidate := range normalized {
-		factID := mappedIDs[candidate.TriviumNodeID]
-		if factID == "" {
+		row, ok := mappedIDs[candidate.TriviumNodeID]
+		if !ok {
+			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
+				TriviumNodeID: candidate.TriviumNodeID,
+				Score:         candidate.Score,
+				Source:        candidate.Source,
+				DropReason:    "unmapped_trivium_node",
+			})
+			report.DroppedCandidateCount++
 			continue
 		}
-		existing, ok := best[factID]
+		if row.status != "indexed" {
+			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
+				TriviumNodeID: candidate.TriviumNodeID,
+				SQLiteFactID:  row.factID,
+				Score:         candidate.Score,
+				Source:        candidate.Source,
+				DropReason:    "stale_mapping_status_" + row.status,
+			})
+			report.DroppedCandidateCount++
+			continue
+		}
+		report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
+			TriviumNodeID: candidate.TriviumNodeID,
+			SQLiteFactID:  row.factID,
+			Score:         candidate.Score,
+			Source:        candidate.Source,
+		})
+		existing, ok := best[row.factID]
 		if !ok || candidate.Score > existing.Score {
-			best[factID] = RetrievalMirrorCandidate{
-				FactID: factID,
-				Score:  candidate.Score,
-				Source: candidate.Source,
+			best[row.factID] = RetrievalMirrorCandidate{
+				FactID:        row.factID,
+				TriviumNodeID: candidate.TriviumNodeID,
+				Score:         candidate.Score,
+				Source:        candidate.Source,
 			}
 		}
 	}
+	report.MappedCandidateCount = len(best)
 	result := make([]RetrievalMirrorCandidate, 0, len(best))
 	for _, candidate := range best {
 		result = append(result, candidate)
 	}
-	return result, nil
+	report.Mapped = result
+	return report, nil
 }
 
 func normalizeMirrorCandidateScore(score float64) (float64, bool) {

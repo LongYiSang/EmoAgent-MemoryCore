@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -532,6 +533,7 @@ func TestForgetRepositoryEnqueuesMirrorDeleteEdgesForFactTargets(t *testing.T) {
 			requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
 			for _, linkID := range linkIDs {
 				requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "delete_edge", 1)
+				requireDeleteEdgePayload(t, ctx, db.SQLDB(), "default", linkID)
 			}
 		})
 	}
@@ -601,6 +603,7 @@ func TestForgetRepositoryEnqueuesMirrorDeleteEdgesForEpisodeTargetsAndDependentF
 			requireQueueCount(t, db.SQLDB(), "fact", fact.ID, "delete_node", 1)
 			for _, linkID := range linkIDs {
 				requireQueueCount(t, db.SQLDB(), "memory_link", linkID, "delete_edge", 1)
+				requireDeleteEdgePayload(t, ctx, db.SQLDB(), "default", linkID)
 			}
 		})
 	}
@@ -761,6 +764,42 @@ WHERE id = ?`, eventID).Scan(&gotLevel, &targetNodeID, &status, &scopeJSON, &cas
 		if value != "" && strings.Contains(combined, value) {
 			t.Fatalf("deletion event contains forbidden value %q in %q", value, combined)
 		}
+	}
+}
+
+func requireDeleteEdgePayload(t *testing.T, ctx context.Context, db *sql.DB, personaID string, linkID string) {
+	t.Helper()
+
+	var payloadJSON string
+	if err := db.QueryRowContext(ctx, `
+SELECT COALESCE(payload_json, '')
+FROM index_sync_queue
+WHERE persona_id = ?
+  AND node_type = 'memory_link'
+  AND node_id = ?
+  AND operation = 'delete_edge'`, personaID, linkID).Scan(&payloadJSON); err != nil {
+		t.Fatalf("query delete_edge payload_json for %s: %v", linkID, err)
+	}
+	if strings.TrimSpace(payloadJSON) == "" {
+		t.Fatalf("delete_edge payload_json is empty for %s", linkID)
+	}
+	var payload struct {
+		PersonaID    string `json:"persona_id"`
+		SQLiteEdgeID string `json:"sqlite_edge_id"`
+		LinkType     string `json:"link_type"`
+		FromNodeType string `json:"from_node_type"`
+		FromNodeID   string `json:"from_node_id"`
+		ToNodeType   string `json:"to_node_type"`
+		ToNodeID     string `json:"to_node_id"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode delete_edge payload_json for %s: %v", linkID, err)
+	}
+	if payload.PersonaID != personaID || payload.SQLiteEdgeID != linkID {
+		t.Fatalf("delete_edge payload id mismatch: %#v", payload)
+	}
+	if payload.LinkType == "" || payload.FromNodeType == "" || payload.FromNodeID == "" || payload.ToNodeType == "" || payload.ToNodeID == "" {
+		t.Fatalf("delete_edge payload missing required fields: %#v", payload)
 	}
 }
 

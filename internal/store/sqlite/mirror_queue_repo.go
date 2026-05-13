@@ -21,17 +21,21 @@ const (
 type MirrorQueueOperation string
 
 const (
-	MirrorQueueOperationUpsertNode     MirrorQueueOperation = "upsert_node"
-	MirrorQueueOperationDeleteNode     MirrorQueueOperation = "delete_node"
-	MirrorQueueOperationUpsertEdge     MirrorQueueOperation = "upsert_edge"
-	MirrorQueueOperationDeleteEdge     MirrorQueueOperation = "delete_edge"
-	MirrorQueueOperationRebuildPersona MirrorQueueOperation = "rebuild_persona"
+	MirrorQueueOperationUpsertNode MirrorQueueOperation = "upsert_node"
+	MirrorQueueOperationDeleteNode MirrorQueueOperation = "delete_node"
+	MirrorQueueOperationUpsertEdge MirrorQueueOperation = "upsert_edge"
+	MirrorQueueOperationDeleteEdge MirrorQueueOperation = "delete_edge"
 )
+
+// Keep the legacy enum value in schema compatibility only; worker execution remains unsupported.
+const legacyMirrorQueueOperationRebuildPersona MirrorQueueOperation = "rebuild_persona"
 
 const (
 	mirrorQueueLeaseDuration       = 15 * time.Minute
 	mirrorQueueLeaseExpiredMessage = "mirror queue lease expired"
 )
+
+var ErrMirrorQueuePersonaProcessingActive = errors.New("mirror queue persona has active processing rows")
 
 type MirrorQueueRow struct {
 	ID           string
@@ -62,6 +66,76 @@ func (r *MirrorQueueRepository) Claim(ctx context.Context, limit int) ([]MirrorQ
 
 func (r *MirrorQueueRepository) ClaimForPersona(ctx context.Context, personaID string, limit int) ([]MirrorQueueRow, error) {
 	return r.claim(ctx, strings.TrimSpace(personaID), limit)
+}
+
+func (r *MirrorQueueRepository) PrepareForPersonaRebuild(ctx context.Context, personaID string, supersedeReason string) (int, error) {
+	personaID = strings.TrimSpace(personaID)
+	if personaID == "" {
+		return 0, errors.New("persona_id is required")
+	}
+	supersedeReason = strings.TrimSpace(supersedeReason)
+	if supersedeReason == "" {
+		supersedeReason = "superseded by mirror rebuild"
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		rollbackUnlessCommitted(tx)
+	}()
+
+	now := time.Now().UTC()
+	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID); err != nil {
+		return 0, err
+	}
+
+	var processing int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM index_sync_queue
+WHERE persona_id = ?
+  AND status = ?`,
+		personaID,
+		string(MirrorQueueStatusProcessing),
+	).Scan(&processing); err != nil {
+		return 0, err
+	}
+	if processing > 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		tx = nil
+		return 0, ErrMirrorQueuePersonaProcessingActive
+	}
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE index_sync_queue
+SET status = ?,
+    error_message = ?,
+    updated_at = ?
+WHERE persona_id = ?
+  AND status IN (?, ?)`,
+		string(MirrorQueueStatusDone),
+		supersedeReason,
+		formatTime(now),
+		personaID,
+		string(MirrorQueueStatusPending),
+		string(MirrorQueueStatusFailed),
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	tx = nil
+	return int(affected), nil
 }
 
 func (r *MirrorQueueRepository) claim(ctx context.Context, personaID string, limit int) ([]MirrorQueueRow, error) {

@@ -443,8 +443,20 @@ func edgePayloadJSON(payload EdgePayload) map[string]any {
 }
 
 func edgeRefJSON(ref EdgeRef) map[string]any {
-	return map[string]any{
+	item := map[string]any{
 		"persona_id":     ref.PersonaID,
 		"sqlite_edge_id": ref.SQLiteEdgeID,
+		"link_type":      ref.LinkType,
+		"from_node_type": ref.FromNodeType,
+		"from_node_id":   ref.FromNodeID,
+		"to_node_type":   ref.ToNodeType,
+		"to_node_id":     ref.ToNodeID,
 	}
+	if ref.FromMirrorNodeID != nil {
+		item["from_mirror_node_id"] = *ref.FromMirrorNodeID
+	}
+	if ref.ToMirrorNodeID != nil {
+		item["to_mirror_node_id"] = *ref.ToMirrorNodeID
+	}
+	return item
 }
