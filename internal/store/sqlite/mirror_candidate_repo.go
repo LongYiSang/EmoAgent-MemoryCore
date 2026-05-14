@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"sort"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ type MirrorCandidate struct {
 	TriviumNodeID int64
 	Score         float64
 	Source        string
+	Rank          int
 }
 
 type RetrievalMirrorCandidate struct {
@@ -21,6 +23,7 @@ type RetrievalMirrorCandidate struct {
 	TriviumNodeID int64
 	Score         float64
 	Source        string
+	Rank          int
 }
 
 type MirrorCandidateDiagnostic struct {
@@ -28,6 +31,7 @@ type MirrorCandidateDiagnostic struct {
 	SQLiteFactID  string
 	Score         float64
 	Source        string
+	Rank          int
 	DropReason    string
 }
 
@@ -56,13 +60,17 @@ func (r *MirrorCandidateRepository) MapFactCandidatesWithDiagnostics(ctx context
 		SidecarCandidateCount: len(candidates),
 	}
 	normalized := make([]MirrorCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
+	for idx, candidate := range candidates {
 		score, ok := normalizeMirrorCandidateScore(candidate.Score)
+		if candidate.Rank <= 0 {
+			candidate.Rank = idx + 1
+		}
 		if candidate.TriviumNodeID <= 0 || !ok {
 			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
 				TriviumNodeID: candidate.TriviumNodeID,
 				Score:         candidate.Score,
 				Source:        candidate.Source,
+				Rank:          candidate.Rank,
 				DropReason:    "invalid_candidate",
 			})
 			report.DroppedCandidateCount++
@@ -119,6 +127,7 @@ WHERE persona_id = ?
 				TriviumNodeID: candidate.TriviumNodeID,
 				Score:         candidate.Score,
 				Source:        candidate.Source,
+				Rank:          candidate.Rank,
 				DropReason:    "unmapped_trivium_node",
 			})
 			report.DroppedCandidateCount++
@@ -130,6 +139,7 @@ WHERE persona_id = ?
 				SQLiteFactID:  row.factID,
 				Score:         candidate.Score,
 				Source:        candidate.Source,
+				Rank:          candidate.Rank,
 				DropReason:    "stale_mapping_status_" + row.status,
 			})
 			report.DroppedCandidateCount++
@@ -140,14 +150,16 @@ WHERE persona_id = ?
 			SQLiteFactID:  row.factID,
 			Score:         candidate.Score,
 			Source:        candidate.Source,
+			Rank:          candidate.Rank,
 		})
 		existing, ok := best[row.factID]
-		if !ok || candidate.Score > existing.Score {
+		if !ok || candidate.Rank < existing.Rank || (candidate.Rank == existing.Rank && candidate.Score > existing.Score) {
 			best[row.factID] = RetrievalMirrorCandidate{
 				FactID:        row.factID,
 				TriviumNodeID: candidate.TriviumNodeID,
 				Score:         candidate.Score,
 				Source:        candidate.Source,
+				Rank:          candidate.Rank,
 			}
 		}
 	}
@@ -156,6 +168,12 @@ WHERE persona_id = ?
 	for _, candidate := range best {
 		result = append(result, candidate)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Rank == result[j].Rank {
+			return result[i].FactID < result[j].FactID
+		}
+		return result[i].Rank < result[j].Rank
+	})
 	report.Mapped = result
 	return report, nil
 }

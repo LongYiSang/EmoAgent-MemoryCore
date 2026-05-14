@@ -19,6 +19,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertMemoryContains(assertion, false)
 	case "query_analysis":
 		return s.assertQueryAnalysis(assertion)
+	case "anchor_fusion":
+		return s.assertAnchorFusion(assertion)
 	case "fact_count":
 		return s.assertFactCount(ctx, assertion)
 	case "fact_column":
@@ -134,6 +136,44 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 		}
 	}
 	return nil
+}
+
+func (s *runState) assertAnchorFusion(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Retrieval == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "retrieve step " + assertion.Step, Actual: "missing"}
+	}
+	diagnostics := result.Retrieval.AnchorFusion
+	if diagnostics == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "anchor fusion present", Actual: "nil"}
+	}
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	nodeType := defaultString(assertion.NodeType, "fact")
+	for _, seed := range diagnostics.Seeds {
+		if seed.NodeType != nodeType || seed.NodeID != nodeID {
+			continue
+		}
+		if seed.FusedAnchorScore <= 0 || seed.SeedEnergy <= 0 {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "positive fused score and seed energy", Actual: fmt.Sprintf("score=%f energy=%f", seed.FusedAnchorScore, seed.SeedEnergy)}
+		}
+		if assertion.Source == "" {
+			return nil
+		}
+		for _, breakdown := range seed.SourceBreakdown {
+			if breakdown.Source != assertion.Source {
+				continue
+			}
+			if assertion.Rank > 0 && breakdown.Rank != assertion.Rank {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("source=%s rank=%d", assertion.Source, assertion.Rank), Actual: fmt.Sprintf("rank=%d", breakdown.Rank)}
+			}
+			return nil
+		}
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "source=" + assertion.Source, Actual: anchorSourcesDebug(seed.SourceBreakdown)}
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: nodeType + " " + nodeID + " anchor seed", Actual: anchorSeedsDebug(diagnostics)}
 }
 
 func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) error {
@@ -522,6 +562,28 @@ func memoryItemsDebug(context *memorycore.MemoryContext) string {
 	}
 	if len(parts) == 0 {
 		return "no memory items"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func anchorSeedsDebug(diagnostics *memorycore.AnchorFusionDiagnostics) string {
+	if diagnostics == nil || len(diagnostics.Seeds) == 0 {
+		return "no anchor seeds"
+	}
+	parts := make([]string, 0, len(diagnostics.Seeds))
+	for _, seed := range diagnostics.Seeds {
+		parts = append(parts, seed.NodeType+":"+seed.NodeID)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func anchorSourcesDebug(breakdown []memorycore.AnchorSourceBreakdown) string {
+	if len(breakdown) == 0 {
+		return "no sources"
+	}
+	parts := make([]string, 0, len(breakdown))
+	for _, source := range breakdown {
+		parts = append(parts, fmt.Sprintf("%s#%d", source.Source, source.Rank))
 	}
 	return strings.Join(parts, ", ")
 }

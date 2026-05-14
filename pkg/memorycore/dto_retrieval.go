@@ -85,6 +85,7 @@ type MemoryContext struct {
 	TokenEstimate int
 	Mirror        *MirrorRetrievalDiagnostics
 	QueryAnalysis *QueryAnalysis
+	AnchorFusion  *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
 }
 
 type QueryAnalysis struct {
@@ -126,6 +127,27 @@ type MemorySuppression struct {
 	Reason   string
 }
 
+type AnchorFusionDiagnostics struct {
+	Seeds []FusedAnchor `json:"seeds,omitempty"`
+}
+
+type FusedAnchor struct {
+	NodeID           string                  `json:"node_id"`
+	NodeType         string                  `json:"node_type"`
+	FusedAnchorScore float64                 `json:"fused_anchor_score"`
+	SeedEnergy       float64                 `json:"seed_energy"`
+	SourceBreakdown  []AnchorSourceBreakdown `json:"source_breakdown,omitempty"`
+}
+
+type AnchorSourceBreakdown struct {
+	Source          string  `json:"source"`
+	Rank            int     `json:"rank"`
+	RawScore        float64 `json:"raw_score"`
+	Weight          float64 `json:"weight"`
+	RRFContribution float64 `json:"rrf_contribution"`
+	DebugReason     string  `json:"debug_reason,omitempty"`
+}
+
 type MirrorRetrievalDiagnostics struct {
 	Status                string                       `json:"status"`
 	SidecarCandidateCount int                          `json:"sidecar_candidate_count"`
@@ -139,6 +161,7 @@ type MirrorCandidateDiagnostics struct {
 	SQLiteFactID  string  `json:"sqlite_fact_id,omitempty"`
 	Score         float64 `json:"score,omitempty"`
 	Source        string  `json:"source,omitempty"`
+	Rank          int     `json:"rank,omitempty"`
 	DropReason    string  `json:"drop_reason,omitempty"`
 }
 

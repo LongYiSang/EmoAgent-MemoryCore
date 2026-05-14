@@ -480,6 +480,49 @@ func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 	}
 }
 
+func TestServiceRetrieveExposesAnchorFusionDiagnosticsWithStableMirrorRank(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡和乌龙茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "乌龙茶", "用户喜欢乌龙茶。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, first.ID, 7201, "indexed")
+	insertMirrorMapForFact(t, db, second.ID, 7202, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{
+		{TriviumNodeID: 7201, Score: 0.10, Source: "trivium_dense"},
+		{TriviumNodeID: 7202, Score: 0.99, Source: "trivium_dense"},
+	}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "mirror-only",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with mirror: %v", err)
+	}
+	if contextResult.AnchorFusion == nil {
+		t.Fatalf("anchor fusion diagnostics is nil")
+	}
+	requirePublicAnchorSeed(t, contextResult.AnchorFusion, "fact", first.ID, "trivium_dense", 1)
+	requirePublicAnchorSeed(t, contextResult.AnchorFusion, "fact", second.ID, "trivium_dense", 2)
+	if contextResult.Mirror == nil || len(contextResult.Mirror.Candidates) != 2 {
+		t.Fatalf("mirror diagnostics = %#v, want two candidates", contextResult.Mirror)
+	}
+	if contextResult.Mirror.Candidates[0].Rank != 1 || contextResult.Mirror.Candidates[1].Rank != 2 {
+		t.Fatalf("mirror candidate ranks = %#v, want source order ranks 1 and 2", contextResult.Mirror.Candidates)
+	}
+}
+
 func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
 	ctx := context.Background()
 	adapter := &retrievalMirrorAdapter{}
@@ -867,6 +910,26 @@ func requireNoMemoryItem(t *testing.T, contextResult *memorycore.MemoryContext, 
 			}
 		}
 	}
+}
+
+func requirePublicAnchorSeed(t *testing.T, diagnostics *memorycore.AnchorFusionDiagnostics, nodeType string, nodeID string, source string, rank int) {
+	t.Helper()
+
+	for _, seed := range diagnostics.Seeds {
+		if seed.NodeType != nodeType || seed.NodeID != nodeID {
+			continue
+		}
+		if seed.FusedAnchorScore <= 0 || seed.SeedEnergy <= 0 {
+			t.Fatalf("seed %#v has non-positive fused score or energy", seed)
+		}
+		for _, breakdown := range seed.SourceBreakdown {
+			if breakdown.Source == source && breakdown.Rank == rank {
+				return
+			}
+		}
+		t.Fatalf("seed %#v missing source=%s rank=%d", seed, source, rank)
+	}
+	t.Fatalf("anchor seed %s/%s not found in %#v", nodeType, nodeID, diagnostics)
 }
 
 func hasQuerySignal(signals []memorycore.QuerySignal, want memorycore.QuerySignal) bool {

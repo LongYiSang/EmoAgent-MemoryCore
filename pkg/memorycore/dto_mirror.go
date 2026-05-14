@@ -79,6 +79,7 @@ type MirrorCandidate struct {
 	TriviumNodeID int64   `json:"trivium_node_id"`
 	Score         float64 `json:"score"`
 	Source        string  `json:"source"`
+	Rank          int     `json:"rank,omitempty"`
 }
 
 type MirrorCandidateResult struct {

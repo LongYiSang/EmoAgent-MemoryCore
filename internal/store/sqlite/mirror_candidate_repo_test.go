@@ -34,7 +34,7 @@ VALUES
 	if len(mapped) != 1 {
 		t.Fatalf("mapped candidates = %#v, want one fact", mapped)
 	}
-	if mapped[0].FactID != "fact_visible" || mapped[0].Score != 1 || mapped[0].Source != "high_score" {
+	if mapped[0].FactID != "fact_visible" || mapped[0].Score != 0.8 || mapped[0].Source != "fake_sparse" || mapped[0].Rank != 1 {
 		t.Fatalf("mapped candidate = %#v", mapped[0])
 	}
 }
@@ -76,5 +76,31 @@ VALUES
 	}
 	if !deletedSeen || !unmappedSeen {
 		t.Fatalf("diagnostics = %#v", report.Diagnostics)
+	}
+}
+
+func TestMirrorCandidateRepositoryDedupesMappedFactByRank(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedMirrorPayloadFixture(t, ctx, db.SQLDB())
+	mustExecMirrorPayload(t, ctx, db.SQLDB(), `
+INSERT INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
+VALUES
+  ('map_first', 'default', 'fact', 'fact_visible', 2001, 'indexed')`)
+
+	repo := memsqlite.NewMirrorCandidateRepository(db.SQLDB())
+	mapped, err := repo.MapFactCandidates(ctx, "default", []memsqlite.MirrorCandidate{
+		{TriviumNodeID: 2001, Score: 0.2, Source: "rank_one", Rank: 1},
+		{TriviumNodeID: 2001, Score: 1.0, Source: "rank_two_high_score", Rank: 2},
+	})
+	if err != nil {
+		t.Fatalf("map mirror candidates: %v", err)
+	}
+	if len(mapped) != 1 {
+		t.Fatalf("mapped candidates = %#v, want one fact", mapped)
+	}
+	if mapped[0].FactID != "fact_visible" || mapped[0].TriviumNodeID != 2001 || mapped[0].Rank != 1 || mapped[0].Source != "rank_one" {
+		t.Fatalf("mapped candidate = %#v, want first ranked hit", mapped[0])
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +56,7 @@ type MemoryContext struct {
 	TokenEstimate int
 	Mirror        *MirrorDiagnostics
 	QueryAnalysis *QueryAnalysis
+	AnchorFusion  *AnchorFusionDiagnostics
 }
 
 type MirrorDiagnostics struct {
@@ -87,10 +87,9 @@ type MemorySuppression struct {
 }
 
 type retrievalCandidate struct {
-	FactID      string
-	TextMatch   float64
-	EntityMatch float64
-	MirrorMatch float64
+	FactID           string
+	FusedAnchorScore float64
+	SeedEnergy       float64
 }
 
 type scoredFact struct {
@@ -135,10 +134,11 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	}
 	policy := effectiveRetrievalPolicy(basePolicy, query)
 
-	candidates, err := r.collectCandidates(ctx, req.PersonaID, query, policy, req.Mirror)
+	fusedAnchors, err := r.collectFusedAnchors(ctx, req.PersonaID, query, policy, req.Mirror, req.MirrorDiagnostics)
 	if err != nil {
 		return MemoryContext{}, err
 	}
+	candidates := factCandidatesFromAnchors(fusedAnchors)
 	scored, suppressions, err := r.scoreCandidates(ctx, req, query, policy, now, candidates)
 	if err != nil {
 		return MemoryContext{}, err
@@ -155,6 +155,7 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 		DoNotMention:  suppressions,
 		Mirror:        req.MirrorDiagnostics,
 		QueryAnalysis: &query,
+		AnchorFusion:  &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
 	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
 	for _, candidate := range scored {
@@ -188,46 +189,6 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 		contextResult.Blocks = append(contextResult.Blocks, block)
 	}
 	return contextResult, nil
-}
-
-func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, mirrorCandidates []RetrievalMirrorCandidate) (map[string]retrievalCandidate, error) {
-	candidates := make(map[string]retrievalCandidate)
-	for _, mirrorCandidate := range mirrorCandidates {
-		if mirrorCandidate.FactID == "" {
-			continue
-		}
-		candidate := candidates[mirrorCandidate.FactID]
-		candidate.FactID = mirrorCandidate.FactID
-		candidate.MirrorMatch = math.Max(candidate.MirrorMatch, mirrorCandidate.Score)
-		candidates[mirrorCandidate.FactID] = candidate
-	}
-	docs, err := r.search.SearchDocumentsForRetrieval(ctx, personaID, query.Raw, policy.UseFTS, policy.FinalMemoryCount*4, policy)
-	if err != nil {
-		return nil, err
-	}
-	for _, doc := range docs {
-		if doc.NodeType != core.NodeTypeFact {
-			continue
-		}
-		candidate := candidates[doc.NodeID]
-		candidate.FactID = doc.NodeID
-		candidate.TextMatch = math.Max(candidate.TextMatch, textMatchScore(query, doc.SearchText))
-		candidates[doc.NodeID] = candidate
-	}
-
-	for _, mention := range query.EntityMentions {
-		factIDs, err := r.factIDsForEntity(ctx, personaID, mention.EntityID, policy)
-		if err != nil {
-			return nil, err
-		}
-		for _, factID := range factIDs {
-			candidate := candidates[factID]
-			candidate.FactID = factID
-			candidate.EntityMatch = 1
-			candidates[factID] = candidate
-		}
-	}
-	return candidates, nil
 }
 
 func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req RetrievalRequest, query QueryAnalysis, policy RetrievalPolicy, now time.Time, candidates map[string]retrievalCandidate) ([]scoredFact, []MemorySuppression, error) {
@@ -271,6 +232,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 						SQLiteFactID:  fact.ID,
 						Score:         mirror.Score,
 						Source:        mirror.Source,
+						Rank:          mirror.Rank,
 						DropReason:    "dropped_by_authority_filter",
 					})
 					req.MirrorDiagnostics.DroppedCandidateCount++
@@ -282,9 +244,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if err != nil {
 			return nil, nil, err
 		}
-		baseScore := 0.35*candidate.TextMatch +
-			0.25*candidate.MirrorMatch +
-			0.20*candidate.EntityMatch +
+		baseScore := 0.80*candidate.SeedEnergy +
 			0.20*fact.Importance +
 			0.10*recencyScore(fact, now) +
 			0.10*factTypePrior(fact.FactType) +
@@ -306,7 +266,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 				Reason:   MemorySuppressionReasonFatigue,
 			})
 		}
-		if len(query.Terms) == 0 && candidate.EntityMatch == 0 && candidate.TextMatch == 0 && candidate.MirrorMatch == 0 {
+		if len(query.Terms) == 0 && candidate.SeedEnergy == 0 && candidate.FusedAnchorScore == 0 {
 			continue
 		}
 		scored = append(scored, item)
@@ -435,7 +395,8 @@ WHERE persona_id = ?
   AND searchable = 1
   AND (validity_status != 'invalidated' OR ? = 1)
   AND (lifecycle_status != 'archived' OR ? = 1)
-  AND (lifecycle_status != 'deep_archived' OR ? = 1)`,
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY importance DESC, updated_at DESC, id ASC`,
 		personaID,
 		entityID,
 		entityID,

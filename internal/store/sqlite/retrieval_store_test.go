@@ -456,6 +456,101 @@ func TestRetrievalRepositoryQueryAnalysisUsesEntityMentionsForCandidates(t *test
 	}
 }
 
+func TestRetrievalRepositoryAnchorFusionUsesMirrorRankBeforeRawScore(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rank_one", "用户提到 rank one mirror candidate。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rank_one", "fact_rank_one")
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rank_two", "用户提到 rank two mirror candidate。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rank_two", "fact_rank_two")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_rank_one", TriviumNodeID: 7001, Score: 0.10, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_rank_two", TriviumNodeID: 7002, Score: 0.99, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if result.AnchorFusion == nil {
+		t.Fatalf("anchor fusion diagnostics is nil")
+	}
+	requireAnchorSeed(t, result.AnchorFusion, core.NodeTypeFact, "fact_rank_one", "trivium_dense", 1)
+	requireAnchorSeed(t, result.AnchorFusion, core.NodeTypeFact, "fact_rank_two", "trivium_dense", 2)
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 {
+		t.Fatalf("retrieval result = %#v, want two mirror facts", result.Blocks)
+	}
+	if result.Blocks[0].Items[0].NodeID != "fact_rank_one" {
+		t.Fatalf("first item = %s, want rank-one mirror candidate before higher raw score", result.Blocks[0].Items[0].NodeID)
+	}
+}
+
+func TestRetrievalRepositoryNarrativeInsightAnchorsAreGatedDiagnosticsOnly(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_causal", "用户说早会导致焦虑。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fact_causal", "fact_causal")
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_causal", "工作压力有周期性模式。")
+	insertSearchInsight(t, ctx, db.SQLDB(), "insight_causal", "早会是压力触发点。")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	direct, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "早会",
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("direct retrieve: %v", err)
+	}
+	if direct.AnchorFusion != nil && hasAnchorSeed(direct.AnchorFusion, core.NodeTypeNarrative, "narrative_causal") {
+		t.Fatalf("direct_fact anchor fusion included narrative seed: %#v", direct.AnchorFusion)
+	}
+	if direct.AnchorFusion != nil && hasAnchorSeed(direct.AnchorFusion, core.NodeTypeInsight, "insight_causal") {
+		t.Fatalf("direct_fact anchor fusion included insight seed: %#v", direct.AnchorFusion)
+	}
+
+	causal, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "为什么工作压力和早会让我焦虑",
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("causal retrieve: %v", err)
+	}
+	if causal.AnchorFusion == nil {
+		t.Fatalf("causal anchor fusion diagnostics is nil")
+	}
+	requireAnchorSeed(t, causal.AnchorFusion, core.NodeTypeNarrative, "narrative_causal", "narrative_insight", 2)
+	requireAnchorSeed(t, causal.AnchorFusion, core.NodeTypeInsight, "insight_causal", "narrative_insight", 1)
+	for _, block := range causal.Blocks {
+		for _, item := range block.Items {
+			if item.NodeType == string(core.NodeTypeNarrative) || item.NodeType == string(core.NodeTypeInsight) {
+				t.Fatalf("non-fact diagnostics seed entered facts block: %#v", item)
+			}
+		}
+	}
+}
+
 func requireSearchDocument(t *testing.T, db *sql.DB, factID string, wantText string) {
 	t.Helper()
 
@@ -557,6 +652,65 @@ func insertRetrievalEvidenceLink(t *testing.T, ctx context.Context, db *sql.DB, 
 	}); err != nil {
 		t.Fatalf("insert evidence link %s: %v", linkID, err)
 	}
+}
+
+func insertSearchNarrative(t *testing.T, ctx context.Context, db *sql.DB, narrativeID string, summary string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO narratives (
+    id, persona_id, scope, scope_ref, summary, importance,
+    visibility_status, sensitivity_level, lifecycle_status, searchable
+) VALUES (?, 'default', 'topic', 'work', ?, 0.8, 'visible', 'normal', 'active', 1)`, narrativeID, summary); err != nil {
+		t.Fatalf("insert narrative %s: %v", narrativeID, err)
+	}
+	if err := memsqlite.NewSearchRepository(db).UpsertNarrativeDocument(ctx, "default", narrativeID); err != nil {
+		t.Fatalf("upsert narrative search document %s: %v", narrativeID, err)
+	}
+}
+
+func insertSearchInsight(t *testing.T, ctx context.Context, db *sql.DB, insightID string, content string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO insights (
+    id, persona_id, insight_type, content, confidence, importance,
+    visibility_status, sensitivity_level, lifecycle_status, searchable
+) VALUES (?, 'default', 'pattern', ?, 0.8, 0.8, 'visible', 'normal', 'active', 1)`, insightID, content); err != nil {
+		t.Fatalf("insert insight %s: %v", insightID, err)
+	}
+	if err := memsqlite.NewSearchRepository(db).UpsertInsightDocument(ctx, "default", insightID); err != nil {
+		t.Fatalf("upsert insight search document %s: %v", insightID, err)
+	}
+}
+
+func requireAnchorSeed(t *testing.T, diagnostics *memsqlite.AnchorFusionDiagnostics, nodeType core.NodeType, nodeID string, source string, rank int) {
+	t.Helper()
+
+	for _, seed := range diagnostics.Seeds {
+		if seed.NodeType != nodeType || seed.NodeID != nodeID {
+			continue
+		}
+		if seed.FusedAnchorScore <= 0 || seed.SeedEnergy <= 0 {
+			t.Fatalf("seed %#v has non-positive fused score or energy", seed)
+		}
+		for _, breakdown := range seed.SourceBreakdown {
+			if breakdown.Source == source && breakdown.Rank == rank {
+				return
+			}
+		}
+		t.Fatalf("seed %#v missing source=%s rank=%d", seed, source, rank)
+	}
+	t.Fatalf("anchor seed %s/%s not found in %#v", nodeType, nodeID, diagnostics)
+}
+
+func hasAnchorSeed(diagnostics *memsqlite.AnchorFusionDiagnostics, nodeType core.NodeType, nodeID string) bool {
+	for _, seed := range diagnostics.Seeds {
+		if seed.NodeType == nodeType && seed.NodeID == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func boolIntTest(value bool) int {

@@ -79,6 +79,25 @@ VALUES ('map_cli_mirror', 'default', 'fact', ?, 5001, 'indexed')`, factID); err 
 	if strings.Contains(mirrorText, "query_text") || strings.Contains(mirrorText, "summary") || strings.Contains(mirrorText, "search_text") {
 		t.Fatalf("mirror diagnostics leaked payload fields: %s", mirrorText)
 	}
+	anchorFusion, ok := decoded["anchor_fusion"].(map[string]any)
+	if !ok {
+		t.Fatalf("json anchor_fusion missing: %v", decoded)
+	}
+	seeds, ok := anchorFusion["seeds"].([]any)
+	if !ok || len(seeds) == 0 {
+		t.Fatalf("json anchor_fusion seeds missing: %#v", anchorFusion)
+	}
+	seed, ok := seeds[0].(map[string]any)
+	if !ok {
+		t.Fatalf("json anchor seed wrong shape: %#v", seeds[0])
+	}
+	if seed["node_type"] != "fact" || seed["node_id"] != factID {
+		t.Fatalf("json anchor seed = %#v, want fact %s", seed, factID)
+	}
+	breakdown, ok := seed["source_breakdown"].([]any)
+	if !ok || len(breakdown) == 0 {
+		t.Fatalf("json anchor source_breakdown missing: %#v", seed)
+	}
 }
 
 func TestRunRetrieveUseMirrorRequiresSidecarURL(t *testing.T) {

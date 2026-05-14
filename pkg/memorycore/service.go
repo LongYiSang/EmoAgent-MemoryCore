@@ -405,11 +405,16 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 		return nil, diagnostics, nil
 	}
 	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
-	for _, candidate := range result.Candidates {
+	for idx, candidate := range result.Candidates {
+		rank := candidate.Rank
+		if rank <= 0 {
+			rank = idx + 1
+		}
 		candidates = append(candidates, memsqlite.MirrorCandidate{
 			TriviumNodeID: candidate.TriviumNodeID,
 			Score:         candidate.Score,
 			Source:        candidate.Source,
+			Rank:          rank,
 		})
 	}
 	report, err := s.mirrorMap.MapFactCandidatesWithDiagnostics(ctx, personaID, candidates)
@@ -426,6 +431,7 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 			SQLiteFactID:  item.SQLiteFactID,
 			Score:         item.Score,
 			Source:        item.Source,
+			Rank:          item.Rank,
 			DropReason:    item.DropReason,
 		})
 	}
@@ -770,6 +776,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		TokenEstimate: context.TokenEstimate,
 		Mirror:        mirrorDiagnosticsFromStore(context.Mirror),
 		QueryAnalysis: queryAnalysisFromStore(context.QueryAnalysis),
+		AnchorFusion:  anchorFusionDiagnosticsFromStore(context.AnchorFusion),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -848,8 +855,39 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 			SQLiteFactID:  sqliteFactID,
 			Score:         item.Score,
 			Source:        item.Source,
+			Rank:          item.Rank,
 			DropReason:    item.DropReason,
 		})
+	}
+	return result
+}
+
+func anchorFusionDiagnosticsFromStore(value *memsqlite.AnchorFusionDiagnostics) *AnchorFusionDiagnostics {
+	if value == nil {
+		return nil
+	}
+	result := &AnchorFusionDiagnostics{
+		Seeds: make([]FusedAnchor, 0, len(value.Seeds)),
+	}
+	for _, seed := range value.Seeds {
+		out := FusedAnchor{
+			NodeID:           seed.NodeID,
+			NodeType:         string(seed.NodeType),
+			FusedAnchorScore: seed.FusedAnchorScore,
+			SeedEnergy:       seed.SeedEnergy,
+			SourceBreakdown:  make([]AnchorSourceBreakdown, 0, len(seed.SourceBreakdown)),
+		}
+		for _, breakdown := range seed.SourceBreakdown {
+			out.SourceBreakdown = append(out.SourceBreakdown, AnchorSourceBreakdown{
+				Source:          breakdown.Source,
+				Rank:            breakdown.Rank,
+				RawScore:        breakdown.RawScore,
+				Weight:          breakdown.Weight,
+				RRFContribution: breakdown.RRFContribution,
+				DebugReason:     breakdown.DebugReason,
+			})
+		}
+		result.Seeds = append(result.Seeds, out)
 	}
 	return result
 }

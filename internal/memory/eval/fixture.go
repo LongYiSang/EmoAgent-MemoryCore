@@ -261,6 +261,8 @@ type Assertion struct {
 	MemoryAbility         string   `yaml:"memory_ability"`
 	EvidenceNeed          string   `yaml:"evidence_need"`
 	EntityMentions        []string `yaml:"entity_mentions"`
+	Source                string   `yaml:"source"`
+	Rank                  int      `yaml:"rank"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -374,6 +376,7 @@ func knownAssertionType(value string) bool {
 		"memory_contains",
 		"memory_not_contains",
 		"query_analysis",
+		"anchor_fusion",
 		"fact_count",
 		"fact_column",
 		"link_exists",
