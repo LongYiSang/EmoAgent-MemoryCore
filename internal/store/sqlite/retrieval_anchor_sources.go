@@ -307,7 +307,7 @@ func factCandidatesFromAnchors(anchors []FusedAnchor) map[string]retrievalCandid
 		candidates[anchor.NodeID] = retrievalCandidate{
 			FactID:           anchor.NodeID,
 			FusedAnchorScore: anchor.FusedAnchorScore,
-			SeedEnergy:       anchor.SeedEnergy,
+			AnchorEnergy:     anchor.SeedEnergy,
 		}
 	}
 	return candidates
@@ -320,11 +320,8 @@ func mergeActivationCandidates(candidates map[string]retrievalCandidate, graphCa
 		}
 		candidate := candidates[graph.FactID]
 		candidate.FactID = graph.FactID
-		if graph.Score > candidate.SeedEnergy {
-			candidate.SeedEnergy = graph.Score
-		}
-		if graph.Score > candidate.FusedAnchorScore {
-			candidate.FusedAnchorScore = graph.Score
+		if graph.Score > candidate.GraphEnergy {
+			candidate.GraphEnergy = graph.Score
 		}
 		candidates[graph.FactID] = candidate
 	}

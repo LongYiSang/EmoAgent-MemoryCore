@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -559,6 +560,178 @@ func TestRetrievalRepositoryNarrativeInsightAnchorsAreGatedDiagnosticsOnly(t *te
 	}
 }
 
+func TestRetrievalRepositoryWritesScoreBreakdownWithAnchorAndGraphEnergy(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_ranked", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_ranked_evidence", "fact_ranked")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "coffee",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_ranked", TriviumNodeID: 7001, Score: 0.91, Source: "trivium_dense", Rank: 1},
+		},
+		GraphActivation: []memsqlite.RetrievalActivationCandidate{
+			{FactID: "fact_ranked", TriviumNodeID: 7001, Score: 0.42, Source: "graph_activation", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != "fact_ranked" {
+		t.Fatalf("retrieval result = %#v, want fact_ranked", result.Blocks)
+	}
+
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_ranked", "retrieved")
+	requireBreakdownNumber(t, breakdown, "anchor_energy", 1)
+	requireBreakdownNumber(t, breakdown, "graph_energy", 0.42)
+	for _, key := range []string{
+		"importance",
+		"recency",
+		"fact_type_prior",
+		"pinned",
+		"evidence_strength",
+		"lifecycle_multiplier",
+		"fatigue_penalty",
+		"sensitivity_penalty",
+		"final_score",
+	} {
+		if _, ok := breakdown[key].(float64); !ok {
+			t.Fatalf("score breakdown missing numeric key %q: %#v", key, breakdown)
+		}
+	}
+}
+
+func TestRetrievalRepositoryMMRSuppressesDuplicateWithoutDoNotMention(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_meeting_primary", "用户讨厌早会，因为早会让他焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_meeting_duplicate", "用户讨厌早会，因为早会让他焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_coffee_distinct", "用户喜欢咖啡，咖啡能帮助他恢复精力。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_primary", "fact_meeting_primary")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_duplicate", "fact_meeting_duplicate")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_distinct", "fact_coffee_distinct")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_meeting_primary", TriviumNodeID: 7101, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_meeting_duplicate", TriviumNodeID: 7102, Score: 0.98, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_coffee_distinct", TriviumNodeID: 7103, Score: 0.97, Source: "trivium_dense", Rank: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.DoNotMention) != 0 {
+		t.Fatalf("do_not_mention = %#v, want empty for MMR duplicate suppression", result.DoNotMention)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 {
+		t.Fatalf("retrieval result = %#v, want two selected facts", result.Blocks)
+	}
+	items := result.Blocks[0].Items
+	if items[0].NodeID != "fact_meeting_primary" || items[1].NodeID != "fact_coffee_distinct" {
+		t.Fatalf("selected items = [%s, %s], want primary meeting and distinct coffee", items[0].NodeID, items[1].NodeID)
+	}
+	requireAccessEventRow(t, db.SQLDB(), "fact_meeting_duplicate", "suppressed", -1)
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_meeting_duplicate", "suppressed")
+	if got := breakdown["suppression_reason"]; got != "mmr_duplicate" {
+		t.Fatalf("suppression_reason = %#v, want mmr_duplicate", got)
+	}
+}
+
+func TestRetrievalRepositoryContextBudgetSkipsLongCandidate(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	longSummary := strings.Repeat("预算很长的候选内容", 16)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_long_budget", longSummary, core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_short_budget", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_long_budget", "fact_long_budget")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_short_budget", "fact_short_budget")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount:    1,
+			ContextBudgetTokens: 20,
+			UseMirror:           true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_long_budget", TriviumNodeID: 7201, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_short_budget", TriviumNodeID: 7202, Score: 0.98, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if len(result.DoNotMention) != 0 {
+		t.Fatalf("do_not_mention = %#v, want empty for context budget suppression", result.DoNotMention)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != "fact_short_budget" {
+		t.Fatalf("retrieval result = %#v, want short budget fact selected after long candidate skipped", result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_long_budget", "suppressed")
+	if got := breakdown["suppression_reason"]; got != "context_budget" {
+		t.Fatalf("suppression_reason = %#v, want context_budget", got)
+	}
+}
+
+func TestRetrievalRepositoryFatigueSuppressionWritesScoreBreakdown(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_fatigue_breakdown", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fatigue_breakdown", "fact_fatigue_breakdown")
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_fatigue_breakdown"); err != nil {
+		t.Fatalf("upsert fact search document: %v", err)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	for i := 0; i < 2; i++ {
+		if _, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+			PersonaID: "default",
+			SessionID: ptr("s1"),
+			QueryText: "咖啡",
+			Policy: memsqlite.RetrievalPolicy{
+				UseFTS:           true,
+				FinalMemoryCount: 1,
+			},
+		}); err != nil {
+			t.Fatalf("retrieve %d: %v", i+1, err)
+		}
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_fatigue_breakdown", "suppressed")
+	if got := breakdown["suppression_reason"]; got != "fatigue" {
+		t.Fatalf("suppression_reason = %#v, want fatigue", got)
+	}
+	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0.6)
+}
+
 func TestSearchDocumentsForRetrievalRanksFTSByRelevanceBeforeRecency(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -658,14 +831,56 @@ func requireAccessEventRow(t *testing.T, db *sql.DB, factID string, accessType s
 	t.Helper()
 
 	var count int
-	if err := db.QueryRow(`
+	query := `
 SELECT COUNT(*)
 FROM memory_access_events
-WHERE node_type = 'fact' AND node_id = ? AND access_type = ? AND rank_position = ?`, factID, accessType, rank).Scan(&count); err != nil {
+WHERE node_type = 'fact' AND node_id = ? AND access_type = ?`
+	args := []any{factID, accessType}
+	if rank >= 0 {
+		query += ` AND rank_position = ?`
+		args = append(args, rank)
+	} else {
+		query += ` AND rank_position IS NULL`
+	}
+	if err := db.QueryRow(query, args...).Scan(&count); err != nil {
 		t.Fatalf("count access events: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("access event count = %d, want 1", count)
+	}
+}
+
+func requireScoreBreakdown(t *testing.T, db *sql.DB, factID string, accessType string) map[string]any {
+	t.Helper()
+
+	var raw string
+	if err := db.QueryRow(`
+SELECT score_breakdown_json
+FROM memory_access_events
+WHERE node_type = 'fact' AND node_id = ? AND access_type = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, factID, accessType).Scan(&raw); err != nil {
+		t.Fatalf("query score breakdown for %s/%s: %v", factID, accessType, err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		t.Fatalf("score breakdown for %s/%s is empty", factID, accessType)
+	}
+	var breakdown map[string]any
+	if err := json.Unmarshal([]byte(raw), &breakdown); err != nil {
+		t.Fatalf("decode score breakdown %q: %v", raw, err)
+	}
+	return breakdown
+}
+
+func requireBreakdownNumber(t *testing.T, breakdown map[string]any, key string, want float64) {
+	t.Helper()
+
+	got, ok := breakdown[key].(float64)
+	if !ok {
+		t.Fatalf("breakdown[%s] = %#v, want number", key, breakdown[key])
+	}
+	if got != want {
+		t.Fatalf("breakdown[%s] = %v, want %v", key, got, want)
 	}
 }
 

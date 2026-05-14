@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +18,13 @@ const (
 	MemoryBlockTypeFacts = "facts"
 
 	MemorySuppressionReasonFatigue = "fatigue"
+
+	memorySuppressionReasonMMRDuplicate  = "mmr_duplicate"
+	memorySuppressionReasonContextBudget = "context_budget"
+
+	defaultMMRLambda          = 0.72
+	defaultDuplicateThreshold = 0.88
+	defaultMinFinalScore      = 0.20
 )
 
 type RetrievalRepository struct {
@@ -117,7 +126,8 @@ type MemorySuppression struct {
 type retrievalCandidate struct {
 	FactID           string
 	FusedAnchorScore float64
-	SeedEnergy       float64
+	AnchorEnergy     float64
+	GraphEnergy      float64
 }
 
 type RetrievalActivationCandidate struct {
@@ -138,11 +148,28 @@ type PreparedRetrieval struct {
 }
 
 type scoredFact struct {
-	Fact        core.Fact
-	Score       float64
-	TokenCost   int
-	Suppressed  bool
-	Suppression string
+	Fact             core.Fact
+	Score            float64
+	TokenCost        int
+	Suppressed       bool
+	Suppression      string
+	Breakdown        retrievalScoreBreakdown
+	SourceEpisodeIDs []string
+}
+
+type retrievalScoreBreakdown struct {
+	AnchorEnergy        float64 `json:"anchor_energy"`
+	GraphEnergy         float64 `json:"graph_energy"`
+	Importance          float64 `json:"importance"`
+	Recency             float64 `json:"recency"`
+	FactTypePrior       float64 `json:"fact_type_prior"`
+	Pinned              float64 `json:"pinned"`
+	EvidenceStrength    float64 `json:"evidence_strength"`
+	LifecycleMultiplier float64 `json:"lifecycle_multiplier"`
+	FatiguePenalty      float64 `json:"fatigue_penalty"`
+	SensitivityPenalty  float64 `json:"sensitivity_penalty"`
+	FinalScore          float64 `json:"final_score"`
+	SuppressionReason   string  `json:"suppression_reason,omitempty"`
 }
 
 func NewRetrievalRepository(db *sql.DB, newID func() string, now func() time.Time) *RetrievalRepository {
@@ -232,18 +259,43 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 		AnchorFusion:    &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
 	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
+	selectable := make([]scoredFact, 0, len(scored))
 	for _, candidate := range scored {
 		if candidate.Suppressed {
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil); err != nil {
+			candidate.Breakdown.SuppressionReason = candidate.Suppression
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
 			continue
 		}
-		if len(block.Items) >= policy.FinalMemoryCount {
+		if candidate.Score < defaultMinFinalScore {
+			continue
+		}
+		selectable = append(selectable, candidate)
+	}
+	remaining := append([]scoredFact(nil), selectable...)
+	var selected []scoredFact
+	for len(block.Items) < policy.FinalMemoryCount && len(remaining) > 0 {
+		bestIndex := bestMMRCandidateIndex(remaining, selected)
+		if bestIndex < 0 {
 			break
 		}
+		candidate := remaining[bestIndex]
+		remaining = removeScoredFactAt(remaining, bestIndex)
+
+		if maxFactSimilarity(candidate, selected) > defaultDuplicateThreshold {
+			candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+				return MemoryContext{}, err
+			}
+			continue
+		}
 		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
-			break
+			candidate.Breakdown.SuppressionReason = memorySuppressionReasonContextBudget
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+				return MemoryContext{}, err
+			}
+			continue
 		}
 		rank := len(block.Items)
 		item := MemoryContextItem{
@@ -254,8 +306,18 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 			UsageGuidance: usageGuidance(candidate.Fact),
 		}
 		block.Items = append(block.Items, item)
+		selected = append(selected, candidate)
 		contextResult.TokenEstimate += candidate.TokenCost
-		if err := r.logAccessEvent(ctx, req, candidate.Fact, "retrieved", candidate.Score, &rank); err != nil {
+		if err := r.logAccessEvent(ctx, req, candidate.Fact, "retrieved", candidate.Score, &rank, candidate.Breakdown); err != nil {
+			return MemoryContext{}, err
+		}
+	}
+	for _, candidate := range remaining {
+		if maxFactSimilarity(candidate, selected) <= defaultDuplicateThreshold {
+			continue
+		}
+		candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
+		if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
 			return MemoryContext{}, err
 		}
 	}
@@ -353,18 +415,45 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if err != nil {
 			return nil, nil, err
 		}
-		baseScore := 0.80*candidate.SeedEnergy +
+		evidenceStrength, sourceEpisodeIDs, err := r.evidenceStrength(ctx, fact)
+		if err != nil {
+			return nil, nil, err
+		}
+		recency := recencyScore(fact, now)
+		typePrior := factTypePrior(fact.FactType)
+		pinned := pinnedScore(fact)
+		fatiguePenalty := fatiguePenalty(fatigue)
+		sensitivityPenalty := sensitivityPenalty(fact.SensitivityLevel)
+		lifecycleMultiplier := lifecycleScoreMultiplier(fact.LifecycleStatus)
+		baseScore := 0.55*candidate.AnchorEnergy +
+			0.25*candidate.GraphEnergy +
 			0.20*fact.Importance +
-			0.10*recencyScore(fact, now) +
-			0.10*factTypePrior(fact.FactType) +
-			0.05*pinnedScore(fact) -
-			fatiguePenalty(fatigue) -
-			sensitivityPenalty(fact.SensitivityLevel)
-		score := baseScore * lifecycleScoreMultiplier(fact.LifecycleStatus)
+			0.10*recency +
+			0.10*typePrior +
+			0.10*evidenceStrength +
+			0.05*pinned -
+			fatiguePenalty -
+			sensitivityPenalty
+		score := baseScore * lifecycleMultiplier
+		breakdown := retrievalScoreBreakdown{
+			AnchorEnergy:        candidate.AnchorEnergy,
+			GraphEnergy:         candidate.GraphEnergy,
+			Importance:          fact.Importance,
+			Recency:             recency,
+			FactTypePrior:       typePrior,
+			Pinned:              pinned,
+			EvidenceStrength:    evidenceStrength,
+			LifecycleMultiplier: lifecycleMultiplier,
+			FatiguePenalty:      fatiguePenalty,
+			SensitivityPenalty:  sensitivityPenalty,
+			FinalScore:          score,
+		}
 		item := scoredFact{
-			Fact:      fact,
-			Score:     score,
-			TokenCost: estimateTokens(fact.ContentSummary),
+			Fact:             fact,
+			Score:            score,
+			TokenCost:        estimateTokens(fact.ContentSummary),
+			Breakdown:        breakdown,
+			SourceEpisodeIDs: sourceEpisodeIDs,
 		}
 		if fatigue > 0 {
 			item.Suppressed = true
@@ -375,7 +464,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 				Reason:   MemorySuppressionReasonFatigue,
 			})
 		}
-		if len(query.Terms) == 0 && candidate.SeedEnergy == 0 && candidate.FusedAnchorScore == 0 {
+		if len(query.Terms) == 0 && candidate.AnchorEnergy == 0 && candidate.GraphEnergy == 0 && candidate.FusedAnchorScore == 0 {
 			continue
 		}
 		scored = append(scored, item)
@@ -494,6 +583,59 @@ WHERE l.persona_id = ?
 	return visibleEvidenceCount > 0, nil
 }
 
+func (r *RetrievalRepository) evidenceStrength(ctx context.Context, fact core.Fact) (float64, []string, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT e.id
+FROM memory_links l
+JOIN episodes e
+  ON e.persona_id = l.persona_id
+ AND e.id = l.to_node_id
+WHERE l.persona_id = ?
+  AND l.from_node_type = 'fact'
+  AND l.from_node_id = ?
+  AND l.link_type = 'EVIDENCED_BY'
+  AND l.to_node_type = 'episode'
+  AND e.visibility_status = 'visible'
+  AND e.searchable = 1
+ORDER BY e.occurred_at ASC, e.id ASC`, fact.PersonaID, fact.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	var sourceEpisodeIDs []string
+	for rows.Next() {
+		var episodeID string
+		if err := rows.Scan(&episodeID); err != nil {
+			return 0, nil, err
+		}
+		sourceEpisodeIDs = append(sourceEpisodeIDs, episodeID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	confidence := fact.ExtractionConfidenceScore
+	if confidence <= 0 {
+		confidence = 0.5
+	}
+	evidenceCountScore := 0.0
+	if len(sourceEpisodeIDs) > 0 {
+		evidenceCountScore = math.Min(1, math.Log(1+float64(len(sourceEpisodeIDs)))/math.Log(4))
+	}
+	sourceQuality := 0.0
+	if len(sourceEpisodeIDs) > 0 {
+		sourceQuality = 1
+	} else if fact.Pinned {
+		sourceQuality = 0.5
+	}
+	reinforcement := 0.0
+	if fact.ReinforcementCount > 0 {
+		reinforcement = math.Min(1, math.Log(1+float64(fact.ReinforcementCount))/math.Log(4))
+	}
+	strength := 0.45*confidence + 0.25*evidenceCountScore + 0.20*sourceQuality + 0.10*reinforcement
+	return strength, sourceEpisodeIDs, nil
+}
+
 func (r *RetrievalRepository) factIDsForEntity(ctx context.Context, personaID string, entityID string, policy RetrievalPolicy) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id
@@ -546,13 +688,14 @@ WHERE session_id = ?
 	return count, err
 }
 
-func (r *RetrievalRepository) logAccessEvent(ctx context.Context, req RetrievalRequest, fact core.Fact, accessType string, score float64, rank *int) error {
+func (r *RetrievalRepository) logAccessEvent(ctx context.Context, req RetrievalRequest, fact core.Fact, accessType string, score float64, rank *int, breakdown retrievalScoreBreakdown) error {
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO memory_access_events (
     id, persona_id, session_id, node_type, node_id, access_type,
     retrieval_score, rank_position, context_block_type,
+    score_breakdown_json,
     user_mood_label, relationship_affect_label
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.newID(),
 		req.PersonaID,
 		nullableString(req.SessionID),
@@ -562,10 +705,19 @@ INSERT INTO memory_access_events (
 		score,
 		nullableInt(rank),
 		MemoryBlockTypeFacts,
+		scoreBreakdownJSON(breakdown),
 		nullableNonEmptyString(req.Context.UserMoodLabel),
 		nullableNonEmptyString(req.Context.RelationshipMoodLabel),
 	)
 	return err
+}
+
+func scoreBreakdownJSON(breakdown retrievalScoreBreakdown) sql.NullString {
+	data, err := json.Marshal(breakdown)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
 }
 
 func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
