@@ -129,6 +129,34 @@ type MirrorActivationResult struct {
 	FallbackReason string                      `json:"fallback_reason,omitempty"`
 }
 
+type MirrorRerankRequest struct {
+	PersonaID  string                  `json:"persona_id"`
+	QueryText  string                  `json:"query_text"`
+	Candidates []MirrorRerankCandidate `json:"candidates"`
+}
+
+type MirrorRerankCandidate struct {
+	NodeID       string  `json:"node_id"`
+	NodeType     string  `json:"node_type"`
+	SafeSummary  string  `json:"safe_summary"`
+	CurrentScore float64 `json:"current_score"`
+	AnchorEnergy float64 `json:"anchor_energy"`
+	GraphEnergy  float64 `json:"graph_energy"`
+}
+
+type MirrorRerankResult struct {
+	Items          []MirrorRerankItem `json:"items"`
+	Degraded       bool               `json:"degraded"`
+	FallbackReason string             `json:"fallback_reason,omitempty"`
+}
+
+type MirrorRerankItem struct {
+	NodeID      string  `json:"node_id"`
+	NodeType    string  `json:"node_type"`
+	RerankScore float64 `json:"rerank_score"`
+	DebugReason string  `json:"debug_reason,omitempty"`
+}
+
 type MirrorAdapter interface {
 	UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error)
 	DeleteNode(ctx context.Context, ref MirrorNodeRef) error
@@ -146,4 +174,8 @@ type MirrorCandidateAdapter interface {
 
 type MirrorActivationAdapter interface {
 	ActivateGraph(ctx context.Context, req MirrorActivationRequest) (*MirrorActivationResult, error)
+}
+
+type MirrorRerankAdapter interface {
+	Rerank(ctx context.Context, req MirrorRerankRequest) (*MirrorRerankResult, error)
 }

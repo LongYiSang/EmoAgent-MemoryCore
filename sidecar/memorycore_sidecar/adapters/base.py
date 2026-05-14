@@ -43,3 +43,7 @@ class MirrorAdapter(ABC):
     @abstractmethod
     def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
+
+    @abstractmethod
+    def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError

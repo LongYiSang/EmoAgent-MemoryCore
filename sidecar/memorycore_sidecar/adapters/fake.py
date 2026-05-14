@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from memorycore_sidecar.activation import ActivationEdge, activate_graph
@@ -113,6 +114,29 @@ class FakeMirrorAdapter(MirrorAdapter):
             "degraded": False,
         }
 
+    def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
+        query_tokens = _tokens(str(request["query_text"]))
+        results = []
+        for candidate in request.get("candidates", []):
+            summary_tokens = _tokens(str(candidate["safe_summary"]))
+            overlap_count = len(query_tokens & summary_tokens)
+            overlap_score = overlap_count / len(query_tokens) if query_tokens else 0.0
+            configured_score = min(float(candidate.get("configured_score", 0.0)), 1.0)
+            rerank_score = min(1.0, overlap_score + configured_score)
+            results.append(
+                {
+                    "node_id": str(candidate["node_id"]),
+                    "node_type": str(candidate.get("node_type", "fact")),
+                    "rerank_score": round(rerank_score, 6),
+                    "debug_reason": (
+                        f"token_overlap={overlap_count}/{len(query_tokens)} "
+                        f"configured_score={configured_score:.6g}"
+                    ),
+                }
+            )
+        results.sort(key=lambda item: (-item["rerank_score"], item["node_id"]))
+        return {"results": results, "degraded": False}
+
 
 def _stable_fake_id(*parts: str) -> int:
     digest = hashlib.sha256()
@@ -121,6 +145,10 @@ def _stable_fake_id(*parts: str) -> int:
         digest.update(b"\x00")
     value = int.from_bytes(digest.digest()[:8], "big") & ((1 << 63) - 1)
     return value or 1
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]", text.casefold()))
 
 
 def _edge_key(edge: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:

@@ -1,4 +1,5 @@
 from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
+from memorycore_sidecar.adapters.trivium import TriviumAdapter
 
 
 def test_fake_adapter_upsert_node_returns_stable_positive_trivium_id():
@@ -95,6 +96,71 @@ def test_fake_adapter_returns_upserted_nodes_as_candidates():
             }
         ],
         "degraded": False,
+    }
+
+
+def test_fake_adapter_rerank_uses_overlap_and_configured_score_deterministically():
+    adapter = FakeMirrorAdapter()
+
+    result = adapter.rerank(
+        {
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "candidates": [
+                {
+                    "node_id": "fact-b",
+                    "node_type": "fact",
+                    "safe_summary": "coffee preference is stable",
+                    "configured_score": 0.2,
+                },
+                {
+                    "node_id": "fact-a",
+                    "node_type": "fact",
+                    "safe_summary": "coffee preference is stable",
+                    "configured_score": 0.2,
+                },
+                {
+                    "node_id": "fact-c",
+                    "node_type": "fact",
+                    "safe_summary": "travel plans",
+                    "configured_score": 0.9,
+                },
+            ],
+        }
+    )
+
+    assert result["degraded"] is False
+    assert [item["node_id"] for item in result["results"]] == [
+        "fact-a",
+        "fact-b",
+        "fact-c",
+    ]
+    assert all(item["node_type"] == "fact" for item in result["results"])
+    assert all(0 <= item["rerank_score"] <= 1 for item in result["results"])
+    assert all("debug_reason" in item for item in result["results"])
+
+
+def test_trivium_adapter_rerank_is_degraded_without_provider():
+    adapter = object.__new__(TriviumAdapter)
+
+    result = adapter.rerank(
+        {
+            "persona_id": "default",
+            "query_text": "coffee",
+            "candidates": [
+                {
+                    "node_id": "fact-1",
+                    "node_type": "fact",
+                    "safe_summary": "coffee",
+                }
+            ],
+        }
+    )
+
+    assert result == {
+        "results": [],
+        "degraded": True,
+        "fallback_reason": "rerank_not_implemented",
     }
 
 

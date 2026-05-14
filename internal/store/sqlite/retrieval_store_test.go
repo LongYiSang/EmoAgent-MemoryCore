@@ -611,6 +611,218 @@ func TestRetrievalRepositoryWritesScoreBreakdownWithAnchorAndGraphEnergy(t *test
 	}
 }
 
+func TestRetrievalRepositoryBuildRerankCandidatesUsesAuthorityFilteredScoredFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_visible_rerank", "用户喜欢咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_hidden_rerank", "用户隐藏喜欢咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_sensitive_rerank", "用户敏感喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_visible_rerank", "fact_visible_rerank")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_hidden_rerank", "fact_hidden_rerank")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_sensitive_rerank", "fact_sensitive_rerank")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_hidden_rerank", "visibility_status", string(core.VisibilityHidden))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_sensitive_rerank", "sensitivity_level", string(core.SensitivitySensitive))
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:             true,
+			SensitivityPermission: string(core.SensitivityNormal),
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_hidden_rerank", TriviumNodeID: 7301, Score: 1.0, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_sensitive_rerank", TriviumNodeID: 7302, Score: 1.0, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_visible_rerank", TriviumNodeID: 7303, Score: 0.5, Source: "trivium_dense", Rank: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, nil, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	if len(finalCandidates.Scored) != 1 || len(safeCandidates) != 1 {
+		t.Fatalf("candidate counts scored=%d safe=%d, want 1/1", len(finalCandidates.Scored), len(safeCandidates))
+	}
+	candidate := safeCandidates[0]
+	if candidate.NodeID != "fact_visible_rerank" || candidate.NodeType != "fact" {
+		t.Fatalf("safe candidate = %#v, want visible fact only", candidate)
+	}
+	if candidate.SafeSummary != "用户喜欢咖啡。" {
+		t.Fatalf("safe summary = %q", candidate.SafeSummary)
+	}
+	if candidate.CurrentScore <= 0 || candidate.AnchorEnergy <= 0 {
+		t.Fatalf("candidate scores = %#v, want positive current and anchor score", candidate)
+	}
+}
+
+func TestRetrievalRepositoryRerankBoostAffectsOrderingAndBreakdownBeforeLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rank_one", "用户喜欢拿铁。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rank_two", "用户喜欢手冲咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rank_one", "fact_rank_one")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rank_two", "fact_rank_two")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_rank_one", TriviumNodeID: 7401, Score: 1.0, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_rank_two", TriviumNodeID: 7402, Score: 0.95, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, nil, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	result, err := retrieval.CompleteFinal(ctx, finalCandidates, []memsqlite.RerankResultItem{
+		{NodeID: "fact_rank_two", NodeType: "fact", RerankScore: 1.25, DebugReason: "direct coffee match"},
+	}, &memsqlite.RerankDiagnostics{Status: "used", SafeCandidateCount: len(safeCandidates), ResultCount: 1})
+	if err != nil {
+		t.Fatalf("complete final: %v", err)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 || result.Blocks[0].Items[0].NodeID != "fact_rank_two" {
+		t.Fatalf("retrieval result = %#v, want rerank-boosted fact_rank_two first", result.Blocks)
+	}
+	if result.Rerank == nil || result.Rerank.Status != "used" || result.Rerank.SafeCandidateCount != len(safeCandidates) {
+		t.Fatalf("rerank diagnostics = %#v, want used with safe count", result.Rerank)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_rank_two", "retrieved")
+	requireBreakdownNumber(t, breakdown, "rerank_score", 1)
+	requireBreakdownNumber(t, breakdown, "rerank_boost", 0.08)
+	if got := breakdown["rerank_status"]; got != "used" {
+		t.Fatalf("rerank_status = %#v, want used", got)
+	}
+	if got := breakdown["rerank_debug_reason"]; got != "direct coffee match" {
+		t.Fatalf("rerank_debug_reason = %#v", got)
+	}
+}
+
+func TestRetrievalRepositoryRerankCannotBypassMMRDuplicateSuppression(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_mmr_primary_rerank", "用户讨厌早会，因为早会让他焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_mmr_duplicate_rerank", "用户讨厌早会，因为早会让他焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_mmr_distinct_rerank", "用户喜欢咖啡，咖啡能帮助他恢复精力。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_primary_rerank", "fact_mmr_primary_rerank")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_duplicate_rerank", "fact_mmr_duplicate_rerank")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_mmr_distinct_rerank", "fact_mmr_distinct_rerank")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_mmr_primary_rerank", TriviumNodeID: 7501, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_mmr_duplicate_rerank", TriviumNodeID: 7502, Score: 0.98, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_mmr_distinct_rerank", TriviumNodeID: 7503, Score: 0.97, Source: "trivium_dense", Rank: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, nil, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	result, err := retrieval.CompleteFinal(ctx, finalCandidates, []memsqlite.RerankResultItem{
+		{NodeID: "fact_mmr_duplicate_rerank", NodeType: "fact", RerankScore: 1.0, DebugReason: "high duplicate score"},
+	}, &memsqlite.RerankDiagnostics{Status: "used", SafeCandidateCount: len(safeCandidates), ResultCount: 1})
+	if err != nil {
+		t.Fatalf("complete final: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 2 || items[1].NodeID != "fact_mmr_distinct_rerank" {
+		t.Fatalf("selected items = %#v, want one meeting fact and distinct fact despite duplicate rerank boost", items)
+	}
+	selectedMeeting := items[0].NodeID
+	if selectedMeeting != "fact_mmr_primary_rerank" && selectedMeeting != "fact_mmr_duplicate_rerank" {
+		t.Fatalf("selected meeting item = %s, want one of the duplicate pair", selectedMeeting)
+	}
+	suppressedMeeting := "fact_mmr_duplicate_rerank"
+	if selectedMeeting == "fact_mmr_duplicate_rerank" {
+		suppressedMeeting = "fact_mmr_primary_rerank"
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), suppressedMeeting, "suppressed")
+	if got := breakdown["suppression_reason"]; got != "mmr_duplicate" {
+		t.Fatalf("suppression_reason = %#v, want mmr_duplicate", got)
+	}
+}
+
+func TestRetrievalRepositoryRerankCannotBypassContextBudget(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	longSummary := strings.Repeat("预算很长的候选内容", 16)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rerank_long_budget", longSummary, core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_rerank_short_budget", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rerank_long_budget", "fact_rerank_long_budget")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_rerank_short_budget", "fact_rerank_short_budget")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount:    1,
+			ContextBudgetTokens: 20,
+			UseMirror:           true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_rerank_long_budget", TriviumNodeID: 7601, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_rerank_short_budget", TriviumNodeID: 7602, Score: 0.98, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, nil, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	result, err := retrieval.CompleteFinal(ctx, finalCandidates, []memsqlite.RerankResultItem{
+		{NodeID: "fact_rerank_long_budget", NodeType: "fact", RerankScore: 1.0, DebugReason: "high long score"},
+	}, &memsqlite.RerankDiagnostics{Status: "used", SafeCandidateCount: len(safeCandidates), ResultCount: 1})
+	if err != nil {
+		t.Fatalf("complete final: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_rerank_short_budget" {
+		t.Fatalf("selected items = %#v, want short fact after long candidate budget suppression", items)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_rerank_long_budget", "suppressed")
+	if got := breakdown["suppression_reason"]; got != "context_budget" {
+		t.Fatalf("suppression_reason = %#v, want context_budget", got)
+	}
+}
+
 func TestRetrievalRepositoryMMRSuppressesDuplicateWithoutDoNotMention(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)

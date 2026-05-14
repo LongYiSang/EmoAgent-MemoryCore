@@ -37,6 +37,10 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertSuppressionEvent(ctx, assertion)
 	case "graph_activation_candidate":
 		return s.assertGraphActivationCandidate(assertion)
+	case "rerank_status":
+		return s.assertRerankStatus(assertion)
+	case "rerank_input":
+		return s.assertRerankInput(assertion)
 	case "unsupported_premise_not_asserted":
 		return s.assertUnsupportedPremiseNotAsserted(assertion)
 	case "ablation_improves":
@@ -410,6 +414,57 @@ func (s *runState) assertGraphActivationCandidate(assertion Assertion) error {
 		return nil
 	}
 	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "graph activation candidate " + nodeID, Actual: graphCandidatesDebug(diagnostics)}
+}
+
+func (s *runState) assertRerankStatus(assertion Assertion) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	if result.Rerank == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "rerank diagnostics present", Actual: "nil"}
+	}
+	if assertion.Status != "" && result.Rerank.Status != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "status=" + assertion.Status, Actual: "status=" + result.Rerank.Status}
+	}
+	return nil
+}
+
+func (s *runState) assertRerankInput(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.RerankRequest == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "rerank request for step " + assertion.Step, Actual: "missing"}
+	}
+	actual := map[string]string{}
+	for _, candidate := range result.RerankRequest.Candidates {
+		actual[candidate.NodeID] = candidate.SafeSummary
+	}
+	expected, err := s.resolveStrings(assertion.NodeIDs)
+	if err != nil {
+		return err
+	}
+	for _, nodeID := range expected {
+		if _, ok := actual[nodeID]; !ok {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "rerank input contains " + nodeID, Actual: strings.Join(mapKeys(actual), ",")}
+		}
+	}
+	forbidden, err := s.resolveStrings(assertion.ForbiddenNodeIDs)
+	if err != nil {
+		return err
+	}
+	for _, nodeID := range forbidden {
+		if _, ok := actual[nodeID]; ok {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "rerank input excludes " + nodeID, Actual: strings.Join(mapKeys(actual), ",")}
+		}
+	}
+	for nodeID, summary := range actual {
+		for _, forbiddenText := range assertion.ForbiddenContains {
+			if strings.Contains(summary, forbiddenText) {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "rerank summary excludes " + forbiddenText, Actual: nodeID + ":" + summary}
+			}
+		}
+	}
+	return nil
 }
 
 func (s *runState) assertUnsupportedPremiseNotAsserted(assertion Assertion) error {
@@ -926,6 +981,14 @@ LIMIT 1`
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "queue_status=" + assertion.Status, Actual: "queue_status=" + actual}
 	}
 	return nil
+}
+
+func mapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func allowedFactAssertionColumn(column string) bool {

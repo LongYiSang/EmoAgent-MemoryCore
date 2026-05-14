@@ -41,6 +41,7 @@ type runState struct {
 type stepResult struct {
 	Consolidation *memorycore.ConsolidationResult
 	Retrieval     *memorycore.MemoryContext
+	RerankRequest *memorycore.MirrorRerankRequest
 	Forget        *memorycore.ForgetResult
 	RetentionRun  *memorycore.RunRetentionResult
 	Compression   *memorycore.ApplyCompressionResult
@@ -230,6 +231,9 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 	if err := s.applyGraphStub(ctx, step); err != nil {
 		return err
 	}
+	if err := s.applyRerankStub(ctx, step); err != nil {
+		return err
+	}
 	switch step.Action {
 	case "consolidate":
 		result, err := s.runConsolidate(ctx, step)
@@ -256,7 +260,12 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		if err != nil {
 			return err
 		}
-		s.steps[step.ID] = stepResult{Retrieval: result}
+		var rerankRequest *memorycore.MirrorRerankRequest
+		if s.mirror.lastRerankRequest.PersonaID != "" {
+			captured := s.mirror.lastRerankRequest
+			rerankRequest = &captured
+		}
+		s.steps[step.ID] = stepResult{Retrieval: result, RerankRequest: rerankRequest}
 	case "forget":
 		result, err := s.runForget(ctx, step)
 		if err != nil {
@@ -691,6 +700,37 @@ func (s *runState) applyGraphStub(ctx context.Context, step Step) error {
 			return err
 		}
 		s.mirror.activationCandidates = append(s.mirror.activationCandidates, mapped)
+	}
+	return nil
+}
+
+func (s *runState) applyRerankStub(ctx context.Context, step Step) error {
+	if step.RerankStub == nil {
+		return nil
+	}
+	if step.RerankStub.Unavailable {
+		s.mirror.rerankUnavailable = true
+	}
+	if step.RerankStub.Degraded {
+		s.mirror.rerankDegraded = true
+		s.mirror.rerankFallbackReason = step.RerankStub.FallbackReason
+	}
+	for _, item := range step.RerankStub.Items {
+		nodeID, err := s.resolveString(item.NodeID)
+		if err != nil {
+			return err
+		}
+		nodeType := defaultString(item.NodeType, "fact")
+		score := item.Score
+		if score == 0 {
+			score = 0.8
+		}
+		s.mirror.rerankItems = append(s.mirror.rerankItems, memorycore.MirrorRerankItem{
+			NodeID:      nodeID,
+			NodeType:    nodeType,
+			RerankScore: score,
+			DebugReason: item.DebugReason,
+		})
 	}
 	return nil
 }

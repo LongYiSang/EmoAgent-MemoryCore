@@ -1,0 +1,46 @@
+case_id: P5G002_reranker_fallback
+description: Phase 5G sidecar rerank failure falls back to existing safe retrieval.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: safe_fact
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: retrieve
+    action: retrieve
+    rerank_stub:
+      unavailable: true
+    retrieve:
+      session_id: s1
+      query_text: 咖啡
+      policy:
+        use_fts: true
+        use_mirror: true
+        final_memory_count: 1
+assertions:
+  - type: rerank_status
+    step: retrieve
+    status: sidecar_error
+  - type: memory_contains
+    step: retrieve
+    node_id: $safe_fact.fact_id

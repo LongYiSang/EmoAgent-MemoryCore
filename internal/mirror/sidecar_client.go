@@ -23,7 +23,10 @@ const (
 	sidecarCandidateResponseSchemaVersion  = "memory_mirror_candidates.v0.1"
 	sidecarActivationRequestSchemaVersion  = "memory_graph_activation_request.v0.1"
 	sidecarActivationResponseSchemaVersion = "memory_graph_activation_result.v0.1"
+	sidecarRerankRequestSchemaVersion      = "memory_rerank_request.v0.1"
+	sidecarRerankResponseSchemaVersion     = "memory_rerank_result.v0.1"
 	defaultSidecarTimeout                  = 10 * time.Second
+	maxRerankDebugReasonRunes              = 160
 )
 
 type SidecarClientOptions struct {
@@ -94,6 +97,34 @@ type ActivationResult struct {
 	Candidates     []ActivationCandidate
 	Degraded       bool
 	FallbackReason string
+}
+
+type RerankRequest struct {
+	PersonaID  string
+	QueryText  string
+	Candidates []RerankCandidate
+}
+
+type RerankCandidate struct {
+	NodeID       string
+	NodeType     string
+	SafeSummary  string
+	CurrentScore float64
+	AnchorEnergy float64
+	GraphEnergy  float64
+}
+
+type RerankResult struct {
+	Items          []RerankItem
+	Degraded       bool
+	FallbackReason string
+}
+
+type RerankItem struct {
+	NodeID      string
+	NodeType    string
+	RerankScore float64
+	DebugReason string
 }
 
 func NewSidecarClient(options SidecarClientOptions) *SidecarClient {
@@ -391,6 +422,93 @@ func (c *SidecarClient) ActivateGraph(ctx context.Context, request ActivationReq
 	return result, nil
 }
 
+func (c *SidecarClient) Rerank(ctx context.Context, request RerankRequest) (RerankResult, error) {
+	endpoint, err := c.endpoint("/retrieval/rerank")
+	if err != nil {
+		return RerankResult{}, err
+	}
+	requestID := rerankRequestID(request)
+	body, err := json.Marshal(map[string]any{
+		"schema_version": sidecarRerankRequestSchemaVersion,
+		"request_id":     requestID,
+		"persona_id":     strings.TrimSpace(request.PersonaID),
+		"query_text":     request.QueryText,
+		"candidates":     rerankCandidatesJSON(request.Candidates),
+	})
+	if err != nil {
+		return RerankResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return RerankResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return RerankResult{}, fmt.Errorf("sidecar rerank request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			return RerankResult{}, fmt.Errorf("sidecar rerank status %d", resp.StatusCode)
+		}
+		return RerankResult{}, fmt.Errorf("sidecar rerank status %d: %s", resp.StatusCode, message)
+	}
+	var response sidecarRerankResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return RerankResult{}, fmt.Errorf("sidecar rerank response decode: %w", err)
+	}
+	if response.SchemaVersion != sidecarRerankResponseSchemaVersion {
+		return RerankResult{}, fmt.Errorf("sidecar rerank response schema mismatch: %q", response.SchemaVersion)
+	}
+	if response.RequestID != requestID {
+		return RerankResult{}, fmt.Errorf("sidecar rerank response request_id mismatch: %q", response.RequestID)
+	}
+	result := RerankResult{
+		Items:          make([]RerankItem, 0, len(response.Results)),
+		Degraded:       response.Degraded,
+		FallbackReason: response.FallbackReason,
+	}
+	allowed := map[string]string{}
+	for _, candidate := range request.Candidates {
+		if strings.TrimSpace(candidate.NodeID) == "" {
+			continue
+		}
+		nodeType := strings.TrimSpace(candidate.NodeType)
+		if nodeType == "" {
+			nodeType = "fact"
+		}
+		allowed[candidate.NodeID] = nodeType
+	}
+	limit := len(allowed)
+	for _, item := range response.Results {
+		if limit > 0 && len(result.Items) >= limit {
+			break
+		}
+		nodeID := strings.TrimSpace(item.NodeID)
+		nodeType := strings.TrimSpace(item.NodeType)
+		if nodeType == "" {
+			nodeType = "fact"
+		}
+		if wantType, ok := allowed[nodeID]; !ok || wantType != nodeType {
+			continue
+		}
+		score, ok := normalizedCandidateScore(item.RerankScore)
+		if !ok {
+			continue
+		}
+		result.Items = append(result.Items, RerankItem{
+			NodeID:      nodeID,
+			NodeType:    nodeType,
+			RerankScore: score,
+			DebugReason: sanitizeDebugReason(item.DebugReason, maxRerankDebugReasonRunes),
+		})
+	}
+	return result, nil
+}
+
 type sidecarOperationRequest struct {
 	SchemaVersion string    `json:"schema_version"`
 	OperationID   string    `json:"operation_id"`
@@ -433,6 +551,19 @@ type sidecarActivationResponse struct {
 			LinkTypes      []string `json:"link_types"`
 		} `json:"paths,omitempty"`
 	} `json:"candidates"`
+	Degraded       bool   `json:"degraded"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+}
+
+type sidecarRerankResponse struct {
+	SchemaVersion string `json:"schema_version"`
+	RequestID     string `json:"request_id,omitempty"`
+	Results       []struct {
+		NodeID      string  `json:"node_id"`
+		NodeType    string  `json:"node_type"`
+		RerankScore float64 `json:"rerank_score"`
+		DebugReason string  `json:"debug_reason,omitempty"`
+	} `json:"results"`
 	Degraded       bool   `json:"degraded"`
 	FallbackReason string `json:"fallback_reason,omitempty"`
 }
@@ -543,6 +674,19 @@ func activationRequestID(request ActivationRequest) string {
 	return strings.Join(parts, ":")
 }
 
+func rerankRequestID(request RerankRequest) string {
+	parts := []string{
+		"rerank",
+		strings.TrimSpace(request.PersonaID),
+		strings.TrimSpace(request.QueryText),
+		fmt.Sprintf("%d", len(request.Candidates)),
+	}
+	for _, candidate := range request.Candidates {
+		parts = append(parts, strings.TrimSpace(candidate.NodeID))
+	}
+	return strings.Join(parts, ":")
+}
+
 func normalizedCandidateScore(score float64) (float64, bool) {
 	if math.IsNaN(score) || math.IsInf(score, 0) || score < 0 {
 		return 0, false
@@ -551,6 +695,43 @@ func normalizedCandidateScore(score float64) (float64, bool) {
 		return 1, true
 	}
 	return score, true
+}
+
+func rerankCandidatesJSON(candidates []RerankCandidate) []map[string]any {
+	result := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		result = append(result, map[string]any{
+			"node_id":       candidate.NodeID,
+			"node_type":     candidate.NodeType,
+			"safe_summary":  candidate.SafeSummary,
+			"current_score": candidate.CurrentScore,
+			"anchor_energy": candidate.AnchorEnergy,
+			"graph_energy":  candidate.GraphEnergy,
+		})
+	}
+	return result
+}
+
+func sanitizeDebugReason(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 {
+			return -1
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func activationSeedsJSON(seeds []ActivationSeed) []map[string]any {

@@ -15,6 +15,12 @@ type evalMirrorAdapter struct {
 	activationFallbackReason string
 	activationCandidates     []memorycore.MirrorActivationCandidate
 	activationCalls          int
+	rerankUnavailable        bool
+	rerankDegraded           bool
+	rerankFallbackReason     string
+	rerankItems              []memorycore.MirrorRerankItem
+	rerankCalls              int
+	lastRerankRequest        memorycore.MirrorRerankRequest
 	nextID                   int64
 }
 
@@ -25,6 +31,11 @@ func (a *evalMirrorAdapter) resetForStep() {
 	a.activationDegraded = false
 	a.activationFallbackReason = ""
 	a.activationCandidates = nil
+	a.rerankUnavailable = false
+	a.rerankDegraded = false
+	a.rerankFallbackReason = ""
+	a.rerankItems = nil
+	a.lastRerankRequest = memorycore.MirrorRerankRequest{}
 }
 
 func (a *evalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
@@ -81,5 +92,18 @@ func (a *evalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.Mi
 		Candidates:     append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
 		Degraded:       a.activationDegraded,
 		FallbackReason: a.activationFallbackReason,
+	}, nil
+}
+
+func (a *evalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+	a.rerankCalls++
+	a.lastRerankRequest = req
+	if a.rerankUnavailable {
+		return nil, errors.New("rerank sidecar unavailable")
+	}
+	return &memorycore.MirrorRerankResult{
+		Items:          append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
+		Degraded:       a.rerankDegraded,
+		FallbackReason: a.rerankFallbackReason,
 	}, nil
 }

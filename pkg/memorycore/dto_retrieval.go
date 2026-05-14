@@ -94,6 +94,7 @@ type MemoryContext struct {
 	TokenEstimate   int
 	Mirror          *MirrorRetrievalDiagnostics
 	GraphActivation *GraphActivationDiagnostics `json:"graph_activation,omitempty"`
+	Rerank          *RerankDiagnostics          `json:"rerank,omitempty"`
 	QueryAnalysis   *QueryAnalysis
 	AnchorFusion    *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
 }
@@ -222,6 +223,14 @@ type GraphActivationCandidateDiagnostics struct {
 type GraphActivationPath struct {
 	TriviumNodeIDs []int64  `json:"trivium_node_ids,omitempty"`
 	LinkTypes      []string `json:"link_types,omitempty"`
+}
+
+type RerankDiagnostics struct {
+	Status             string `json:"status"`
+	SafeCandidateCount int    `json:"safe_candidate_count"`
+	ResultCount        int    `json:"result_count"`
+	Degraded           bool   `json:"degraded"`
+	FallbackReason     string `json:"fallback_reason,omitempty"`
 }
 
 type RebuildSearchDocumentsRequest struct {

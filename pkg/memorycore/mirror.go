@@ -311,6 +311,19 @@ func (fakeMirrorAdapter) ClearNamespace(ctx context.Context, personaID string) e
 	return nil
 }
 
+func (fakeMirrorAdapter) Rerank(ctx context.Context, req MirrorRerankRequest) (*MirrorRerankResult, error) {
+	items := make([]MirrorRerankItem, 0, len(req.Candidates))
+	for _, candidate := range req.Candidates {
+		items = append(items, MirrorRerankItem{
+			NodeID:      candidate.NodeID,
+			NodeType:    candidate.NodeType,
+			RerankScore: 0,
+			DebugReason: "fake reranker neutral score",
+		})
+	}
+	return &MirrorRerankResult{Items: items}, nil
+}
+
 func stableFakeMirrorID(parts ...string) int64 {
 	hash := sha256.New()
 	for _, part := range parts {
@@ -448,6 +461,31 @@ func (a sidecarMirrorAdapter) ActivateGraph(ctx context.Context, req MirrorActiv
 	return out, nil
 }
 
+func (a sidecarMirrorAdapter) Rerank(ctx context.Context, req MirrorRerankRequest) (*MirrorRerankResult, error) {
+	result, err := a.client.Rerank(ctx, internalmirror.RerankRequest{
+		PersonaID:  req.PersonaID,
+		QueryText:  req.QueryText,
+		Candidates: rerankCandidatesToInternal(req.Candidates),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &MirrorRerankResult{
+		Items:          make([]MirrorRerankItem, 0, len(result.Items)),
+		Degraded:       result.Degraded,
+		FallbackReason: result.FallbackReason,
+	}
+	for _, item := range result.Items {
+		out.Items = append(out.Items, MirrorRerankItem{
+			NodeID:      item.NodeID,
+			NodeType:    item.NodeType,
+			RerankScore: item.RerankScore,
+			DebugReason: item.DebugReason,
+		})
+	}
+	return out, nil
+}
+
 func activationSeedsToInternal(seeds []MirrorActivationSeed) []internalmirror.ActivationSeed {
 	result := make([]internalmirror.ActivationSeed, 0, len(seeds))
 	for _, seed := range seeds {
@@ -456,6 +494,21 @@ func activationSeedsToInternal(seeds []MirrorActivationSeed) []internalmirror.Ac
 			SQLiteNodeID:  seed.SQLiteNodeID,
 			NodeType:      seed.NodeType,
 			SeedEnergy:    seed.SeedEnergy,
+		})
+	}
+	return result
+}
+
+func rerankCandidatesToInternal(candidates []MirrorRerankCandidate) []internalmirror.RerankCandidate {
+	result := make([]internalmirror.RerankCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		result = append(result, internalmirror.RerankCandidate{
+			NodeID:       candidate.NodeID,
+			NodeType:     candidate.NodeType,
+			SafeSummary:  candidate.SafeSummary,
+			CurrentScore: candidate.CurrentScore,
+			AnchorEnergy: candidate.AnchorEnergy,
+			GraphEnergy:  candidate.GraphEnergy,
 		})
 	}
 	return result

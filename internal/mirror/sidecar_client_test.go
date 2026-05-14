@@ -361,6 +361,128 @@ func TestSidecarClientActivateGraphCapsAndSanitizesResponse(t *testing.T) {
 	}
 }
 
+func TestSidecarClientRerankPostsSafeCandidatesAndSanitizesResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/rerank" {
+			t.Fatalf("path = %s, want /retrieval/rerank", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if captured["schema_version"] != "memory_rerank_request.v0.1" {
+			t.Fatalf("schema_version = %v", captured["schema_version"])
+		}
+		if captured["request_id"] == "" {
+			t.Fatalf("request_id is empty in request %#v", captured)
+		}
+		candidates := captured["candidates"].([]any)
+		if len(candidates) != 1 {
+			t.Fatalf("candidates = %#v, want one", candidates)
+		}
+		candidate := candidates[0].(map[string]any)
+		if candidate["safe_summary"] != "用户喜欢咖啡。" {
+			t.Fatalf("safe_summary = %#v", candidate["safe_summary"])
+		}
+		if strings.Contains(candidate["safe_summary"].(string), "episode raw") {
+			t.Fatalf("safe_summary leaked raw episode content: %#v", candidate)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_rerank_result.v0.1",
+			"request_id":     captured["request_id"],
+			"results": []map[string]any{
+				{"node_id": "fact-1", "node_type": "fact", "rerank_score": 1.25, "debug_reason": strings.Repeat("direct\n", 60)},
+				{"node_id": "unknown", "node_type": "fact", "rerank_score": 0.99, "debug_reason": "injected"},
+				{"node_id": "fact-2", "node_type": "fact", "rerank_score": -0.1, "debug_reason": "bad score"},
+			},
+			"degraded": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.Rerank(context.Background(), RerankRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+		Candidates: []RerankCandidate{
+			{
+				NodeID:       "fact-1",
+				NodeType:     "fact",
+				SafeSummary:  "用户喜欢咖啡。",
+				CurrentScore: 0.72,
+				AnchorEnergy: 1.0,
+				GraphEnergy:  0.2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items = %#v, want one sanitized known result", result.Items)
+	}
+	item := result.Items[0]
+	if item.NodeID != "fact-1" || item.NodeType != "fact" || item.RerankScore != 1 {
+		t.Fatalf("item = %#v, want fact-1 clamped score", item)
+	}
+	if strings.ContainsAny(item.DebugReason, "\r\n\t") {
+		t.Fatalf("debug reason was not sanitized: %q", item.DebugReason)
+	}
+	if len([]rune(item.DebugReason)) > 160 {
+		t.Fatalf("debug reason length = %d, want <= 160", len([]rune(item.DebugReason)))
+	}
+}
+
+func TestSidecarClientRerankRejectsBadResponseIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		body func(requestID string) map[string]any
+		want string
+	}{
+		{
+			name: "wrong schema",
+			body: func(requestID string) map[string]any {
+				return map[string]any{"schema_version": "wrong", "request_id": requestID}
+			},
+			want: "schema",
+		},
+		{
+			name: "request mismatch",
+			body: func(requestID string) map[string]any {
+				return map[string]any{"schema_version": "memory_rerank_result.v0.1", "request_id": requestID + "-other"}
+			},
+			want: "request_id",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(tc.body(request["request_id"].(string)))
+			}))
+			defer server.Close()
+
+			client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+			_, err := client.Rerank(context.Background(), RerankRequest{
+				PersonaID: "default",
+				QueryText: "咖啡",
+				Candidates: []RerankCandidate{
+					{NodeID: "fact-1", NodeType: "fact", SafeSummary: "用户喜欢咖啡。"},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func ptrInt64(v int64) *int64 {
 	return &v
 }

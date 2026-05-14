@@ -365,7 +365,12 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.retrieve.Complete(ctx, prepared, graphCandidates, graphDiagnostics)
+	finalCandidates, safeRerankCandidates, err := s.retrieve.BuildRerankCandidates(ctx, prepared, graphCandidates, graphDiagnostics)
+	if err != nil {
+		return nil, err
+	}
+	rerankResults, rerankDiagnostics := s.rerankCandidates(ctx, personaID, prepared, safeRerankCandidates)
+	result, err := s.retrieve.CompleteFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -523,6 +528,43 @@ func (s *service) graphActivationCandidates(ctx context.Context, personaID strin
 	return report.Mapped, diagnostics, nil
 }
 
+func (s *service) rerankCandidates(ctx context.Context, personaID string, prepared memsqlite.PreparedRetrieval, candidates []memsqlite.RerankCandidate) ([]memsqlite.RerankResultItem, *memsqlite.RerankDiagnostics) {
+	diagnostics := &memsqlite.RerankDiagnostics{
+		Status:             "disabled_by_config",
+		SafeCandidateCount: len(candidates),
+	}
+	if !prepared.Policy.UseMirror {
+		return nil, diagnostics
+	}
+	if len(candidates) == 0 {
+		diagnostics.Status = "no_candidates"
+		return nil, diagnostics
+	}
+	diagnostics.Status = "adapter_missing"
+	rerankAdapter, ok := s.mirrorAdapter.(MirrorRerankAdapter)
+	if !ok || rerankAdapter == nil {
+		return nil, diagnostics
+	}
+	result, err := rerankAdapter.Rerank(ctx, MirrorRerankRequest{
+		PersonaID:  personaID,
+		QueryText:  prepared.Query.Raw,
+		Candidates: rerankCandidatesFromStore(candidates),
+	})
+	if err != nil || result == nil {
+		diagnostics.Status = "sidecar_error"
+		return nil, diagnostics
+	}
+	diagnostics.Degraded = result.Degraded
+	diagnostics.FallbackReason = result.FallbackReason
+	if result.Degraded {
+		diagnostics.Status = "sidecar_degraded"
+		return nil, diagnostics
+	}
+	diagnostics.Status = "used"
+	diagnostics.ResultCount = len(result.Items)
+	return rerankItemsToStore(result.Items), diagnostics
+}
+
 func defaultMirrorActivationParams() MirrorActivationParams {
 	return MirrorActivationParams{
 		MaxHops:             2,
@@ -560,6 +602,34 @@ func activationCandidatesToStore(candidates []MirrorActivationCandidate) []memsq
 			Source:        source,
 			Rank:          candidate.Rank,
 			Paths:         graphActivationPathsToStorePublic(candidate.Paths),
+		})
+	}
+	return result
+}
+
+func rerankCandidatesFromStore(candidates []memsqlite.RerankCandidate) []MirrorRerankCandidate {
+	result := make([]MirrorRerankCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		result = append(result, MirrorRerankCandidate{
+			NodeID:       candidate.NodeID,
+			NodeType:     candidate.NodeType,
+			SafeSummary:  candidate.SafeSummary,
+			CurrentScore: candidate.CurrentScore,
+			AnchorEnergy: candidate.AnchorEnergy,
+			GraphEnergy:  candidate.GraphEnergy,
+		})
+	}
+	return result
+}
+
+func rerankItemsToStore(items []MirrorRerankItem) []memsqlite.RerankResultItem {
+	result := make([]memsqlite.RerankResultItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, memsqlite.RerankResultItem{
+			NodeID:      item.NodeID,
+			NodeType:    item.NodeType,
+			RerankScore: item.RerankScore,
+			DebugReason: item.DebugReason,
 		})
 	}
 	return result
@@ -920,6 +990,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		TokenEstimate:   context.TokenEstimate,
 		Mirror:          mirrorDiagnosticsFromStore(context.Mirror),
 		GraphActivation: graphActivationDiagnosticsFromStore(context.GraphActivation),
+		Rerank:          rerankDiagnosticsFromStore(context.Rerank),
 		QueryAnalysis:   queryAnalysisFromStore(context.QueryAnalysis),
 		AnchorFusion:    anchorFusionDiagnosticsFromStore(context.AnchorFusion),
 	}
@@ -1086,6 +1157,19 @@ func graphActivationPathsFromStore(paths []memsqlite.GraphActivationPath) []Grap
 		})
 	}
 	return result
+}
+
+func rerankDiagnosticsFromStore(value *memsqlite.RerankDiagnostics) *RerankDiagnostics {
+	if value == nil {
+		return nil
+	}
+	return &RerankDiagnostics{
+		Status:             value.Status,
+		SafeCandidateCount: value.SafeCandidateCount,
+		ResultCount:        value.ResultCount,
+		Degraded:           value.Degraded,
+		FallbackReason:     value.FallbackReason,
+	}
 }
 
 func anchorFusionDiagnosticsFromStore(value *memsqlite.AnchorFusionDiagnostics) *AnchorFusionDiagnostics {

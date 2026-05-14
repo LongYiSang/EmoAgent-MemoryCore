@@ -14,15 +14,19 @@ from memorycore_sidecar.protocol import (
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
     CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION,
     CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION,
+    RERANK_REQUEST_SCHEMA_VERSION,
+    RERANK_RESPONSE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
     RESPONSE_SCHEMA_VERSION,
     ProtocolError,
     build_activation_result,
+    build_rerank_result,
     build_result,
     parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
     parse_operation_request,
+    parse_rerank_request,
 )
 from memorycore_sidecar.server import create_server, create_adapter
 
@@ -248,6 +252,151 @@ def test_build_activation_result_uses_activation_schema():
     }
 
 
+def test_parse_rerank_request_validates_and_sanitizes_candidates():
+    request = parse_rerank_request(
+        {
+            "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+            "request_id": " rerank-1 ",
+            "persona_id": " default ",
+            "query_text": "coffee preference",
+            "candidates": [
+                {
+                    "node_id": " fact-1 ",
+                    "node_type": " fact ",
+                    "safe_summary": "The user likes coffee.",
+                    "current_score": 0.25,
+                    "anchor_energy": 0.3,
+                    "graph_energy": 0.1,
+                    "configured_score": 0.75,
+                    "source_scores": {"sqlite_fts": 0.4, "graph": 0.2},
+                    "raw_episode_content": "must not be propagated",
+                }
+            ],
+        }
+    )
+
+    assert request == {
+        "request_id": "rerank-1",
+        "persona_id": "default",
+        "query_text": "coffee preference",
+        "candidates": [
+            {
+                "node_id": "fact-1",
+                "node_type": "fact",
+                "safe_summary": "The user likes coffee.",
+                "current_score": 0.25,
+                "anchor_energy": 0.3,
+                "graph_energy": 0.1,
+                "configured_score": 0.75,
+                "source_scores": {"sqlite_fts": 0.4, "graph": 0.2},
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("request_id", " ", "request_id"),
+        ("persona_id", "", "persona_id"),
+        ("query_text", " ", "query_text"),
+    ],
+)
+def test_parse_rerank_request_rejects_blank_required_fields(field, value, match):
+    request = {
+        "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+        "request_id": "rerank-1",
+        "persona_id": "default",
+        "query_text": "coffee",
+        "candidates": [
+            {
+                "node_id": "fact-1",
+                "node_type": "fact",
+                "safe_summary": "coffee",
+            }
+        ],
+    }
+    request[field] = value
+    with pytest.raises(ProtocolError, match=match):
+        parse_rerank_request(request)
+
+
+@pytest.mark.parametrize("field", ["node_id", "node_type", "safe_summary"])
+def test_parse_rerank_request_rejects_blank_candidate_fields(field):
+    candidate = {
+        "node_id": "fact-1",
+        "node_type": "fact",
+        "safe_summary": "coffee",
+    }
+    candidate[field] = " "
+    with pytest.raises(ProtocolError, match=field):
+        parse_rerank_request(
+            {
+                "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+                "request_id": "rerank-1",
+                "persona_id": "default",
+                "query_text": "coffee",
+                "candidates": [candidate],
+            }
+        )
+
+
+def test_parse_rerank_request_rejects_invalid_candidate_scores():
+    with pytest.raises(ProtocolError, match="configured_score"):
+        parse_rerank_request(
+            {
+                "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+                "request_id": "rerank-1",
+                "persona_id": "default",
+                "query_text": "coffee",
+                "candidates": [
+                    {
+                        "node_id": "fact-1",
+                        "node_type": "fact",
+                        "safe_summary": "coffee",
+                        "configured_score": float("inf"),
+                    }
+                ],
+            }
+        )
+
+
+def test_parse_rerank_request_rejects_negative_source_scores():
+    with pytest.raises(ProtocolError, match="source_scores"):
+        parse_rerank_request(
+            {
+                "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+                "request_id": "rerank-1",
+                "persona_id": "default",
+                "query_text": "coffee",
+                "candidates": [
+                    {
+                        "node_id": "fact-1",
+                        "node_type": "fact",
+                        "safe_summary": "coffee",
+                        "source_scores": {"sqlite_fts": -0.1},
+                    }
+                ],
+            }
+        )
+
+
+def test_build_rerank_result_uses_rerank_schema():
+    result = build_rerank_result(
+        "rerank-1",
+        results=[{"node_id": "fact-1", "rerank_score": 0.5, "debug_reason": "token_overlap=1"}],
+    )
+
+    assert result == {
+        "schema_version": RERANK_RESPONSE_SCHEMA_VERSION,
+        "request_id": "rerank-1",
+        "results": [
+            {"node_id": "fact-1", "rerank_score": 0.5, "debug_reason": "token_overlap=1"}
+        ],
+        "degraded": False,
+    }
+
+
 def test_server_health_and_mirror_operation_roundtrip():
     server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
     thread = threading.Thread(target=server.serve_forever)
@@ -332,6 +481,39 @@ def test_server_health_and_mirror_operation_roundtrip():
         assert candidate_body["candidates"] == [
             {"trivium_node_id": body["trivium_node_id"], "score": 1.0, "source": "fake_sparse"}
         ]
+
+        rerank_response = urllib.request.urlopen(
+            urllib.request.Request(
+                base_url + "/retrieval/rerank",
+                data=json.dumps(
+                    {
+                        "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+                        "request_id": "rerank-1",
+                        "persona_id": "default",
+                        "query_text": "coffee",
+                        "candidates": [
+                            {
+                                "node_id": "fact-1",
+                                "node_type": "fact",
+                                "safe_summary": "coffee safe text",
+                                "configured_score": 0.5,
+                            }
+                        ],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=2,
+        )
+        rerank_body = json.load(rerank_response)
+        assert rerank_response.status == 200
+        assert rerank_body["schema_version"] == RERANK_RESPONSE_SCHEMA_VERSION
+        assert rerank_body["request_id"] == "rerank-1"
+        assert rerank_body["degraded"] is False
+        assert rerank_body["results"][0]["node_id"] == "fact-1"
+        assert rerank_body["results"][0]["node_type"] == "fact"
+        assert 0 <= rerank_body["results"][0]["rerank_score"] <= 1
     finally:
         server.shutdown()
         server.server_close()

@@ -84,6 +84,7 @@ type Step struct {
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
 	GraphStub     *GraphStubSettings  `yaml:"graph_activation_stub"`
+	RerankStub    *RerankStubSettings `yaml:"rerank_stub"`
 }
 
 type ConsolidateStep struct {
@@ -267,6 +268,20 @@ type GraphCandidateStub struct {
 	PathLinkTypes      []string `yaml:"path_link_types"`
 }
 
+type RerankStubSettings struct {
+	Items          []RerankItemStub `yaml:"items"`
+	Unavailable    bool             `yaml:"unavailable"`
+	Degraded       bool             `yaml:"degraded"`
+	FallbackReason string           `yaml:"fallback_reason"`
+}
+
+type RerankItemStub struct {
+	NodeID      string  `yaml:"node_id"`
+	NodeType    string  `yaml:"node_type"`
+	Score       float64 `yaml:"score"`
+	DebugReason string  `yaml:"debug_reason"`
+}
+
 type Assertion struct {
 	Type                  string   `yaml:"type"`
 	Name                  string   `yaml:"name"`
@@ -445,6 +460,8 @@ func knownAssertionType(value string) bool {
 		"selected_chain_correct",
 		"suppression_event",
 		"graph_activation_candidate",
+		"rerank_status",
+		"rerank_input",
 		"unsupported_premise_not_asserted",
 		"ablation_improves":
 		return true

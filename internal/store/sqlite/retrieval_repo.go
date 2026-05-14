@@ -34,6 +34,8 @@ const (
 	defaultMMRLambda          = 0.72
 	defaultDuplicateThreshold = 0.88
 	defaultMinFinalScore      = 0.20
+	rerankBoostWeight         = 0.08
+	maxRerankSafeSummaryRunes = 512
 )
 
 type RetrievalRepository struct {
@@ -77,6 +79,7 @@ type MemoryContext struct {
 	TokenEstimate   int
 	Mirror          *MirrorDiagnostics
 	GraphActivation *GraphActivationDiagnostics
+	Rerank          *RerankDiagnostics
 	QueryAnalysis   *QueryAnalysis
 	AnchorFusion    *AnchorFusionDiagnostics
 }
@@ -111,6 +114,30 @@ type GraphActivationCandidateDiagnostic struct {
 type GraphActivationPath struct {
 	TriviumNodeIDs []int64
 	LinkTypes      []string
+}
+
+type RerankDiagnostics struct {
+	Status             string
+	SafeCandidateCount int
+	ResultCount        int
+	Degraded           bool
+	FallbackReason     string
+}
+
+type RerankCandidate struct {
+	NodeID       string
+	NodeType     string
+	SafeSummary  string
+	CurrentScore float64
+	AnchorEnergy float64
+	GraphEnergy  float64
+}
+
+type RerankResultItem struct {
+	NodeID      string
+	NodeType    string
+	RerankScore float64
+	DebugReason string
 }
 
 type MemoryBlock struct {
@@ -181,6 +208,16 @@ type PreparedRetrieval struct {
 	FusedAnchors []FusedAnchor
 }
 
+type PreparedFinalCandidates struct {
+	Request      RetrievalRequest
+	Query        QueryAnalysis
+	Policy       RetrievalPolicy
+	Now          time.Time
+	FusedAnchors []FusedAnchor
+	Scored       []scoredFact
+	Suppressions []MemorySuppression
+}
+
 type scoredFact struct {
 	Fact             core.Fact
 	Score            float64
@@ -202,6 +239,10 @@ type retrievalScoreBreakdown struct {
 	LifecycleMultiplier float64 `json:"lifecycle_multiplier"`
 	FatiguePenalty      float64 `json:"fatigue_penalty"`
 	SensitivityPenalty  float64 `json:"sensitivity_penalty"`
+	RerankScore         float64 `json:"rerank_score"`
+	RerankBoost         float64 `json:"rerank_boost"`
+	RerankStatus        string  `json:"rerank_status,omitempty"`
+	RerankDebugReason   string  `json:"rerank_debug_reason,omitempty"`
 	FinalScore          float64 `json:"final_score"`
 	SuppressionReason   string  `json:"suppression_reason,omitempty"`
 }
@@ -264,6 +305,14 @@ func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest)
 }
 
 func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRetrieval, graphCandidates []RetrievalActivationCandidate, graphDiagnostics *GraphActivationDiagnostics) (MemoryContext, error) {
+	finalCandidates, _, err := r.BuildRerankCandidates(ctx, prepared, graphCandidates, graphDiagnostics)
+	if err != nil {
+		return MemoryContext{}, err
+	}
+	return r.CompleteFinal(ctx, finalCandidates, nil, nil)
+}
+
+func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepared PreparedRetrieval, graphCandidates []RetrievalActivationCandidate, graphDiagnostics *GraphActivationDiagnostics) (PreparedFinalCandidates, []RerankCandidate, error) {
 	req := prepared.Request
 	req.GraphActivation = graphCandidates
 	req.GraphActivationDiagnostics = graphDiagnostics
@@ -275,8 +324,28 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 	mergeActivationCandidates(candidates, graphCandidates)
 	scored, suppressions, err := r.scoreCandidates(ctx, req, query, policy, now, candidates)
 	if err != nil {
-		return MemoryContext{}, err
+		return PreparedFinalCandidates{}, nil, err
 	}
+	finalCandidates := PreparedFinalCandidates{
+		Request:      req,
+		Query:        query,
+		Policy:       policy,
+		Now:          now,
+		FusedAnchors: fusedAnchors,
+		Scored:       scored,
+		Suppressions: suppressions,
+	}
+	return finalCandidates, safeRerankCandidates(scored), nil
+}
+
+func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
+	req := finalCandidates.Request
+	query := finalCandidates.Query
+	policy := finalCandidates.Policy
+	fusedAnchors := finalCandidates.FusedAnchors
+	scored := append([]scoredFact(nil), finalCandidates.Scored...)
+	suppressions := append([]MemorySuppression(nil), finalCandidates.Suppressions...)
+	applyRerankResults(scored, rerankResults, rerankDiagnostics)
 
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].Score == scored[j].Score {
@@ -289,6 +358,7 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 		DoNotMention:    suppressions,
 		Mirror:          req.MirrorDiagnostics,
 		GraphActivation: req.GraphActivationDiagnostics,
+		Rerank:          rerankDiagnostics,
 		QueryAnalysis:   &query,
 		AnchorFusion:    &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
@@ -482,6 +552,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			LifecycleMultiplier: lifecycleMultiplier,
 			FatiguePenalty:      fatiguePenalty,
 			SensitivityPenalty:  sensitivityPenalty,
+			RerankStatus:        "not_requested",
 			FinalScore:          score,
 		}
 		item := scoredFact{
@@ -506,6 +577,81 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		scored = append(scored, item)
 	}
 	return scored, suppressions, nil
+}
+
+func safeRerankCandidates(scored []scoredFact) []RerankCandidate {
+	result := make([]RerankCandidate, 0, len(scored))
+	for _, candidate := range scored {
+		if candidate.Suppressed {
+			continue
+		}
+		result = append(result, RerankCandidate{
+			NodeID:       candidate.Fact.ID,
+			NodeType:     string(core.NodeTypeFact),
+			SafeSummary:  capRunes(candidate.Fact.ContentSummary, maxRerankSafeSummaryRunes),
+			CurrentScore: candidate.Score,
+			AnchorEnergy: candidate.Breakdown.AnchorEnergy,
+			GraphEnergy:  candidate.Breakdown.GraphEnergy,
+		})
+	}
+	return result
+}
+
+func applyRerankResults(scored []scoredFact, results []RerankResultItem, diagnostics *RerankDiagnostics) {
+	if diagnostics == nil || strings.TrimSpace(diagnostics.Status) == "" {
+		return
+	}
+	status := strings.TrimSpace(diagnostics.Status)
+	for index := range scored {
+		scored[index].Breakdown.RerankStatus = status
+	}
+	if status != "used" {
+		return
+	}
+	byFact := map[string]RerankResultItem{}
+	for _, item := range results {
+		if item.NodeID == "" {
+			continue
+		}
+		if item.NodeType != "" && item.NodeType != string(core.NodeTypeFact) {
+			continue
+		}
+		byFact[item.NodeID] = item
+	}
+	for index := range scored {
+		item, ok := byFact[scored[index].Fact.ID]
+		if !ok {
+			continue
+		}
+		score := clampUnitScore(item.RerankScore)
+		boost := rerankBoostWeight * score
+		scored[index].Score += boost * scored[index].Breakdown.LifecycleMultiplier
+		scored[index].Breakdown.RerankScore = score
+		scored[index].Breakdown.RerankBoost = boost
+		scored[index].Breakdown.RerankDebugReason = capRunes(strings.TrimSpace(item.DebugReason), 160)
+		scored[index].Breakdown.FinalScore = scored[index].Score
+	}
+}
+
+func clampUnitScore(score float64) float64 {
+	if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func capRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func (r *RetrievalRepository) getFact(ctx context.Context, personaID string, factID string) (core.Fact, error) {

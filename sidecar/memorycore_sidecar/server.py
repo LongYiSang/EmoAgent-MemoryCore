@@ -16,11 +16,13 @@ from .protocol import (
     build_clear_namespace_result,
     build_candidates_result,
     build_error,
+    build_rerank_result,
     build_result,
     parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
     parse_operation_request,
+    parse_rerank_request,
 )
 
 
@@ -87,6 +89,14 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
                         build_activation_result(
                             activation_request["request_id"], **result
                         ),
+                    )
+                    return
+                if self.path == "/retrieval/rerank":
+                    rerank_request = parse_rerank_request(request)
+                    result = adapter.rerank(rerank_request)
+                    self._write_json(
+                        HTTPStatus.OK,
+                        build_rerank_result(rerank_request["request_id"], **result),
                     )
                     return
                 self._write_json(HTTPStatus.NOT_FOUND, build_error("not found"))

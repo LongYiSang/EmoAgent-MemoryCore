@@ -872,6 +872,84 @@ func TestServiceRetrieveGraphActivationRedactsAuthorityDroppedCandidate(t *testi
 	}
 }
 
+func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "RAW_EPISODE_SECRET coffee detail", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	visible := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	hidden := consolidateLiteral(t, ctx, svc, userID, "likes", "隐藏咖啡", "用户隐藏喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
+	adapter.rerankItems = []memorycore.MirrorRerankItem{
+		{NodeID: visible.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "safe summary match"},
+	}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseFTS:    true,
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with rerank: %v", err)
+	}
+	if adapter.rerankCalls != 1 {
+		t.Fatalf("rerank calls = %d, want 1", adapter.rerankCalls)
+	}
+	if adapter.lastRerankRequest.QueryText != "咖啡" {
+		t.Fatalf("rerank query = %q", adapter.lastRerankRequest.QueryText)
+	}
+	if len(adapter.lastRerankRequest.Candidates) != 1 {
+		t.Fatalf("rerank candidates = %#v, want one safe candidate", adapter.lastRerankRequest.Candidates)
+	}
+	candidate := adapter.lastRerankRequest.Candidates[0]
+	if candidate.NodeID != visible.ID || candidate.SafeSummary != "用户喜欢咖啡。" {
+		t.Fatalf("rerank candidate = %#v, want visible safe summary only", candidate)
+	}
+	if strings.Contains(candidate.SafeSummary, "RAW_EPISODE_SECRET") || candidate.NodeID == hidden.ID {
+		t.Fatalf("rerank input leaked unsafe content/candidate: %#v", candidate)
+	}
+	requireMemoryItem(t, contextResult, visible.ID, "用户喜欢咖啡。", "")
+	requireNoMemoryItem(t, contextResult, hidden.ID)
+	if contextResult.Rerank == nil || contextResult.Rerank.Status != "used" || contextResult.Rerank.SafeCandidateCount != 1 {
+		t.Fatalf("rerank diagnostics = %#v, want used with one safe candidate", contextResult.Rerank)
+	}
+}
+
+func TestServiceRetrieveRerankFallsBackWhenAdapterFails(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{rerankErr: sql.ErrConnDone}
+	svc, _ := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseFTS:    true,
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with failing rerank: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	if contextResult.Rerank == nil || contextResult.Rerank.Status != "sidecar_error" {
+		t.Fatalf("rerank diagnostics = %#v, want sidecar_error", contextResult.Rerank)
+	}
+}
+
 func TestServiceRetrieveUseMirrorFallsBackWhenPersonaMirrorStateNotReady(t *testing.T) {
 	for _, state := range []string{"rebuilding", "degraded"} {
 		t.Run(state, func(t *testing.T) {
@@ -1006,13 +1084,18 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 type retrievalMirrorAdapter struct {
 	candidates            []memorycore.MirrorCandidate
 	activationCandidates  []memorycore.MirrorActivationCandidate
+	rerankItems           []memorycore.MirrorRerankItem
 	err                   error
 	activationErr         error
+	rerankErr             error
 	degraded              bool
 	activationDegraded    bool
+	rerankDegraded        bool
 	calls                 int
 	activationCalls       int
+	rerankCalls           int
 	lastActivationRequest memorycore.MirrorActivationRequest
+	lastRerankRequest     memorycore.MirrorRerankRequest
 }
 
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
@@ -1032,6 +1115,18 @@ func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memoryco
 	return &memorycore.MirrorActivationResult{
 		Candidates: append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
 		Degraded:   a.activationDegraded,
+	}, nil
+}
+
+func (a *retrievalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+	a.rerankCalls++
+	a.lastRerankRequest = req
+	if a.rerankErr != nil {
+		return nil, a.rerankErr
+	}
+	return &memorycore.MirrorRerankResult{
+		Items:    append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
+		Degraded: a.rerankDegraded,
 	}, nil
 }
 

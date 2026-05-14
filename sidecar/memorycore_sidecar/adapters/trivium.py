@@ -208,6 +208,13 @@ class TriviumAdapter(MirrorAdapter):
             )
         return {"candidates": candidates, "degraded": False}
 
+    def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "results": [],
+            "degraded": True,
+            "fallback_reason": "rerank_not_implemented",
+        }
+
     def close(self) -> None:
         with self._lock:
             for persona_id in list(self._dbs):

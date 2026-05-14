@@ -12,6 +12,8 @@ CANDIDATE_REQUEST_SCHEMA_VERSION = "memory_mirror_candidate_request.v0.1"
 CANDIDATE_RESPONSE_SCHEMA_VERSION = "memory_mirror_candidates.v0.1"
 ACTIVATION_REQUEST_SCHEMA_VERSION = "memory_graph_activation_request.v0.1"
 ACTIVATION_RESPONSE_SCHEMA_VERSION = "memory_graph_activation_result.v0.1"
+RERANK_REQUEST_SCHEMA_VERSION = "memory_rerank_request.v0.1"
+RERANK_RESPONSE_SCHEMA_VERSION = "memory_rerank_result.v0.1"
 
 SUPPORTED_OPERATIONS = frozenset(
     {"upsert_node", "delete_node", "upsert_edge", "delete_edge"}
@@ -168,6 +170,74 @@ def parse_activation_request(data: Any) -> dict[str, Any]:
     }
 
 
+def parse_rerank_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != RERANK_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(f"schema_version must be {RERANK_REQUEST_SCHEMA_VERSION}")
+    request_id = data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ProtocolError("request_id is required")
+    persona_id = data.get("persona_id")
+    if not isinstance(persona_id, str) or not persona_id.strip():
+        raise ProtocolError("persona_id is required")
+    query_text = data.get("query_text")
+    if not isinstance(query_text, str) or not query_text.strip():
+        raise ProtocolError("query_text is required")
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list):
+        raise ProtocolError("candidates must be a JSON array")
+    return {
+        "request_id": request_id.strip(),
+        "persona_id": persona_id.strip(),
+        "query_text": query_text,
+        "candidates": [
+            _parse_rerank_candidate(candidate, idx)
+            for idx, candidate in enumerate(candidates)
+        ],
+    }
+
+
+def _parse_rerank_candidate(candidate: Any, idx: int) -> dict[str, Any]:
+    if not isinstance(candidate, dict):
+        raise ProtocolError(f"candidate[{idx}] must be a JSON object")
+    parsed: dict[str, Any] = {}
+    for field in ("node_id", "node_type", "safe_summary"):
+        value = candidate.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ProtocolError(f"candidate[{idx}].{field} is required")
+        parsed[field] = value.strip() if field != "safe_summary" else value
+    for field in ("current_score", "anchor_energy", "graph_energy", "configured_score"):
+        if field in candidate:
+            parsed[field] = _candidate_score(candidate[field], f"candidate[{idx}].{field}")
+    if "source_scores" in candidate:
+        parsed["source_scores"] = _source_scores(
+            candidate["source_scores"], f"candidate[{idx}].source_scores"
+        )
+    return parsed
+
+
+def _source_scores(value: Any, field_name: str) -> dict[str, float]:
+    if not isinstance(value, dict):
+        raise ProtocolError(f"{field_name} must be a JSON object")
+    parsed = {}
+    for source, score in value.items():
+        if not isinstance(source, str) or not source.strip():
+            raise ProtocolError(f"{field_name} keys must be nonblank strings")
+        parsed[source.strip()] = _candidate_score(score, f"{field_name}.{source}")
+    return parsed
+
+
+def _candidate_score(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProtocolError(f"{field_name} must be a finite nonnegative number")
+    score = float(value)
+    if not math.isfinite(score) or score < 0:
+        raise ProtocolError(f"{field_name} must be a finite nonnegative number")
+    return score
+
+
 def _parse_activation_seed(seed: Any) -> dict[str, Any]:
     if not isinstance(seed, dict):
         raise ProtocolError("activation seed must be a JSON object")
@@ -293,6 +363,23 @@ def build_activation_result(
         "schema_version": ACTIVATION_RESPONSE_SCHEMA_VERSION,
         "request_id": request_id,
         "candidates": candidates or [],
+        "degraded": degraded,
+    }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    return result
+
+
+def build_rerank_result(
+    request_id: str,
+    results: list[dict[str, Any]] | None = None,
+    degraded: bool = False,
+    fallback_reason: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": RERANK_RESPONSE_SCHEMA_VERSION,
+        "request_id": request_id,
+        "results": results or [],
         "degraded": degraded,
     }
     if fallback_reason:
