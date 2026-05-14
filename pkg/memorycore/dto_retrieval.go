@@ -3,7 +3,16 @@ package memorycore
 import "time"
 
 const (
-	MemoryBlockTypeFacts = "facts"
+	MemoryBlockTypeFacts             = "facts"
+	MemoryBlockTypeCausalContext     = "causal_context"
+	MemoryBlockTypeHistoricalContext = "historical_context"
+	MemoryBlockTypeProvenanceContext = "provenance_context"
+	MemoryBlockTypeSupportiveContext = "supportive_context"
+	MemoryBlockTypeExperienceContext = "experience_context"
+
+	MemoryHistoricalStatusCurrent    = "current"
+	MemoryHistoricalStatusHistorical = "historical"
+	MemoryHistoricalStatusSuperseded = "superseded"
 
 	MemorySuppressionReasonFatigue = "fatigue"
 )
@@ -115,11 +124,36 @@ type MemoryBlock struct {
 }
 
 type MemoryContextItem struct {
-	NodeType      string
-	NodeID        string
-	Summary       string
-	Confidence    float64
-	UsageGuidance string
+	NodeType         string
+	NodeID           string
+	Summary          string
+	Confidence       float64
+	UsageGuidance    string
+	HistoricalStatus string                 `json:",omitempty"`
+	ValidFrom        *time.Time             `json:",omitempty"`
+	ValidTo          *time.Time             `json:",omitempty"`
+	SourceRefs       []MemorySourceRef      `json:",omitempty"`
+	RelatedFacts     []MemoryRelatedFactRef `json:",omitempty"`
+	DoNotOverstate   bool                   `json:",omitempty"`
+}
+
+type MemorySourceRef struct {
+	EpisodeID     string
+	SessionID     string
+	SessionTitle  string
+	OccurredAt    time.Time
+	SourceStatus  string
+	EvidenceCount int
+	QuoteAllowed  bool
+}
+
+type MemoryRelatedFactRef struct {
+	NodeType         string
+	NodeID           string
+	Summary          string
+	LinkType         string
+	Direction        string
+	HistoricalStatus string
 }
 
 type MemorySuppression struct {

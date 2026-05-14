@@ -3,6 +3,7 @@ package memorycore_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +92,78 @@ func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(
 		t.Fatalf("retrieve historical deep allowed: %v", err)
 	}
 	requireMemoryItem(t, deepAllowed, fact.ID, "用户以前参与过旧项目。", "historical")
+}
+
+func TestServiceRetrievePreservesPhase5EContextFields(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "早会让我焦虑，所以我最近抗拒上班。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	effect := consolidateLiteral(t, ctx, svc, userID, "dislikes", "上班焦虑", "用户因为早会安排而对上班感到焦虑。", episode.ID).Fact
+	cause := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会安排。", episode.ID).Fact
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertPublicFactLink(t, db, "link_public_effect_cause", effect.ID, "CAUSED_BY", cause.ID)
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "为什么 焦虑 上班",
+		Policy: memorycore.RetrievalPolicy{
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	block := requirePublicBlock(t, contextResult, memorycore.MemoryBlockTypeCausalContext)
+	item := requirePublicBlockItem(t, block, effect.ID)
+	if item.HistoricalStatus != memorycore.MemoryHistoricalStatusCurrent {
+		t.Fatalf("historical_status = %q, want current", item.HistoricalStatus)
+	}
+	if len(item.SourceRefs) != 1 {
+		t.Fatalf("source_refs = %#v, want one source", item.SourceRefs)
+	}
+	if item.SourceRefs[0].EpisodeID != episode.ID || item.SourceRefs[0].QuoteAllowed {
+		t.Fatalf("source ref = %#v, want safe episode id and quote_allowed=false", item.SourceRefs[0])
+	}
+	if len(item.RelatedFacts) != 1 {
+		t.Fatalf("related_facts = %#v, want one related fact", item.RelatedFacts)
+	}
+	related := item.RelatedFacts[0]
+	if related.NodeID != cause.ID || related.LinkType != "CAUSED_BY" || related.Direction != "outbound" || related.HistoricalStatus != memorycore.MemoryHistoricalStatusCurrent {
+		t.Fatalf("related fact = %#v, want public causal related fact", related)
+	}
+	if !item.DoNotOverstate {
+		t.Fatalf("do_not_overstate = false, want true for causal context")
+	}
+}
+
+func TestMemoryContextItemJSONOmitsPhase5EZeroValueFields(t *testing.T) {
+	item := memorycore.MemoryContextItem{
+		NodeType:         "fact",
+		NodeID:           "fact_direct",
+		Summary:          "用户喜欢咖啡。",
+		Confidence:       0.8,
+		HistoricalStatus: memorycore.MemoryHistoricalStatusCurrent,
+		SourceRefs:       []memorycore.MemorySourceRef{},
+		RelatedFacts:     []memorycore.MemoryRelatedFactRef{},
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal memory context item: %v", err)
+	}
+	jsonText := string(raw)
+	for _, field := range []string{`"ValidFrom"`, `"ValidTo"`, `"SourceRefs"`, `"RelatedFacts"`, `"DoNotOverstate"`} {
+		if strings.Contains(jsonText, field) {
+			t.Fatalf("json contains zero-value Phase 5E field %s: %s", field, jsonText)
+		}
+	}
+	if !strings.Contains(jsonText, `"HistoricalStatus":"current"`) {
+		t.Fatalf("json = %s, want current historical status preserved", jsonText)
+	}
 }
 
 func TestServiceRetrieveQueryAnalysisKeepsSensitivityGateAndReportsEntityMentions(t *testing.T) {
@@ -1037,6 +1110,30 @@ func requireMemoryItem(t *testing.T, contextResult *memorycore.MemoryContext, no
 	t.Fatalf("memory item %s not found in %#v", nodeID, contextResult)
 }
 
+func requirePublicBlock(t *testing.T, contextResult *memorycore.MemoryContext, blockType string) memorycore.MemoryBlock {
+	t.Helper()
+
+	for _, block := range contextResult.Blocks {
+		if block.BlockType == blockType {
+			return block
+		}
+	}
+	t.Fatalf("block %q not found in %#v", blockType, contextResult.Blocks)
+	return memorycore.MemoryBlock{}
+}
+
+func requirePublicBlockItem(t *testing.T, block memorycore.MemoryBlock, nodeID string) memorycore.MemoryContextItem {
+	t.Helper()
+
+	for _, item := range block.Items {
+		if item.NodeID == nodeID {
+			return item
+		}
+	}
+	t.Fatalf("item %q not found in %#v", nodeID, block.Items)
+	return memorycore.MemoryContextItem{}
+}
+
 func requireNoMemoryItem(t *testing.T, contextResult *memorycore.MemoryContext, nodeID string) {
 	t.Helper()
 
@@ -1046,6 +1143,24 @@ func requireNoMemoryItem(t *testing.T, contextResult *memorycore.MemoryContext, 
 				t.Fatalf("memory item %s found in %#v", nodeID, contextResult)
 			}
 		}
+	}
+}
+
+func insertPublicFactLink(t *testing.T, db *sql.DB, linkID string, fromFactID string, linkType string, toFactID string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+INSERT INTO memory_links (
+    id, persona_id, from_node_type, from_node_id, link_type,
+    to_node_type, to_node_id, direction, confidence, weight,
+    created_by, visibility_status, searchable
+) VALUES (?, 'default', 'fact', ?, ?, 'fact', ?, 'forward', 1, 1, 'system', 'visible', 1)`,
+		linkID,
+		fromFactID,
+		linkType,
+		toFactID,
+	); err != nil {
+		t.Fatalf("insert public fact link %s: %v", linkID, err)
 	}
 }
 

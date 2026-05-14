@@ -929,13 +929,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 			Items:     make([]MemoryContextItem, 0, len(block.Items)),
 		}
 		for _, item := range block.Items {
-			out.Items = append(out.Items, MemoryContextItem{
-				NodeType:      item.NodeType,
-				NodeID:        item.NodeID,
-				Summary:       item.Summary,
-				Confidence:    item.Confidence,
-				UsageGuidance: item.UsageGuidance,
-			})
+			out.Items = append(out.Items, memoryContextItemFromStore(item))
 		}
 		result.Blocks = append(result.Blocks, out)
 	}
@@ -947,6 +941,52 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		})
 	}
 	return result
+}
+
+func memoryContextItemFromStore(item memsqlite.MemoryContextItem) MemoryContextItem {
+	result := MemoryContextItem{
+		NodeType:         item.NodeType,
+		NodeID:           item.NodeID,
+		Summary:          item.Summary,
+		Confidence:       item.Confidence,
+		UsageGuidance:    item.UsageGuidance,
+		HistoricalStatus: item.HistoricalStatus,
+		ValidFrom:        cloneTimePtr(item.ValidFrom),
+		ValidTo:          cloneTimePtr(item.ValidTo),
+		SourceRefs:       make([]MemorySourceRef, 0, len(item.SourceRefs)),
+		RelatedFacts:     make([]MemoryRelatedFactRef, 0, len(item.RelatedFacts)),
+		DoNotOverstate:   item.DoNotOverstate,
+	}
+	for _, source := range item.SourceRefs {
+		result.SourceRefs = append(result.SourceRefs, MemorySourceRef{
+			EpisodeID:     source.EpisodeID,
+			SessionID:     source.SessionID,
+			SessionTitle:  source.SessionTitle,
+			OccurredAt:    source.OccurredAt,
+			SourceStatus:  source.SourceStatus,
+			EvidenceCount: source.EvidenceCount,
+			QuoteAllowed:  source.QuoteAllowed,
+		})
+	}
+	for _, related := range item.RelatedFacts {
+		result.RelatedFacts = append(result.RelatedFacts, MemoryRelatedFactRef{
+			NodeType:         related.NodeType,
+			NodeID:           related.NodeID,
+			Summary:          related.Summary,
+			LinkType:         related.LinkType,
+			Direction:        related.Direction,
+			HistoricalStatus: related.HistoricalStatus,
+		})
+	}
+	return result
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func queryAnalysisFromStore(value *memsqlite.QueryAnalysis) *QueryAnalysis {

@@ -39,6 +39,7 @@ __pycache__/
 tmp/
 *.tmp
 *.log
+/.gocache/
 
 # ── OS 文件 ──
 .DS_Store

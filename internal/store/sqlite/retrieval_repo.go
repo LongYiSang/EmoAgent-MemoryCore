@@ -15,7 +15,16 @@ import (
 )
 
 const (
-	MemoryBlockTypeFacts = "facts"
+	MemoryBlockTypeFacts             = "facts"
+	MemoryBlockTypeCausalContext     = "causal_context"
+	MemoryBlockTypeHistoricalContext = "historical_context"
+	MemoryBlockTypeProvenanceContext = "provenance_context"
+	MemoryBlockTypeSupportiveContext = "supportive_context"
+	MemoryBlockTypeExperienceContext = "experience_context"
+
+	MemoryHistoricalStatusCurrent    = "current"
+	MemoryHistoricalStatusHistorical = "historical"
+	MemoryHistoricalStatusSuperseded = "superseded"
 
 	MemorySuppressionReasonFatigue = "fatigue"
 
@@ -110,11 +119,36 @@ type MemoryBlock struct {
 }
 
 type MemoryContextItem struct {
-	NodeType      string
-	NodeID        string
-	Summary       string
-	Confidence    float64
-	UsageGuidance string
+	NodeType         string
+	NodeID           string
+	Summary          string
+	Confidence       float64
+	UsageGuidance    string
+	HistoricalStatus string
+	ValidFrom        *time.Time
+	ValidTo          *time.Time
+	SourceRefs       []MemorySourceRef
+	RelatedFacts     []MemoryRelatedFactRef
+	DoNotOverstate   bool
+}
+
+type MemorySourceRef struct {
+	EpisodeID     string
+	SessionID     string
+	SessionTitle  string
+	OccurredAt    time.Time
+	SourceStatus  string
+	EvidenceCount int
+	QuoteAllowed  bool
+}
+
+type MemoryRelatedFactRef struct {
+	NodeType         string
+	NodeID           string
+	Summary          string
+	LinkType         string
+	Direction        string
+	HistoricalStatus string
 }
 
 type MemorySuppression struct {
@@ -258,12 +292,11 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 		QueryAnalysis:   &query,
 		AnchorFusion:    &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
-	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
 	selectable := make([]scoredFact, 0, len(scored))
 	for _, candidate := range scored {
 		if candidate.Suppressed {
 			candidate.Breakdown.SuppressionReason = candidate.Suppression
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
 			continue
@@ -275,7 +308,7 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 	}
 	remaining := append([]scoredFact(nil), selectable...)
 	var selected []scoredFact
-	for len(block.Items) < policy.FinalMemoryCount && len(remaining) > 0 {
+	for len(selected) < policy.FinalMemoryCount && len(remaining) > 0 {
 		bestIndex := bestMMRCandidateIndex(remaining, selected)
 		if bestIndex < 0 {
 			break
@@ -285,44 +318,47 @@ func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRet
 
 		if maxFactSimilarity(candidate, selected) > defaultDuplicateThreshold {
 			candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
 			continue
 		}
 		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
 			candidate.Breakdown.SuppressionReason = memorySuppressionReasonContextBudget
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
 			continue
 		}
-		rank := len(block.Items)
-		item := MemoryContextItem{
-			NodeType:      string(core.NodeTypeFact),
-			NodeID:        candidate.Fact.ID,
-			Summary:       candidate.Fact.ContentSummary,
-			Confidence:    candidate.Fact.ExtractionConfidenceScore,
-			UsageGuidance: usageGuidance(candidate.Fact),
-		}
-		block.Items = append(block.Items, item)
 		selected = append(selected, candidate)
 		contextResult.TokenEstimate += candidate.TokenCost
-		if err := r.logAccessEvent(ctx, req, candidate.Fact, "retrieved", candidate.Score, &rank, candidate.Breakdown); err != nil {
-			return MemoryContext{}, err
-		}
 	}
 	for _, candidate := range remaining {
 		if maxFactSimilarity(candidate, selected) <= defaultDuplicateThreshold {
 			continue
 		}
 		candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
-		if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, candidate.Breakdown); err != nil {
+		if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 			return MemoryContext{}, err
 		}
 	}
-	if len(block.Items) > 0 {
-		contextResult.Blocks = append(contextResult.Blocks, block)
+	blocks, blockTypeByFactID, tokenEstimate, err := r.reconstructMemoryBlocks(ctx, req, query, policy, selected)
+	if err != nil {
+		return MemoryContext{}, err
+	}
+	contextResult.Blocks = blocks
+	if tokenEstimate > 0 {
+		contextResult.TokenEstimate = tokenEstimate
+	}
+	for rank, candidate := range selected {
+		rank := rank
+		blockType := blockTypeByFactID[candidate.Fact.ID]
+		if blockType == "" {
+			blockType = MemoryBlockTypeFacts
+		}
+		if err := r.logAccessEvent(ctx, req, candidate.Fact, "retrieved", candidate.Score, &rank, blockType, candidate.Breakdown); err != nil {
+			return MemoryContext{}, err
+		}
 	}
 	return contextResult, nil
 }
@@ -688,7 +724,7 @@ WHERE session_id = ?
 	return count, err
 }
 
-func (r *RetrievalRepository) logAccessEvent(ctx context.Context, req RetrievalRequest, fact core.Fact, accessType string, score float64, rank *int, breakdown retrievalScoreBreakdown) error {
+func (r *RetrievalRepository) logAccessEvent(ctx context.Context, req RetrievalRequest, fact core.Fact, accessType string, score float64, rank *int, contextBlockType string, breakdown retrievalScoreBreakdown) error {
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO memory_access_events (
     id, persona_id, session_id, node_type, node_id, access_type,
@@ -704,7 +740,7 @@ INSERT INTO memory_access_events (
 		accessType,
 		score,
 		nullableInt(rank),
-		MemoryBlockTypeFacts,
+		contextBlockType,
 		scoreBreakdownJSON(breakdown),
 		nullableNonEmptyString(req.Context.UserMoodLabel),
 		nullableNonEmptyString(req.Context.RelationshipMoodLabel),

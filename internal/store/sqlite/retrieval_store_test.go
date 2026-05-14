@@ -309,10 +309,10 @@ WHERE id IN ('fact_a_archived', 'fact_z_active')`, fixedRetrievalNow().Format(ti
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 {
+	items := flattenMemoryItems(result)
+	if len(items) != 2 {
 		t.Fatalf("retrieval items = %#v, want both active and archived facts", result.Blocks)
 	}
-	items := result.Blocks[0].Items
 	if items[0].NodeID != "fact_z_active" || items[1].NodeID != "fact_a_archived" {
 		t.Fatalf("retrieval order = [%s, %s], want active before archived", items[0].NodeID, items[1].NodeID)
 	}
@@ -699,6 +699,195 @@ func TestRetrievalRepositoryContextBudgetSkipsLongCandidate(t *testing.T) {
 	}
 }
 
+func TestRetrievalRepositoryReconstructsCausalContextWithSafeRelatedFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_work_resistance", "用户因为早会安排而对上班感到焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_morning_meeting", "用户不喜欢早会安排。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_hidden_cause", "用户有隐藏的早会原因。", core.LifecycleActive)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_work_resistance", "importance", 0.95)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_morning_meeting", "importance", 0.2)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_hidden_cause", "importance", 0.1)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_effect_evidence", "fact_work_resistance")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_cause_evidence", "fact_morning_meeting")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_hidden_cause_evidence", "fact_hidden_cause")
+	insertFactLink(t, ctx, db.SQLDB(), "link_effect_cause", "fact_work_resistance", "CAUSED_BY", "fact_morning_meeting")
+	insertFactLink(t, ctx, db.SQLDB(), "link_effect_hidden", "fact_work_resistance", "CAUSED_BY", "fact_hidden_cause")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_hidden_cause", "visibility_status", string(core.VisibilityHidden))
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "为什么 焦虑 上班",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	block := requireBlock(t, result, memsqlite.MemoryBlockTypeCausalContext)
+	item := requireBlockItem(t, block, "fact_work_resistance")
+	if item.HistoricalStatus != memsqlite.MemoryHistoricalStatusCurrent {
+		t.Fatalf("historical_status = %q, want current", item.HistoricalStatus)
+	}
+	requireRelatedFact(t, item, "fact_morning_meeting", "CAUSED_BY", "outbound", memsqlite.MemoryHistoricalStatusCurrent)
+	for _, related := range item.RelatedFacts {
+		if related.NodeID == "fact_hidden_cause" {
+			t.Fatalf("hidden related fact leaked into causal context: %#v", item.RelatedFacts)
+		}
+	}
+	requireAccessEventBlockType(t, db.SQLDB(), "fact_work_resistance", "retrieved", memsqlite.MemoryBlockTypeCausalContext)
+}
+
+func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_city", "用户以前住在北京。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_new_city", "用户现在住在上海。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_city_evidence", "fact_old_city")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_new_city_evidence", "fact_new_city")
+	insertFactLink(t, ctx, db.SQLDB(), "link_city_supersedes", "fact_new_city", "SUPERSEDES", "fact_old_city")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_city", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_city", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	historical, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "以前 北京",
+	})
+	if err != nil {
+		t.Fatalf("retrieve historical: %v", err)
+	}
+	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalContext)
+	historicalItem := requireBlockItem(t, historicalBlock, "fact_old_city")
+	if historicalItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
+		t.Fatalf("historical_status = %q, want superseded", historicalItem.HistoricalStatus)
+	}
+	if historicalItem.ValidTo == nil {
+		t.Fatalf("valid_to is nil, want invalidation window")
+	}
+
+	provenance, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "以前 北京 证据 来源",
+	})
+	if err != nil {
+		t.Fatalf("retrieve provenance: %v", err)
+	}
+	provenanceBlock := requireBlock(t, provenance, memsqlite.MemoryBlockTypeProvenanceContext)
+	provenanceItem := requireBlockItem(t, provenanceBlock, "fact_old_city")
+	if len(provenanceItem.SourceRefs) != 1 {
+		t.Fatalf("source_refs = %#v, want one source", provenanceItem.SourceRefs)
+	}
+	source := provenanceItem.SourceRefs[0]
+	if source.EpisodeID != "ep_visible" || source.SessionID != "s1" || source.EvidenceCount != 1 {
+		t.Fatalf("source ref = %#v, want safe episode id/session/evidence count", source)
+	}
+	if source.QuoteAllowed {
+		t.Fatalf("quote_allowed = true, want false")
+	}
+	if strings.Contains(source.SourceStatus, "我喜欢咖啡") || strings.Contains(source.SessionTitle, "我喜欢咖啡") {
+		t.Fatalf("source ref leaked raw episode content: %#v", source)
+	}
+}
+
+func TestRetrievalRepositoryIgnoresUnauthorizedSupersedingSources(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_phone", "用户以前使用旧手机。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_hidden_phone", "用户现在使用隐藏手机。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_purged_phone", "用户现在使用已清除手机。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_sensitive_phone", "用户现在使用敏感手机。", core.LifecycleActive)
+	for _, factID := range []string{"fact_old_phone", "fact_hidden_phone", "fact_purged_phone", "fact_sensitive_phone"} {
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID+"_evidence", factID)
+	}
+	insertFactLink(t, ctx, db.SQLDB(), "link_hidden_phone_supersedes", "fact_hidden_phone", "SUPERSEDES", "fact_old_phone")
+	insertFactLink(t, ctx, db.SQLDB(), "link_purged_phone_supersedes", "fact_purged_phone", "SUPERSEDES", "fact_old_phone")
+	insertFactLink(t, ctx, db.SQLDB(), "link_sensitive_phone_supersedes", "fact_sensitive_phone", "SUPERSEDES", "fact_old_phone")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_phone", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_phone", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_hidden_phone", "visibility_status", string(core.VisibilityHidden))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_purged_phone", "visibility_status", string(core.VisibilityPurged))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_sensitive_phone", "sensitivity_level", string(core.SensitivitySensitive))
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	historical, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "以前 旧手机",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve historical: %v", err)
+	}
+	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalContext)
+	historicalItem := requireBlockItem(t, historicalBlock, "fact_old_phone")
+	if historicalItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusHistorical {
+		t.Fatalf("historical_status = %q, want historical when superseding sources are unauthorized", historicalItem.HistoricalStatus)
+	}
+}
+
+func TestRetrievalRepositoryUsesFactsFallbackAndNarrowExperienceContext(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_direct_coffee", "用户喜欢咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_workflow", "部署失败时应先检查 Python runtime 路径。", core.LifecycleActive)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_workflow", "fact_type", string(core.FactTypeTaskRelevantContext))
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_direct_coffee_evidence", "fact_direct_coffee")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_workflow_evidence", "fact_workflow")
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_direct_coffee"); err != nil {
+		t.Fatalf("upsert direct fact search document: %v", err)
+	}
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_workflow"); err != nil {
+		t.Fatalf("upsert workflow fact search document: %v", err)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	direct, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+	})
+	if err != nil {
+		t.Fatalf("retrieve direct: %v", err)
+	}
+	factsBlock := requireBlock(t, direct, memsqlite.MemoryBlockTypeFacts)
+	directItem := requireBlockItem(t, factsBlock, "fact_direct_coffee")
+	if directItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusCurrent {
+		t.Fatalf("historical_status = %q, want current", directItem.HistoricalStatus)
+	}
+
+	experience, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "部署 workflow python runtime 失败",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve experience: %v", err)
+	}
+	experienceBlock := requireBlock(t, experience, memsqlite.MemoryBlockTypeExperienceContext)
+	requireBlockItem(t, experienceBlock, "fact_workflow")
+	if hasBlock(experience, memsqlite.MemoryBlockTypeFacts) {
+		t.Fatalf("experience query also emitted fallback facts block: %#v", experience.Blocks)
+	}
+}
+
 func TestRetrievalRepositoryFatigueSuppressionWritesScoreBreakdown(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -850,6 +1039,75 @@ WHERE node_type = 'fact' AND node_id = ? AND access_type = ?`
 	}
 }
 
+func requireAccessEventBlockType(t *testing.T, db *sql.DB, factID string, accessType string, blockType string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`
+SELECT COALESCE(context_block_type, '')
+FROM memory_access_events
+WHERE node_type = 'fact' AND node_id = ? AND access_type = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, factID, accessType).Scan(&got); err != nil {
+		t.Fatalf("query access event block type: %v", err)
+	}
+	if got != blockType {
+		t.Fatalf("context_block_type = %q, want %q", got, blockType)
+	}
+}
+
+func requireBlock(t *testing.T, context memsqlite.MemoryContext, blockType string) memsqlite.MemoryBlock {
+	t.Helper()
+
+	for _, block := range context.Blocks {
+		if block.BlockType == blockType {
+			return block
+		}
+	}
+	t.Fatalf("block %q not found in %#v", blockType, context.Blocks)
+	return memsqlite.MemoryBlock{}
+}
+
+func hasBlock(context memsqlite.MemoryContext, blockType string) bool {
+	for _, block := range context.Blocks {
+		if block.BlockType == blockType {
+			return true
+		}
+	}
+	return false
+}
+
+func requireBlockItem(t *testing.T, block memsqlite.MemoryBlock, nodeID string) memsqlite.MemoryContextItem {
+	t.Helper()
+
+	for _, item := range block.Items {
+		if item.NodeID == nodeID {
+			return item
+		}
+	}
+	t.Fatalf("item %q not found in %#v", nodeID, block.Items)
+	return memsqlite.MemoryContextItem{}
+}
+
+func flattenMemoryItems(context memsqlite.MemoryContext) []memsqlite.MemoryContextItem {
+	var items []memsqlite.MemoryContextItem
+	for _, block := range context.Blocks {
+		items = append(items, block.Items...)
+	}
+	return items
+}
+
+func requireRelatedFact(t *testing.T, item memsqlite.MemoryContextItem, nodeID string, linkType string, direction string, historicalStatus string) {
+	t.Helper()
+
+	for _, related := range item.RelatedFacts {
+		if related.NodeID == nodeID && related.LinkType == linkType && related.Direction == direction && related.HistoricalStatus == historicalStatus {
+			return
+		}
+	}
+	t.Fatalf("related fact %s/%s/%s/%s not found in %#v", nodeID, linkType, direction, historicalStatus, item.RelatedFacts)
+}
+
 func requireScoreBreakdown(t *testing.T, db *sql.DB, factID string, accessType string) map[string]any {
 	t.Helper()
 
@@ -915,6 +1173,19 @@ WHERE id = ?`, validity, lifecycle, factID); err != nil {
 	}
 }
 
+func updateFactRetrievalColumn(t *testing.T, db *sql.DB, factID string, column string, value any) {
+	t.Helper()
+
+	switch column {
+	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "valid_to", "fact_type", "importance":
+	default:
+		t.Fatalf("unsupported fact column %q", column)
+	}
+	if _, err := db.Exec("UPDATE facts SET "+column+" = ? WHERE id = ?", value, factID); err != nil {
+		t.Fatalf("update fact %s.%s: %v", factID, column, err)
+	}
+}
+
 func setSearchDocumentUpdatedAt(t *testing.T, db *sql.DB, factID string, updatedAt string) {
 	t.Helper()
 
@@ -923,6 +1194,22 @@ UPDATE memory_search_documents
 SET updated_at = ?
 WHERE node_type = 'fact' AND node_id = ?`, updatedAt, factID); err != nil {
 		t.Fatalf("set search document updated_at: %v", err)
+	}
+}
+
+func insertFactLink(t *testing.T, ctx context.Context, db *sql.DB, linkID string, fromFactID string, linkType string, toFactID string) {
+	t.Helper()
+
+	if err := memsqlite.NewLinkRepository(db).Insert(ctx, core.MemoryLink{
+		ID:           linkID,
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeFact,
+		FromNodeID:   fromFactID,
+		LinkType:     core.LinkType(linkType),
+		ToNodeType:   core.NodeTypeFact,
+		ToNodeID:     toFactID,
+	}); err != nil {
+		t.Fatalf("insert fact link %s: %v", linkID, err)
 	}
 }
 
