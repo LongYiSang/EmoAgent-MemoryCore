@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
@@ -500,16 +501,68 @@ func textMatchScore(query QueryAnalysis, searchText string) float64 {
 	if strings.Contains(normalizedText, query.Normalized) {
 		return 1
 	}
-	if len(query.Terms) == 0 {
+	terms := textMatchTerms(query)
+	if len(terms) == 0 {
 		return 0
 	}
 	matches := 0
-	for _, term := range query.Terms {
+	for _, term := range terms {
 		if strings.Contains(normalizedText, term) {
 			matches++
 		}
 	}
-	return float64(matches) / float64(len(query.Terms))
+	return float64(matches) / float64(len(terms))
+}
+
+func textMatchTerms(query QueryAnalysis) []string {
+	seen := map[string]struct{}{}
+	var terms []string
+	add := func(value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		terms = append(terms, value)
+	}
+	for _, term := range query.Terms {
+		add(term)
+	}
+	for _, term := range cjkBigrams(query.Normalized) {
+		add(term)
+	}
+	return terms
+}
+
+func cjkBigrams(value string) []string {
+	var result []string
+	var sequence []rune
+	flush := func() {
+		if len(sequence) < 2 {
+			sequence = sequence[:0]
+			return
+		}
+		for i := 0; i+1 < len(sequence); i++ {
+			result = append(result, string(sequence[i:i+2]))
+		}
+		sequence = sequence[:0]
+	}
+	for _, r := range value {
+		if isCJKRune(r) {
+			sequence = append(sequence, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return result
+}
+
+func isCJKRune(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
 }
 
 func recencyScore(fact core.Fact, now time.Time) float64 {

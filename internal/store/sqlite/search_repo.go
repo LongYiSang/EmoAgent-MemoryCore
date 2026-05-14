@@ -262,7 +262,7 @@ WHERE fts.persona_id = ?
   AND (facts.validity_status != 'invalidated' OR ? = 1)
   AND (facts.lifecycle_status != 'archived' OR ? = 1)
   AND (facts.lifecycle_status != 'deep_archived' OR ? = 1)
-ORDER BY d.updated_at DESC
+ORDER BY bm25(memory_search_fts), d.updated_at DESC, d.node_id ASC
 LIMIT ?`,
 		personaID,
 		ftsQuery(query),
@@ -339,7 +339,33 @@ func (r *SearchRepository) keywordSearchForRetrieval(ctx context.Context, person
 	if limit <= 0 {
 		limit = 10
 	}
-	like := "%" + strings.TrimSpace(query) + "%"
+	trimmed := strings.TrimSpace(query)
+	terms := keywordSearchTerms(trimmed)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	whereClauses := make([]string, 0, len(terms))
+	whereArgs := make([]any, 0, len(terms))
+	scoreClauses := []string{fmt.Sprintf("CASE WHEN d.search_text LIKE ? THEN %d ELSE 0 END", len(terms)+1)}
+	scoreArgs := []any{"%" + trimmed + "%"}
+	for _, term := range terms {
+		like := "%" + term + "%"
+		whereClauses = append(whereClauses, "d.search_text LIKE ?")
+		whereArgs = append(whereArgs, like)
+		scoreClauses = append(scoreClauses, "CASE WHEN d.search_text LIKE ? THEN 1 ELSE 0 END")
+		scoreArgs = append(scoreArgs, like)
+	}
+	args := make([]any, 0, 1+len(whereArgs)+3+len(scoreArgs)+1)
+	args = append(args, personaID)
+	args = append(args, whereArgs...)
+	args = append(args,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+	)
+	args = append(args, scoreArgs...)
+	args = append(args, limit)
+
 	rows, err := r.db.QueryContext(ctx, `
 SELECT d.id, d.persona_id, d.node_type, d.node_id, d.search_text, d.search_tier,
        d.visibility_status, d.sensitivity_level, d.lifecycle_status, d.searchable
@@ -348,7 +374,7 @@ JOIN facts facts
   ON facts.persona_id = d.persona_id
  AND facts.id = d.node_id
 WHERE d.persona_id = ?
-  AND d.search_text LIKE ?
+  AND (`+strings.Join(whereClauses, " OR ")+`)
   AND d.node_type = 'fact'
   AND d.visibility_status = 'visible'
   AND d.searchable = 1
@@ -357,20 +383,35 @@ WHERE d.persona_id = ?
   AND (facts.validity_status != 'invalidated' OR ? = 1)
   AND (facts.lifecycle_status != 'archived' OR ? = 1)
   AND (facts.lifecycle_status != 'deep_archived' OR ? = 1)
-ORDER BY d.updated_at DESC
-LIMIT ?`,
-		personaID,
-		like,
-		boolInt(policy.AllowHistorical),
-		boolInt(policy.AllowHistorical),
-		boolInt(policy.AllowDeepArchive),
-		limit)
+ORDER BY (`+strings.Join(scoreClauses, " + ")+`) DESC, d.updated_at DESC, d.node_id ASC
+LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	return scanSearchDocuments(rows)
+}
+
+func keywordSearchTerms(query string) []string {
+	fields := strings.Fields(query)
+	if len(fields) == 0 && query != "" {
+		fields = []string{query}
+	}
+	seen := map[string]struct{}{}
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		terms = append(terms, field)
+	}
+	return terms
 }
 
 func scanSearchDocuments(rows *sql.Rows) ([]core.SearchDocument, error) {

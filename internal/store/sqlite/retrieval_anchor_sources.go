@@ -260,13 +260,17 @@ func (r *RetrievalRepository) addNarrativeInsightAnchorHits(ctx context.Context,
 		if !searchDocumentAuthorityAllows(doc, policy) {
 			continue
 		}
+		matchScore := textMatchScore(query, doc.SearchText)
+		if matchScore <= 0 {
+			continue
+		}
 		rank++
 		*hits = append(*hits, AnchorHit{
 			NodeID:      doc.NodeID,
 			NodeType:    doc.NodeType,
 			Source:      AnchorSourceNarrativeInsight,
 			Rank:        rank,
-			RawScore:    textMatchScore(query, doc.SearchText),
+			RawScore:    matchScore,
 			DebugReason: string(doc.NodeType) + " search document match",
 		})
 	}

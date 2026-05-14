@@ -505,7 +505,9 @@ func TestRetrievalRepositoryNarrativeInsightAnchorsAreGatedDiagnosticsOnly(t *te
 	insertSearchFact(t, ctx, db.SQLDB(), "fact_causal", "用户说早会导致焦虑。", core.LifecycleActive)
 	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fact_causal", "fact_causal")
 	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_causal", "工作压力有周期性模式。")
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_unrelated", "咖啡豆库存需要每周盘点。")
 	insertSearchInsight(t, ctx, db.SQLDB(), "insight_causal", "早会是压力触发点。")
+	insertSearchInsight(t, ctx, db.SQLDB(), "insight_unrelated", "旅行计划适合提前订票。")
 
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	direct, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
@@ -542,12 +544,83 @@ func TestRetrievalRepositoryNarrativeInsightAnchorsAreGatedDiagnosticsOnly(t *te
 	}
 	requireAnchorSeed(t, causal.AnchorFusion, core.NodeTypeNarrative, "narrative_causal", "narrative_insight", 2)
 	requireAnchorSeed(t, causal.AnchorFusion, core.NodeTypeInsight, "insight_causal", "narrative_insight", 1)
+	if hasAnchorSeed(causal.AnchorFusion, core.NodeTypeNarrative, "narrative_unrelated") {
+		t.Fatalf("causal anchor fusion included unrelated narrative seed: %#v", causal.AnchorFusion)
+	}
+	if hasAnchorSeed(causal.AnchorFusion, core.NodeTypeInsight, "insight_unrelated") {
+		t.Fatalf("causal anchor fusion included unrelated insight seed: %#v", causal.AnchorFusion)
+	}
 	for _, block := range causal.Blocks {
 		for _, item := range block.Items {
 			if item.NodeType == string(core.NodeTypeNarrative) || item.NodeType == string(core.NodeTypeInsight) {
 				t.Fatalf("non-fact diagnostics seed entered facts block: %#v", item)
 			}
 		}
+	}
+}
+
+func TestSearchDocumentsForRetrievalRanksFTSByRelevanceBeforeRecency(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_weak_recent", "coffee note", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_strong_old", "coffee laptop laptop setup", core.LifecycleActive)
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertFactDocument(ctx, "default", "fact_weak_recent"); err != nil {
+		t.Fatalf("upsert weak fact search document: %v", err)
+	}
+	if err := search.UpsertFactDocument(ctx, "default", "fact_strong_old"); err != nil {
+		t.Fatalf("upsert strong fact search document: %v", err)
+	}
+	setSearchDocumentUpdatedAt(t, db.SQLDB(), "fact_weak_recent", "2026-05-12T12:00:00Z")
+	setSearchDocumentUpdatedAt(t, db.SQLDB(), "fact_strong_old", "2026-05-01T12:00:00Z")
+
+	docs, err := search.SearchDocumentsForRetrieval(ctx, "default", "coffee laptop", true, 2, memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 2,
+		UseFTS:           true,
+	})
+	if err != nil {
+		t.Fatalf("search documents for retrieval: %v", err)
+	}
+	if len(docs) < 2 {
+		t.Fatalf("docs = %#v, want two matches", docs)
+	}
+	if docs[0].NodeID != "fact_strong_old" {
+		t.Fatalf("first doc = %s, want stronger text relevance before newer weak match", docs[0].NodeID)
+	}
+}
+
+func TestSearchDocumentsForRetrievalSparseUsesTermMatchCountBeforeRecency(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_sparse_weak_recent", "coffee note", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_sparse_strong_old", "coffee laptop setup", core.LifecycleActive)
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertFactDocument(ctx, "default", "fact_sparse_weak_recent"); err != nil {
+		t.Fatalf("upsert weak fact search document: %v", err)
+	}
+	if err := search.UpsertFactDocument(ctx, "default", "fact_sparse_strong_old"); err != nil {
+		t.Fatalf("upsert strong fact search document: %v", err)
+	}
+	setSearchDocumentUpdatedAt(t, db.SQLDB(), "fact_sparse_weak_recent", "2026-05-12T12:00:00Z")
+	setSearchDocumentUpdatedAt(t, db.SQLDB(), "fact_sparse_strong_old", "2026-05-01T12:00:00Z")
+
+	docs, err := search.SearchDocumentsForRetrieval(ctx, "default", "coffee laptop", false, 2, memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 2,
+	})
+	if err != nil {
+		t.Fatalf("search documents for retrieval: %v", err)
+	}
+	if len(docs) < 2 {
+		t.Fatalf("docs = %#v, want two term matches", docs)
+	}
+	if docs[0].NodeID != "fact_sparse_strong_old" {
+		t.Fatalf("first doc = %s, want higher term match count before newer weak match", docs[0].NodeID)
 	}
 }
 
