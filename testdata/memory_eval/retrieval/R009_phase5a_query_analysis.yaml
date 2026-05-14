@@ -1,0 +1,50 @@
+case_id: R009_phase5a_query_analysis
+description: Phase 5A QueryAnalysis 元数据覆盖 historical / provenance / premise_check / workflow / gotcha / entity alias。
+seed:
+  entities:
+    - id: ent_user
+      canonical_name: Long
+      entity_type: user
+      aliases:
+        - id: alias_longyi
+          alias: LongYi
+          alias_type: nickname
+          confidence: 0.9
+steps:
+  - id: historical_provenance
+    action: retrieve
+    retrieve:
+      query_text: LongYi 上次部署为什么失败的证据
+  - id: workflow_gotcha
+    action: retrieve
+    retrieve:
+      query_text: 这个环境报错的操作步骤和坑是什么
+  - id: premise_check
+    action: retrieve
+    retrieve:
+      query_text: 我是不是一直都讨厌上班
+assertions:
+  - type: query_analysis
+    step: historical_provenance
+    time_mode: historical
+    signals:
+      - historical
+      - causal
+      - provenance
+    memory_domain: work_experience_memory
+    memory_ability: provenance
+    evidence_need: provenance_source
+    entity_mentions:
+      - ent_user
+  - type: query_analysis
+    step: workflow_gotcha
+    time_mode: current
+    memory_domain: environment_experience_memory
+    memory_ability: gotcha
+    evidence_need: gotcha_note
+  - type: query_analysis
+    step: premise_check
+    time_mode: bitemporal_check
+    memory_domain: user_profile_memory
+    memory_ability: premise_check
+    evidence_need: premise_counterexample

@@ -8,6 +8,53 @@ const (
 	MemorySuppressionReasonFatigue = "fatigue"
 )
 
+type QueryTimeMode string
+type QuerySignal string
+type MemoryDomain string
+type MemoryAbility string
+type EvidenceNeed string
+type QueryEntityMentionKind string
+
+const (
+	QueryTimeModeCurrent         QueryTimeMode = "current"
+	QueryTimeModeHistorical      QueryTimeMode = "historical"
+	QueryTimeModeBitemporalCheck QueryTimeMode = "bitemporal_check"
+
+	QuerySignalCausal      QuerySignal = "causal"
+	QuerySignalHistorical  QuerySignal = "historical"
+	QuerySignalProvenance  QuerySignal = "provenance"
+	QuerySignalSensitivity QuerySignal = "sensitivity"
+	QuerySignalDebug       QuerySignal = "debug"
+
+	MemoryDomainRelationship          MemoryDomain = "relationship_memory"
+	MemoryDomainUserProfile           MemoryDomain = "user_profile_memory"
+	MemoryDomainWorkExperience        MemoryDomain = "work_experience_memory"
+	MemoryDomainEnvironmentExperience MemoryDomain = "environment_experience_memory"
+
+	MemoryAbilityDirectFact    MemoryAbility = "direct_fact"
+	MemoryAbilityCausalExplain MemoryAbility = "causal_explain"
+	MemoryAbilityHistorical    MemoryAbility = "historical"
+	MemoryAbilityProvenance    MemoryAbility = "provenance"
+	MemoryAbilityBoundary      MemoryAbility = "boundary"
+	MemoryAbilitySupportive    MemoryAbility = "supportive"
+	MemoryAbilityPlanning      MemoryAbility = "planning"
+	MemoryAbilityStaticState   MemoryAbility = "static_state"
+	MemoryAbilityDynamicState  MemoryAbility = "dynamic_state"
+	MemoryAbilityWorkflow      MemoryAbility = "workflow"
+	MemoryAbilityGotcha        MemoryAbility = "gotcha"
+	MemoryAbilityPremiseCheck  MemoryAbility = "premise_check"
+
+	EvidenceNeedExactObservation      EvidenceNeed = "exact_observation"
+	EvidenceNeedStateTransition       EvidenceNeed = "state_transition"
+	EvidenceNeedProcedureNote         EvidenceNeed = "procedure_note"
+	EvidenceNeedGotchaNote            EvidenceNeed = "gotcha_note"
+	EvidenceNeedPremiseCounterexample EvidenceNeed = "premise_counterexample"
+	EvidenceNeedProvenanceSource      EvidenceNeed = "provenance_source"
+
+	QueryEntityMentionKindCanonical QueryEntityMentionKind = "canonical_name"
+	QueryEntityMentionKindAlias     QueryEntityMentionKind = "entity_alias"
+)
+
 type RetrievalRequest struct {
 	PersonaID string
 	SessionID *string
@@ -37,6 +84,27 @@ type MemoryContext struct {
 	DoNotMention  []MemorySuppression
 	TokenEstimate int
 	Mirror        *MirrorRetrievalDiagnostics
+	QueryAnalysis *QueryAnalysis
+}
+
+type QueryAnalysis struct {
+	Raw            string
+	Normalized     string
+	Terms          []string
+	EntityMentions []QueryEntityMention
+	TimeMode       QueryTimeMode
+	Signals        []QuerySignal
+	MemoryDomain   MemoryDomain
+	MemoryAbility  MemoryAbility
+	EvidenceNeed   EvidenceNeed
+}
+
+type QueryEntityMention struct {
+	EntityID      string
+	CanonicalName string
+	Alias         string
+	MatchText     string
+	MatchKind     QueryEntityMentionKind
 }
 
 type MemoryBlock struct {

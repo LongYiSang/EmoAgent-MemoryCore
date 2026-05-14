@@ -414,6 +414,48 @@ func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 	requireAccessEventRow(t, db.SQLDB(), "fact_like_coffee", "retrieved", 0)
 }
 
+func TestRetrievalRepositoryQueryAnalysisUsesEntityMentionsForCandidates(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	if _, err := memsqlite.NewEntityRepository(db.SQLDB()).EnsureAlias(ctx, core.EntityAlias{
+		ID:         "alias_longyi",
+		PersonaID:  "default",
+		EntityID:   "ent_user",
+		Alias:      "LongYi",
+		AliasType:  core.AliasTypeNickname,
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("ensure alias: %v", err)
+	}
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_alias_only", "用户喜欢不在查询中的乌龙茶。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_alias_only", "fact_alias_only")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalID, fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "LongYi",
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if result.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	if len(result.QueryAnalysis.EntityMentions) != 1 || result.QueryAnalysis.EntityMentions[0].EntityID != "ent_user" || result.QueryAnalysis.EntityMentions[0].MatchText != "LongYi" {
+		t.Fatalf("entity_mentions = %#v, want LongYi alias for ent_user", result.QueryAnalysis.EntityMentions)
+	}
+	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != "fact_alias_only" {
+		t.Fatalf("retrieval result = %#v, want alias-only fact", result)
+	}
+}
+
 func requireSearchDocument(t *testing.T, db *sql.DB, factID string, wantText string) {
 	t.Helper()
 

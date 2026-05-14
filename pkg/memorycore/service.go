@@ -769,6 +769,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		DoNotMention:  make([]MemorySuppression, 0, len(context.DoNotMention)),
 		TokenEstimate: context.TokenEstimate,
 		Mirror:        mirrorDiagnosticsFromStore(context.Mirror),
+		QueryAnalysis: queryAnalysisFromStore(context.QueryAnalysis),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -796,6 +797,36 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 	return result
 }
 
+func queryAnalysisFromStore(value *memsqlite.QueryAnalysis) *QueryAnalysis {
+	if value == nil {
+		return nil
+	}
+	result := &QueryAnalysis{
+		Raw:            value.Raw,
+		Normalized:     value.Normalized,
+		Terms:          append([]string(nil), value.Terms...),
+		EntityMentions: make([]QueryEntityMention, 0, len(value.EntityMentions)),
+		TimeMode:       QueryTimeMode(value.TimeMode),
+		Signals:        make([]QuerySignal, 0, len(value.Signals)),
+		MemoryDomain:   MemoryDomain(value.MemoryDomain),
+		MemoryAbility:  MemoryAbility(value.MemoryAbility),
+		EvidenceNeed:   EvidenceNeed(value.EvidenceNeed),
+	}
+	for _, mention := range value.EntityMentions {
+		result.EntityMentions = append(result.EntityMentions, QueryEntityMention{
+			EntityID:      mention.EntityID,
+			CanonicalName: mention.CanonicalName,
+			Alias:         mention.Alias,
+			MatchText:     mention.MatchText,
+			MatchKind:     QueryEntityMentionKind(mention.MatchKind),
+		})
+	}
+	for _, signal := range value.Signals {
+		result.Signals = append(result.Signals, QuerySignal(signal))
+	}
+	return result
+}
+
 func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetrievalDiagnostics {
 	if value == nil {
 		return nil
@@ -808,9 +839,13 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 		Candidates:            make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
 	}
 	for _, item := range value.Candidates {
+		sqliteFactID := item.SQLiteFactID
+		if item.DropReason == "dropped_by_authority_filter" {
+			sqliteFactID = ""
+		}
 		result.Candidates = append(result.Candidates, MirrorCandidateDiagnostics{
 			TriviumNodeID: item.TriviumNodeID,
-			SQLiteFactID:  item.SQLiteFactID,
+			SQLiteFactID:  sqliteFactID,
 			Score:         item.Score,
 			Source:        item.Source,
 			DropReason:    item.DropReason,

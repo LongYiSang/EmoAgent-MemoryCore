@@ -43,6 +43,13 @@ func TestRunPhase2AOperationalFlow(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonOut), &decoded); err != nil {
 		t.Fatalf("retrieve json did not decode: %v\n%s", err, jsonOut)
 	}
+	analysis, ok := decoded["QueryAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("retrieve json QueryAnalysis missing or wrong shape: %#v", decoded["QueryAnalysis"])
+	}
+	if analysis["Raw"] != "早上八点" || analysis["TimeMode"] != "current" {
+		t.Fatalf("retrieve json QueryAnalysis = %#v, want raw query with current time mode", analysis)
+	}
 
 	endedID := requireRunID(t, "end-session", "--db", dbPath, "--session", sessionID, "--summary", "manual smoke done", "--format", "id")
 	if endedID != sessionID {

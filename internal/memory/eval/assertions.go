@@ -17,6 +17,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertMemoryContains(assertion, true)
 	case "memory_not_contains":
 		return s.assertMemoryContains(assertion, false)
+	case "query_analysis":
+		return s.assertQueryAnalysis(assertion)
 	case "fact_count":
 		return s.assertFactCount(ctx, assertion)
 	case "fact_column":
@@ -92,6 +94,48 @@ func (s *runState) assertMemoryContains(assertion Assertion, wantPresent bool) e
 	return nil
 }
 
+func (s *runState) assertQueryAnalysis(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Retrieval == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "retrieve step " + assertion.Step, Actual: "missing"}
+	}
+	analysis := result.Retrieval.QueryAnalysis
+	if analysis == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "query analysis present", Actual: "nil"}
+	}
+	if assertion.TimeMode != "" && string(analysis.TimeMode) != assertion.TimeMode {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "time_mode=" + assertion.TimeMode, Actual: "time_mode=" + string(analysis.TimeMode)}
+	}
+	if assertion.MemoryDomain != "" && string(analysis.MemoryDomain) != assertion.MemoryDomain {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "memory_domain=" + assertion.MemoryDomain, Actual: "memory_domain=" + string(analysis.MemoryDomain)}
+	}
+	if assertion.MemoryAbility != "" && string(analysis.MemoryAbility) != assertion.MemoryAbility {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "memory_ability=" + assertion.MemoryAbility, Actual: "memory_ability=" + string(analysis.MemoryAbility)}
+	}
+	if assertion.EvidenceNeed != "" && string(analysis.EvidenceNeed) != assertion.EvidenceNeed {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "evidence_need=" + assertion.EvidenceNeed, Actual: "evidence_need=" + string(analysis.EvidenceNeed)}
+	}
+	if len(assertion.Signals) > 0 {
+		actual := make([]string, 0, len(analysis.Signals))
+		for _, signal := range analysis.Signals {
+			actual = append(actual, string(signal))
+		}
+		if !sameStringSet(actual, assertion.Signals) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "signals=" + strings.Join(assertion.Signals, ","), Actual: "signals=" + strings.Join(actual, ",")}
+		}
+	}
+	if len(assertion.EntityMentions) > 0 {
+		actual := make([]string, 0, len(analysis.EntityMentions))
+		for _, mention := range analysis.EntityMentions {
+			actual = append(actual, mention.EntityID)
+		}
+		if !sameStringSet(actual, assertion.EntityMentions) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "entity_mentions=" + strings.Join(assertion.EntityMentions, ","), Actual: "entity_mentions=" + strings.Join(actual, ",")}
+		}
+	}
+	return nil
+}
+
 func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) error {
 	query := `SELECT COUNT(*) FROM facts WHERE persona_id = ?`
 	args := []any{s.persona}
@@ -108,6 +152,23 @@ func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) err
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "fact_count=" + assertion.Equals, Actual: "fact_count=" + actual}
 	}
 	return nil
+}
+
+func sameStringSet(actual []string, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, item := range actual {
+		counts[item]++
+	}
+	for _, item := range expected {
+		counts[item]--
+		if counts[item] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *runState) assertFactColumn(ctx context.Context, assertion Assertion) error {

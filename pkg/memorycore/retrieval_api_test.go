@@ -35,6 +35,236 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	requireAccessEvent(t, db, fact.ID, "retrieved")
 }
 
+func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我以前参与过旧项目。", time.Date(2025, 1, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "旧项目", "用户以前参与过旧项目。", episode.ID).Fact
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, fact.ID, "validity_status", memorycore.ValidityInvalidated)
+	updateFactColumn(t, db, fact.ID, "lifecycle_status", "archived")
+
+	historical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "Long 以前 旧项目",
+	})
+	if err != nil {
+		t.Fatalf("retrieve historical query: %v", err)
+	}
+	requireMemoryItem(t, historical, fact.ID, "用户以前参与过旧项目。", "historical")
+	if historical.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	if historical.QueryAnalysis.TimeMode != memorycore.QueryTimeModeHistorical {
+		t.Fatalf("time_mode = %q, want historical", historical.QueryAnalysis.TimeMode)
+	}
+	if !hasQuerySignal(historical.QueryAnalysis.Signals, memorycore.QuerySignalHistorical) {
+		t.Fatalf("signals = %#v, want historical", historical.QueryAnalysis.Signals)
+	}
+	if historical.QueryAnalysis.MemoryAbility != memorycore.MemoryAbilityHistorical {
+		t.Fatalf("memory_ability = %q, want historical", historical.QueryAnalysis.MemoryAbility)
+	}
+	if historical.QueryAnalysis.EvidenceNeed != memorycore.EvidenceNeedStateTransition {
+		t.Fatalf("evidence_need = %q, want state_transition", historical.QueryAnalysis.EvidenceNeed)
+	}
+
+	updateFactColumn(t, db, fact.ID, "lifecycle_status", "deep_archived")
+	deepDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "Long 以前 旧项目",
+	})
+	if err != nil {
+		t.Fatalf("retrieve historical deep default: %v", err)
+	}
+	requireNoMemoryItem(t, deepDefault, fact.ID)
+
+	deepAllowed, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "Long 以前 旧项目",
+		Policy: memorycore.RetrievalPolicy{
+			AllowDeepArchive: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve historical deep allowed: %v", err)
+	}
+	requireMemoryItem(t, deepAllowed, fact.ID, "用户以前参与过旧项目。", "historical")
+}
+
+func TestServiceRetrieveQueryAnalysisKeepsSensitivityGateAndReportsEntityMentions(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+		EntityID:  userID,
+		Alias:     "LongYi",
+		AliasType: memorycore.AliasTypeNickname,
+	}); err != nil {
+		t.Fatalf("add alias: %v", err)
+	}
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我以前的银行卡卡号是4111。", time.Date(2025, 1, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "银行卡卡号4111", "用户以前提到银行卡卡号4111。", episode.ID).Fact
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, fact.ID, "validity_status", memorycore.ValidityInvalidated)
+	updateFactColumn(t, db, fact.ID, "lifecycle_status", "archived")
+	updateFactColumn(t, db, fact.ID, "sensitivity_level", memorycore.SensitivitySensitive)
+
+	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "debug: LongYi 上次部署为什么失败的证据和银行卡4111",
+	})
+	if err != nil {
+		t.Fatalf("retrieve normal permission: %v", err)
+	}
+	requireNoMemoryItem(t, normalPermission, fact.ID)
+	if normalPermission.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	analysis := normalPermission.QueryAnalysis
+	if analysis.MemoryDomain != memorycore.MemoryDomainWorkExperience {
+		t.Fatalf("memory_domain = %q, want work_experience_memory", analysis.MemoryDomain)
+	}
+	if analysis.MemoryAbility != memorycore.MemoryAbilityProvenance {
+		t.Fatalf("memory_ability = %q, want provenance", analysis.MemoryAbility)
+	}
+	if analysis.EvidenceNeed != memorycore.EvidenceNeedProvenanceSource {
+		t.Fatalf("evidence_need = %q, want provenance_source", analysis.EvidenceNeed)
+	}
+	for _, signal := range []memorycore.QuerySignal{
+		memorycore.QuerySignalHistorical,
+		memorycore.QuerySignalCausal,
+		memorycore.QuerySignalProvenance,
+		memorycore.QuerySignalDebug,
+	} {
+		if !hasQuerySignal(analysis.Signals, signal) {
+			t.Fatalf("signals = %#v, want %q", analysis.Signals, signal)
+		}
+	}
+	if len(analysis.EntityMentions) != 1 || analysis.EntityMentions[0].EntityID != userID || analysis.EntityMentions[0].MatchText != "LongYi" {
+		t.Fatalf("entity_mentions = %#v, want alias mention for %s", analysis.EntityMentions, userID)
+	}
+
+	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "LongYi 以前的银行卡4111",
+		Policy: memorycore.RetrievalPolicy{
+			SensitivityPermission: memorycore.SensitivitySensitive,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve sensitive permission: %v", err)
+	}
+	requireMemoryItem(t, sensitivePermission, fact.ID, "用户以前提到银行卡卡号4111。", "historical")
+}
+
+func TestServiceRetrieveQueryAnalysisDoesNotLeakSensitiveEntityMentions(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	_, userID := seedConsolidationSubject(t, ctx, svc)
+	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+		EntityID:  userID,
+		Alias:     "LongYi",
+		AliasType: memorycore.AliasTypeNickname,
+	}); err != nil {
+		t.Fatalf("add alias: %v", err)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateEntityColumn(t, db, userID, "sensitivity_level", memorycore.SensitivitySensitive)
+
+	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "LongYi",
+	})
+	if err != nil {
+		t.Fatalf("retrieve normal permission: %v", err)
+	}
+	if normalPermission.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	if len(normalPermission.QueryAnalysis.EntityMentions) != 0 {
+		t.Fatalf("entity_mentions = %#v, want no sensitive entity mention at normal permission", normalPermission.QueryAnalysis.EntityMentions)
+	}
+
+	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "LongYi",
+		Policy: memorycore.RetrievalPolicy{
+			SensitivityPermission: memorycore.SensitivitySensitive,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve sensitive permission: %v", err)
+	}
+	if sensitivePermission.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	if len(sensitivePermission.QueryAnalysis.EntityMentions) != 1 || sensitivePermission.QueryAnalysis.EntityMentions[0].EntityID != userID || sensitivePermission.QueryAnalysis.EntityMentions[0].MatchText != "LongYi" {
+		t.Fatalf("entity_mentions = %#v, want alias mention for %s with sensitive permission", sensitivePermission.QueryAnalysis.EntityMentions, userID)
+	}
+}
+
+func TestServiceRetrieveAuthorityFiltersLinkedSensitiveEntities(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	secretEntity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+		CanonicalName:    "SecretProject",
+		EntityType:       memorycore.EntityTypeConcept,
+		SensitivityLevel: memorycore.SensitivitySensitive,
+	})
+	if err != nil {
+		t.Fatalf("ensure secret entity: %v", err)
+	}
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我参与过 SecretProject。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+		Candidate: memorycore.ManualFactCandidate{
+			SubjectEntityID:  userID,
+			Predicate:        "likes",
+			ObjectEntityID:   &secretEntity.ID,
+			ContentSummary:   "用户参与过一个项目。",
+			SourceEpisodeIDs: []string{episode.ID},
+			Confidence:       memorycore.ConfidenceExplicit,
+			Importance:       0.7,
+			Sensitivity:      memorycore.SensitivityNormal,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate linked entity fact: %v", err)
+	}
+	if result.Fact == nil {
+		t.Fatalf("result fact is nil: %#v", result)
+	}
+
+	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "SecretProject",
+	})
+	if err != nil {
+		t.Fatalf("retrieve normal permission: %v", err)
+	}
+	requireNoMemoryItem(t, normalPermission, result.Fact.ID)
+
+	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "SecretProject",
+		Policy: memorycore.RetrievalPolicy{
+			SensitivityPermission: memorycore.SensitivitySensitive,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve sensitive permission: %v", err)
+	}
+	requireMemoryItem(t, sensitivePermission, result.Fact.ID, "用户参与过一个项目。", "")
+}
+
 func TestServiceRetrieveAppliesAuthorityFilters(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)
@@ -284,12 +514,75 @@ func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
 	}
 	var sawAuthorityDrop bool
 	for _, candidate := range contextResult.Mirror.Candidates {
-		if candidate.SQLiteFactID == fact.ID && candidate.DropReason == "dropped_by_authority_filter" {
+		if candidate.DropReason == "dropped_by_authority_filter" && candidate.SQLiteFactID == "" {
 			sawAuthorityDrop = true
+		}
+		if candidate.DropReason == "dropped_by_authority_filter" && candidate.SQLiteFactID == fact.ID {
+			t.Fatalf("authority-dropped mirror candidate leaked sqlite fact id: %#v", candidate)
 		}
 	}
 	if !sawAuthorityDrop {
-		t.Fatalf("mirror candidates = %#v, want dropped_by_authority_filter for %s", contextResult.Mirror.Candidates, fact.ID)
+		t.Fatalf("mirror candidates = %#v, want redacted dropped_by_authority_filter candidate", contextResult.Mirror.Candidates)
+	}
+}
+
+func TestServiceRetrieveUseMirrorRedactsAuthorityDroppedSensitiveLinkedEntityCandidate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	secretEntity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+		CanonicalName:    "SecretProject",
+		EntityType:       memorycore.EntityTypeConcept,
+		SensitivityLevel: memorycore.SensitivitySensitive,
+	})
+	if err != nil {
+		t.Fatalf("ensure secret entity: %v", err)
+	}
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我参与过 SecretProject。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+		Candidate: memorycore.ManualFactCandidate{
+			SubjectEntityID:  userID,
+			Predicate:        "likes",
+			ObjectEntityID:   &secretEntity.ID,
+			ContentSummary:   "用户参与过一个项目。",
+			SourceEpisodeIDs: []string{episode.ID},
+			Confidence:       memorycore.ConfidenceExplicit,
+			Importance:       0.7,
+			Sensitivity:      memorycore.SensitivityNormal,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate linked entity fact: %v", err)
+	}
+	if result.Fact == nil {
+		t.Fatalf("result fact is nil: %#v", result)
+	}
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, result.Fact.ID, 7101, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7101, Score: 0.91, Source: "sensitive_link"}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "mirror-only",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with sensitive linked mirror candidate: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, result.Fact.ID)
+	if contextResult.Mirror == nil || contextResult.Mirror.DroppedCandidateCount == 0 {
+		t.Fatalf("mirror diagnostics = %#v, want authority drop", contextResult.Mirror)
+	}
+	for _, candidate := range contextResult.Mirror.Candidates {
+		if candidate.DropReason == "dropped_by_authority_filter" && candidate.SQLiteFactID != "" {
+			t.Fatalf("authority-dropped sensitive linked candidate leaked sqlite fact id: %#v", candidate)
+		}
 	}
 }
 
@@ -576,6 +869,15 @@ func requireNoMemoryItem(t *testing.T, contextResult *memorycore.MemoryContext, 
 	}
 }
 
+func hasQuerySignal(signals []memorycore.QuerySignal, want memorycore.QuerySignal) bool {
+	for _, signal := range signals {
+		if signal == want {
+			return true
+		}
+	}
+	return false
+}
+
 func requireAccessEvent(t *testing.T, db *sql.DB, factID string, accessType string) {
 	t.Helper()
 
@@ -595,11 +897,24 @@ func updateFactColumn(t *testing.T, db *sql.DB, factID string, column string, va
 	t.Helper()
 
 	switch column {
-	case "visibility_status", "searchable", "lifecycle_status":
+	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level":
 	default:
 		t.Fatalf("unsupported fact column %q", column)
 	}
 	if _, err := db.Exec("UPDATE facts SET "+column+" = ? WHERE id = ?", value, factID); err != nil {
 		t.Fatalf("update fact %s.%s: %v", factID, column, err)
+	}
+}
+
+func updateEntityColumn(t *testing.T, db *sql.DB, entityID string, column string, value any) {
+	t.Helper()
+
+	switch column {
+	case "visibility_status", "searchable", "sensitivity_level":
+	default:
+		t.Fatalf("unsupported entity column %q", column)
+	}
+	if _, err := db.Exec("UPDATE entities SET "+column+" = ? WHERE id = ?", value, entityID); err != nil {
+		t.Fatalf("update entity %s.%s: %v", entityID, column, err)
 	}
 }

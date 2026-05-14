@@ -255,6 +255,12 @@ type Assertion struct {
 	DeletionEventID       string   `yaml:"deletion_event_id"`
 	ForbiddenContains     []string `yaml:"forbidden_contains"`
 	EpisodeID             string   `yaml:"episode_id"`
+	TimeMode              string   `yaml:"time_mode"`
+	Signals               []string `yaml:"signals"`
+	MemoryDomain          string   `yaml:"memory_domain"`
+	MemoryAbility         string   `yaml:"memory_ability"`
+	EvidenceNeed          string   `yaml:"evidence_need"`
+	EntityMentions        []string `yaml:"entity_mentions"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -367,6 +373,7 @@ func knownAssertionType(value string) bool {
 	case "consolidation_result",
 		"memory_contains",
 		"memory_not_contains",
+		"query_analysis",
 		"fact_count",
 		"fact_column",
 		"link_exists",

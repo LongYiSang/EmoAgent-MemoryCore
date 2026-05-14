@@ -56,6 +56,7 @@ type MemoryContext struct {
 	DoNotMention  []MemorySuppression
 	TokenEstimate int
 	Mirror        *MirrorDiagnostics
+	QueryAnalysis *QueryAnalysis
 }
 
 type MirrorDiagnostics struct {
@@ -123,12 +124,16 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	if strings.TrimSpace(req.PersonaID) == "" {
 		return MemoryContext{}, errors.New("persona_id is required")
 	}
-	policy := normalizeRetrievalPolicy(req.Policy)
+	basePolicy := normalizeRetrievalPolicy(req.Policy)
 	now := req.Now
 	if now.IsZero() {
 		now = r.now()
 	}
-	query := analyzeQuery(req.QueryText)
+	query, err := r.analyzeQuery(ctx, req.PersonaID, req.QueryText, basePolicy)
+	if err != nil {
+		return MemoryContext{}, err
+	}
+	policy := effectiveRetrievalPolicy(basePolicy, query)
 
 	candidates, err := r.collectCandidates(ctx, req.PersonaID, query, policy, req.Mirror)
 	if err != nil {
@@ -147,8 +152,9 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	})
 
 	contextResult := MemoryContext{
-		DoNotMention: suppressions,
-		Mirror:       req.MirrorDiagnostics,
+		DoNotMention:  suppressions,
+		Mirror:        req.MirrorDiagnostics,
+		QueryAnalysis: &query,
 	}
 	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
 	for _, candidate := range scored {
@@ -184,7 +190,7 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	return contextResult, nil
 }
 
-func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query queryAnalysis, policy RetrievalPolicy, mirrorCandidates []RetrievalMirrorCandidate) (map[string]retrievalCandidate, error) {
+func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, mirrorCandidates []RetrievalMirrorCandidate) (map[string]retrievalCandidate, error) {
 	candidates := make(map[string]retrievalCandidate)
 	for _, mirrorCandidate := range mirrorCandidates {
 		if mirrorCandidate.FactID == "" {
@@ -209,12 +215,8 @@ func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID s
 		candidates[doc.NodeID] = candidate
 	}
 
-	entityIDs, err := r.matchEntities(ctx, personaID, query.Normalized)
-	if err != nil {
-		return nil, err
-	}
-	for _, entityID := range entityIDs {
-		factIDs, err := r.factIDsForEntity(ctx, personaID, entityID, policy)
+	for _, mention := range query.EntityMentions {
+		factIDs, err := r.factIDsForEntity(ctx, personaID, mention.EntityID, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +230,7 @@ func (r *RetrievalRepository) collectCandidates(ctx context.Context, personaID s
 	return candidates, nil
 }
 
-func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req RetrievalRequest, query queryAnalysis, policy RetrievalPolicy, now time.Time, candidates map[string]retrievalCandidate) ([]scoredFact, []MemorySuppression, error) {
+func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req RetrievalRequest, query QueryAnalysis, policy RetrievalPolicy, now time.Time, candidates map[string]retrievalCandidate) ([]scoredFact, []MemorySuppression, error) {
 	scored := make([]scoredFact, 0, len(candidates))
 	var suppressions []MemorySuppression
 	mirrorByFact := map[string]RetrievalMirrorCandidate{}
@@ -345,7 +347,58 @@ func (r *RetrievalRepository) authorityAllows(ctx context.Context, fact core.Fac
 	if sensitivityRank(fact.SensitivityLevel) > sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission)) {
 		return false, nil
 	}
+	if ok, err := r.linkedEntitiesAllow(ctx, fact, policy); err != nil {
+		return false, err
+	} else if !ok {
+		return false, nil
+	}
 	return r.provenanceAllows(ctx, fact)
+}
+
+func (r *RetrievalRepository) linkedEntitiesAllow(ctx context.Context, fact core.Fact, policy RetrievalPolicy) (bool, error) {
+	entityIDs := linkedEntityIDs(fact)
+	if len(entityIDs) == 0 {
+		return true, nil
+	}
+	allowedSensitivityRank := sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission))
+	for _, entityID := range entityIDs {
+		var visibilityStatus string
+		var sensitivityLevel string
+		var searchable int
+		err := r.db.QueryRowContext(ctx, `
+SELECT visibility_status, sensitivity_level, searchable
+FROM entities
+WHERE persona_id = ? AND id = ?`, fact.PersonaID, entityID).Scan(&visibilityStatus, &sensitivityLevel, &searchable)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if visibilityStatus != string(core.VisibilityVisible) || searchable != 1 {
+			return false, nil
+		}
+		if sensitivityRank(core.SensitivityLevel(sensitivityLevel)) > allowedSensitivityRank {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func linkedEntityIDs(fact core.Fact) []string {
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, id := range []*string{fact.SubjectEntityID, fact.ObjectEntityID} {
+		if id == nil || *id == "" {
+			continue
+		}
+		if _, ok := seen[*id]; ok {
+			continue
+		}
+		seen[*id] = struct{}{}
+		ids = append(ids, *id)
+	}
+	return ids
 }
 
 func (r *RetrievalRepository) provenanceAllows(ctx context.Context, fact core.Fact) (bool, error) {
@@ -370,46 +423,6 @@ WHERE l.persona_id = ?
 		return fact.Pinned, nil
 	}
 	return visibleEvidenceCount > 0, nil
-}
-
-func (r *RetrievalRepository) matchEntities(ctx context.Context, personaID string, normalizedQuery string) ([]string, error) {
-	if normalizedQuery == "" {
-		return nil, nil
-	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT DISTINCT e.id, e.canonical_name, COALESCE(a.alias, '')
-FROM entities e
-LEFT JOIN entity_aliases a
-  ON a.persona_id = e.persona_id
- AND a.entity_id = e.id
-WHERE e.persona_id = ?
-  AND e.visibility_status = 'visible'
-  AND e.searchable = 1`, personaID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	seen := map[string]struct{}{}
-	var ids []string
-	for rows.Next() {
-		var id, canonicalName, alias string
-		if err := rows.Scan(&id, &canonicalName, &alias); err != nil {
-			return nil, err
-		}
-		if !containsNormalized(normalizedQuery, canonicalName) && !containsNormalized(normalizedQuery, alias) {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 func (r *RetrievalRepository) factIDsForEntity(ctx context.Context, personaID string, entityID string, policy RetrievalPolicy) ([]string, error) {
@@ -485,22 +498,6 @@ INSERT INTO memory_access_events (
 	return err
 }
 
-type queryAnalysis struct {
-	Raw        string
-	Normalized string
-	Terms      []string
-}
-
-func analyzeQuery(query string) queryAnalysis {
-	raw := strings.TrimSpace(query)
-	normalized := strings.ToLower(raw)
-	return queryAnalysis{
-		Raw:        raw,
-		Normalized: normalized,
-		Terms:      strings.Fields(normalized),
-	}
-}
-
 func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 	if policy.SensitivityPermission == "" {
 		policy.SensitivityPermission = string(core.SensitivityNormal)
@@ -517,6 +514,13 @@ func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 	return policy
 }
 
+func effectiveRetrievalPolicy(policy RetrievalPolicy, analysis QueryAnalysis) RetrievalPolicy {
+	if analysis.TimeMode == QueryTimeModeHistorical {
+		policy.AllowHistorical = true
+	}
+	return policy
+}
+
 func isZeroRetrievalPolicy(policy RetrievalPolicy) bool {
 	return policy.SensitivityPermission == string(core.SensitivityNormal) &&
 		!policy.AllowHistorical &&
@@ -527,7 +531,7 @@ func isZeroRetrievalPolicy(policy RetrievalPolicy) bool {
 		!policy.UseMirror
 }
 
-func textMatchScore(query queryAnalysis, searchText string) float64 {
+func textMatchScore(query QueryAnalysis, searchText string) float64 {
 	if query.Raw == "" {
 		return 0
 	}
@@ -653,11 +657,6 @@ func nullableNonEmptyString(value string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: value, Valid: true}
-}
-
-func containsNormalized(query string, value string) bool {
-	value = strings.TrimSpace(strings.ToLower(value))
-	return value != "" && strings.Contains(query, value)
 }
 
 func formatInt(value int) string {
