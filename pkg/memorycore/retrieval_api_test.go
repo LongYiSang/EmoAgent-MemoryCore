@@ -891,7 +891,7 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
-		QueryText: "咖啡 RAW_PROMPT_SECRET",
+		QueryText: "咖啡\n" + strings.Repeat("x", 220) + " RAW_PROMPT_SUFFIX",
 		Policy: memorycore.RetrievalPolicy{
 			UseFTS:    true,
 			UseMirror: true,
@@ -903,8 +903,15 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 	if adapter.rerankCalls != 1 {
 		t.Fatalf("rerank calls = %d, want 1", adapter.rerankCalls)
 	}
-	if strings.Contains(adapter.lastRerankRequest.QueryText, "RAW_PROMPT_SECRET") || strings.Contains(adapter.lastRerankRequest.QueryText, "咖啡") {
-		t.Fatalf("rerank query leaked raw prompt text: %q", adapter.lastRerankRequest.QueryText)
+	if !strings.Contains(adapter.lastRerankRequest.QueryText, "query=咖啡") {
+		t.Fatalf("rerank query = %q, want capped normalized query surface", adapter.lastRerankRequest.QueryText)
+	}
+	if !strings.Contains(adapter.lastRerankRequest.QueryText, "memory_ability=direct_fact") ||
+		!strings.Contains(adapter.lastRerankRequest.QueryText, "evidence_need=exact_observation") {
+		t.Fatalf("rerank query = %q, want retrieval intent labels", adapter.lastRerankRequest.QueryText)
+	}
+	if strings.Contains(adapter.lastRerankRequest.QueryText, "RAW_PROMPT_SUFFIX") || strings.Contains(adapter.lastRerankRequest.QueryText, "\n") {
+		t.Fatalf("rerank query exceeded sanitized bounded surface: %q", adapter.lastRerankRequest.QueryText)
 	}
 	if len(adapter.lastRerankRequest.Candidates) != 1 {
 		t.Fatalf("rerank candidates = %#v, want one safe candidate", adapter.lastRerankRequest.Candidates)

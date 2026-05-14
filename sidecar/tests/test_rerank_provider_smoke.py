@@ -27,7 +27,7 @@ def test_dashscope_vl_rerank_provider_smoke_maps_safe_candidates():
     )
 
     result = provider.rerank(
-        "memory_domain=user_profile_memory memory_ability=direct_fact evidence_need=exact_observation time_mode=current",
+        "用户喜欢什么咖啡？",
         [
             {
                 "node_id": "fact-coffee",

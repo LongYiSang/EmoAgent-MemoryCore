@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
 )
 
-const defaultPersonaID = "default"
+const (
+	defaultPersonaID       = "default"
+	maxRerankQueryTextRune = 160
+)
 
 type Service interface {
 	Close() error
@@ -566,12 +570,16 @@ func (s *service) rerankCandidates(ctx context.Context, personaID string, prepar
 }
 
 func safeRerankQueryText(query memsqlite.QueryAnalysis) string {
-	parts := []string{
-		"memory_domain=" + string(query.MemoryDomain),
-		"memory_ability=" + string(query.MemoryAbility),
-		"evidence_need=" + string(query.EvidenceNeed),
-		"time_mode=" + string(query.TimeMode),
+	parts := make([]string, 0, 6)
+	if normalized := boundedRerankQueryText(query.Normalized); normalized != "" {
+		parts = append(parts, "query="+normalized)
 	}
+	parts = append(parts,
+		"memory_domain="+string(query.MemoryDomain),
+		"memory_ability="+string(query.MemoryAbility),
+		"evidence_need="+string(query.EvidenceNeed),
+		"time_mode="+string(query.TimeMode),
+	)
 	if len(query.Signals) > 0 {
 		signals := make([]string, 0, len(query.Signals))
 		for _, signal := range query.Signals {
@@ -580,6 +588,31 @@ func safeRerankQueryText(query memsqlite.QueryAnalysis) string {
 		parts = append(parts, "signals="+strings.Join(signals, ","))
 	}
 	return strings.Join(parts, " ")
+}
+
+func boundedRerankQueryText(value string) string {
+	var builder strings.Builder
+	previousSpace := true
+	for _, r := range strings.TrimSpace(value) {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			if !previousSpace {
+				builder.WriteByte(' ')
+				previousSpace = true
+			}
+			continue
+		}
+		builder.WriteRune(r)
+		previousSpace = false
+	}
+	sanitized := strings.TrimSpace(builder.String())
+	if sanitized == "" {
+		return ""
+	}
+	runes := []rune(sanitized)
+	if len(runes) > maxRerankQueryTextRune {
+		return string(runes[:maxRerankQueryTextRune])
+	}
+	return sanitized
 }
 
 func defaultMirrorActivationParams() MirrorActivationParams {
