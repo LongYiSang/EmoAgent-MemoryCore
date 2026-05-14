@@ -8,14 +8,23 @@ import (
 )
 
 type evalMirrorAdapter struct {
-	unavailable bool
-	candidates  []memorycore.MirrorCandidate
-	nextID      int64
+	unavailable              bool
+	candidates               []memorycore.MirrorCandidate
+	activationUnavailable    bool
+	activationDegraded       bool
+	activationFallbackReason string
+	activationCandidates     []memorycore.MirrorActivationCandidate
+	activationCalls          int
+	nextID                   int64
 }
 
 func (a *evalMirrorAdapter) resetForStep() {
 	a.unavailable = false
 	a.candidates = nil
+	a.activationUnavailable = false
+	a.activationDegraded = false
+	a.activationFallbackReason = ""
+	a.activationCandidates = nil
 }
 
 func (a *evalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
@@ -60,5 +69,17 @@ func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.M
 	}
 	return &memorycore.MirrorCandidateResult{
 		Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...),
+	}, nil
+}
+
+func (a *evalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+	a.activationCalls++
+	if a.activationUnavailable {
+		return nil, errors.New("activation sidecar unavailable")
+	}
+	return &memorycore.MirrorActivationResult{
+		Candidates:     append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
+		Degraded:       a.activationDegraded,
+		FallbackReason: a.activationFallbackReason,
 	}, nil
 }

@@ -227,6 +227,9 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 	if err := s.applyMirrorStub(ctx, step); err != nil {
 		return err
 	}
+	if err := s.applyGraphStub(ctx, step); err != nil {
+		return err
+	}
 	switch step.Action {
 	case "consolidate":
 		result, err := s.runConsolidate(ctx, step)
@@ -588,48 +591,163 @@ func (s *runState) applyMirrorStub(ctx context.Context, step Step) error {
 		s.mirror.unavailable = true
 	}
 	if step.MirrorStub.IndexMappedNodeID != "" {
-		nodeID, err := s.resolveString(step.MirrorStub.IndexMappedNodeID)
-		if err != nil {
+		if _, err := s.insertMirrorMap(ctx, step.MirrorStub.IndexMappedNodeID, step.MirrorStub.IndexMappedType); err != nil {
 			return err
 		}
-		nodeType := defaultString(step.MirrorStub.IndexMappedType, "fact")
-		triviumNodeID := s.nextTriviumID
-		s.nextTriviumID++
-		_, err = s.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
-VALUES (?, ?, ?, ?, ?, 'indexed')`,
-			"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, triviumNodeID)
-		if err != nil {
-			return fmt.Errorf("case %s step %s mirror stub: %w", s.caseID, step.ID, err)
+	}
+	for _, item := range step.MirrorStub.IndexMappedNodes {
+		if _, err := s.insertMirrorMap(ctx, item.NodeID, item.NodeType); err != nil {
+			return err
 		}
 	}
 	if step.MirrorStub.CandidateNodeID != "" {
-		nodeID, err := s.resolveString(step.MirrorStub.CandidateNodeID)
+		candidate := MirrorCandidate{
+			NodeID:   step.MirrorStub.CandidateNodeID,
+			NodeType: step.MirrorStub.CandidateNodeType,
+			Score:    step.MirrorStub.CandidateScore,
+		}
+		if err := s.addMirrorCandidate(ctx, candidate); err != nil {
+			return err
+		}
+	}
+	for _, candidate := range step.MirrorStub.Candidates {
+		if err := s.addMirrorCandidate(ctx, candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *runState) insertMirrorMap(ctx context.Context, rawNodeID string, rawNodeType string) (int64, error) {
+	nodeID, err := s.resolveString(rawNodeID)
+	if err != nil {
+		return 0, err
+	}
+	nodeType := defaultString(rawNodeType, "fact")
+	triviumNodeID := s.nextTriviumID
+	s.nextTriviumID++
+	_, err = s.db.ExecContext(ctx, `
+INSERT OR IGNORE INTO memory_index_map (id, persona_id, node_type, node_id, trivium_node_id, index_status)
+VALUES (?, ?, ?, ?, ?, 'indexed')`,
+		"map_"+sanitizeFileName(nodeID), s.persona, nodeType, nodeID, triviumNodeID)
+	if err != nil {
+		return 0, fmt.Errorf("case %s step %s mirror stub: %w", s.caseID, s.stepID, err)
+	}
+	return s.lookupTriviumNodeID(ctx, nodeID, nodeType)
+}
+
+func (s *runState) addMirrorCandidate(ctx context.Context, candidate MirrorCandidate) error {
+	score := candidate.Score
+	if score == 0 {
+		score = 0.8
+	}
+	source := defaultString(candidate.Source, "eval_stub")
+	nodeType := defaultString(candidate.NodeType, "fact")
+	triviumNodeID := candidate.TriviumNodeID
+	if triviumNodeID == 0 {
+		nodeID, err := s.resolveString(candidate.NodeID)
 		if err != nil {
 			return err
 		}
-		nodeType := defaultString(step.MirrorStub.CandidateNodeType, "fact")
-		score := step.MirrorStub.CandidateScore
-		if score == 0 {
-			score = 0.8
+		triviumNodeID, err = s.lookupTriviumNodeID(ctx, nodeID, nodeType)
+		if err != nil {
+			return fmt.Errorf("case %s step %s mirror candidate map: %w", s.caseID, s.stepID, err)
 		}
-		var triviumNodeID int64
-		err = s.db.QueryRowContext(ctx, `
+	}
+	s.mirror.candidates = append(s.mirror.candidates, memorycore.MirrorCandidate{
+		TriviumNodeID: triviumNodeID,
+		Score:         score,
+		Source:        source,
+		Rank:          candidate.Rank,
+	})
+	return nil
+}
+
+func (s *runState) lookupTriviumNodeID(ctx context.Context, nodeID string, nodeType string) (int64, error) {
+	var triviumNodeID int64
+	err := s.db.QueryRowContext(ctx, `
 SELECT trivium_node_id
 FROM memory_index_map
 WHERE persona_id = ?
   AND node_type = ?
   AND node_id = ?`, s.persona, nodeType, nodeID).Scan(&triviumNodeID)
+	return triviumNodeID, err
+}
+
+func (s *runState) applyGraphStub(ctx context.Context, step Step) error {
+	if step.GraphStub == nil {
+		return nil
+	}
+	if step.GraphStub.Unavailable {
+		s.mirror.activationUnavailable = true
+	}
+	if step.GraphStub.Degraded {
+		s.mirror.activationDegraded = true
+		s.mirror.activationFallbackReason = step.GraphStub.FallbackReason
+	}
+	for _, candidate := range step.GraphStub.Candidates {
+		mapped, err := s.graphActivationCandidate(ctx, candidate)
 		if err != nil {
-			return fmt.Errorf("case %s step %s mirror candidate map: %w", s.caseID, step.ID, err)
+			return err
 		}
-		s.mirror.candidates = append(s.mirror.candidates, memorycore.MirrorCandidate{
-			TriviumNodeID: triviumNodeID,
-			Score:         score,
-			Source:        "eval_stub",
-		})
+		s.mirror.activationCandidates = append(s.mirror.activationCandidates, mapped)
 	}
 	return nil
+}
+
+func (s *runState) graphActivationCandidate(ctx context.Context, candidate GraphCandidateStub) (memorycore.MirrorActivationCandidate, error) {
+	nodeType := defaultString(candidate.NodeType, "fact")
+	triviumNodeID := candidate.TriviumNodeID
+	if triviumNodeID == 0 {
+		nodeID, err := s.resolveString(candidate.NodeID)
+		if err != nil {
+			return memorycore.MirrorActivationCandidate{}, err
+		}
+		triviumID, err := s.lookupTriviumNodeID(ctx, nodeID, nodeType)
+		if err != nil {
+			return memorycore.MirrorActivationCandidate{}, fmt.Errorf("case %s step %s graph candidate map: %w", s.caseID, s.stepID, err)
+		}
+		triviumNodeID = triviumID
+	}
+	score := candidate.Score
+	if score == 0 {
+		score = 0.8
+	}
+	source := defaultString(candidate.Source, "graph_activation")
+	paths, err := s.graphActivationPaths(ctx, candidate)
+	if err != nil {
+		return memorycore.MirrorActivationCandidate{}, err
+	}
+	return memorycore.MirrorActivationCandidate{
+		TriviumNodeID: triviumNodeID,
+		Score:         score,
+		Source:        source,
+		Rank:          candidate.Rank,
+		Paths:         paths,
+	}, nil
+}
+
+func (s *runState) graphActivationPaths(ctx context.Context, candidate GraphCandidateStub) ([]memorycore.MirrorActivationPath, error) {
+	if len(candidate.PathNodeIDs) == 0 && len(candidate.PathTriviumNodeIDs) == 0 && len(candidate.PathLinkTypes) == 0 {
+		return nil, nil
+	}
+	ids := append([]int64(nil), candidate.PathTriviumNodeIDs...)
+	for _, rawNodeID := range candidate.PathNodeIDs {
+		nodeID, err := s.resolveString(rawNodeID)
+		if err != nil {
+			return nil, err
+		}
+		nodeType := defaultString(candidate.NodeType, "fact")
+		triviumID, err := s.lookupTriviumNodeID(ctx, nodeID, nodeType)
+		if err != nil {
+			return nil, fmt.Errorf("case %s step %s graph path map: %w", s.caseID, s.stepID, err)
+		}
+		ids = append(ids, triviumID)
+	}
+	return []memorycore.MirrorActivationPath{{
+		TriviumNodeIDs: ids,
+		LinkTypes:      append([]string(nil), candidate.PathLinkTypes...),
+	}}, nil
 }
 
 func (s *runState) resolveString(value string) (string, error) {

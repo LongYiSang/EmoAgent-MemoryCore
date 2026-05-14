@@ -1,0 +1,98 @@
+case_id: P5F002_selected_recall_precision
+description: "Phase 5F quality gate: selected recall and context precision count only MemoryContext selected items."
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡、手冲咖啡和拿铁。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: coffee
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.9
+  - id: pour_over
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 手冲咖啡
+        content_summary: 用户喜欢手冲咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: latte
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 拿铁咖啡
+        content_summary: 用户喜欢拿铁咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $coffee.fact_id
+          node_type: fact
+        - node_id: $pour_over.fact_id
+          node_type: fact
+        - node_id: $latte.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $coffee.fact_id
+          node_type: fact
+          score: 0.99
+          rank: 1
+        - node_id: $pour_over.fact_id
+          node_type: fact
+          score: 0.98
+          rank: 2
+        - node_id: $latte.fact_id
+          node_type: fact
+          score: 0.97
+          rank: 3
+    retrieve:
+      session_id: s1
+      query_text: 咖啡
+      policy:
+        use_mirror: true
+        final_memory_count: 8
+assertions:
+  - type: selected_recall_at_k
+    step: retrieve
+    relevant_node_ids:
+      - $coffee.fact_id
+      - $pour_over.fact_id
+      - $latte.fact_id
+    at: 8
+    min: 1.0
+  - type: context_precision_at_k
+    step: retrieve
+    relevant_node_ids:
+      - $coffee.fact_id
+      - $pour_over.fact_id
+      - $latte.fact_id
+    at: 8
+    min: 1.0

@@ -35,6 +35,461 @@ steps:
 	}
 }
 
+func TestLoadFixtureBytesRejectsUnknownAssertionType(t *testing.T) {
+	_, err := LoadFixtureBytes([]byte(`
+case_id: BAD_ASSERTION
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      query_text: coffee
+assertions:
+  - type: unsupported_phase5f_assertion
+    step: retrieve
+`))
+	if err == nil {
+		t.Fatal("LoadFixtureBytes err is nil, want unknown assertion type error")
+	}
+	if !strings.Contains(err.Error(), "BAD_ASSERTION") || !strings.Contains(err.Error(), "unsupported_phase5f_assertion") {
+		t.Fatalf("error = %q, want case id and assertion type", err.Error())
+	}
+}
+
+func TestLoadFixtureBytesAcceptsPhase5FAssertionFields(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: PHASE5F_ASSERTION_FIELDS
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      query_text: coffee
+assertions:
+  - type: selected_recall_at_k
+    step: retrieve
+    relevant_node_ids: [fact_a, fact_b]
+    at: 8
+    min: 0.9
+  - type: context_precision_at_k
+    step: retrieve
+    relevant_node_ids: [fact_a]
+    at: 8
+    min: 0.75
+  - type: selected_chain_correct
+    step: retrieve
+    block_type: causal_context
+    node_id: fact_a
+    node_ids: [fact_b]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    source_ref_count: 1
+  - type: suppression_event
+    step: retrieve
+    node_id: fact_b
+    suppression_reason: mmr_duplicate
+  - type: graph_activation_candidate
+    step: retrieve
+    node_id: fact_c
+    source: graph_activation
+    rank: 1
+`))
+	if err != nil {
+		t.Fatalf("LoadFixtureBytes err = %v, want nil", err)
+	}
+	if len(fixture.Assertions) != 5 {
+		t.Fatalf("assertion count = %d, want 5", len(fixture.Assertions))
+	}
+	if got := fixture.Assertions[0].RelevantNodeIDs; len(got) != 2 || got[0] != "fact_a" || fixture.Assertions[0].At != 8 || fixture.Assertions[0].Min != 0.9 {
+		t.Fatalf("selected_recall assertion = %#v", fixture.Assertions[0])
+	}
+	if got := fixture.Assertions[2].NodeIDs; len(got) != 1 || got[0] != "fact_b" || fixture.Assertions[2].BlockType != "causal_context" || fixture.Assertions[2].SourceRefCount != 1 {
+		t.Fatalf("selected_chain assertion = %#v", fixture.Assertions[2])
+	}
+}
+
+func TestPhase5FMetricMath(t *testing.T) {
+	selected := []string{"a", "b", "c"}
+	relevant := []string{"a", "c", "d"}
+
+	if got := recallAtK(selected, relevant, 2); got != float64(1)/float64(3) {
+		t.Fatalf("recallAtK = %.3f, want %.3f", got, float64(1)/float64(3))
+	}
+	if got := recallAtK(selected, relevant, 0); got != float64(2)/float64(3) {
+		t.Fatalf("recallAtK all = %.3f, want %.3f", got, float64(2)/float64(3))
+	}
+	if got := precisionAtK(selected, relevant, 2); got != 0.5 {
+		t.Fatalf("precisionAtK = %.3f, want 0.500", got)
+	}
+}
+
+func TestPhase5FMetricAssertionsUseOnlySelectedItems(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: PHASE5F_METRIC_SELECTED_ONLY
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 早会导致焦虑，咖啡帮助恢复。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: selected
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会
+        content_summary: 用户不喜欢早会。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: related
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喝咖啡恢复精力。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.1
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 早会
+      policy:
+        final_memory_count: 1
+assertions:
+  - type: selected_recall_at_k
+    step: retrieve
+    relevant_node_ids: [$selected.fact_id, $related.fact_id]
+    at: 8
+    min: 0.5
+  - type: context_precision_at_k
+    step: retrieve
+    relevant_node_ids: [$selected.fact_id]
+    at: 8
+    min: 1.0
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids: [$related.fact_id]
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture: %s", report.Error())
+	}
+}
+
+func TestPhase5FMetricAssertionFailureMessage(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: PHASE5F_METRIC_FAILURE
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 早会和咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: selected
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会
+        content_summary: 用户不喜欢早会。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: missing
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.1
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 早会
+      policy:
+        final_memory_count: 1
+assertions:
+  - type: selected_recall_at_k
+    step: retrieve
+    relevant_node_ids: [$selected.fact_id, $missing.fact_id]
+    at: 8
+    min: 1.0
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if !report.Failed() {
+		t.Fatal("report passed, want recall assertion failure")
+	}
+	errText := report.Error()
+	if !strings.Contains(errText, "PHASE5F_METRIC_FAILURE") ||
+		!strings.Contains(errText, "recall@1 >= 1.000") ||
+		!strings.Contains(errText, "selected=") ||
+		!strings.Contains(errText, "relevant=") {
+		t.Fatalf("report error = %q, want case id, recall threshold, selected and relevant ids", errText)
+	}
+}
+
+func TestForbiddenRecallZeroChecksSourceRefs(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: FORBIDDEN_SOURCE_REF
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_forbidden
+      session_id: s1
+      content: 用户喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep_forbidden]
+        confidence: explicit
+        importance: 1.0
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 咖啡
+      policy:
+        final_memory_count: 1
+assertions:
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids: [ep_forbidden]
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if !report.Failed() {
+		t.Fatal("report passed, want source ref forbidden recall failure")
+	}
+	if !strings.Contains(report.Error(), "source_ref:ep_forbidden") {
+		t.Fatalf("report error = %q, want forbidden source ref id", report.Error())
+	}
+}
+
+func TestEvalRunnerGraphActivationStubFeedsRetrieveDiagnostics(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: GRAPH_ACTIVATION_STUB
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡，早会会让我焦虑。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: seed_fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: graph_fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会
+        content_summary: 用户不喜欢早会。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.7
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+        - node_id: $graph_fact.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+          score: 0.95
+    graph_activation_stub:
+      candidates:
+        - node_id: $graph_fact.fact_id
+          node_type: fact
+          score: 0.88
+          source: graph_activation
+          rank: 1
+          path_node_ids: [$seed_fact.fact_id, $graph_fact.fact_id]
+          path_link_types: [CAUSED_BY]
+    retrieve:
+      session_id: s1
+      query_text: no-sqlite-match
+      policy:
+        use_mirror: true
+assertions:
+  - type: graph_activation_candidate
+    step: retrieve
+    node_id: $graph_fact.fact_id
+    source: graph_activation
+    rank: 1
+  - type: memory_contains
+    step: retrieve
+    node_id: $graph_fact.fact_id
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture: %s", report.Error())
+	}
+}
+
+func TestEvalRunnerGraphActivationStubFallbackStatuses(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: GRAPH_ACTIVATION_STUB_FALLBACKS
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: seed_fact
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户喜欢咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.8
+  - id: unavailable
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+          score: 0.95
+    graph_activation_stub:
+      unavailable: true
+    retrieve:
+      query_text: nosqlitematch
+      policy:
+        use_mirror: true
+  - id: degraded
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+          score: 0.95
+    graph_activation_stub:
+      degraded: true
+      fallback_reason: eval forced degradation
+      candidates:
+        - node_id: $seed_fact.fact_id
+          node_type: fact
+          score: 0.50
+    retrieve:
+      query_text: nosqlitematch
+      policy:
+        use_mirror: true
+assertions:
+  - type: graph_activation_candidate
+    step: unavailable
+    status: sidecar_error
+  - type: memory_contains
+    step: unavailable
+    node_id: $seed_fact.fact_id
+  - type: graph_activation_candidate
+    step: degraded
+    status: sidecar_degraded
+  - type: memory_contains
+    step: degraded
+    node_id: $seed_fact.fact_id
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture: %s", report.Error())
+	}
+}
+
 func TestRunnerReportsBadReferenceWithCaseID(t *testing.T) {
 	fixture, err := LoadFixtureBytes([]byte(`
 case_id: BAD_REF

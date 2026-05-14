@@ -1,0 +1,73 @@
+case_id: P5F003_mmr_duplicate_suppression
+description: Phase 5F verifies MMR duplicate suppression with both selected result and access event evidence.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我讨厌早会，但咖啡能帮我恢复精力。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: meeting_primary
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会A
+        content_summary: 用户讨厌早会，因为早会让他焦虑。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: meeting_duplicate
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会B
+        content_summary: 用户讨厌早会，因为早会让他焦虑。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.5
+  - id: coffee_distinct
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 咖啡
+        content_summary: 用户会在早会后喝咖啡恢复精力。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.78
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 早会
+      policy:
+        final_memory_count: 2
+assertions:
+  - type: memory_contains
+    step: retrieve
+    node_id: $meeting_primary.fact_id
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $meeting_duplicate.fact_id
+  - type: memory_contains
+    step: retrieve
+    node_id: $coffee_distinct.fact_id
+  - type: suppression_event
+    step: retrieve
+    node_id: $meeting_duplicate.fact_id
+    suppression_reason: mmr_duplicate

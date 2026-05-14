@@ -1,0 +1,106 @@
+case_id: P5F007_premise_workflow_gotcha
+description: Phase 5F keeps premise checks from overstating unsupported claims and routes workflow/gotcha through existing task-relevant evidence.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+    - id: s2
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 部署 workflow python runtime 的坑是先检查 Python runtime 路径，这个坑重复出现过。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 我其实喜欢上班时的结对调试。
+      occurred_at: "2026-04-29T09:00:00+08:00"
+steps:
+  - id: workflow
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: workflow python runtime 坑
+        content_summary: 部署 workflow python runtime 的坑是先检查 Python runtime 路径。
+        fact_type: task_relevant_context
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.95
+  - id: unsupported_premise
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我是不是一直都讨厌上班
+      policy:
+        final_memory_count: 4
+  - id: counterexample
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 上班时的结对调试
+        content_summary: 用户喜欢上班时的结对调试。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.9
+  - id: premise_counterexample
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我是不是一直都讨厌上班
+      policy:
+        final_memory_count: 4
+  - id: gotcha
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $workflow.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $workflow.fact_id
+          node_type: fact
+          score: 0.99
+          source: eval_gotcha
+          rank: 1
+    retrieve:
+      session_id: s2
+      query_text: 部署 workflow python runtime 的坑是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+assertions:
+  - type: unsupported_premise_not_asserted
+    step: unsupported_premise
+    forbidden_contains:
+      - 一直都讨厌上班
+  - type: query_analysis
+    step: unsupported_premise
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    step: premise_counterexample
+    forbidden_contains:
+      - 一直都讨厌上班
+    node_ids:
+      - $counterexample.fact_id
+  - type: query_analysis
+    step: premise_counterexample
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: block_contains
+    step: gotcha
+    block_type: experience_context
+    node_id: $workflow.fact_id
+  - type: query_analysis
+    step: gotcha
+    memory_ability: gotcha
+    evidence_need: gotcha_note

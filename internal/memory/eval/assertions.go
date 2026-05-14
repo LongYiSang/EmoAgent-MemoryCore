@@ -21,6 +21,26 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertQueryAnalysis(assertion)
 	case "anchor_fusion":
 		return s.assertAnchorFusion(assertion)
+	case "selected_recall_at_k":
+		return s.assertSelectedRecallAtK(assertion)
+	case "context_precision_at_k":
+		return s.assertContextPrecisionAtK(assertion)
+	case "forbidden_recall_zero":
+		return s.assertForbiddenRecallZero(assertion)
+	case "block_contains":
+		return s.assertBlockContains(assertion, true)
+	case "block_not_contains":
+		return s.assertBlockContains(assertion, false)
+	case "selected_chain_correct":
+		return s.assertSelectedChainCorrect(assertion)
+	case "suppression_event":
+		return s.assertSuppressionEvent(ctx, assertion)
+	case "graph_activation_candidate":
+		return s.assertGraphActivationCandidate(assertion)
+	case "unsupported_premise_not_asserted":
+		return s.assertUnsupportedPremiseNotAsserted(assertion)
+	case "ablation_improves":
+		return s.assertAblationImproves(assertion)
 	case "fact_count":
 		return s.assertFactCount(ctx, assertion)
 	case "fact_column":
@@ -176,6 +196,282 @@ func (s *runState) assertAnchorFusion(assertion Assertion) error {
 	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: nodeType + " " + nodeID + " anchor seed", Actual: anchorSeedsDebug(diagnostics)}
 }
 
+func (s *runState) assertSelectedRecallAtK(assertion Assertion) error {
+	selected, err := s.selectedNodeIDs(assertion)
+	if err != nil {
+		return err
+	}
+	relevant, err := s.resolveStrings(assertion.RelevantNodeIDs)
+	if err != nil {
+		return err
+	}
+	recall := recallAtK(selected, relevant, assertion.At)
+	minimum := assertion.Min
+	if recall < minimum {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("recall@%d >= %.3f", normalizedAt(assertion.At, len(selected)), minimum), Actual: fmt.Sprintf("recall=%.3f selected=%s relevant=%s", recall, strings.Join(selected, ","), strings.Join(relevant, ","))}
+	}
+	return nil
+}
+
+func (s *runState) assertContextPrecisionAtK(assertion Assertion) error {
+	selected, err := s.selectedNodeIDs(assertion)
+	if err != nil {
+		return err
+	}
+	relevant, err := s.resolveStrings(assertion.RelevantNodeIDs)
+	if err != nil {
+		return err
+	}
+	precision := precisionAtK(selected, relevant, assertion.At)
+	minimum := assertion.Min
+	if precision < minimum {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("precision@%d >= %.3f", normalizedAt(assertion.At, len(selected)), minimum), Actual: fmt.Sprintf("precision=%.3f selected=%s relevant=%s", precision, strings.Join(selected, ","), strings.Join(relevant, ","))}
+	}
+	return nil
+}
+
+func (s *runState) assertForbiddenRecallZero(assertion Assertion) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	forbidden, err := s.resolveStrings(assertion.ForbiddenNodeIDs)
+	if err != nil {
+		return err
+	}
+	forbiddenSet := stringSet(forbidden)
+	var present []string
+	for _, block := range result.Blocks {
+		for _, item := range block.Items {
+			if _, ok := forbiddenSet[item.NodeID]; ok {
+				present = append(present, item.NodeID)
+			}
+			for _, related := range item.RelatedFacts {
+				if _, ok := forbiddenSet[related.NodeID]; ok {
+					present = append(present, related.NodeID)
+				}
+			}
+			for _, source := range item.SourceRefs {
+				if _, ok := forbiddenSet[source.EpisodeID]; ok {
+					present = append(present, "source_ref:"+source.EpisodeID)
+				}
+			}
+		}
+	}
+	if len(present) > 0 {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "forbidden nodes and source refs absent from selected context", Actual: strings.Join(present, ",")}
+	}
+	return nil
+}
+
+func (s *runState) assertBlockContains(assertion Assertion, wantPresent bool) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	for _, block := range result.Blocks {
+		if assertion.BlockType != "" && block.BlockType != assertion.BlockType {
+			continue
+		}
+		for _, item := range block.Items {
+			if item.NodeID != nodeID {
+				continue
+			}
+			if !wantPresent {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "node " + nodeID + " absent from block " + assertion.BlockType, Actual: "present"}
+			}
+			if assertion.Summary != "" && item.Summary != assertion.Summary {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "summary=" + assertion.Summary, Actual: "summary=" + item.Summary}
+			}
+			return nil
+		}
+	}
+	if wantPresent {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "node " + nodeID + " present in block " + assertion.BlockType, Actual: memoryItemsDebug(result)}
+	}
+	return nil
+}
+
+func (s *runState) assertSelectedChainCorrect(assertion Assertion) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	item, ok := findMemoryItem(result, assertion.BlockType, nodeID)
+	if !ok {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "selected node " + nodeID + " in block " + assertion.BlockType, Actual: memoryItemsDebug(result)}
+	}
+	if assertion.HistoricalStatus != "" && item.HistoricalStatus != assertion.HistoricalStatus {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "historical_status=" + assertion.HistoricalStatus, Actual: "historical_status=" + item.HistoricalStatus}
+	}
+	if assertion.SourceRefCount > 0 && len(item.SourceRefs) != assertion.SourceRefCount {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("source_ref_count=%d", assertion.SourceRefCount), Actual: fmt.Sprintf("source_ref_count=%d", len(item.SourceRefs))}
+	}
+	relatedIDs, err := s.resolveStrings(assertion.NodeIDs)
+	if err != nil {
+		return err
+	}
+	for _, relatedID := range relatedIDs {
+		if !hasRelatedFact(item, relatedID, assertion.LinkType, assertion.Direction) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: relatedExpectation(relatedID, assertion.LinkType, assertion.Direction), Actual: relatedFactsDebug(item.RelatedFacts)}
+		}
+	}
+	return nil
+}
+
+func (s *runState) assertSuppressionEvent(ctx context.Context, assertion Assertion) error {
+	nodeID, err := s.resolveString(assertion.NodeID)
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT COALESCE(context_block_type, ''), COALESCE(score_breakdown_json, '')
+FROM memory_access_events
+WHERE persona_id = ?
+  AND node_type = ?
+  AND node_id = ?
+  AND access_type = 'suppressed'`, s.persona, defaultString(assertion.NodeType, "fact"), nodeID)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s access events: %w", s.caseID, assertion.Type, err)
+	}
+	defer rows.Close()
+	wantReason := assertion.SuppressionReason
+	for rows.Next() {
+		var blockType string
+		var breakdown string
+		if err := rows.Scan(&blockType, &breakdown); err != nil {
+			return fmt.Errorf("case %s assertion %s access event scan: %w", s.caseID, assertion.Type, err)
+		}
+		if assertion.BlockType != "" && blockType != assertion.BlockType {
+			continue
+		}
+		if wantReason == "" || strings.Contains(breakdown, `"suppression_reason":"`+wantReason+`"`) {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("case %s assertion %s access events: %w", s.caseID, assertion.Type, err)
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "suppressed access event reason=" + wantReason, Actual: "missing"}
+}
+
+func (s *runState) assertGraphActivationCandidate(assertion Assertion) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	diagnostics := result.GraphActivation
+	if diagnostics == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "graph activation diagnostics present", Actual: "nil"}
+	}
+	if assertion.Status != "" && diagnostics.Status != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "status=" + assertion.Status, Actual: "status=" + diagnostics.Status}
+	}
+	statusOnly := assertion.NodeID == "" &&
+		assertion.NodeType == "" &&
+		assertion.Source == "" &&
+		assertion.Rank == 0 &&
+		assertion.SuppressionReason == ""
+	if statusOnly {
+		return nil
+	}
+	nodeID := assertion.NodeID
+	if nodeID != "" {
+		resolved, err := s.resolveString(nodeID)
+		if err != nil {
+			return err
+		}
+		nodeID = resolved
+	}
+	for _, candidate := range diagnostics.Candidates {
+		if nodeID != "" && candidate.SQLiteNodeID != nodeID {
+			continue
+		}
+		if assertion.NodeType != "" && candidate.NodeType != assertion.NodeType {
+			continue
+		}
+		if assertion.Source != "" && candidate.Source != assertion.Source {
+			continue
+		}
+		if assertion.Rank > 0 && candidate.Rank != assertion.Rank {
+			continue
+		}
+		if assertion.SuppressionReason != "" && candidate.DropReason != assertion.SuppressionReason {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "drop_reason=" + assertion.SuppressionReason, Actual: "drop_reason=" + candidate.DropReason}
+		}
+		return nil
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "graph activation candidate " + nodeID, Actual: graphCandidatesDebug(diagnostics)}
+}
+
+func (s *runState) assertUnsupportedPremiseNotAsserted(assertion Assertion) error {
+	if err := s.assertForbiddenRecallZero(assertion); err != nil {
+		return err
+	}
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	for _, block := range result.Blocks {
+		for _, item := range block.Items {
+			for _, forbidden := range assertion.ForbiddenContains {
+				if strings.Contains(item.Summary, forbidden) || strings.Contains(item.UsageGuidance, forbidden) {
+					return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "context does not assert unsupported premise " + forbidden, Actual: item.NodeID + ":" + item.Summary}
+				}
+			}
+		}
+	}
+	expected, err := s.resolveStrings(assertion.NodeIDs)
+	if err != nil {
+		return err
+	}
+	selected := stringSet(flattenSelectedNodeIDs(result))
+	for _, nodeID := range expected {
+		if _, ok := selected[nodeID]; !ok {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "counterexample node " + nodeID + " selected", Actual: memoryItemsDebug(result)}
+		}
+	}
+	return nil
+}
+
+func (s *runState) assertAblationImproves(assertion Assertion) error {
+	selected, err := s.selectedNodeIDs(assertion)
+	if err != nil {
+		return err
+	}
+	baselineAssertion := assertion
+	baselineAssertion.Step = assertion.CompareStep
+	baseline, err := s.selectedNodeIDs(baselineAssertion)
+	if err != nil {
+		return err
+	}
+	relevant, err := s.resolveStrings(assertion.RelevantNodeIDs)
+	if err != nil {
+		return err
+	}
+	actual := recallAtK(selected, relevant, assertion.At)
+	previous := recallAtK(baseline, relevant, assertion.At)
+	improvement := actual - previous
+	if assertion.Min == 0 {
+		if improvement <= 0 {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("recall improvement > 0 over %s", assertion.CompareStep), Actual: fmt.Sprintf("improvement=%.3f current=%.3f baseline=%.3f", improvement, actual, previous)}
+		}
+		return nil
+	}
+	if improvement < assertion.Min {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("recall improvement >= %.3f over %s", assertion.Min, assertion.CompareStep), Actual: fmt.Sprintf("improvement=%.3f current=%.3f baseline=%.3f", improvement, actual, previous)}
+	}
+	return nil
+}
+
 func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) error {
 	query := `SELECT COUNT(*) FROM facts WHERE persona_id = ?`
 	args := []any{s.persona}
@@ -192,6 +488,173 @@ func (s *runState) assertFactCount(ctx context.Context, assertion Assertion) err
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "fact_count=" + assertion.Equals, Actual: "fact_count=" + actual}
 	}
 	return nil
+}
+
+func (s *runState) retrievalResult(assertion Assertion) (*memorycore.MemoryContext, error) {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Retrieval == nil {
+		return nil, AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "retrieve step " + assertion.Step, Actual: "missing"}
+	}
+	return result.Retrieval, nil
+}
+
+func (s *runState) selectedNodeIDs(assertion Assertion) ([]string, error) {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return nil, err
+	}
+	return flattenSelectedNodeIDs(result), nil
+}
+
+func (s *runState) resolveStrings(values []string) ([]string, error) {
+	resolved := make([]string, 0, len(values))
+	for _, value := range values {
+		item, err := s.resolveString(value)
+		if err != nil {
+			return nil, err
+		}
+		if item != "" {
+			resolved = append(resolved, item)
+		}
+	}
+	return resolved, nil
+}
+
+func flattenSelectedNodeIDs(context *memorycore.MemoryContext) []string {
+	if context == nil {
+		return nil
+	}
+	var ids []string
+	for _, block := range context.Blocks {
+		for _, item := range block.Items {
+			ids = append(ids, item.NodeID)
+		}
+	}
+	return ids
+}
+
+func recallAtK(selected []string, relevant []string, at int) float64 {
+	if len(relevant) == 0 {
+		return 1
+	}
+	selected = limitStrings(selected, at)
+	selectedSet := stringSet(selected)
+	hits := 0
+	for _, nodeID := range relevant {
+		if _, ok := selectedSet[nodeID]; ok {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(relevant))
+}
+
+func precisionAtK(selected []string, relevant []string, at int) float64 {
+	selected = limitStrings(selected, at)
+	if len(selected) == 0 {
+		if len(relevant) == 0 {
+			return 1
+		}
+		return 0
+	}
+	relevantSet := stringSet(relevant)
+	hits := 0
+	for _, nodeID := range selected {
+		if _, ok := relevantSet[nodeID]; ok {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(selected))
+}
+
+func limitStrings(values []string, at int) []string {
+	if at <= 0 || at > len(values) {
+		return values
+	}
+	return values[:at]
+}
+
+func normalizedAt(at int, length int) int {
+	if at <= 0 || at > length {
+		return length
+	}
+	return at
+}
+
+func stringSet(values []string) map[string]struct{} {
+	set := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	return set
+}
+
+func findMemoryItem(context *memorycore.MemoryContext, blockType string, nodeID string) (memorycore.MemoryContextItem, bool) {
+	if context == nil {
+		return memorycore.MemoryContextItem{}, false
+	}
+	for _, block := range context.Blocks {
+		if blockType != "" && block.BlockType != blockType {
+			continue
+		}
+		for _, item := range block.Items {
+			if item.NodeID == nodeID {
+				return item, true
+			}
+		}
+	}
+	return memorycore.MemoryContextItem{}, false
+}
+
+func hasRelatedFact(item memorycore.MemoryContextItem, nodeID string, linkType string, direction string) bool {
+	for _, related := range item.RelatedFacts {
+		if related.NodeID != nodeID {
+			continue
+		}
+		if linkType != "" && related.LinkType != linkType {
+			continue
+		}
+		if direction != "" && related.Direction != direction {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func relatedExpectation(nodeID string, linkType string, direction string) string {
+	parts := []string{"related_node=" + nodeID}
+	if linkType != "" {
+		parts = append(parts, "link_type="+linkType)
+	}
+	if direction != "" {
+		parts = append(parts, "direction="+direction)
+	}
+	return strings.Join(parts, " ")
+}
+
+func relatedFactsDebug(items []memorycore.MemoryRelatedFactRef) string {
+	if len(items) == 0 {
+		return "no related facts"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s/%s/%s/%s", item.NodeID, item.LinkType, item.Direction, item.HistoricalStatus))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func graphCandidatesDebug(diagnostics *memorycore.GraphActivationDiagnostics) string {
+	if diagnostics == nil || len(diagnostics.Candidates) == 0 {
+		return "no graph activation candidates"
+	}
+	parts := make([]string, 0, len(diagnostics.Candidates))
+	for _, candidate := range diagnostics.Candidates {
+		parts = append(parts, fmt.Sprintf("%s/%s#%d drop=%s", candidate.NodeType, candidate.SQLiteNodeID, candidate.Rank, candidate.DropReason))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func sameStringSet(actual []string, expected []string) bool {

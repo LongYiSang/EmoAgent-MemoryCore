@@ -83,6 +83,7 @@ type Step struct {
 	MirrorSync    *MirrorSyncStep     `yaml:"mirror_sync"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
+	GraphStub     *GraphStubSettings  `yaml:"graph_activation_stub"`
 }
 
 type ConsolidateStep struct {
@@ -223,12 +224,47 @@ type FactOverride struct {
 }
 
 type MirrorStubSettings struct {
-	IndexMappedNodeID string  `yaml:"index_mapped_node_id"`
-	IndexMappedType   string  `yaml:"index_mapped_type"`
-	CandidateNodeID   string  `yaml:"candidate_node_id"`
-	CandidateNodeType string  `yaml:"candidate_node_type"`
-	CandidateScore    float64 `yaml:"candidate_score"`
-	Unavailable       bool    `yaml:"unavailable"`
+	IndexMappedNodeID string            `yaml:"index_mapped_node_id"`
+	IndexMappedType   string            `yaml:"index_mapped_type"`
+	IndexMappedNodes  []MirrorMapStub   `yaml:"index_mapped_nodes"`
+	CandidateNodeID   string            `yaml:"candidate_node_id"`
+	CandidateNodeType string            `yaml:"candidate_node_type"`
+	CandidateScore    float64           `yaml:"candidate_score"`
+	Candidates        []MirrorCandidate `yaml:"candidates"`
+	Unavailable       bool              `yaml:"unavailable"`
+}
+
+type MirrorMapStub struct {
+	NodeID   string `yaml:"node_id"`
+	NodeType string `yaml:"node_type"`
+}
+
+type MirrorCandidate struct {
+	NodeID        string  `yaml:"node_id"`
+	NodeType      string  `yaml:"node_type"`
+	TriviumNodeID int64   `yaml:"trivium_node_id"`
+	Score         float64 `yaml:"score"`
+	Source        string  `yaml:"source"`
+	Rank          int     `yaml:"rank"`
+}
+
+type GraphStubSettings struct {
+	Candidates     []GraphCandidateStub `yaml:"candidates"`
+	Unavailable    bool                 `yaml:"unavailable"`
+	Degraded       bool                 `yaml:"degraded"`
+	FallbackReason string               `yaml:"fallback_reason"`
+}
+
+type GraphCandidateStub struct {
+	NodeID             string   `yaml:"node_id"`
+	NodeType           string   `yaml:"node_type"`
+	TriviumNodeID      int64    `yaml:"trivium_node_id"`
+	Score              float64  `yaml:"score"`
+	Source             string   `yaml:"source"`
+	Rank               int      `yaml:"rank"`
+	PathNodeIDs        []string `yaml:"path_node_ids"`
+	PathTriviumNodeIDs []int64  `yaml:"path_trivium_node_ids"`
+	PathLinkTypes      []string `yaml:"path_link_types"`
 }
 
 type Assertion struct {
@@ -237,6 +273,10 @@ type Assertion struct {
 	Step                  string   `yaml:"step"`
 	NodeID                string   `yaml:"node_id"`
 	NodeType              string   `yaml:"node_type"`
+	NodeIDs               []string `yaml:"node_ids"`
+	RelevantNodeIDs       []string `yaml:"relevant_node_ids"`
+	ForbiddenNodeIDs      []string `yaml:"forbidden_node_ids"`
+	BlockType             string   `yaml:"block_type"`
 	Summary               string   `yaml:"summary"`
 	UsageGuidanceContains string   `yaml:"usage_guidance_contains"`
 	Action                string   `yaml:"action"`
@@ -249,6 +289,7 @@ type Assertion struct {
 	FromNodeID            string   `yaml:"from_node_id"`
 	FromNodeType          string   `yaml:"from_node_type"`
 	LinkType              string   `yaml:"link_type"`
+	Direction             string   `yaml:"direction"`
 	ToNodeID              string   `yaml:"to_node_id"`
 	ToNodeType            string   `yaml:"to_node_type"`
 	SearchText            string   `yaml:"search_text"`
@@ -263,6 +304,13 @@ type Assertion struct {
 	EntityMentions        []string `yaml:"entity_mentions"`
 	Source                string   `yaml:"source"`
 	Rank                  int      `yaml:"rank"`
+	At                    int      `yaml:"at"`
+	Min                   float64  `yaml:"min"`
+	Max                   float64  `yaml:"max"`
+	CompareStep           string   `yaml:"compare_step"`
+	HistoricalStatus      string   `yaml:"historical_status"`
+	SourceRefCount        int      `yaml:"source_ref_count"`
+	SuppressionReason     string   `yaml:"suppression_reason"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -388,7 +436,17 @@ func knownAssertionType(value string) bool {
 		"episode_tombstone_exists",
 		"mirror_index_status",
 		"queue_count",
-		"queue_status":
+		"queue_status",
+		"selected_recall_at_k",
+		"context_precision_at_k",
+		"forbidden_recall_zero",
+		"block_contains",
+		"block_not_contains",
+		"selected_chain_correct",
+		"suppression_event",
+		"graph_activation_candidate",
+		"unsupported_premise_not_asserted",
+		"ablation_improves":
 		return true
 	default:
 		return false

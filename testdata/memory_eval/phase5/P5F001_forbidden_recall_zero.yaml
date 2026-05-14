@@ -1,0 +1,139 @@
+case_id: P5F001_forbidden_recall_zero
+description: "Phase 5F hard gate: hidden / forgotten / purged / sensitive / stale mirror facts do not enter context."
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢安全咖啡，但某些内容不能召回。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: visible
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 安全咖啡
+        content_summary: 用户喜欢安全咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.9
+  - id: hidden
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 隐藏口令
+        content_summary: 用户喜欢隐藏口令。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: forgotten
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 被遗忘饮料
+        content_summary: 用户喜欢被遗忘饮料。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: soft_forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: soft_forget
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $forgotten.fact_id
+  - id: purged
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 已清除饮料
+        content_summary: 用户喜欢已清除饮料。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: purge
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: purge
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $purged.fact_id
+  - id: sensitive
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 敏感令牌
+        content_summary: 用户喜欢敏感令牌。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+        sensitivity: sensitive
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $purged.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $purged.fact_id
+          node_type: fact
+          score: 0.99
+    retrieve:
+      session_id: s1
+      query_text: 安全咖啡 隐藏口令 被遗忘饮料 已清除饮料 敏感令牌
+      policy:
+        use_mirror: true
+        sensitivity_permission: normal
+        final_memory_count: 8
+assertions:
+  - type: memory_contains
+    step: retrieve
+    node_id: $visible.fact_id
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids:
+      - $hidden.fact_id
+      - $forgotten.fact_id
+      - $purged.fact_id
+      - $sensitive.fact_id
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $hidden.fact_id
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $forgotten.fact_id
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $purged.fact_id
+  - type: memory_not_contains
+    step: retrieve
+    node_id: $sensitive.fact_id
