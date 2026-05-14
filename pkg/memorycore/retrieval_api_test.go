@@ -891,7 +891,7 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
-		QueryText: "咖啡",
+		QueryText: "咖啡 RAW_PROMPT_SECRET",
 		Policy: memorycore.RetrievalPolicy{
 			UseFTS:    true,
 			UseMirror: true,
@@ -903,8 +903,8 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 	if adapter.rerankCalls != 1 {
 		t.Fatalf("rerank calls = %d, want 1", adapter.rerankCalls)
 	}
-	if adapter.lastRerankRequest.QueryText != "咖啡" {
-		t.Fatalf("rerank query = %q", adapter.lastRerankRequest.QueryText)
+	if strings.Contains(adapter.lastRerankRequest.QueryText, "RAW_PROMPT_SECRET") || strings.Contains(adapter.lastRerankRequest.QueryText, "咖啡") {
+		t.Fatalf("rerank query leaked raw prompt text: %q", adapter.lastRerankRequest.QueryText)
 	}
 	if len(adapter.lastRerankRequest.Candidates) != 1 {
 		t.Fatalf("rerank candidates = %#v, want one safe candidate", adapter.lastRerankRequest.Candidates)

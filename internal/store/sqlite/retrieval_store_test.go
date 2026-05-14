@@ -662,6 +662,118 @@ func TestRetrievalRepositoryBuildRerankCandidatesUsesAuthorityFilteredScoredFact
 	}
 }
 
+func TestRetrievalRepositoryBuildRerankCandidatesCapsSafeCandidatesByPreliminaryScore(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	var graphCandidates []memsqlite.RetrievalActivationCandidate
+	for i := 0; i < 29; i++ {
+		suffix := strconv.Itoa(i)
+		if i < 10 {
+			suffix = "0" + suffix
+		}
+		factID := "fact_rerank_cap_high_" + suffix
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户提到 rerank cap high "+suffix+"。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(8100 + i),
+			Score:         0.90,
+			Source:        "graph_activation",
+			Rank:          i + 1,
+		})
+	}
+	for _, factID := range []string{"fact_rerank_cap_tie_a", "fact_rerank_cap_tie_b"} {
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户提到 rerank cap tie。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(8100 + len(graphCandidates)),
+			Score:         0.80,
+			Source:        "graph_activation",
+			Rank:          len(graphCandidates) + 1,
+		})
+	}
+	for _, factID := range []string{"fact_rerank_cap_low_a", "fact_rerank_cap_low_b"} {
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户提到 rerank cap low。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(8100 + len(graphCandidates)),
+			Score:         0.10,
+			Source:        "graph_activation",
+			Rank:          len(graphCandidates) + 1,
+		})
+	}
+	for _, blocked := range []struct {
+		factID string
+		column string
+		value  any
+	}{
+		{factID: "fact_rerank_cap_hidden", column: "visibility_status", value: string(core.VisibilityHidden)},
+		{factID: "fact_rerank_cap_sensitive", column: "sensitivity_level", value: string(core.SensitivitySensitive)},
+	} {
+		insertSearchFact(t, ctx, db.SQLDB(), blocked.factID, "用户提到 rerank cap blocked。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+blocked.factID, blocked.factID)
+		updateFactRetrievalColumn(t, db.SQLDB(), blocked.factID, blocked.column, blocked.value)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        blocked.factID,
+			TriviumNodeID: int64(8100 + len(graphCandidates)),
+			Score:         1.0,
+			Source:        "graph_activation",
+			Rank:          len(graphCandidates) + 1,
+		})
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET created_at = ?
+WHERE id LIKE 'fact_rerank_cap_%'`, fixedRetrievalNow().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("fix rerank cap fact timestamps: %v", err)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "graph-only-cap",
+		Policy: memsqlite.RetrievalPolicy{
+			SensitivityPermission: string(core.SensitivityNormal),
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, graphCandidates, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+
+	const wantSafeCandidates = 30
+	if len(safeCandidates) != wantSafeCandidates {
+		t.Fatalf("safe candidate count = %d, want %d", len(safeCandidates), wantSafeCandidates)
+	}
+	for i := 0; i < 29; i++ {
+		suffix := strconv.Itoa(i)
+		if i < 10 {
+			suffix = "0" + suffix
+		}
+		wantID := "fact_rerank_cap_high_" + suffix
+		if safeCandidates[i].NodeID != wantID {
+			t.Fatalf("safe candidate[%d] = %s, want %s", i, safeCandidates[i].NodeID, wantID)
+		}
+	}
+	if safeCandidates[29].NodeID != "fact_rerank_cap_tie_a" {
+		t.Fatalf("safe candidate[29] = %s, want fact_rerank_cap_tie_a", safeCandidates[29].NodeID)
+	}
+	for _, candidate := range safeCandidates {
+		switch candidate.NodeID {
+		case "fact_rerank_cap_tie_b", "fact_rerank_cap_low_a", "fact_rerank_cap_low_b", "fact_rerank_cap_hidden", "fact_rerank_cap_sensitive":
+			t.Fatalf("safe candidates included ineligible or overflow fact %s: %#v", candidate.NodeID, safeCandidates)
+		}
+	}
+}
+
 func TestRetrievalRepositoryRerankBoostAffectsOrderingAndBreakdownBeforeLifecycle(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)

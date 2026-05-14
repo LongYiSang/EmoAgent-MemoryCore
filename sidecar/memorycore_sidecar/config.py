@@ -18,10 +18,22 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_EMBEDDING_DIMENSIONS = 1024
 DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 30
 DEFAULT_EMBEDDING_ENCODING_FORMAT = "float"
+DEFAULT_RERANK_PROVIDER = "none"
+DEFAULT_RERANK_ENDPOINT_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+)
+DEFAULT_RERANK_API_KEY_ENV = "DASHSCOPE_API_KEY"
+DEFAULT_RERANK_MODEL = "qwen3-vl-rerank"
+DEFAULT_RERANK_TIMEOUT_SECONDS = 30
+DEFAULT_RERANK_TOP_N = 30
+DEFAULT_RERANK_INSTRUCT = (
+    "Retrieve semantically relevant safe memory summaries for the user's query."
+)
 _SIDECAR_PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 _VALID_DTYPES = {"f32", "f16", "u64"}
 _VALID_SYNC_MODES = {"full", "normal", "off"}
+_VALID_RERANK_PROVIDERS = {"none", "dashscope-vl"}
 _LOOPBACK_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -44,9 +56,21 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class RerankConfig:
+    provider: str
+    endpoint_url: str
+    api_key_env: str
+    model: str
+    timeout_seconds: int
+    top_n: int
+    instruct: str
+
+
+@dataclass(frozen=True)
 class SidecarConfig:
     trivium: TriviumConfig
     embedding: EmbeddingConfig
+    rerank: RerankConfig
 
 
 def load_config(
@@ -65,6 +89,7 @@ def load_config(
     env_values = os.environ if env is None else env
     trivium_data = _table(data, "trivium")
     embedding_data = _table(data, "embedding")
+    rerank_data = _table(data, "rerank")
 
     trivium_dir_value = _env_or_value(
         env_values, "MEMORYCORE_TRIVIUM_DIR", trivium_data, "dir", DEFAULT_TRIVIUM_DIR
@@ -167,6 +192,78 @@ def load_config(
                 ),
             ),
         ),
+        rerank=RerankConfig(
+            provider=_string(
+                "rerank.provider",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_PROVIDER",
+                    rerank_data,
+                    "provider",
+                    DEFAULT_RERANK_PROVIDER,
+                ),
+            ),
+            endpoint_url=_string(
+                "rerank.endpoint_url",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_ENDPOINT_URL",
+                    rerank_data,
+                    "endpoint_url",
+                    DEFAULT_RERANK_ENDPOINT_URL,
+                ),
+            ),
+            api_key_env=_string(
+                "rerank.api_key_env",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_API_KEY_ENV",
+                    rerank_data,
+                    "api_key_env",
+                    DEFAULT_RERANK_API_KEY_ENV,
+                ),
+            ),
+            model=_string(
+                "rerank.model",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_MODEL",
+                    rerank_data,
+                    "model",
+                    DEFAULT_RERANK_MODEL,
+                ),
+            ),
+            timeout_seconds=_positive_int(
+                "rerank.timeout_seconds",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_TIMEOUT_SECONDS",
+                    rerank_data,
+                    "timeout_seconds",
+                    DEFAULT_RERANK_TIMEOUT_SECONDS,
+                ),
+            ),
+            top_n=_positive_int(
+                "rerank.top_n",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_TOP_N",
+                    rerank_data,
+                    "top_n",
+                    DEFAULT_RERANK_TOP_N,
+                ),
+            ),
+            instruct=_string(
+                "rerank.instruct",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_RERANK_INSTRUCT",
+                    rerank_data,
+                    "instruct",
+                    DEFAULT_RERANK_INSTRUCT,
+                ),
+            ),
+        ),
     )
     _validate(config)
     return config
@@ -226,12 +323,19 @@ def _validate(config: SidecarConfig) -> None:
         raise ValueError("trivium.sync_mode must be one of full, normal, off")
     if config.embedding.provider != "openai-compatible":
         raise ValueError("embedding.provider must be openai-compatible")
-    _validate_embedding_base_url(config.embedding.base_url)
+    _validate_https_or_loopback_http_url(
+        "embedding.base_url", config.embedding.base_url
+    )
     if config.embedding.encoding_format != "float":
         raise ValueError("embedding.encoding_format must be float")
+    if config.rerank.provider not in _VALID_RERANK_PROVIDERS:
+        raise ValueError("rerank.provider must be one of none, dashscope-vl")
+    _validate_https_or_loopback_http_url(
+        "rerank.endpoint_url", config.rerank.endpoint_url
+    )
 
 
-def _validate_embedding_base_url(value: str) -> None:
+def _validate_https_or_loopback_http_url(name: str, value: str) -> None:
     parsed = urlparse(value)
     scheme = parsed.scheme.lower()
     hostname = parsed.hostname.lower() if parsed.hostname is not None else ""
@@ -239,6 +343,4 @@ def _validate_embedding_base_url(value: str) -> None:
         return
     if scheme == "http" and hostname in _LOOPBACK_HTTP_HOSTS:
         return
-    raise ValueError(
-        "embedding.base_url must use https unless it is loopback http"
-    )
+    raise ValueError(f"{name} must use https unless it is loopback http")

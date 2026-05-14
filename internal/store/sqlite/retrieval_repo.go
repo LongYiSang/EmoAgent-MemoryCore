@@ -35,6 +35,7 @@ const (
 	defaultDuplicateThreshold = 0.88
 	defaultMinFinalScore      = 0.20
 	rerankBoostWeight         = 0.08
+	defaultRerankTopN         = 30
 	maxRerankSafeSummaryRunes = 512
 )
 
@@ -580,11 +581,25 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 }
 
 func safeRerankCandidates(scored []scoredFact) []RerankCandidate {
-	result := make([]RerankCandidate, 0, len(scored))
+	safe := make([]scoredFact, 0, len(scored))
 	for _, candidate := range scored {
 		if candidate.Suppressed {
 			continue
 		}
+		safe = append(safe, candidate)
+	}
+	sort.Slice(safe, func(i, j int) bool {
+		if safe[i].Score == safe[j].Score {
+			return safe[i].Fact.ID < safe[j].Fact.ID
+		}
+		return safe[i].Score > safe[j].Score
+	})
+	if len(safe) > defaultRerankTopN {
+		safe = safe[:defaultRerankTopN]
+	}
+
+	result := make([]RerankCandidate, 0, len(safe))
+	for _, candidate := range safe {
 		result = append(result, RerankCandidate{
 			NodeID:       candidate.Fact.ID,
 			NodeType:     string(core.NodeTypeFact),

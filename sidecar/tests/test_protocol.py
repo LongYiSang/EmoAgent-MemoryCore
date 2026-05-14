@@ -1,7 +1,9 @@
 import json
+import tempfile
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -518,6 +520,62 @@ def test_server_health_and_mirror_operation_roundtrip():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_server_trivium_adapter_rerank_provider_none_returns_degraded():
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = Path(tmp) / "sidecar.toml"
+        config_path.write_text(
+            "[trivium]\n"
+            f"dir = '{(Path(tmp) / 'trivium').as_posix()}'\n"
+            "[embedding]\n"
+            "dimensions = 3\n"
+            "[rerank]\n"
+            "provider = 'none'\n",
+            encoding="utf-8",
+        )
+        adapter = create_adapter("trivium", config_path, env={})
+        server = create_server(("127.0.0.1", 0), adapter)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            rerank_response = urllib.request.urlopen(
+                urllib.request.Request(
+                    base_url + "/retrieval/rerank",
+                    data=json.dumps(
+                        {
+                            "schema_version": RERANK_REQUEST_SCHEMA_VERSION,
+                            "request_id": "rerank-none",
+                            "persona_id": "default",
+                            "query_text": "coffee",
+                            "candidates": [
+                                {
+                                    "node_id": "fact-1",
+                                    "node_type": "fact",
+                                    "safe_summary": "coffee safe text",
+                                }
+                            ],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=2,
+            )
+            rerank_body = json.load(rerank_response)
+            assert rerank_response.status == 200
+            assert rerank_body == {
+                "schema_version": RERANK_RESPONSE_SCHEMA_VERSION,
+                "request_id": "rerank-none",
+                "results": [],
+                "degraded": True,
+                "fallback_reason": "rerank_not_configured",
+            }
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 def test_server_rejects_bad_schema_with_http_400():

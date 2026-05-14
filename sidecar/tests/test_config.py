@@ -20,6 +20,19 @@ def test_load_config_without_file_uses_defaults_relative_to_sidecar_project(monk
     assert config.embedding.dimensions == 1024
     assert config.embedding.timeout_seconds == 30
     assert config.embedding.encoding_format == "float"
+    assert config.rerank.provider == "none"
+    assert (
+        config.rerank.endpoint_url
+        == "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    )
+    assert config.rerank.api_key_env == "DASHSCOPE_API_KEY"
+    assert config.rerank.model == "qwen3-vl-rerank"
+    assert config.rerank.timeout_seconds == 30
+    assert config.rerank.top_n == 30
+    assert (
+        config.rerank.instruct
+        == "Retrieve semantically relevant safe memory summaries for the user's query."
+    )
 
 
 def test_load_config_reads_example_defaults():
@@ -35,6 +48,19 @@ def test_load_config_reads_example_defaults():
     assert config.embedding.dimensions == 1024
     assert config.embedding.timeout_seconds == 30
     assert config.embedding.encoding_format == "float"
+    assert config.rerank.provider == "none"
+    assert (
+        config.rerank.endpoint_url
+        == "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    )
+    assert config.rerank.api_key_env == "DASHSCOPE_API_KEY"
+    assert config.rerank.model == "qwen3-vl-rerank"
+    assert config.rerank.timeout_seconds == 30
+    assert config.rerank.top_n == 30
+    assert (
+        config.rerank.instruct
+        == "Retrieve semantically relevant safe memory summaries for the user's query."
+    )
 
 
 def test_load_config_resolves_relative_trivium_dir_from_config_file(tmp_path):
@@ -65,6 +91,13 @@ def test_load_config_applies_environment_overrides(tmp_path):
         "MEMORYCORE_EMBEDDING_DIMENSIONS": "256",
         "MEMORYCORE_EMBEDDING_TIMEOUT_SECONDS": "45",
         "MEMORYCORE_EMBEDDING_ENCODING_FORMAT": "float",
+        "MEMORYCORE_RERANK_PROVIDER": "dashscope-vl",
+        "MEMORYCORE_RERANK_ENDPOINT_URL": "https://example.test/rerank",
+        "MEMORYCORE_RERANK_API_KEY_ENV": "RERANK_KEY",
+        "MEMORYCORE_RERANK_MODEL": "rerank-model",
+        "MEMORYCORE_RERANK_TIMEOUT_SECONDS": "12",
+        "MEMORYCORE_RERANK_TOP_N": "7",
+        "MEMORYCORE_RERANK_INSTRUCT": "Find safe memories.",
     }
 
     config = load_config(config_path, env=env)
@@ -79,6 +112,25 @@ def test_load_config_applies_environment_overrides(tmp_path):
     assert config.embedding.dimensions == 256
     assert config.embedding.timeout_seconds == 45
     assert config.embedding.encoding_format == "float"
+    assert config.rerank.provider == "dashscope-vl"
+    assert config.rerank.endpoint_url == "https://example.test/rerank"
+    assert config.rerank.api_key_env == "RERANK_KEY"
+    assert config.rerank.model == "rerank-model"
+    assert config.rerank.timeout_seconds == 12
+    assert config.rerank.top_n == 7
+    assert config.rerank.instruct == "Find safe memories."
+
+
+def test_load_config_does_not_support_rerank_return_documents_override(tmp_path):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text("[rerank]\nprovider = 'dashscope-vl'\n", encoding="utf-8")
+
+    config = load_config(
+        config_path,
+        env={"MEMORYCORE_RERANK_RETURN_DOCUMENTS": "true"},
+    )
+
+    assert not hasattr(config.rerank, "return_documents")
 
 
 @pytest.mark.parametrize(
@@ -96,6 +148,37 @@ def test_load_config_allows_loopback_http_embedding_base_url(tmp_path, base_url)
     config = load_config(config_path, env={})
 
     assert config.embedding.base_url == base_url
+
+
+@pytest.mark.parametrize(
+    "endpoint_url",
+    [
+        "http://localhost:8000/rerank",
+        "http://127.0.0.1:8000/rerank",
+        "http://[::1]:8000/rerank",
+    ],
+)
+def test_load_config_allows_loopback_http_rerank_endpoint_url(tmp_path, endpoint_url):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(
+        f"[rerank]\nprovider = 'dashscope-vl'\nendpoint_url = '{endpoint_url}'\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env={})
+
+    assert config.rerank.endpoint_url == endpoint_url
+
+
+def test_load_config_rejects_non_loopback_http_rerank_endpoint_url(tmp_path):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(
+        "[rerank]\nprovider = 'dashscope-vl'\nendpoint_url = 'http://example.test/rerank'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="rerank.endpoint_url"):
+        load_config(config_path, env={})
 
 
 def test_load_config_rejects_non_loopback_http_embedding_base_url(tmp_path):
@@ -122,6 +205,13 @@ def test_load_config_rejects_non_loopback_http_embedding_base_url(tmp_path):
         ("[embedding]\ndimensions = 0\n", "embedding.dimensions"),
         ("[embedding]\ntimeout_seconds = 0\n", "embedding.timeout_seconds"),
         ("[embedding]\nencoding_format = 'base64'\n", "embedding.encoding_format"),
+        ("[rerank]\nprovider = 'other'\n", "rerank.provider"),
+        ("[rerank]\nendpoint_url = ''\n", "rerank.endpoint_url"),
+        ("[rerank]\napi_key_env = ''\n", "rerank.api_key_env"),
+        ("[rerank]\nmodel = ''\n", "rerank.model"),
+        ("[rerank]\ntimeout_seconds = 0\n", "rerank.timeout_seconds"),
+        ("[rerank]\ntop_n = 0\n", "rerank.top_n"),
+        ("[rerank]\ninstruct = ''\n", "rerank.instruct"),
     ],
 )
 def test_load_config_rejects_invalid_values(tmp_path, body, message):

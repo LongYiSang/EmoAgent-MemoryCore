@@ -9,7 +9,12 @@ import pytest
 triviumdb = pytest.importorskip("triviumdb")
 
 from memorycore_sidecar.adapters.trivium import TriviumAdapter
-from memorycore_sidecar.config import EmbeddingConfig, SidecarConfig, TriviumConfig
+from memorycore_sidecar.config import (
+    EmbeddingConfig,
+    RerankConfig,
+    SidecarConfig,
+    TriviumConfig,
+)
 from memorycore_sidecar.embedding import FakeEmbeddingProvider
 
 
@@ -284,6 +289,15 @@ def _config(tmp_path: Path) -> SidecarConfig:
             dimensions=3,
             timeout_seconds=2,
             encoding_format="float",
+        ),
+        rerank=RerankConfig(
+            provider="none",
+            endpoint_url="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+            api_key_env="DASHSCOPE_API_KEY",
+            model="qwen3-vl-rerank",
+            timeout_seconds=30,
+            top_n=30,
+            instruct="Retrieve semantically relevant safe memory summaries for the user's query.",
         ),
     )
 

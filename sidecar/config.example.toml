@@ -11,3 +11,13 @@ model = "text-embedding-v4"
 dimensions = 1024
 timeout_seconds = 30
 encoding_format = "float"
+
+[rerank]
+provider = "none"
+endpoint_url = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3-vl-rerank"
+timeout_seconds = 30
+top_n = 30
+instruct = "Retrieve semantically relevant safe memory summaries for the user's query."
+# return_documents is fixed false by provider code for safety.

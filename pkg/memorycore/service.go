@@ -547,7 +547,7 @@ func (s *service) rerankCandidates(ctx context.Context, personaID string, prepar
 	}
 	result, err := rerankAdapter.Rerank(ctx, MirrorRerankRequest{
 		PersonaID:  personaID,
-		QueryText:  prepared.Query.Raw,
+		QueryText:  safeRerankQueryText(prepared.Query),
 		Candidates: rerankCandidatesFromStore(candidates),
 	})
 	if err != nil || result == nil {
@@ -563,6 +563,23 @@ func (s *service) rerankCandidates(ctx context.Context, personaID string, prepar
 	diagnostics.Status = "used"
 	diagnostics.ResultCount = len(result.Items)
 	return rerankItemsToStore(result.Items), diagnostics
+}
+
+func safeRerankQueryText(query memsqlite.QueryAnalysis) string {
+	parts := []string{
+		"memory_domain=" + string(query.MemoryDomain),
+		"memory_ability=" + string(query.MemoryAbility),
+		"evidence_need=" + string(query.EvidenceNeed),
+		"time_mode=" + string(query.TimeMode),
+	}
+	if len(query.Signals) > 0 {
+		signals := make([]string, 0, len(query.Signals))
+		for _, signal := range query.Signals {
+			signals = append(signals, string(signal))
+		}
+		parts = append(parts, "signals="+strings.Join(signals, ","))
+	}
+	return strings.Join(parts, " ")
 }
 
 func defaultMirrorActivationParams() MirrorActivationParams {

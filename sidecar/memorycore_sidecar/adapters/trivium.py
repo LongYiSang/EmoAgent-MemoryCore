@@ -31,6 +31,9 @@ class TriviumAdapter(MirrorAdapter):
             if embedding_provider is None
             else embedding_provider
         )
+        from memorycore_sidecar.rerank import build_rerank_provider
+
+        self.rerank_provider = build_rerank_provider(self.config.rerank)
         try:
             import triviumdb
         except ImportError as exc:
@@ -209,11 +212,24 @@ class TriviumAdapter(MirrorAdapter):
         return {"candidates": candidates, "degraded": False}
 
     def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "results": [],
-            "degraded": True,
-            "fallback_reason": "rerank_not_implemented",
-        }
+        provider = getattr(self, "rerank_provider", None)
+        if provider is None:
+            return {
+                "results": [],
+                "degraded": True,
+                "fallback_reason": "rerank_not_configured",
+            }
+        try:
+            return provider.rerank(
+                str(request["query_text"]),
+                list(request.get("candidates", [])),
+            )
+        except Exception:
+            return {
+                "results": [],
+                "degraded": True,
+                "fallback_reason": "rerank_provider_error",
+            }
 
     def close(self) -> None:
         with self._lock:

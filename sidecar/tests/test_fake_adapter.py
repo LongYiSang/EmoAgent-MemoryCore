@@ -160,8 +160,88 @@ def test_trivium_adapter_rerank_is_degraded_without_provider():
     assert result == {
         "results": [],
         "degraded": True,
-        "fallback_reason": "rerank_not_implemented",
+        "fallback_reason": "rerank_not_configured",
     }
+
+
+def test_trivium_adapter_rerank_delegates_to_configured_provider():
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def rerank(self, query_text, candidates):
+            self.requests.append((query_text, candidates))
+            return {
+                "results": [
+                    {
+                        "node_id": "fact-1",
+                        "node_type": "fact",
+                        "rerank_score": 0.8,
+                        "debug_reason": "provider",
+                    }
+                ],
+                "degraded": False,
+            }
+
+    provider = RecordingProvider()
+    adapter = object.__new__(TriviumAdapter)
+    adapter.rerank_provider = provider
+    request = {
+        "persona_id": "default",
+        "query_text": "coffee",
+        "candidates": [
+            {
+                "node_id": "fact-1",
+                "node_type": "fact",
+                "safe_summary": "coffee",
+            }
+        ],
+    }
+
+    result = adapter.rerank(request)
+
+    assert provider.requests == [("coffee", request["candidates"])]
+    assert result == {
+        "results": [
+            {
+                "node_id": "fact-1",
+                "node_type": "fact",
+                "rerank_score": 0.8,
+                "debug_reason": "provider",
+            }
+        ],
+        "degraded": False,
+    }
+
+
+def test_trivium_adapter_rerank_provider_error_degrades_without_error_detail():
+    class FailingProvider:
+        def rerank(self, query_text, candidates):
+            raise RuntimeError("secret document payload should not leak")
+
+    adapter = object.__new__(TriviumAdapter)
+    adapter.rerank_provider = FailingProvider()
+
+    result = adapter.rerank(
+        {
+            "persona_id": "default",
+            "query_text": "coffee",
+            "candidates": [
+                {
+                    "node_id": "fact-1",
+                    "node_type": "fact",
+                    "safe_summary": "coffee",
+                }
+            ],
+        }
+    )
+
+    assert result == {
+        "results": [],
+        "degraded": True,
+        "fallback_reason": "rerank_provider_error",
+    }
+    assert "secret" not in str(result)
 
 
 def test_fake_adapter_activate_graph_expands_weighted_edges_with_paths():
