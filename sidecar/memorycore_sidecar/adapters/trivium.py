@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from memorycore_sidecar.activation import ActivationEdge, activate_graph
 from memorycore_sidecar.config import SidecarConfig, load_config
 from memorycore_sidecar.embedding import (
     EmbeddingProvider,
@@ -170,6 +171,43 @@ class TriviumAdapter(MirrorAdapter):
             )
         return {"candidates": candidates, "degraded": False}
 
+    def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
+        persona_id = str(request["persona_id"])
+        with self._lock:
+            db = self._db_for_persona(persona_id)
+
+            def neighbors(trivium_node_id: int) -> list[ActivationEdge]:
+                if db.get(trivium_node_id) is None:
+                    return []
+                out: list[ActivationEdge] = []
+                for edge in db.get_edges(trivium_node_id):
+                    target_id = getattr(edge, "target_id", None)
+                    if not isinstance(target_id, int) or target_id <= 0:
+                        continue
+                    if db.get(target_id) is None:
+                        continue
+                    out.append(
+                        ActivationEdge(
+                            target_id=target_id,
+                            link_type=str(getattr(edge, "label", "related")),
+                            weight=_finite_edge_weight(getattr(edge, "weight", 1.0)),
+                        )
+                    )
+                return out
+
+            def degree(trivium_node_id: int) -> int:
+                if db.get(trivium_node_id) is None:
+                    return 0
+                return len(list(db.get_edges(trivium_node_id)))
+
+            candidates = activate_graph(
+                list(request.get("seeds", [])),
+                neighbors=neighbors,
+                degree=degree,
+                params=request.get("params", {}),
+            )
+        return {"candidates": candidates, "degraded": False}
+
     def close(self) -> None:
         with self._lock:
             for persona_id in list(self._dbs):
@@ -244,6 +282,16 @@ def _edge_weight(edge: dict[str, Any]) -> float:
     if not math.isfinite(weight):
         raise ValueError("edge weight must be a finite float")
     return weight
+
+
+def _finite_edge_weight(weight: Any) -> float:
+    try:
+        value = float(weight)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(value):
+        return 1.0
+    return value
 
 
 def _resolve_unlink(db: Any) -> Any | None:

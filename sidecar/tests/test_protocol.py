@@ -8,6 +8,8 @@ import pytest
 from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
 from memorycore_sidecar.config import SidecarConfig
 from memorycore_sidecar.protocol import (
+    ACTIVATION_REQUEST_SCHEMA_VERSION,
+    ACTIVATION_RESPONSE_SCHEMA_VERSION,
     CANDIDATE_REQUEST_SCHEMA_VERSION,
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
     CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION,
@@ -15,7 +17,9 @@ from memorycore_sidecar.protocol import (
     REQUEST_SCHEMA_VERSION,
     RESPONSE_SCHEMA_VERSION,
     ProtocolError,
+    build_activation_result,
     build_result,
+    parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
     parse_operation_request,
@@ -139,6 +143,109 @@ def test_parse_candidate_request_requires_query_text():
                 "persona_id": "default",
             }
         )
+
+
+def test_parse_activation_request_applies_defaults_and_keeps_anchor_debug_out_of_seeds():
+    request = parse_activation_request(
+        {
+            "schema_version": ACTIVATION_REQUEST_SCHEMA_VERSION,
+            "request_id": "act-1",
+            "persona_id": "default",
+            "seeds": [
+                {
+                    "trivium_node_id": 42,
+                    "sqlite_node_id": "fact-1",
+                    "node_type": "fact",
+                    "seed_energy": 0.75,
+                    "source_breakdown": [{"source": "sqlite_fts", "rank": 1}],
+                }
+            ],
+            "anchor_debug": [{"node_id": "fact-1", "source_breakdown": []}],
+        }
+    )
+
+    assert request["request_id"] == "act-1"
+    assert request["persona_id"] == "default"
+    assert request["seeds"] == [
+        {
+            "trivium_node_id": 42,
+            "sqlite_node_id": "fact-1",
+            "node_type": "fact",
+            "seed_energy": 0.75,
+        }
+    ]
+    assert request["params"]["max_hops"] == 2
+    assert request["params"]["hop_decay"] == 0.70
+    assert request["params"]["min_energy"] == 0.01
+    assert request["params"]["max_active_nodes"] == 80
+    assert request["params"]["hub_suppression_power"] == 0.50
+    assert request["params"]["include_paths"] is True
+
+
+def test_parse_activation_request_rejects_bad_seed():
+    with pytest.raises(ProtocolError, match="trivium_node_id"):
+        parse_activation_request(
+            {
+                "schema_version": ACTIVATION_REQUEST_SCHEMA_VERSION,
+                "request_id": "act-1",
+                "persona_id": "default",
+                "seeds": [
+                    {
+                        "trivium_node_id": 0,
+                        "sqlite_node_id": "fact-1",
+                        "node_type": "fact",
+                        "seed_energy": 0.5,
+                    }
+                ],
+            }
+        )
+
+
+def test_parse_activation_request_rejects_non_finite_seed_energy():
+    with pytest.raises(ProtocolError, match="seed_energy"):
+        parse_activation_request(
+            {
+                "schema_version": ACTIVATION_REQUEST_SCHEMA_VERSION,
+                "request_id": "act-1",
+                "persona_id": "default",
+                "seeds": [
+                    {
+                        "trivium_node_id": 42,
+                        "sqlite_node_id": "fact-1",
+                        "node_type": "fact",
+                        "seed_energy": float("nan"),
+                    }
+                ],
+            }
+        )
+
+
+def test_build_activation_result_uses_activation_schema():
+    result = build_activation_result(
+        "act-1",
+        candidates=[
+            {
+                "trivium_node_id": 42,
+                "score": 0.7,
+                "source": "graph_activation",
+                "rank": 1,
+            }
+        ],
+    )
+
+    assert result == {
+        "schema_version": ACTIVATION_RESPONSE_SCHEMA_VERSION,
+        "request_id": "act-1",
+        "candidates": [
+            {
+                "trivium_node_id": 42,
+                "score": 0.7,
+                "source": "graph_activation",
+                "rank": 1,
+            }
+        ],
+        "degraded": False,
+    }
 
 
 def test_server_health_and_mirror_operation_roundtrip():

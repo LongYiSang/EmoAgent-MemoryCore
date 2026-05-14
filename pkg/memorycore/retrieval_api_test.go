@@ -679,6 +679,126 @@ func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
 	requireNoMemoryItem(t, contextResult, fact.ID)
 }
 
+func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡，但早会让我焦虑。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	seed := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	related := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, seed.ID, 8101, "indexed")
+	insertMirrorMapForFact(t, db, related.ID, 8102, "indexed")
+	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+		{
+			TriviumNodeID: 8102,
+			Score:         0.77,
+			Source:        "graph_activation",
+			Rank:          1,
+			Paths: []memorycore.MirrorActivationPath{
+				{TriviumNodeIDs: []int64{8101, 8102}, LinkTypes: []string{"CAUSED_BY"}},
+			},
+		},
+	}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with graph activation: %v", err)
+	}
+	requireMemoryItem(t, contextResult, seed.ID, "用户喜欢咖啡。", "")
+	requireMemoryItem(t, contextResult, related.ID, "用户不喜欢早会。", "")
+	if adapter.activationCalls != 1 {
+		t.Fatalf("activation calls = %d, want 1", adapter.activationCalls)
+	}
+	if len(adapter.lastActivationRequest.Seeds) == 0 || adapter.lastActivationRequest.Seeds[0].TriviumNodeID != 8101 {
+		t.Fatalf("activation seeds = %#v, want mapped seed 8101", adapter.lastActivationRequest.Seeds)
+	}
+	if contextResult.GraphActivation == nil || contextResult.GraphActivation.Status != "used" {
+		t.Fatalf("graph activation diagnostics = %#v, want used", contextResult.GraphActivation)
+	}
+	requirePublicGraphActivationCandidate(t, contextResult.GraphActivation, related.ID, "graph_activation", 1)
+}
+
+func TestServiceRetrieveGraphActivationFallsBackWhenAdapterFails(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{activationErr: sql.ErrConnDone}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	seed := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, seed.ID, 8201, "indexed")
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with failing graph activation: %v", err)
+	}
+	requireMemoryItem(t, contextResult, seed.ID, "用户喜欢咖啡。", "")
+	if contextResult.GraphActivation == nil || contextResult.GraphActivation.Status != "sidecar_error" {
+		t.Fatalf("graph activation diagnostics = %#v, want sidecar_error", contextResult.GraphActivation)
+	}
+}
+
+func TestServiceRetrieveGraphActivationRedactsAuthorityDroppedCandidate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡，但早会让我焦虑。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	seed := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	hidden := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, seed.ID, 8301, "indexed")
+	insertMirrorMapForFact(t, db, hidden.ID, 8302, "indexed")
+	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityPurged)
+	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+		{TriviumNodeID: 8302, Score: 0.91, Source: "graph_activation", Rank: 1},
+	}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with graph activation authority drop: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, hidden.ID)
+	if contextResult.GraphActivation == nil || contextResult.GraphActivation.DroppedCandidateCount == 0 {
+		t.Fatalf("graph activation diagnostics = %#v, want dropped candidate", contextResult.GraphActivation)
+	}
+	for _, candidate := range contextResult.GraphActivation.Candidates {
+		if candidate.DropReason == "dropped_by_authority_filter" && candidate.SQLiteNodeID != "" {
+			t.Fatalf("authority-dropped graph activation leaked sqlite node id: %#v", candidate)
+		}
+	}
+}
+
 func TestServiceRetrieveUseMirrorFallsBackWhenPersonaMirrorStateNotReady(t *testing.T) {
 	for _, state := range []string{"rebuilding", "degraded"} {
 		t.Run(state, func(t *testing.T) {
@@ -811,10 +931,15 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 }
 
 type retrievalMirrorAdapter struct {
-	candidates []memorycore.MirrorCandidate
-	err        error
-	degraded   bool
-	calls      int
+	candidates            []memorycore.MirrorCandidate
+	activationCandidates  []memorycore.MirrorActivationCandidate
+	err                   error
+	activationErr         error
+	degraded              bool
+	activationDegraded    bool
+	calls                 int
+	activationCalls       int
+	lastActivationRequest memorycore.MirrorActivationRequest
 }
 
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
@@ -823,6 +948,18 @@ func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memoryc
 		return nil, a.err
 	}
 	return &memorycore.MirrorCandidateResult{Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded}, nil
+}
+
+func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+	a.activationCalls++
+	a.lastActivationRequest = req
+	if a.activationErr != nil {
+		return nil, a.activationErr
+	}
+	return &memorycore.MirrorActivationResult{
+		Candidates: append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
+		Degraded:   a.activationDegraded,
+	}, nil
 }
 
 func (a *retrievalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
@@ -930,6 +1067,20 @@ func requirePublicAnchorSeed(t *testing.T, diagnostics *memorycore.AnchorFusionD
 		t.Fatalf("seed %#v missing source=%s rank=%d", seed, source, rank)
 	}
 	t.Fatalf("anchor seed %s/%s not found in %#v", nodeType, nodeID, diagnostics)
+}
+
+func requirePublicGraphActivationCandidate(t *testing.T, diagnostics *memorycore.GraphActivationDiagnostics, nodeID string, source string, rank int) {
+	t.Helper()
+
+	for _, candidate := range diagnostics.Candidates {
+		if candidate.SQLiteNodeID == nodeID && candidate.Source == source && candidate.Rank == rank {
+			if candidate.Score <= 0 {
+				t.Fatalf("graph activation candidate %#v has non-positive score", candidate)
+			}
+			return
+		}
+	}
+	t.Fatalf("graph activation candidate %s source=%s rank=%d not found in %#v", nodeID, source, rank, diagnostics)
 }
 
 func hasQuerySignal(signals []memorycore.QuerySignal, want memorycore.QuerySignal) bool {

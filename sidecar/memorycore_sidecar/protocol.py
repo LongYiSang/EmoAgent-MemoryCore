@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,8 @@ CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION = "memory_mirror_clear_namespace.v0.1"
 CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION = "memory_mirror_clear_namespace_result.v0.1"
 CANDIDATE_REQUEST_SCHEMA_VERSION = "memory_mirror_candidate_request.v0.1"
 CANDIDATE_RESPONSE_SCHEMA_VERSION = "memory_mirror_candidates.v0.1"
+ACTIVATION_REQUEST_SCHEMA_VERSION = "memory_graph_activation_request.v0.1"
+ACTIVATION_RESPONSE_SCHEMA_VERSION = "memory_graph_activation_result.v0.1"
 
 SUPPORTED_OPERATIONS = frozenset(
     {"upsert_node", "delete_node", "upsert_edge", "delete_edge"}
@@ -139,6 +142,103 @@ def parse_candidate_request(data: Any) -> dict[str, Any]:
     }
 
 
+def parse_activation_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != ACTIVATION_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(f"schema_version must be {ACTIVATION_REQUEST_SCHEMA_VERSION}")
+    request_id = data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ProtocolError("request_id is required")
+    persona_id = data.get("persona_id")
+    if not isinstance(persona_id, str) or not persona_id.strip():
+        raise ProtocolError("persona_id is required")
+    seeds = data.get("seeds")
+    if not isinstance(seeds, list):
+        raise ProtocolError("seeds must be a JSON array")
+    parsed_seeds = [_parse_activation_seed(seed) for seed in seeds]
+    params = _parse_activation_params(data.get("params", {}))
+    return {
+        "request_id": request_id.strip(),
+        "persona_id": persona_id.strip(),
+        "seeds": parsed_seeds,
+        "params": params,
+        "anchor_debug": data.get("anchor_debug", []),
+    }
+
+
+def _parse_activation_seed(seed: Any) -> dict[str, Any]:
+    if not isinstance(seed, dict):
+        raise ProtocolError("activation seed must be a JSON object")
+    trivium_node_id = seed.get("trivium_node_id")
+    if not isinstance(trivium_node_id, int) or trivium_node_id <= 0:
+        raise ProtocolError("activation seed trivium_node_id must be a positive integer")
+    sqlite_node_id = seed.get("sqlite_node_id")
+    if not isinstance(sqlite_node_id, str) or not sqlite_node_id.strip():
+        raise ProtocolError("activation seed sqlite_node_id is required")
+    node_type = seed.get("node_type")
+    if not isinstance(node_type, str) or not node_type.strip():
+        raise ProtocolError("activation seed node_type is required")
+    seed_energy = seed.get("seed_energy")
+    if (
+        not isinstance(seed_energy, (int, float))
+        or not math.isfinite(float(seed_energy))
+        or seed_energy <= 0
+    ):
+        raise ProtocolError("activation seed seed_energy must be positive")
+    return {
+        "trivium_node_id": trivium_node_id,
+        "sqlite_node_id": sqlite_node_id.strip(),
+        "node_type": node_type.strip(),
+        "seed_energy": float(seed_energy),
+    }
+
+
+def _parse_activation_params(params: Any) -> dict[str, Any]:
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        raise ProtocolError("params must be a JSON object")
+    return {
+        "max_hops": _positive_int(params.get("max_hops"), 2),
+        "hop_decay": _positive_float(params.get("hop_decay"), 0.70),
+        "min_energy": _positive_float(params.get("min_energy"), 0.01),
+        "max_active_nodes": _positive_int(params.get("max_active_nodes"), 80),
+        "hub_suppression_power": _non_negative_float(
+            params.get("hub_suppression_power"), 0.50
+        ),
+        "include_paths": bool(params.get("include_paths", True)),
+        "include_provenance_edges": bool(params.get("include_provenance_edges", False)),
+    }
+
+
+def _positive_int(value: Any, default: int) -> int:
+    if not isinstance(value, int) or value <= 0:
+        return default
+    return value
+
+
+def _positive_float(value: Any, default: float) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value <= 0
+    ):
+        return default
+    return float(value)
+
+
+def _non_negative_float(value: Any, default: float) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        return default
+    return float(value)
+
+
 def build_result(operation_id: str, **fields: Any) -> dict[str, Any]:
     result = {
         "schema_version": RESPONSE_SCHEMA_VERSION,
@@ -174,6 +274,23 @@ def build_candidates_result(
 ) -> dict[str, Any]:
     result = {
         "schema_version": CANDIDATE_RESPONSE_SCHEMA_VERSION,
+        "request_id": request_id,
+        "candidates": candidates or [],
+        "degraded": degraded,
+    }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    return result
+
+
+def build_activation_result(
+    request_id: str,
+    candidates: list[dict[str, Any]] | None = None,
+    degraded: bool = False,
+    fallback_reason: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": ACTIVATION_RESPONSE_SCHEMA_VERSION,
         "request_id": request_id,
         "candidates": candidates or [],
         "degraded": degraded,

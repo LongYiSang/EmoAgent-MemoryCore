@@ -262,6 +262,105 @@ func TestSidecarClientFindCandidatesCapsAndSanitizesResponse(t *testing.T) {
 	}
 }
 
+func TestSidecarClientActivateGraph(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/activate" {
+			t.Fatalf("path = %s, want /retrieval/activate", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request["schema_version"] != "memory_graph_activation_request.v0.1" {
+			t.Fatalf("schema_version = %v", request["schema_version"])
+		}
+		if request["request_id"] == "" {
+			t.Fatalf("request_id is empty in request %#v", request)
+		}
+		seeds, ok := request["seeds"].([]any)
+		if !ok || len(seeds) != 1 {
+			t.Fatalf("seeds = %#v, want one seed", request["seeds"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_graph_activation_result.v0.1",
+			"request_id":     request["request_id"],
+			"candidates": []map[string]any{
+				{
+					"trivium_node_id": 42,
+					"score":           0.75,
+					"source":          "graph_activation",
+					"rank":            1,
+					"paths": []map[string]any{
+						{
+							"trivium_node_ids": []int{7, 42},
+							"link_types":       []string{"CAUSED_BY"},
+						},
+					},
+				},
+			},
+			"degraded": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.ActivateGraph(context.Background(), ActivationRequest{
+		PersonaID: "default",
+		Seeds: []ActivationSeed{
+			{TriviumNodeID: 7, SQLiteNodeID: "fact-seed", NodeType: "fact", SeedEnergy: 1.0},
+		},
+		Params: ActivationParams{MaxHops: 1, IncludePaths: true},
+	})
+	if err != nil {
+		t.Fatalf("activate graph: %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 0.75 || result.Candidates[0].Rank != 1 {
+		t.Fatalf("activation candidates = %#v", result.Candidates)
+	}
+	if len(result.Candidates[0].Paths) != 1 || len(result.Candidates[0].Paths[0].TriviumNodeIDs) != 2 {
+		t.Fatalf("activation paths = %#v", result.Candidates[0].Paths)
+	}
+}
+
+func TestSidecarClientActivateGraphCapsAndSanitizesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_graph_activation_result.v0.1",
+			"request_id":     request["request_id"],
+			"candidates": []map[string]any{
+				{"trivium_node_id": -1, "score": 0.99, "source": "bad_id", "rank": 1},
+				{"trivium_node_id": 42, "score": 1.25, "source": "high_score", "rank": 2},
+				{"trivium_node_id": 43, "score": -0.1, "source": "negative_score", "rank": 3},
+				{"trivium_node_id": 44, "score": 0.5, "source": "over_limit", "rank": 4},
+			},
+			"degraded": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.ActivateGraph(context.Background(), ActivationRequest{
+		PersonaID: "default",
+		Seeds: []ActivationSeed{
+			{TriviumNodeID: 7, SQLiteNodeID: "fact-seed", NodeType: "fact", SeedEnergy: 1.0},
+		},
+		Params: ActivationParams{MaxActiveNodes: 1},
+	})
+	if err != nil {
+		t.Fatalf("activate graph: %v", err)
+	}
+	if len(result.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1: %#v", len(result.Candidates), result.Candidates)
+	}
+	if result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 1 {
+		t.Fatalf("candidate = %#v, want id 42 score clamped to 1", result.Candidates[0])
+	}
+}
+
 func ptrInt64(v int64) *int64 {
 	return &v
 }

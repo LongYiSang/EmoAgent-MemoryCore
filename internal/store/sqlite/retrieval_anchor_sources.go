@@ -313,6 +313,34 @@ func factCandidatesFromAnchors(anchors []FusedAnchor) map[string]retrievalCandid
 	return candidates
 }
 
+func mergeActivationCandidates(candidates map[string]retrievalCandidate, graphCandidates []RetrievalActivationCandidate) {
+	for _, graph := range graphCandidates {
+		if graph.FactID == "" || graph.Score <= 0 {
+			continue
+		}
+		candidate := candidates[graph.FactID]
+		candidate.FactID = graph.FactID
+		if graph.Score > candidate.SeedEnergy {
+			candidate.SeedEnergy = graph.Score
+		}
+		if graph.Score > candidate.FusedAnchorScore {
+			candidate.FusedAnchorScore = graph.Score
+		}
+		candidates[graph.FactID] = candidate
+	}
+}
+
+func cloneGraphActivationPaths(paths []GraphActivationPath) []GraphActivationPath {
+	result := make([]GraphActivationPath, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, GraphActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
+		})
+	}
+	return result
+}
+
 func queryAllowsPinnedCoreAnchors(query QueryAnalysis) bool {
 	return query.MemoryAbility == MemoryAbilityBoundary ||
 		query.MemoryAbility == MemoryAbilitySupportive ||

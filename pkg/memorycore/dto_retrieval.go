@@ -80,12 +80,13 @@ type RetrievalAffectContext struct {
 }
 
 type MemoryContext struct {
-	Blocks        []MemoryBlock
-	DoNotMention  []MemorySuppression
-	TokenEstimate int
-	Mirror        *MirrorRetrievalDiagnostics
-	QueryAnalysis *QueryAnalysis
-	AnchorFusion  *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
+	Blocks          []MemoryBlock
+	DoNotMention    []MemorySuppression
+	TokenEstimate   int
+	Mirror          *MirrorRetrievalDiagnostics
+	GraphActivation *GraphActivationDiagnostics `json:"graph_activation,omitempty"`
+	QueryAnalysis   *QueryAnalysis
+	AnchorFusion    *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
 }
 
 type QueryAnalysis struct {
@@ -163,6 +164,30 @@ type MirrorCandidateDiagnostics struct {
 	Source        string  `json:"source,omitempty"`
 	Rank          int     `json:"rank,omitempty"`
 	DropReason    string  `json:"drop_reason,omitempty"`
+}
+
+type GraphActivationDiagnostics struct {
+	Status                string                                `json:"status"`
+	SidecarCandidateCount int                                   `json:"sidecar_candidate_count"`
+	MappedCandidateCount  int                                   `json:"mapped_candidate_count"`
+	DroppedCandidateCount int                                   `json:"dropped_candidate_count"`
+	Candidates            []GraphActivationCandidateDiagnostics `json:"candidates,omitempty"`
+}
+
+type GraphActivationCandidateDiagnostics struct {
+	TriviumNodeID int64                 `json:"trivium_node_id,omitempty"`
+	SQLiteNodeID  string                `json:"sqlite_node_id,omitempty"`
+	NodeType      string                `json:"node_type,omitempty"`
+	Score         float64               `json:"score,omitempty"`
+	Source        string                `json:"source,omitempty"`
+	Rank          int                   `json:"rank,omitempty"`
+	DropReason    string                `json:"drop_reason,omitempty"`
+	Paths         []GraphActivationPath `json:"paths,omitempty"`
+}
+
+type GraphActivationPath struct {
+	TriviumNodeIDs []int64  `json:"trivium_node_ids,omitempty"`
+	LinkTypes      []string `json:"link_types,omitempty"`
 }
 
 type RebuildSearchDocumentsRequest struct {

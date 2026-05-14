@@ -414,3 +414,60 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 	}
 	return out, nil
 }
+
+func (a sidecarMirrorAdapter) ActivateGraph(ctx context.Context, req MirrorActivationRequest) (*MirrorActivationResult, error) {
+	result, err := a.client.ActivateGraph(ctx, internalmirror.ActivationRequest{
+		PersonaID: req.PersonaID,
+		Seeds:     activationSeedsToInternal(req.Seeds),
+		Params: internalmirror.ActivationParams{
+			MaxHops:             req.Params.MaxHops,
+			HopDecay:            req.Params.HopDecay,
+			MinEnergy:           req.Params.MinEnergy,
+			MaxActiveNodes:      req.Params.MaxActiveNodes,
+			HubSuppressionPower: req.Params.HubSuppressionPower,
+			IncludePaths:        req.Params.IncludePaths,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &MirrorActivationResult{
+		Candidates:     make([]MirrorActivationCandidate, 0, len(result.Candidates)),
+		Degraded:       result.Degraded,
+		FallbackReason: result.FallbackReason,
+	}
+	for _, candidate := range result.Candidates {
+		out.Candidates = append(out.Candidates, MirrorActivationCandidate{
+			TriviumNodeID: candidate.TriviumNodeID,
+			Score:         candidate.Score,
+			Source:        candidate.Source,
+			Rank:          candidate.Rank,
+			Paths:         activationPathsFromInternal(candidate.Paths),
+		})
+	}
+	return out, nil
+}
+
+func activationSeedsToInternal(seeds []MirrorActivationSeed) []internalmirror.ActivationSeed {
+	result := make([]internalmirror.ActivationSeed, 0, len(seeds))
+	for _, seed := range seeds {
+		result = append(result, internalmirror.ActivationSeed{
+			TriviumNodeID: seed.TriviumNodeID,
+			SQLiteNodeID:  seed.SQLiteNodeID,
+			NodeType:      seed.NodeType,
+			SeedEnergy:    seed.SeedEnergy,
+		})
+	}
+	return result
+}
+
+func activationPathsFromInternal(paths []internalmirror.ActivationPath) []MirrorActivationPath {
+	result := make([]MirrorActivationPath, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, MirrorActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
+		})
+	}
+	return result
+}

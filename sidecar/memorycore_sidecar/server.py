@@ -12,10 +12,12 @@ from .adapters.fake import FakeMirrorAdapter
 from .adapters.trivium import TriviumAdapter
 from .config import load_config
 from .protocol import (
+    build_activation_result,
     build_clear_namespace_result,
     build_candidates_result,
     build_error,
     build_result,
+    parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
     parse_operation_request,
@@ -74,6 +76,16 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
                         HTTPStatus.OK,
                         build_candidates_result(
                             candidate_request["request_id"], **result
+                        ),
+                    )
+                    return
+                if self.path == "/retrieval/activate":
+                    activation_request = parse_activation_request(request)
+                    result = adapter.activate_graph(activation_request)
+                    self._write_json(
+                        HTTPStatus.OK,
+                        build_activation_result(
+                            activation_request["request_id"], **result
                         ),
                     )
                     return

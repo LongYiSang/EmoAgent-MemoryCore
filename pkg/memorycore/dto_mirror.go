@@ -88,6 +88,47 @@ type MirrorCandidateResult struct {
 	FallbackReason string            `json:"fallback_reason,omitempty"`
 }
 
+type MirrorActivationRequest struct {
+	PersonaID string                 `json:"persona_id"`
+	Seeds     []MirrorActivationSeed `json:"seeds"`
+	Params    MirrorActivationParams `json:"params"`
+}
+
+type MirrorActivationSeed struct {
+	TriviumNodeID int64   `json:"trivium_node_id"`
+	SQLiteNodeID  string  `json:"sqlite_node_id"`
+	NodeType      string  `json:"node_type"`
+	SeedEnergy    float64 `json:"seed_energy"`
+}
+
+type MirrorActivationParams struct {
+	MaxHops             int     `json:"max_hops"`
+	HopDecay            float64 `json:"hop_decay"`
+	MinEnergy           float64 `json:"min_energy"`
+	MaxActiveNodes      int     `json:"max_active_nodes"`
+	HubSuppressionPower float64 `json:"hub_suppression_power"`
+	IncludePaths        bool    `json:"include_paths"`
+}
+
+type MirrorActivationCandidate struct {
+	TriviumNodeID int64                  `json:"trivium_node_id"`
+	Score         float64                `json:"score"`
+	Source        string                 `json:"source"`
+	Rank          int                    `json:"rank,omitempty"`
+	Paths         []MirrorActivationPath `json:"paths,omitempty"`
+}
+
+type MirrorActivationPath struct {
+	TriviumNodeIDs []int64  `json:"trivium_node_ids"`
+	LinkTypes      []string `json:"link_types"`
+}
+
+type MirrorActivationResult struct {
+	Candidates     []MirrorActivationCandidate `json:"candidates"`
+	Degraded       bool                        `json:"degraded"`
+	FallbackReason string                      `json:"fallback_reason,omitempty"`
+}
+
 type MirrorAdapter interface {
 	UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error)
 	DeleteNode(ctx context.Context, ref MirrorNodeRef) error
@@ -101,4 +142,8 @@ type MirrorNamespaceAdapter interface {
 
 type MirrorCandidateAdapter interface {
 	FindCandidates(ctx context.Context, req MirrorCandidateRequest) (*MirrorCandidateResult, error)
+}
+
+type MirrorActivationAdapter interface {
+	ActivateGraph(ctx context.Context, req MirrorActivationRequest) (*MirrorActivationResult, error)
 }

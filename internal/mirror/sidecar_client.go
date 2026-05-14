@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -14,13 +15,15 @@ import (
 )
 
 const (
-	sidecarRequestSchemaVersion           = "memory_mirror_operation.v0.1"
-	sidecarResponseSchemaVersion          = "memory_mirror_operation_result.v0.1"
-	sidecarClearRequestSchemaVersion      = "memory_mirror_clear_namespace.v0.1"
-	sidecarClearResponseSchemaVersion     = "memory_mirror_clear_namespace_result.v0.1"
-	sidecarCandidateRequestSchemaVersion  = "memory_mirror_candidate_request.v0.1"
-	sidecarCandidateResponseSchemaVersion = "memory_mirror_candidates.v0.1"
-	defaultSidecarTimeout                 = 10 * time.Second
+	sidecarRequestSchemaVersion            = "memory_mirror_operation.v0.1"
+	sidecarResponseSchemaVersion           = "memory_mirror_operation_result.v0.1"
+	sidecarClearRequestSchemaVersion       = "memory_mirror_clear_namespace.v0.1"
+	sidecarClearResponseSchemaVersion      = "memory_mirror_clear_namespace_result.v0.1"
+	sidecarCandidateRequestSchemaVersion   = "memory_mirror_candidate_request.v0.1"
+	sidecarCandidateResponseSchemaVersion  = "memory_mirror_candidates.v0.1"
+	sidecarActivationRequestSchemaVersion  = "memory_graph_activation_request.v0.1"
+	sidecarActivationResponseSchemaVersion = "memory_graph_activation_result.v0.1"
+	defaultSidecarTimeout                  = 10 * time.Second
 )
 
 type SidecarClientOptions struct {
@@ -48,6 +51,47 @@ type Candidate struct {
 
 type CandidateResult struct {
 	Candidates     []Candidate
+	Degraded       bool
+	FallbackReason string
+}
+
+type ActivationRequest struct {
+	PersonaID string
+	Seeds     []ActivationSeed
+	Params    ActivationParams
+}
+
+type ActivationSeed struct {
+	TriviumNodeID int64
+	SQLiteNodeID  string
+	NodeType      string
+	SeedEnergy    float64
+}
+
+type ActivationParams struct {
+	MaxHops             int
+	HopDecay            float64
+	MinEnergy           float64
+	MaxActiveNodes      int
+	HubSuppressionPower float64
+	IncludePaths        bool
+}
+
+type ActivationCandidate struct {
+	TriviumNodeID int64
+	Score         float64
+	Source        string
+	Rank          int
+	Paths         []ActivationPath
+}
+
+type ActivationPath struct {
+	TriviumNodeIDs []int64
+	LinkTypes      []string
+}
+
+type ActivationResult struct {
+	Candidates     []ActivationCandidate
 	Degraded       bool
 	FallbackReason string
 }
@@ -267,6 +311,86 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 	return result, nil
 }
 
+func (c *SidecarClient) ActivateGraph(ctx context.Context, request ActivationRequest) (ActivationResult, error) {
+	endpoint, err := c.endpoint("/retrieval/activate")
+	if err != nil {
+		return ActivationResult{}, err
+	}
+	requestID := activationRequestID(request)
+	body, err := json.Marshal(map[string]any{
+		"schema_version": sidecarActivationRequestSchemaVersion,
+		"request_id":     requestID,
+		"persona_id":     strings.TrimSpace(request.PersonaID),
+		"seeds":          activationSeedsJSON(request.Seeds),
+		"params":         activationParamsJSON(request.Params),
+	})
+	if err != nil {
+		return ActivationResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return ActivationResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ActivationResult{}, fmt.Errorf("sidecar activation request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			return ActivationResult{}, fmt.Errorf("sidecar activation status %d", resp.StatusCode)
+		}
+		return ActivationResult{}, fmt.Errorf("sidecar activation status %d: %s", resp.StatusCode, message)
+	}
+	var response sidecarActivationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return ActivationResult{}, fmt.Errorf("sidecar activation response decode: %w", err)
+	}
+	if response.SchemaVersion != sidecarActivationResponseSchemaVersion {
+		return ActivationResult{}, fmt.Errorf("sidecar activation response schema mismatch: %q", response.SchemaVersion)
+	}
+	if response.RequestID != requestID {
+		return ActivationResult{}, fmt.Errorf("sidecar activation response request_id mismatch: %q", response.RequestID)
+	}
+	result := ActivationResult{
+		Candidates:     make([]ActivationCandidate, 0, len(response.Candidates)),
+		Degraded:       response.Degraded,
+		FallbackReason: response.FallbackReason,
+	}
+	limit := request.Params.MaxActiveNodes
+	if limit <= 0 {
+		limit = 80
+	}
+	for idx, candidate := range response.Candidates {
+		if len(result.Candidates) >= limit {
+			break
+		}
+		score, ok := normalizedCandidateScore(candidate.Score)
+		if candidate.TriviumNodeID <= 0 || !ok {
+			continue
+		}
+		rank := candidate.Rank
+		if rank <= 0 {
+			rank = idx + 1
+		}
+		source := strings.TrimSpace(candidate.Source)
+		if source == "" {
+			source = "graph_activation"
+		}
+		result.Candidates = append(result.Candidates, ActivationCandidate{
+			TriviumNodeID: candidate.TriviumNodeID,
+			Score:         score,
+			Source:        source,
+			Rank:          rank,
+			Paths:         activationPathsFromResponse(candidate.Paths),
+		})
+	}
+	return result, nil
+}
+
 type sidecarOperationRequest struct {
 	SchemaVersion string    `json:"schema_version"`
 	OperationID   string    `json:"operation_id"`
@@ -291,6 +415,23 @@ type sidecarCandidateResponse struct {
 		TriviumNodeID int64   `json:"trivium_node_id"`
 		Score         float64 `json:"score"`
 		Source        string  `json:"source"`
+	} `json:"candidates"`
+	Degraded       bool   `json:"degraded"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+}
+
+type sidecarActivationResponse struct {
+	SchemaVersion string `json:"schema_version"`
+	RequestID     string `json:"request_id,omitempty"`
+	Candidates    []struct {
+		TriviumNodeID int64   `json:"trivium_node_id"`
+		Score         float64 `json:"score"`
+		Source        string  `json:"source"`
+		Rank          int     `json:"rank,omitempty"`
+		Paths         []struct {
+			TriviumNodeIDs []int64  `json:"trivium_node_ids"`
+			LinkTypes      []string `json:"link_types"`
+		} `json:"paths,omitempty"`
 	} `json:"candidates"`
 	Degraded       bool   `json:"degraded"`
 	FallbackReason string `json:"fallback_reason,omitempty"`
@@ -389,14 +530,68 @@ func candidateRequestID(request CandidateRequest) string {
 	}, ":")
 }
 
+func activationRequestID(request ActivationRequest) string {
+	parts := []string{
+		"activate",
+		strings.TrimSpace(request.PersonaID),
+		fmt.Sprintf("h%d", request.Params.MaxHops),
+		fmt.Sprintf("n%d", request.Params.MaxActiveNodes),
+	}
+	for _, seed := range request.Seeds {
+		parts = append(parts, fmt.Sprintf("%d", seed.TriviumNodeID))
+	}
+	return strings.Join(parts, ":")
+}
+
 func normalizedCandidateScore(score float64) (float64, bool) {
-	if score < 0 {
+	if math.IsNaN(score) || math.IsInf(score, 0) || score < 0 {
 		return 0, false
 	}
 	if score > 1 {
 		return 1, true
 	}
 	return score, true
+}
+
+func activationSeedsJSON(seeds []ActivationSeed) []map[string]any {
+	result := make([]map[string]any, 0, len(seeds))
+	for _, seed := range seeds {
+		result = append(result, map[string]any{
+			"trivium_node_id": seed.TriviumNodeID,
+			"sqlite_node_id":  seed.SQLiteNodeID,
+			"node_type":       seed.NodeType,
+			"seed_energy":     seed.SeedEnergy,
+		})
+	}
+	return result
+}
+
+func activationParamsJSON(params ActivationParams) map[string]any {
+	return map[string]any{
+		"max_hops":              params.MaxHops,
+		"hop_decay":             params.HopDecay,
+		"min_energy":            params.MinEnergy,
+		"max_active_nodes":      params.MaxActiveNodes,
+		"hub_suppression_power": params.HubSuppressionPower,
+		"include_paths":         params.IncludePaths,
+	}
+}
+
+func activationPathsFromResponse(paths []struct {
+	TriviumNodeIDs []int64  `json:"trivium_node_ids"`
+	LinkTypes      []string `json:"link_types"`
+}) []ActivationPath {
+	result := make([]ActivationPath, 0, len(paths))
+	for _, path := range paths {
+		if len(path.TriviumNodeIDs) == 0 {
+			continue
+		}
+		result = append(result, ActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
+		})
+	}
+	return result
 }
 
 func mapStringField(value any, field string) string {

@@ -337,7 +337,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.retrieve.Retrieve(ctx, memsqlite.RetrievalRequest{
+	prepared, err := s.retrieve.Prepare(ctx, memsqlite.RetrievalRequest{
 		PersonaID: personaID,
 		SessionID: req.SessionID,
 		QueryText: req.QueryText,
@@ -358,6 +358,14 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 		Mirror:            mirrorCandidates,
 		MirrorDiagnostics: mirrorDiagnostics,
 	})
+	if err != nil {
+		return nil, err
+	}
+	graphCandidates, graphDiagnostics, err := s.graphActivationCandidates(ctx, personaID, prepared)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.retrieve.Complete(ctx, prepared, graphCandidates, graphDiagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +449,142 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 		diagnostics.Status = "used"
 	}
 	return report.Mapped, diagnostics, nil
+}
+
+func (s *service) graphActivationCandidates(ctx context.Context, personaID string, prepared memsqlite.PreparedRetrieval) ([]memsqlite.RetrievalActivationCandidate, *memsqlite.GraphActivationDiagnostics, error) {
+	diagnostics := &memsqlite.GraphActivationDiagnostics{Status: "disabled_by_config"}
+	if !prepared.Policy.UseMirror {
+		return nil, diagnostics, nil
+	}
+	diagnostics.Status = "persona_not_ready"
+	ready, err := s.mirrorState.IsReady(ctx, personaID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ready {
+		return nil, diagnostics, nil
+	}
+	diagnostics.Status = "adapter_missing"
+	activationAdapter, ok := s.mirrorAdapter.(MirrorActivationAdapter)
+	if !ok || activationAdapter == nil {
+		return nil, diagnostics, nil
+	}
+	seeds, err := s.mirrorMap.MapActivationSeeds(ctx, personaID, prepared.FusedAnchors)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(seeds) == 0 {
+		diagnostics.Status = "no_seeds"
+		return nil, diagnostics, nil
+	}
+	result, err := activationAdapter.ActivateGraph(ctx, MirrorActivationRequest{
+		PersonaID: personaID,
+		Seeds:     mirrorActivationSeedsFromStore(seeds),
+		Params:    defaultMirrorActivationParams(),
+	})
+	if err != nil || result == nil {
+		diagnostics.Status = "sidecar_error"
+		return nil, diagnostics, nil
+	}
+	diagnostics.SidecarCandidateCount = len(result.Candidates)
+	if result.Degraded {
+		diagnostics.Status = "sidecar_degraded"
+		return nil, diagnostics, nil
+	}
+	if len(result.Candidates) == 0 {
+		diagnostics.Status = "no_candidates"
+		return nil, diagnostics, nil
+	}
+	report, err := s.mirrorMap.MapActivationCandidatesWithDiagnostics(ctx, personaID, activationCandidatesToStore(result.Candidates))
+	if err != nil {
+		return nil, nil, err
+	}
+	diagnostics.SidecarCandidateCount = report.SidecarCandidateCount
+	diagnostics.MappedCandidateCount = report.MappedCandidateCount
+	diagnostics.DroppedCandidateCount = report.DroppedCandidateCount
+	diagnostics.Candidates = make([]memsqlite.GraphActivationCandidateDiagnostic, 0, len(report.Diagnostics))
+	for _, item := range report.Diagnostics {
+		diagnostics.Candidates = append(diagnostics.Candidates, memsqlite.GraphActivationCandidateDiagnostic{
+			TriviumNodeID: item.TriviumNodeID,
+			SQLiteNodeID:  item.SQLiteNodeID,
+			NodeType:      item.NodeType,
+			Score:         item.Score,
+			Source:        item.Source,
+			Rank:          item.Rank,
+			DropReason:    item.DropReason,
+			Paths:         graphActivationPathsToStore(item.Paths),
+		})
+	}
+	if diagnostics.MappedCandidateCount == 0 && diagnostics.SidecarCandidateCount > 0 {
+		diagnostics.Status = "candidates_unmapped_or_stale"
+	} else {
+		diagnostics.Status = "used"
+	}
+	return report.Mapped, diagnostics, nil
+}
+
+func defaultMirrorActivationParams() MirrorActivationParams {
+	return MirrorActivationParams{
+		MaxHops:             2,
+		HopDecay:            0.70,
+		MinEnergy:           0.01,
+		MaxActiveNodes:      80,
+		HubSuppressionPower: 0.50,
+		IncludePaths:        true,
+	}
+}
+
+func mirrorActivationSeedsFromStore(seeds []memsqlite.ActivationSeed) []MirrorActivationSeed {
+	result := make([]MirrorActivationSeed, 0, len(seeds))
+	for _, seed := range seeds {
+		result = append(result, MirrorActivationSeed{
+			TriviumNodeID: seed.TriviumNodeID,
+			SQLiteNodeID:  seed.NodeID,
+			NodeType:      string(seed.NodeType),
+			SeedEnergy:    seed.SeedEnergy,
+		})
+	}
+	return result
+}
+
+func activationCandidatesToStore(candidates []MirrorActivationCandidate) []memsqlite.ActivationCandidate {
+	result := make([]memsqlite.ActivationCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		source := candidate.Source
+		if strings.TrimSpace(source) == "" {
+			source = "graph_activation"
+		}
+		result = append(result, memsqlite.ActivationCandidate{
+			TriviumNodeID: candidate.TriviumNodeID,
+			Score:         candidate.Score,
+			Source:        source,
+			Rank:          candidate.Rank,
+			Paths:         graphActivationPathsToStorePublic(candidate.Paths),
+		})
+	}
+	return result
+}
+
+func graphActivationPathsToStorePublic(paths []MirrorActivationPath) []memsqlite.GraphActivationPath {
+	result := make([]memsqlite.GraphActivationPath, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, memsqlite.GraphActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
+		})
+	}
+	return result
+}
+
+func graphActivationPathsToStore(paths []memsqlite.GraphActivationPath) []memsqlite.GraphActivationPath {
+	result := make([]memsqlite.GraphActivationPath, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, memsqlite.GraphActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
+		})
+	}
+	return result
 }
 
 func (s *service) RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error) {
@@ -771,12 +915,13 @@ func factFromCore(fact *core.Fact) *Fact {
 
 func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 	result := &MemoryContext{
-		Blocks:        make([]MemoryBlock, 0, len(context.Blocks)),
-		DoNotMention:  make([]MemorySuppression, 0, len(context.DoNotMention)),
-		TokenEstimate: context.TokenEstimate,
-		Mirror:        mirrorDiagnosticsFromStore(context.Mirror),
-		QueryAnalysis: queryAnalysisFromStore(context.QueryAnalysis),
-		AnchorFusion:  anchorFusionDiagnosticsFromStore(context.AnchorFusion),
+		Blocks:          make([]MemoryBlock, 0, len(context.Blocks)),
+		DoNotMention:    make([]MemorySuppression, 0, len(context.DoNotMention)),
+		TokenEstimate:   context.TokenEstimate,
+		Mirror:          mirrorDiagnosticsFromStore(context.Mirror),
+		GraphActivation: graphActivationDiagnosticsFromStore(context.GraphActivation),
+		QueryAnalysis:   queryAnalysisFromStore(context.QueryAnalysis),
+		AnchorFusion:    anchorFusionDiagnosticsFromStore(context.AnchorFusion),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -857,6 +1002,47 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 			Source:        item.Source,
 			Rank:          item.Rank,
 			DropReason:    item.DropReason,
+		})
+	}
+	return result
+}
+
+func graphActivationDiagnosticsFromStore(value *memsqlite.GraphActivationDiagnostics) *GraphActivationDiagnostics {
+	if value == nil {
+		return nil
+	}
+	result := &GraphActivationDiagnostics{
+		Status:                value.Status,
+		SidecarCandidateCount: value.SidecarCandidateCount,
+		MappedCandidateCount:  value.MappedCandidateCount,
+		DroppedCandidateCount: value.DroppedCandidateCount,
+		Candidates:            make([]GraphActivationCandidateDiagnostics, 0, len(value.Candidates)),
+	}
+	for _, item := range value.Candidates {
+		sqliteNodeID := item.SQLiteNodeID
+		if item.DropReason != "" {
+			sqliteNodeID = ""
+		}
+		result.Candidates = append(result.Candidates, GraphActivationCandidateDiagnostics{
+			TriviumNodeID: item.TriviumNodeID,
+			SQLiteNodeID:  sqliteNodeID,
+			NodeType:      item.NodeType,
+			Score:         item.Score,
+			Source:        item.Source,
+			Rank:          item.Rank,
+			DropReason:    item.DropReason,
+			Paths:         graphActivationPathsFromStore(item.Paths),
+		})
+	}
+	return result
+}
+
+func graphActivationPathsFromStore(paths []memsqlite.GraphActivationPath) []GraphActivationPath {
+	result := make([]GraphActivationPath, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, GraphActivationPath{
+			TriviumNodeIDs: append([]int64(nil), path.TriviumNodeIDs...),
+			LinkTypes:      append([]string(nil), path.LinkTypes...),
 		})
 	}
 	return result

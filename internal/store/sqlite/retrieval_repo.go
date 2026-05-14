@@ -26,14 +26,16 @@ type RetrievalRepository struct {
 }
 
 type RetrievalRequest struct {
-	PersonaID         string
-	SessionID         *string
-	QueryText         string
-	Now               time.Time
-	Policy            RetrievalPolicy
-	Context           RetrievalAffectContext
-	Mirror            []RetrievalMirrorCandidate
-	MirrorDiagnostics *MirrorDiagnostics
+	PersonaID                  string
+	SessionID                  *string
+	QueryText                  string
+	Now                        time.Time
+	Policy                     RetrievalPolicy
+	Context                    RetrievalAffectContext
+	Mirror                     []RetrievalMirrorCandidate
+	MirrorDiagnostics          *MirrorDiagnostics
+	GraphActivation            []RetrievalActivationCandidate
+	GraphActivationDiagnostics *GraphActivationDiagnostics
 }
 
 type RetrievalPolicy struct {
@@ -52,12 +54,13 @@ type RetrievalAffectContext struct {
 }
 
 type MemoryContext struct {
-	Blocks        []MemoryBlock
-	DoNotMention  []MemorySuppression
-	TokenEstimate int
-	Mirror        *MirrorDiagnostics
-	QueryAnalysis *QueryAnalysis
-	AnchorFusion  *AnchorFusionDiagnostics
+	Blocks          []MemoryBlock
+	DoNotMention    []MemorySuppression
+	TokenEstimate   int
+	Mirror          *MirrorDiagnostics
+	GraphActivation *GraphActivationDiagnostics
+	QueryAnalysis   *QueryAnalysis
+	AnchorFusion    *AnchorFusionDiagnostics
 }
 
 type MirrorDiagnostics struct {
@@ -66,6 +69,30 @@ type MirrorDiagnostics struct {
 	MappedCandidateCount  int
 	DroppedCandidateCount int
 	Candidates            []MirrorCandidateDiagnostic
+}
+
+type GraphActivationDiagnostics struct {
+	Status                string
+	SidecarCandidateCount int
+	MappedCandidateCount  int
+	DroppedCandidateCount int
+	Candidates            []GraphActivationCandidateDiagnostic
+}
+
+type GraphActivationCandidateDiagnostic struct {
+	TriviumNodeID int64
+	SQLiteNodeID  string
+	NodeType      string
+	Score         float64
+	Source        string
+	Rank          int
+	DropReason    string
+	Paths         []GraphActivationPath
+}
+
+type GraphActivationPath struct {
+	TriviumNodeIDs []int64
+	LinkTypes      []string
 }
 
 type MemoryBlock struct {
@@ -91,6 +118,23 @@ type retrievalCandidate struct {
 	FactID           string
 	FusedAnchorScore float64
 	SeedEnergy       float64
+}
+
+type RetrievalActivationCandidate struct {
+	FactID        string
+	TriviumNodeID int64
+	Score         float64
+	Source        string
+	Rank          int
+	Paths         []GraphActivationPath
+}
+
+type PreparedRetrieval struct {
+	Request      RetrievalRequest
+	Query        QueryAnalysis
+	Policy       RetrievalPolicy
+	Now          time.Time
+	FusedAnchors []FusedAnchor
 }
 
 type scoredFact struct {
@@ -121,8 +165,16 @@ func NewRetrievalRepository(db *sql.DB, newID func() string, now func() time.Tim
 }
 
 func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest) (MemoryContext, error) {
+	prepared, err := r.Prepare(ctx, req)
+	if err != nil {
+		return MemoryContext{}, err
+	}
+	return r.Complete(ctx, prepared, req.GraphActivation, req.GraphActivationDiagnostics)
+}
+
+func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest) (PreparedRetrieval, error) {
 	if strings.TrimSpace(req.PersonaID) == "" {
-		return MemoryContext{}, errors.New("persona_id is required")
+		return PreparedRetrieval{}, errors.New("persona_id is required")
 	}
 	basePolicy := normalizeRetrievalPolicy(req.Policy)
 	now := req.Now
@@ -131,15 +183,35 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	}
 	query, err := r.analyzeQuery(ctx, req.PersonaID, req.QueryText, basePolicy)
 	if err != nil {
-		return MemoryContext{}, err
+		return PreparedRetrieval{}, err
 	}
 	policy := effectiveRetrievalPolicy(basePolicy, query)
 
 	fusedAnchors, err := r.collectFusedAnchors(ctx, req.PersonaID, query, policy, req.Mirror, req.MirrorDiagnostics)
 	if err != nil {
-		return MemoryContext{}, err
+		return PreparedRetrieval{}, err
 	}
+	req.Policy = basePolicy
+	req.Now = now
+	return PreparedRetrieval{
+		Request:      req,
+		Query:        query,
+		Policy:       policy,
+		Now:          now,
+		FusedAnchors: fusedAnchors,
+	}, nil
+}
+
+func (r *RetrievalRepository) Complete(ctx context.Context, prepared PreparedRetrieval, graphCandidates []RetrievalActivationCandidate, graphDiagnostics *GraphActivationDiagnostics) (MemoryContext, error) {
+	req := prepared.Request
+	req.GraphActivation = graphCandidates
+	req.GraphActivationDiagnostics = graphDiagnostics
+	query := prepared.Query
+	policy := prepared.Policy
+	now := prepared.Now
+	fusedAnchors := prepared.FusedAnchors
 	candidates := factCandidatesFromAnchors(fusedAnchors)
+	mergeActivationCandidates(candidates, graphCandidates)
 	scored, suppressions, err := r.scoreCandidates(ctx, req, query, policy, now, candidates)
 	if err != nil {
 		return MemoryContext{}, err
@@ -153,10 +225,11 @@ func (r *RetrievalRepository) Retrieve(ctx context.Context, req RetrievalRequest
 	})
 
 	contextResult := MemoryContext{
-		DoNotMention:  suppressions,
-		Mirror:        req.MirrorDiagnostics,
-		QueryAnalysis: &query,
-		AnchorFusion:  &AnchorFusionDiagnostics{Seeds: fusedAnchors},
+		DoNotMention:    suppressions,
+		Mirror:          req.MirrorDiagnostics,
+		GraphActivation: req.GraphActivationDiagnostics,
+		QueryAnalysis:   &query,
+		AnchorFusion:    &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
 	block := MemoryBlock{BlockType: MemoryBlockTypeFacts}
 	for _, candidate := range scored {
@@ -202,11 +275,26 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		}
 		mirrorByFact[mirror.FactID] = mirror
 	}
-	candidateIndexByFact := map[string]int{}
+	graphByFact := map[string]RetrievalActivationCandidate{}
+	for _, activation := range req.GraphActivation {
+		if activation.FactID == "" {
+			continue
+		}
+		graphByFact[activation.FactID] = activation
+	}
+	mirrorCandidateIndexByFact := map[string]int{}
 	if req.MirrorDiagnostics != nil {
 		for idx, item := range req.MirrorDiagnostics.Candidates {
 			if item.SQLiteFactID != "" {
-				candidateIndexByFact[item.SQLiteFactID] = idx
+				mirrorCandidateIndexByFact[item.SQLiteFactID] = idx
+			}
+		}
+	}
+	graphCandidateIndexByFact := map[string]int{}
+	if req.GraphActivationDiagnostics != nil {
+		for idx, item := range req.GraphActivationDiagnostics.Candidates {
+			if item.SQLiteNodeID != "" && item.NodeType == string(core.NodeTypeFact) {
+				graphCandidateIndexByFact[item.SQLiteNodeID] = idx
 			}
 		}
 	}
@@ -222,7 +310,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			return nil, nil, err
 		} else if !ok {
 			if req.MirrorDiagnostics != nil {
-				if idx, ok := candidateIndexByFact[fact.ID]; ok {
+				if idx, ok := mirrorCandidateIndexByFact[fact.ID]; ok {
 					if req.MirrorDiagnostics.Candidates[idx].DropReason == "" {
 						req.MirrorDiagnostics.Candidates[idx].DropReason = "dropped_by_authority_filter"
 						req.MirrorDiagnostics.DroppedCandidateCount++
@@ -237,6 +325,26 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 						DropReason:    "dropped_by_authority_filter",
 					})
 					req.MirrorDiagnostics.DroppedCandidateCount++
+				}
+			}
+			if req.GraphActivationDiagnostics != nil {
+				if idx, ok := graphCandidateIndexByFact[fact.ID]; ok {
+					if req.GraphActivationDiagnostics.Candidates[idx].DropReason == "" {
+						req.GraphActivationDiagnostics.Candidates[idx].DropReason = "dropped_by_authority_filter"
+						req.GraphActivationDiagnostics.DroppedCandidateCount++
+					}
+				} else if activation, ok := graphByFact[fact.ID]; ok {
+					req.GraphActivationDiagnostics.Candidates = append(req.GraphActivationDiagnostics.Candidates, GraphActivationCandidateDiagnostic{
+						TriviumNodeID: activation.TriviumNodeID,
+						SQLiteNodeID:  fact.ID,
+						NodeType:      string(core.NodeTypeFact),
+						Score:         activation.Score,
+						Source:        activation.Source,
+						Rank:          activation.Rank,
+						Paths:         cloneGraphActivationPaths(activation.Paths),
+						DropReason:    "dropped_by_authority_filter",
+					})
+					req.GraphActivationDiagnostics.DroppedCandidateCount++
 				}
 			}
 			continue

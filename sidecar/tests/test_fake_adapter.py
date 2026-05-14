@@ -96,3 +96,186 @@ def test_fake_adapter_returns_upserted_nodes_as_candidates():
         ],
         "degraded": False,
     }
+
+
+def test_fake_adapter_activate_graph_expands_weighted_edges_with_paths():
+    adapter = FakeMirrorAdapter()
+    seed = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-seed",
+            "searchable_text": "seed",
+            "payload": {},
+        }
+    )
+    related = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-related",
+            "searchable_text": "related",
+            "payload": {},
+        }
+    )
+    episode = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "episode",
+            "sqlite_node_id": "ep-1",
+            "searchable_text": "episode raw text",
+            "payload": {},
+        }
+    )
+    adapter.upsert_edge(
+        {
+            "persona_id": "default",
+            "sqlite_edge_id": "edge-caused",
+            "link_type": "CAUSED_BY",
+            "from_node_type": "fact",
+            "from_node_id": "fact-seed",
+            "to_node_type": "fact",
+            "to_node_id": "fact-related",
+            "weight": 0.8,
+        }
+    )
+    adapter.upsert_edge(
+        {
+            "persona_id": "default",
+            "sqlite_edge_id": "edge-evidence",
+            "link_type": "EVIDENCED_BY",
+            "from_node_type": "fact",
+            "from_node_id": "fact-seed",
+            "to_node_type": "episode",
+            "to_node_id": "ep-1",
+            "weight": 1.0,
+        }
+    )
+
+    result = adapter.activate_graph(
+        {
+            "persona_id": "default",
+            "seeds": [
+                {
+                    "trivium_node_id": seed["trivium_node_id"],
+                    "sqlite_node_id": "fact-seed",
+                    "node_type": "fact",
+                    "seed_energy": 1.0,
+                }
+            ],
+            "params": {"max_hops": 1, "hop_decay": 0.5, "include_paths": True},
+        }
+    )
+
+    ids = [candidate["trivium_node_id"] for candidate in result["candidates"]]
+    assert seed["trivium_node_id"] in ids
+    assert related["trivium_node_id"] in ids
+    assert episode["trivium_node_id"] not in ids
+    related_candidate = next(
+        candidate
+        for candidate in result["candidates"]
+        if candidate["trivium_node_id"] == related["trivium_node_id"]
+    )
+    assert related_candidate["score"] == 0.4
+    assert related_candidate["source"] == "graph_activation"
+    assert related_candidate["paths"][0]["link_types"] == ["CAUSED_BY"]
+
+
+def test_fake_adapter_activate_graph_suppresses_hub_dominance():
+    adapter = FakeMirrorAdapter()
+    seed = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-seed",
+            "searchable_text": "seed",
+            "payload": {},
+        }
+    )
+    leaf = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-leaf",
+            "searchable_text": "leaf",
+            "payload": {},
+        }
+    )
+    hub = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "entity",
+            "sqlite_node_id": "entity-hub",
+            "searchable_text": "hub",
+            "payload": {},
+        }
+    )
+    for idx in range(6):
+        adapter.upsert_node(
+            {
+                "persona_id": "default",
+                "node_type": "fact",
+                "sqlite_node_id": f"fact-hub-{idx}",
+                "searchable_text": f"hub neighbor {idx}",
+                "payload": {},
+            }
+        )
+        adapter.upsert_edge(
+            {
+                "persona_id": "default",
+                "sqlite_edge_id": f"edge-hub-{idx}",
+                "link_type": "ABOUT_ENTITY",
+                "from_node_type": "entity",
+                "from_node_id": "entity-hub",
+                "to_node_type": "fact",
+                "to_node_id": f"fact-hub-{idx}",
+                "weight": 1.0,
+            }
+        )
+    adapter.upsert_edge(
+        {
+            "persona_id": "default",
+            "sqlite_edge_id": "edge-leaf",
+            "link_type": "SUPPORTS",
+            "from_node_type": "fact",
+            "from_node_id": "fact-seed",
+            "to_node_type": "fact",
+            "to_node_id": "fact-leaf",
+            "weight": 1.0,
+        }
+    )
+    adapter.upsert_edge(
+        {
+            "persona_id": "default",
+            "sqlite_edge_id": "edge-hub",
+            "link_type": "ABOUT_ENTITY",
+            "from_node_type": "fact",
+            "from_node_id": "fact-seed",
+            "to_node_type": "entity",
+            "to_node_id": "entity-hub",
+            "weight": 1.0,
+        }
+    )
+
+    result = adapter.activate_graph(
+        {
+            "persona_id": "default",
+            "seeds": [
+                {
+                    "trivium_node_id": seed["trivium_node_id"],
+                    "sqlite_node_id": "fact-seed",
+                    "node_type": "fact",
+                    "seed_energy": 1.0,
+                }
+            ],
+            "params": {
+                "max_hops": 1,
+                "hop_decay": 1.0,
+                "hub_suppression_power": 1.0,
+                "include_paths": False,
+            },
+        }
+    )
+    by_id = {candidate["trivium_node_id"]: candidate for candidate in result["candidates"]}
+
+    assert by_id[hub["trivium_node_id"]]["score"] < by_id[leaf["trivium_node_id"]]["score"]

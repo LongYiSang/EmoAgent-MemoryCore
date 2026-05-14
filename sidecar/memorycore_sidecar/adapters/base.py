@@ -39,3 +39,7 @@ class MirrorAdapter(ABC):
     @abstractmethod
     def find_candidates(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
+
+    @abstractmethod
+    def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError

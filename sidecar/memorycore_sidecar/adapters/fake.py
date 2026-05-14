@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from memorycore_sidecar.activation import ActivationEdge, activate_graph
+
 from .base import MirrorAdapter
 
 
@@ -62,6 +64,54 @@ class FakeMirrorAdapter(MirrorAdapter):
             if len(candidates) >= limit:
                 break
         return {"candidates": candidates, "degraded": False}
+
+    def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
+        persona_id = str(request["persona_id"])
+
+        def neighbors(trivium_node_id: int) -> list[ActivationEdge]:
+            out: list[ActivationEdge] = []
+            for edge in self._edges.values():
+                if str(edge["persona_id"]) != persona_id:
+                    continue
+                source_id = _stable_fake_id(
+                    persona_id, str(edge["from_node_type"]), str(edge["from_node_id"])
+                )
+                target_id = _stable_fake_id(
+                    persona_id, str(edge["to_node_type"]), str(edge["to_node_id"])
+                )
+                direction = str(edge.get("direction", "forward"))
+                weight = float(edge.get("weight", 1.0))
+                link_type = str(edge.get("link_type", "related"))
+                if source_id == trivium_node_id and direction in ("forward", "bidirectional"):
+                    out.append(ActivationEdge(target_id=target_id, link_type=link_type, weight=weight))
+                if target_id == trivium_node_id and direction in ("backward", "bidirectional"):
+                    out.append(ActivationEdge(target_id=source_id, link_type=link_type, weight=weight))
+            return out
+
+        def degree(trivium_node_id: int) -> int:
+            count = 0
+            for edge in self._edges.values():
+                if str(edge["persona_id"]) != persona_id:
+                    continue
+                source_id = _stable_fake_id(
+                    persona_id, str(edge["from_node_type"]), str(edge["from_node_id"])
+                )
+                target_id = _stable_fake_id(
+                    persona_id, str(edge["to_node_type"]), str(edge["to_node_id"])
+                )
+                if source_id == trivium_node_id or target_id == trivium_node_id:
+                    count += 1
+            return count
+
+        return {
+            "candidates": activate_graph(
+                list(request.get("seeds", [])),
+                neighbors=neighbors,
+                degree=degree,
+                params=request.get("params", {}),
+            ),
+            "degraded": False,
+        }
 
 
 def _stable_fake_id(*parts: str) -> int:
