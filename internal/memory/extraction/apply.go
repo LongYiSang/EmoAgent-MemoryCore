@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 func ApplyAcceptedFacts(ctx context.Context, svc memorycore.Service, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult) memorycore.ExtractionApplyResult {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 type evalMirrorAdapter struct {

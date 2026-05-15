@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 const defaultPersonaID = "default"

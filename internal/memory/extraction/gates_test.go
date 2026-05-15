@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestValidateExtractionHardRulesAndRouting(t *testing.T) {

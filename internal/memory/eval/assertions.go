@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 func (s *runState) assert(ctx context.Context, assertion Assertion) error {

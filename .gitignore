@@ -49,6 +49,6 @@ Desktop.ini
 
 # ── 暂不开放 ──
 /docs/architecture/
-EmoAgent-MemoryCore_Handoff.md
 /docs/TODO/
 /docs/Phase5参考/
+/docs/refactor/
