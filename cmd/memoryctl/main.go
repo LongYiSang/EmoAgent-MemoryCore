@@ -19,6 +19,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	switch args[0] {
 	case "init-db":
 		return runInitDB(args[1:], stdout, stderr)
+	case "validate-config":
+		return runValidateConfig(args[1:], stdout, stderr)
+	case "config-docs":
+		return runConfigDocs(args[1:], stdout, stderr)
 	case "start-session":
 		return runStartSession(args[1:], stdout, stderr)
 	case "end-session":

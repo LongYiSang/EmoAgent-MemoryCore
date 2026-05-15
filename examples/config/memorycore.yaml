@@ -1,0 +1,31 @@
+schema_version: "memorycore.config.v0.1"
+
+enabled: false
+
+core:
+  db_path: "./data/memory.db"
+  persona_id: "default"
+  auto_migrate: true
+  enable_fts: true
+
+retrieval:
+  use_fts: true
+  use_mirror: false
+  final_memory_count: 8
+  context_budget_tokens: 1200
+  allow_historical: false
+  allow_deep_archive: false
+  sensitivity_permission: "normal"
+
+sidecar:
+  enabled: false
+  url: ""
+  adapter: "trivium"
+
+retention:
+  jobs:
+    - "daily_ttl_expiry"
+  deep_archive_after_days: 0
+
+mirror:
+  sync_limit: 100

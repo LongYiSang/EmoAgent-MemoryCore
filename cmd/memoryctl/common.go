@@ -29,6 +29,7 @@ type commonOptions struct {
 	AutoMigrate bool
 	EnableFTS   bool
 	Pretty      bool
+	ConfigPath  string
 }
 
 type stringList []string

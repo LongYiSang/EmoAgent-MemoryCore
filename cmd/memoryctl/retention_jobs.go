@@ -18,12 +18,36 @@ func runRetentionJobs(args []string, stdout io.Writer, stderr io.Writer) int {
 	var dryRun bool
 	var deepArchiveAfterDays int
 	addCommonFlags(fs, &opts, formatText)
+	addConfigFlag(fs, &opts)
 	fs.StringVar(&now, "now", "", "RFC3339 now")
 	fs.StringVar(&jobsValue, "jobs", "", "comma-separated retention jobs")
 	fs.BoolVar(&dryRun, "dry-run", false, "preview retention job changes without mutating")
 	fs.IntVar(&deepArchiveAfterDays, "deep-archive-after-days", 0, "required positive day threshold for monthly_deep_archive")
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(opts)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyCommonConfig(&opts, &cfg, explicit, stderr)
+		if explicit["jobs"] {
+			warnConfigOverride(stderr, "jobs", "retention.jobs")
+			cfg.Retention.Jobs = splitRetentionJobNames(jobsValue)
+		} else {
+			jobsValue = joinRetentionJobs(cfg.Retention.Jobs)
+		}
+		if explicit["deep-archive-after-days"] {
+			warnConfigOverride(stderr, "deep-archive-after-days", "retention.deep_archive_after_days")
+			cfg.Retention.DeepArchiveAfterDays = deepArchiveAfterDays
+		} else {
+			deepArchiveAfterDays = cfg.Retention.DeepArchiveAfterDays
+		}
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
 	}
 	if !requireDB(stderr, fs, opts.DBPath) {
 		return 2
@@ -96,6 +120,19 @@ func parseRetentionJobNames(value string) ([]memorycore.RetentionJobName, error)
 		}
 	}
 	return jobs, nil
+}
+
+func splitRetentionJobNames(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	jobs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		jobs = append(jobs, strings.TrimSpace(part))
+	}
+	return jobs
 }
 
 func hasRetentionJob(jobs []memorycore.RetentionJobName, target memorycore.RetentionJobName) bool {

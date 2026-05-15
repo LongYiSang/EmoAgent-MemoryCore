@@ -167,6 +167,17 @@ go run ./cmd/memoryctl init-db --db ./data/memory.db
 
 该命令创建包含全部基础表、索引和种子谓词语法的 SQLite 数据库。
 
+### 配置契约
+
+MemoryCore 提供可嵌入的 v0.1 配置契约，示例见 `examples/config/memorycore.yaml`。部署前可用 CLI 校验配置或导出字段参考：
+
+```bash
+go run ./cmd/memoryctl validate-config --config examples/config/memorycore.yaml
+go run ./cmd/memoryctl config-docs --format markdown
+```
+
+`enabled` 是嵌入方开关；`memoryctl --config` 执行显式命令时不会因为 `enabled: false` 被拦截。显式 CLI flags 会覆盖配置文件中的对应字段，并在 stderr 输出 warning。
+
 ### Public API 使用示例
 
 ```go

@@ -15,11 +15,29 @@ func runRetention(args []string, stdout io.Writer, stderr io.Writer) int {
 	var dryRun bool
 	var deepArchiveAfterDays int
 	addCommonFlags(fs, &opts, formatText)
+	addConfigFlag(fs, &opts)
 	fs.StringVar(&now, "now", "", "RFC3339 now")
 	fs.BoolVar(&dryRun, "dry-run", false, "preview retention changes without mutating")
 	fs.IntVar(&deepArchiveAfterDays, "deep-archive-after-days", 0, "move archived facts older than this many days to deep archive; 0 disables")
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(opts)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyCommonConfig(&opts, &cfg, explicit, stderr)
+		if explicit["deep-archive-after-days"] {
+			warnConfigOverride(stderr, "deep-archive-after-days", "retention.deep_archive_after_days")
+			cfg.Retention.DeepArchiveAfterDays = deepArchiveAfterDays
+		} else {
+			deepArchiveAfterDays = cfg.Retention.DeepArchiveAfterDays
+		}
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
 	}
 	if !requireDB(stderr, fs, opts.DBPath) {
 		return 2

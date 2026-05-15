@@ -17,11 +17,48 @@ func runMirrorSync(args []string, stdout io.Writer, stderr io.Writer) int {
 	var fakeAdapter bool
 	var sidecarURL string
 	addCommonFlags(fs, &opts, formatText)
+	addConfigFlag(fs, &opts)
 	fs.IntVar(&limit, "limit", 100, "maximum queue rows to process")
 	fs.BoolVar(&fakeAdapter, "fake-adapter", false, "use the Phase 4A deterministic fake mirror adapter")
 	fs.StringVar(&sidecarURL, "sidecar-url", "", "loopback HTTP URL for the Python mirror sidecar")
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(opts)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyCommonConfig(&opts, &cfg, explicit, stderr)
+		if explicit["limit"] {
+			warnConfigOverride(stderr, "limit", "mirror.sync_limit")
+			cfg.Mirror.SyncLimit = limit
+		} else {
+			limit = cfg.Mirror.SyncLimit
+		}
+		if explicit["fake-adapter"] {
+			warnConfigOverride(stderr, "fake-adapter", "sidecar.adapter")
+			cfg.Sidecar.Enabled = true
+			cfg.Sidecar.Adapter = "fake"
+			cfg.Sidecar.URL = ""
+		} else if explicit["sidecar-url"] {
+			warnConfigOverride(stderr, "sidecar-url", "sidecar.url")
+			cfg.Sidecar.Enabled = true
+			cfg.Sidecar.Adapter = "trivium"
+			cfg.Sidecar.URL = sidecarURL
+		} else if cfg.Sidecar.Enabled {
+			fakeAdapter = cfg.Sidecar.Adapter == "fake"
+			if fakeAdapter {
+				sidecarURL = ""
+				cfg.Sidecar.URL = ""
+			} else {
+				sidecarURL = cfg.Sidecar.URL
+			}
+		}
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
 	}
 	if !requireDB(stderr, fs, opts.DBPath) {
 		return 2
@@ -88,9 +125,33 @@ func runMirrorRebuild(args []string, stdout io.Writer, stderr io.Writer) int {
 	var opts commonOptions
 	var sidecarURL string
 	addCommonFlags(fs, &opts, formatText)
+	addConfigFlag(fs, &opts)
 	fs.StringVar(&sidecarURL, "sidecar-url", "", "loopback HTTP URL for the Python mirror sidecar")
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(opts)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyCommonConfig(&opts, &cfg, explicit, stderr)
+		if explicit["sidecar-url"] {
+			warnConfigOverride(stderr, "sidecar-url", "sidecar.url")
+			cfg.Sidecar.Enabled = true
+			cfg.Sidecar.Adapter = "trivium"
+			cfg.Sidecar.URL = sidecarURL
+		} else if cfg.Sidecar.Enabled {
+			sidecarURL = cfg.Sidecar.URL
+			if cfg.Sidecar.Adapter == "fake" {
+				sidecarURL = ""
+				cfg.Sidecar.URL = ""
+			}
+		}
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
 	}
 	if !requireDB(stderr, fs, opts.DBPath) {
 		return 2
@@ -99,11 +160,19 @@ func runMirrorRebuild(args []string, stdout io.Writer, stderr io.Writer) int {
 		return usageError(stderr, fs, err.Error())
 	}
 	sidecarURL = strings.TrimSpace(sidecarURL)
-	if sidecarURL == "" {
+	useFakeMirrorConfig := hasConfig && cfg.Sidecar.Enabled && cfg.Sidecar.Adapter == "fake" && !explicit["sidecar-url"]
+	if sidecarURL == "" && !useFakeMirrorConfig {
 		return usageError(stderr, fs, "--sidecar-url is required")
 	}
-	if err := internalmirror.ValidateLoopbackURL(sidecarURL); err != nil {
-		return usageError(stderr, fs, err.Error())
+	if sidecarURL != "" {
+		if err := internalmirror.ValidateLoopbackURL(sidecarURL); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
+	}
+
+	adapter := memorycore.NewSidecarMirrorAdapter(sidecarURL)
+	if useFakeMirrorConfig {
+		adapter = memorycore.NewFakeMirrorAdapter()
 	}
 
 	ctx := context.Background()
@@ -112,7 +181,7 @@ func runMirrorRebuild(args []string, stdout io.Writer, stderr io.Writer) int {
 		PersonaID:     opts.PersonaID,
 		AutoMigrate:   opts.AutoMigrate,
 		EnableFTS:     opts.EnableFTS,
-		MirrorAdapter: memorycore.NewSidecarMirrorAdapter(sidecarURL),
+		MirrorAdapter: adapter,
 	})
 	if err != nil {
 		return runtimeError(stderr, "open memorycore: %v", err)
