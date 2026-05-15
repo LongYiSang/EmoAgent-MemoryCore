@@ -233,13 +233,15 @@ EmoAgent-MemoryCore/
 ├── cmd/
 │   └── memoryctl/             # CLI 入口，数据库管理与运维
 ├── internal/
+│   ├── app/
+│   │   └── memorycore/            # Application service 层：Service 实现、DTO、use case 编排
 │   ├── core/                  # 领域类型：Episode、Fact、Entity、Link 等
 │   ├── memory/
 │   │   └── eval/              # YAML fixture 回归测试框架
 │   └── store/
 │       └── sqlite/            # SQLite 驱动、迁移、仓储层
 ├── pkg/
-│   └── memorycore/            # 外部项目使用的 public API facade
+│   └── memorycore/            # 外部项目使用的 public API facade（alias / forwarding）
 ├── migrations/                # 嵌入式 SQL 迁移文件
 │   ├── 0001_foundation.sql    # Personas、sessions、episodes、entities、facts
 │   ├── 0002_graph_policy.sql  # Predicate schemas、memory links、同步队列
