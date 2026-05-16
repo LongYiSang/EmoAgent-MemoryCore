@@ -281,6 +281,19 @@ func TestSidecarClientActivateGraph(t *testing.T) {
 		if !ok || len(seeds) != 1 {
 			t.Fatalf("seeds = %#v, want one seed", request["seeds"])
 		}
+		params, ok := request["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("params = %#v, want object", request["params"])
+		}
+		if params["max_edges_scanned_per_request"] != float64(10000) {
+			t.Fatalf("max_edges_scanned_per_request = %#v, want 10000", params["max_edges_scanned_per_request"])
+		}
+		if params["max_neighbors_per_node"] != float64(100) {
+			t.Fatalf("max_neighbors_per_node = %#v, want 100", params["max_neighbors_per_node"])
+		}
+		if params["max_activation_wall_ms"] != float64(120) {
+			t.Fatalf("max_activation_wall_ms = %#v, want 120", params["max_activation_wall_ms"])
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"schema_version": "memory_graph_activation_result.v0.1",
 			"request_id":     request["request_id"],
@@ -309,7 +322,13 @@ func TestSidecarClientActivateGraph(t *testing.T) {
 		Seeds: []ActivationSeed{
 			{TriviumNodeID: 7, SQLiteNodeID: "fact-seed", NodeType: "fact", SeedEnergy: 1.0},
 		},
-		Params: ActivationParams{MaxHops: 1, IncludePaths: true},
+		Params: ActivationParams{
+			MaxHops:                   1,
+			IncludePaths:              true,
+			MaxEdgesScannedPerRequest: 10000,
+			MaxNeighborsPerNode:       100,
+			MaxActivationWallMs:       120,
+		},
 	})
 	if err != nil {
 		t.Fatalf("activate graph: %v", err)

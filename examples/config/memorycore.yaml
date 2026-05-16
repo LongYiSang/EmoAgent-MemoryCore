@@ -21,6 +21,17 @@ sidecar:
   enabled: false
   url: ""
   adapter: "trivium"
+  total_timeout_ms: 400
+  mirror_timeout_ms: 80
+  activation_timeout_ms: 150
+  rerank_timeout_ms: 100
+  breaker_enabled: true
+  breaker_window: 20
+  breaker_failure_threshold: 3
+  breaker_open_ms: 60000
+  activation_max_edges_scanned_per_request: 10000
+  activation_max_neighbors_per_node: 100
+  activation_max_wall_ms: 120
 
 retention:
   jobs:

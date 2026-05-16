@@ -280,6 +280,15 @@ def _parse_activation_params(params: Any) -> dict[str, Any]:
         ),
         "include_paths": bool(params.get("include_paths", True)),
         "include_provenance_edges": bool(params.get("include_provenance_edges", False)),
+        "max_edges_scanned_per_request": _positive_int(
+            params.get("max_edges_scanned_per_request"), 10000
+        ),
+        "max_neighbors_per_node": _positive_int(
+            params.get("max_neighbors_per_node"), 100
+        ),
+        "max_activation_wall_ms": _positive_float(
+            params.get("max_activation_wall_ms"), 120.0
+        ),
     }
 
 

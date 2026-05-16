@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Any
 
@@ -10,6 +11,15 @@ class ActivationEdge:
     target_id: int
     link_type: str
     weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class ActivationRun:
+    candidates: list[dict[str, Any]]
+    degraded: bool = False
+    fallback_reason: str | None = None
+    edge_scanned_count: int = 0
+    active_node_count: int = 0
 
 
 NeighborProvider = Callable[[int], Iterable[ActivationEdge]]
@@ -23,6 +33,21 @@ def activate_graph(
     degree: DegreeProvider,
     params: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
+    return activate_graph_with_diagnostics(
+        seeds,
+        neighbors=neighbors,
+        degree=degree,
+        params=params,
+    ).candidates
+
+
+def activate_graph_with_diagnostics(
+    seeds: list[dict[str, Any]],
+    *,
+    neighbors: NeighborProvider,
+    degree: DegreeProvider,
+    params: Mapping[str, Any],
+) -> ActivationRun:
     max_hops = _positive_int(params.get("max_hops"), 2)
     hop_decay = _positive_float(params.get("hop_decay"), 0.70)
     min_energy = _positive_float(params.get("min_energy"), 0.01)
@@ -30,10 +55,21 @@ def activate_graph(
     hub_power = _non_negative_float(params.get("hub_suppression_power"), 0.50)
     include_paths = bool(params.get("include_paths", True))
     include_provenance_edges = bool(params.get("include_provenance_edges", False))
+    max_edges = _positive_int(params.get("max_edges_scanned_per_request"), 10000)
+    max_neighbors = _positive_int(params.get("max_neighbors_per_node"), 100)
+    max_wall_ms = _positive_float(params.get("max_activation_wall_ms"), 120.0)
 
     energy: dict[int, float] = {}
     paths: dict[int, dict[str, Any]] = {}
     frontier: dict[int, float] = {}
+    edge_scanned_count = 0
+    degraded = False
+    fallback_reason: str | None = None
+    started = time.monotonic()
+
+    def budget_exceeded() -> bool:
+        return (time.monotonic() - started) * 1000.0 >= max_wall_ms
+
     for seed in seeds:
         node_id = int(seed["trivium_node_id"])
         seed_energy = _non_negative_float(seed.get("seed_energy"), 0.0)
@@ -47,7 +83,22 @@ def activate_graph(
     for _hop in range(max_hops):
         next_frontier: dict[int, float] = {}
         for source_id, source_energy in frontier.items():
-            for edge in neighbors(source_id):
+            if budget_exceeded():
+                degraded = True
+                fallback_reason = "activation_budget_exceeded"
+                break
+            for neighbor_index, edge in enumerate(neighbors(source_id)):
+                if neighbor_index >= max_neighbors:
+                    break
+                if edge_scanned_count >= max_edges:
+                    degraded = True
+                    fallback_reason = "activation_budget_exceeded"
+                    break
+                if budget_exceeded():
+                    degraded = True
+                    fallback_reason = "activation_budget_exceeded"
+                    break
+                edge_scanned_count += 1
                 edge_weight = _edge_weight(edge, include_provenance_edges)
                 if edge_weight <= 0:
                     continue
@@ -66,6 +117,10 @@ def activate_graph(
                         "trivium_node_ids": previous["trivium_node_ids"] + [edge.target_id],
                         "link_types": previous["link_types"] + [edge.link_type],
                     }
+            if degraded:
+                break
+        if degraded:
+            break
         if not next_frontier:
             break
         frontier = next_frontier
@@ -87,7 +142,13 @@ def activate_graph(
         candidate["rank"] = rank
         if include_paths and candidate["trivium_node_id"] in paths:
             candidate["paths"] = [paths[candidate["trivium_node_id"]]]
-    return candidates
+    return ActivationRun(
+        candidates=candidates,
+        degraded=degraded,
+        fallback_reason=fallback_reason,
+        edge_scanned_count=edge_scanned_count,
+        active_node_count=len(energy),
+    )
 
 
 def _edge_weight(edge: ActivationEdge, include_provenance_edges: bool) -> float:

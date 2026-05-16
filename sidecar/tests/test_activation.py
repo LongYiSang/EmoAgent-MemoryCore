@@ -1,6 +1,10 @@
 import pytest
 
-from memorycore_sidecar.activation import ActivationEdge, activate_graph
+from memorycore_sidecar.activation import (
+    ActivationEdge,
+    activate_graph,
+    activate_graph_with_diagnostics,
+)
 
 
 def test_activate_graph_propagates_two_hops_with_unique_path():
@@ -98,3 +102,28 @@ def test_activate_graph_sorts_by_score_then_node_id_and_caps_active_nodes():
 
     assert [candidate["trivium_node_id"] for candidate in result] == [1, 4, 5]
     assert [candidate["rank"] for candidate in result] == [1, 2, 3]
+
+
+def test_activate_graph_with_diagnostics_stops_at_edge_budget():
+    graph = {
+        1: [
+            ActivationEdge(target_id=i, link_type="SUPPORTS", weight=1.0)
+            for i in range(2, 20)
+        ]
+    }
+
+    run = activate_graph_with_diagnostics(
+        [{"trivium_node_id": 1, "seed_energy": 1.0}],
+        neighbors=lambda node_id: graph.get(node_id, []),
+        degree=lambda node_id: 1,
+        params={
+            "max_hops": 1,
+            "hop_decay": 1.0,
+            "max_edges_scanned_per_request": 1,
+        },
+    )
+
+    assert run.degraded is True
+    assert run.fallback_reason == "activation_budget_exceeded"
+    assert run.edge_scanned_count == 1
+    assert run.candidates

@@ -186,6 +186,9 @@ def test_parse_activation_request_applies_defaults_and_keeps_anchor_debug_out_of
     assert request["params"]["max_active_nodes"] == 80
     assert request["params"]["hub_suppression_power"] == 0.50
     assert request["params"]["include_paths"] is True
+    assert request["params"]["max_edges_scanned_per_request"] == 10000
+    assert request["params"]["max_neighbors_per_node"] == 100
+    assert request["params"]["max_activation_wall_ms"] == 120.0
 
 
 def test_parse_activation_request_rejects_bad_seed():

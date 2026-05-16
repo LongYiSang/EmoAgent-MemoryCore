@@ -4,6 +4,7 @@ import (
 	"context"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -12,7 +13,9 @@ const maxRerankQueryTextRune = 160
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	policy := req.Policy
-	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, personaID, req.QueryText, policy)
+	sidecarCtx, sidecarCancel := sidecarTotalContext(ctx, s.sidecarResilience.Timeouts.Total)
+	defer sidecarCancel()
+	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +43,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	graphCandidates, graphDiagnostics, err := s.graphActivationCandidates(ctx, personaID, prepared)
+	graphCandidates, graphDiagnostics, err := s.graphActivationCandidates(ctx, sidecarCtx, personaID, prepared)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +51,10 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	rerankResults, rerankDiagnostics := s.rerankCandidates(ctx, personaID, prepared, safeRerankCandidates)
+	rerankResults, rerankDiagnostics, err := s.rerankCandidates(ctx, sidecarCtx, personaID, prepared, safeRerankCandidates)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.retrieve.CompleteFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics)
 	if err != nil {
 		return nil, err
@@ -56,7 +62,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	return memoryContextFromStore(result), nil
 }
 
-func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
+func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
 	diagnostics := &memsqlite.MirrorDiagnostics{Status: "disabled_by_config"}
 	if !policy.UseMirror {
 		return nil, diagnostics, nil
@@ -74,26 +80,53 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 	if !ok || candidateAdapter == nil {
 		return nil, diagnostics, nil
 	}
+	if s.sidecarBreaker != nil && !s.sidecarBreaker.allow(personaID, sidecarStageMirror) {
+		diagnostics.Status = "breaker_open"
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_breaker_open"
+		return nil, diagnostics, nil
+	}
 	limit := policy.FinalMemoryCount
 	if limit <= 0 {
 		limit = 8
 	}
-	result, err := candidateAdapter.FindCandidates(ctx, MirrorCandidateRequest{
+	started := time.Now()
+	stageCtx, cancel, ok := sidecarStageContext(ctx, sidecarCtx, sidecarStageTimeout(s.sidecarResilience, sidecarStageMirror))
+	if !ok {
+		diagnostics.Status = sidecarStatusSkippedByBudget
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_timeout"
+		return nil, diagnostics, nil
+	}
+	defer cancel()
+	result, err := candidateAdapter.FindCandidates(stageCtx, MirrorCandidateRequest{
 		PersonaID: personaID,
 		QueryText: queryText,
 		Limit:     limit * 4,
 	})
+	diagnostics.LatencyMs = time.Since(started).Milliseconds()
 	if err != nil || result == nil {
-		diagnostics.Status = "sidecar_error"
+		status, topErr := classifySidecarStageError(ctx, stageCtx, err)
+		if topErr != nil {
+			return nil, diagnostics, topErr
+		}
+		diagnostics.Status = status
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = sanitizeSidecarFallbackReason(status)
+		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
+		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
 	diagnostics.SidecarCandidateCount = len(result.Candidates)
 	if len(result.Candidates) == 0 {
 		diagnostics.Status = "no_candidates"
+		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
 	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
@@ -132,10 +165,11 @@ func (s *service) mirrorFactCandidates(ctx context.Context, personaID string, qu
 	} else {
 		diagnostics.Status = "used"
 	}
+	s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 	return report.Mapped, diagnostics, nil
 }
 
-func (s *service) graphActivationCandidates(ctx context.Context, personaID string, prepared memsqlite.PreparedRetrieval) ([]memsqlite.RetrievalActivationCandidate, *memsqlite.GraphActivationDiagnostics, error) {
+func (s *service) graphActivationCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval) ([]memsqlite.RetrievalActivationCandidate, *memsqlite.GraphActivationDiagnostics, error) {
 	diagnostics := &memsqlite.GraphActivationDiagnostics{Status: "disabled_by_config"}
 	if !prepared.Policy.UseMirror {
 		return nil, diagnostics, nil
@@ -161,22 +195,51 @@ func (s *service) graphActivationCandidates(ctx context.Context, personaID strin
 		diagnostics.Status = "no_seeds"
 		return nil, diagnostics, nil
 	}
-	result, err := activationAdapter.ActivateGraph(ctx, MirrorActivationRequest{
+	if s.sidecarBreaker != nil && !s.sidecarBreaker.allow(personaID, sidecarStageActivation) {
+		diagnostics.Status = "breaker_open"
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_breaker_open"
+		return nil, diagnostics, nil
+	}
+	started := time.Now()
+	stageCtx, cancel, ok := sidecarStageContext(ctx, sidecarCtx, sidecarStageTimeout(s.sidecarResilience, sidecarStageActivation))
+	if !ok {
+		diagnostics.Status = sidecarStatusSkippedByBudget
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_timeout"
+		return nil, diagnostics, nil
+	}
+	defer cancel()
+	result, err := activationAdapter.ActivateGraph(stageCtx, MirrorActivationRequest{
 		PersonaID: personaID,
 		Seeds:     mirrorActivationSeedsFromStore(seeds),
-		Params:    defaultMirrorActivationParams(),
+		Params:    s.defaultMirrorActivationParams(),
 	})
+	diagnostics.LatencyMs = time.Since(started).Milliseconds()
 	if err != nil || result == nil {
-		diagnostics.Status = "sidecar_error"
+		status, topErr := classifySidecarStageError(ctx, stageCtx, err)
+		if topErr != nil {
+			return nil, diagnostics, topErr
+		}
+		diagnostics.Status = status
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = sanitizeSidecarFallbackReason(status)
+		s.recordSidecarStage(personaID, sidecarStageActivation, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
 	diagnostics.SidecarCandidateCount = len(result.Candidates)
+	diagnostics.Degraded = result.Degraded
+	diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
-		return nil, diagnostics, nil
+		if diagnostics.FallbackReason != "activation_budget_exceeded" || len(result.Candidates) == 0 {
+			s.recordSidecarStage(personaID, sidecarStageActivation, diagnostics.Status, diagnostics.FallbackReason)
+			return nil, diagnostics, nil
+		}
 	}
 	if len(result.Candidates) == 0 {
 		diagnostics.Status = "no_candidates"
+		s.recordSidecarStage(personaID, sidecarStageActivation, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
 	report, err := s.mirrorMap.MapActivationCandidatesWithDiagnostics(ctx, personaID, activationCandidatesToStore(result.Candidates))
@@ -199,49 +262,77 @@ func (s *service) graphActivationCandidates(ctx context.Context, personaID strin
 			Paths:         graphActivationPathsToStore(item.Paths),
 		})
 	}
-	if diagnostics.MappedCandidateCount == 0 && diagnostics.SidecarCandidateCount > 0 {
+	if result.Degraded {
+		diagnostics.Status = "sidecar_degraded"
+	} else if diagnostics.MappedCandidateCount == 0 && diagnostics.SidecarCandidateCount > 0 {
 		diagnostics.Status = "candidates_unmapped_or_stale"
 	} else {
 		diagnostics.Status = "used"
 	}
+	s.recordSidecarStage(personaID, sidecarStageActivation, diagnostics.Status, diagnostics.FallbackReason)
 	return report.Mapped, diagnostics, nil
 }
 
-func (s *service) rerankCandidates(ctx context.Context, personaID string, prepared memsqlite.PreparedRetrieval, candidates []memsqlite.RerankCandidate) ([]memsqlite.RerankResultItem, *memsqlite.RerankDiagnostics) {
+func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval, candidates []memsqlite.RerankCandidate) ([]memsqlite.RerankResultItem, *memsqlite.RerankDiagnostics, error) {
 	diagnostics := &memsqlite.RerankDiagnostics{
 		Status:             "disabled_by_config",
 		SafeCandidateCount: len(candidates),
 	}
 	if !prepared.Policy.UseMirror {
-		return nil, diagnostics
+		return nil, diagnostics, nil
 	}
 	if len(candidates) == 0 {
 		diagnostics.Status = "no_candidates"
-		return nil, diagnostics
+		return nil, diagnostics, nil
 	}
 	diagnostics.Status = "adapter_missing"
 	rerankAdapter, ok := s.mirrorAdapter.(MirrorRerankAdapter)
 	if !ok || rerankAdapter == nil {
-		return nil, diagnostics
+		return nil, diagnostics, nil
 	}
-	result, err := rerankAdapter.Rerank(ctx, MirrorRerankRequest{
+	if s.sidecarBreaker != nil && !s.sidecarBreaker.allow(personaID, sidecarStageRerank) {
+		diagnostics.Status = "breaker_open"
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_breaker_open"
+		return nil, diagnostics, nil
+	}
+	started := time.Now()
+	stageCtx, cancel, ok := sidecarStageContext(ctx, sidecarCtx, sidecarStageTimeout(s.sidecarResilience, sidecarStageRerank))
+	if !ok {
+		diagnostics.Status = sidecarStatusSkippedByBudget
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = "sidecar_timeout"
+		return nil, diagnostics, nil
+	}
+	defer cancel()
+	result, err := rerankAdapter.Rerank(stageCtx, MirrorRerankRequest{
 		PersonaID:  personaID,
 		QueryText:  safeRerankQueryText(prepared.Query),
 		Candidates: rerankCandidatesFromStore(candidates),
 	})
+	diagnostics.LatencyMs = time.Since(started).Milliseconds()
 	if err != nil || result == nil {
-		diagnostics.Status = "sidecar_error"
-		return nil, diagnostics
+		status, topErr := classifySidecarStageError(ctx, stageCtx, err)
+		if topErr != nil {
+			return nil, diagnostics, topErr
+		}
+		diagnostics.Status = status
+		diagnostics.Degraded = true
+		diagnostics.FallbackReason = sanitizeSidecarFallbackReason(status)
+		s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
+		return nil, diagnostics, nil
 	}
 	diagnostics.Degraded = result.Degraded
-	diagnostics.FallbackReason = result.FallbackReason
+	diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
-		return nil, diagnostics
+		s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
+		return nil, diagnostics, nil
 	}
 	diagnostics.Status = "used"
 	diagnostics.ResultCount = len(result.Items)
-	return rerankItemsToStore(result.Items), diagnostics
+	s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
+	return rerankItemsToStore(result.Items), diagnostics, nil
 }
 
 func safeRerankQueryText(query memsqlite.QueryAnalysis) string {
@@ -290,14 +381,18 @@ func boundedRerankQueryText(value string) string {
 	return sanitized
 }
 
-func defaultMirrorActivationParams() MirrorActivationParams {
+func (s *service) defaultMirrorActivationParams() MirrorActivationParams {
+	budget := s.sidecarResilience.ActivationBudget
 	return MirrorActivationParams{
-		MaxHops:             2,
-		HopDecay:            0.70,
-		MinEnergy:           0.01,
-		MaxActiveNodes:      80,
-		HubSuppressionPower: 0.50,
-		IncludePaths:        true,
+		MaxHops:                   2,
+		HopDecay:                  0.70,
+		MinEnergy:                 0.01,
+		MaxActiveNodes:            80,
+		HubSuppressionPower:       0.50,
+		IncludePaths:              true,
+		MaxEdgesScannedPerRequest: budget.MaxEdgesScannedPerRequest,
+		MaxNeighborsPerNode:       budget.MaxNeighborsPerNode,
+		MaxActivationWallMs:       float64(budget.MaxActivationWall / time.Millisecond),
 	}
 }
 

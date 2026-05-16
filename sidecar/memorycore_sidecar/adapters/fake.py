@@ -4,7 +4,10 @@ import hashlib
 import re
 from typing import Any
 
-from memorycore_sidecar.activation import ActivationEdge, activate_graph
+from memorycore_sidecar.activation import (
+    ActivationEdge,
+    activate_graph_with_diagnostics,
+)
 
 from .base import MirrorAdapter
 
@@ -68,51 +71,56 @@ class FakeMirrorAdapter(MirrorAdapter):
 
     def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
         persona_id = str(request["persona_id"])
+        edges_by_source, degree_by_node = self._build_persona_activation_graph(persona_id)
 
         def neighbors(trivium_node_id: int) -> list[ActivationEdge]:
-            out: list[ActivationEdge] = []
-            for edge in self._edges.values():
-                if str(edge["persona_id"]) != persona_id:
-                    continue
-                source_id = _stable_fake_id(
-                    persona_id, str(edge["from_node_type"]), str(edge["from_node_id"])
-                )
-                target_id = _stable_fake_id(
-                    persona_id, str(edge["to_node_type"]), str(edge["to_node_id"])
-                )
-                direction = str(edge.get("direction", "forward"))
-                weight = float(edge.get("weight", 1.0))
-                link_type = str(edge.get("link_type", "related"))
-                if source_id == trivium_node_id and direction in ("forward", "bidirectional"):
-                    out.append(ActivationEdge(target_id=target_id, link_type=link_type, weight=weight))
-                if target_id == trivium_node_id and direction in ("backward", "bidirectional"):
-                    out.append(ActivationEdge(target_id=source_id, link_type=link_type, weight=weight))
-            return out
+            return edges_by_source.get(trivium_node_id, [])
 
         def degree(trivium_node_id: int) -> int:
-            count = 0
-            for edge in self._edges.values():
-                if str(edge["persona_id"]) != persona_id:
-                    continue
-                source_id = _stable_fake_id(
-                    persona_id, str(edge["from_node_type"]), str(edge["from_node_id"])
-                )
-                target_id = _stable_fake_id(
-                    persona_id, str(edge["to_node_type"]), str(edge["to_node_id"])
-                )
-                if source_id == trivium_node_id or target_id == trivium_node_id:
-                    count += 1
-            return count
+            return degree_by_node.get(trivium_node_id, 0)
 
-        return {
-            "candidates": activate_graph(
-                list(request.get("seeds", [])),
-                neighbors=neighbors,
-                degree=degree,
-                params=request.get("params", {}),
-            ),
-            "degraded": False,
+        run = activate_graph_with_diagnostics(
+            list(request.get("seeds", [])),
+            neighbors=neighbors,
+            degree=degree,
+            params=request.get("params", {}),
+        )
+        result = {
+            "candidates": run.candidates,
+            "degraded": run.degraded,
         }
+        if run.fallback_reason:
+            result["fallback_reason"] = run.fallback_reason
+        return result
+
+    def _build_persona_activation_graph(
+        self, persona_id: str
+    ) -> tuple[dict[int, list[ActivationEdge]], dict[int, int]]:
+        edges_by_source: dict[int, list[ActivationEdge]] = {}
+        degree_by_node: dict[int, int] = {}
+        for edge in self._edges.values():
+            if str(edge["persona_id"]) != persona_id:
+                continue
+            source_id = _stable_fake_id(
+                persona_id, str(edge["from_node_type"]), str(edge["from_node_id"])
+            )
+            target_id = _stable_fake_id(
+                persona_id, str(edge["to_node_type"]), str(edge["to_node_id"])
+            )
+            direction = str(edge.get("direction", "forward"))
+            weight = float(edge.get("weight", 1.0))
+            link_type = str(edge.get("link_type", "related"))
+            if direction in ("forward", "bidirectional"):
+                edges_by_source.setdefault(source_id, []).append(
+                    ActivationEdge(target_id=target_id, link_type=link_type, weight=weight)
+                )
+            if direction in ("backward", "bidirectional"):
+                edges_by_source.setdefault(target_id, []).append(
+                    ActivationEdge(target_id=source_id, link_type=link_type, weight=weight)
+                )
+            degree_by_node[source_id] = degree_by_node.get(source_id, 0) + 1
+            degree_by_node[target_id] = degree_by_node.get(target_id, 0) + 1
+        return edges_by_source, degree_by_node
 
     def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
         query_tokens = _tokens(str(request["query_text"]))

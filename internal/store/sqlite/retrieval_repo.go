@@ -86,6 +86,9 @@ type MemoryContext struct {
 
 type MirrorDiagnostics struct {
 	Status                string
+	Degraded              bool
+	FallbackReason        string
+	LatencyMs             int64
 	SidecarCandidateCount int
 	MappedCandidateCount  int
 	DroppedCandidateCount int
@@ -94,6 +97,9 @@ type MirrorDiagnostics struct {
 
 type GraphActivationDiagnostics struct {
 	Status                string
+	Degraded              bool
+	FallbackReason        string
+	LatencyMs             int64
 	SidecarCandidateCount int
 	MappedCandidateCount  int
 	DroppedCandidateCount int
@@ -122,6 +128,7 @@ type RerankDiagnostics struct {
 	ResultCount        int
 	Degraded           bool
 	FallbackReason     string
+	LatencyMs          int64
 }
 
 type RerankCandidate struct {

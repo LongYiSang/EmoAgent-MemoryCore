@@ -32,25 +32,27 @@ type Service interface {
 }
 
 type service struct {
-	db            *memsqlite.DB
-	sqlDB         *sql.DB
-	store         *memsqlite.Store
-	episodes      *memsqlite.EpisodeRepository
-	entities      *memsqlite.EntityRepository
-	facts         *memsqlite.ConsolidationRepository
-	search        *memsqlite.SearchRepository
-	retrieve      *memsqlite.RetrievalRepository
-	retention     *memsqlite.RetentionRepository
-	compress      *memsqlite.CompressionRepository
-	forget        *memsqlite.ForgetRepository
-	mirrorAdapter MirrorAdapter
-	mirrorQueue   *memsqlite.MirrorQueueRepository
-	mirrorPayload *memsqlite.MirrorPayloadRepository
-	mirrorIndex   *memsqlite.MirrorIndexRepository
-	mirrorMap     *memsqlite.MirrorCandidateRepository
-	mirrorState   *memsqlite.MirrorPersonaStateRepository
-	persona       string
-	now           func() time.Time
+	db                *memsqlite.DB
+	sqlDB             *sql.DB
+	store             *memsqlite.Store
+	episodes          *memsqlite.EpisodeRepository
+	entities          *memsqlite.EntityRepository
+	facts             *memsqlite.ConsolidationRepository
+	search            *memsqlite.SearchRepository
+	retrieve          *memsqlite.RetrievalRepository
+	retention         *memsqlite.RetentionRepository
+	compress          *memsqlite.CompressionRepository
+	forget            *memsqlite.ForgetRepository
+	mirrorAdapter     MirrorAdapter
+	mirrorQueue       *memsqlite.MirrorQueueRepository
+	mirrorPayload     *memsqlite.MirrorPayloadRepository
+	mirrorIndex       *memsqlite.MirrorIndexRepository
+	mirrorMap         *memsqlite.MirrorCandidateRepository
+	mirrorState       *memsqlite.MirrorPersonaStateRepository
+	persona           string
+	now               func() time.Time
+	sidecarResilience SidecarResilienceOptions
+	sidecarBreaker    *sidecarCircuitBreaker
 }
 
 func Open(ctx context.Context, opts Options) (Service, error) {
@@ -73,27 +75,30 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
+	resilience := normalizeSidecarResilienceOptions(opts.SidecarResilience)
 	sqlDB := db.SQLDB()
 	return &service{
-		db:            db,
-		sqlDB:         sqlDB,
-		store:         memsqlite.NewStore(sqlDB),
-		episodes:      memsqlite.NewEpisodeRepository(sqlDB),
-		entities:      memsqlite.NewEntityRepository(sqlDB),
-		facts:         memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
-		search:        memsqlite.NewSearchRepository(sqlDB),
-		retrieve:      memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
-		retention:     memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
-		compress:      memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
-		forget:        memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
-		mirrorAdapter: opts.MirrorAdapter,
-		mirrorQueue:   memsqlite.NewMirrorQueueRepository(sqlDB),
-		mirrorPayload: memsqlite.NewMirrorPayloadRepository(sqlDB),
-		mirrorIndex:   memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
-		mirrorMap:     memsqlite.NewMirrorCandidateRepository(sqlDB),
-		mirrorState:   memsqlite.NewMirrorPersonaStateRepository(sqlDB),
-		persona:       defaultString(opts.PersonaID, defaultPersonaID),
-		now:           now,
+		db:                db,
+		sqlDB:             sqlDB,
+		store:             memsqlite.NewStore(sqlDB),
+		episodes:          memsqlite.NewEpisodeRepository(sqlDB),
+		entities:          memsqlite.NewEntityRepository(sqlDB),
+		facts:             memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
+		search:            memsqlite.NewSearchRepository(sqlDB),
+		retrieve:          memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
+		retention:         memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
+		compress:          memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
+		forget:            memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
+		mirrorAdapter:     opts.MirrorAdapter,
+		mirrorQueue:       memsqlite.NewMirrorQueueRepository(sqlDB),
+		mirrorPayload:     memsqlite.NewMirrorPayloadRepository(sqlDB),
+		mirrorIndex:       memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
+		mirrorMap:         memsqlite.NewMirrorCandidateRepository(sqlDB),
+		mirrorState:       memsqlite.NewMirrorPersonaStateRepository(sqlDB),
+		persona:           defaultString(opts.PersonaID, defaultPersonaID),
+		now:               now,
+		sidecarResilience: resilience,
+		sidecarBreaker:    newSidecarCircuitBreaker(resilience.Breaker, now),
 	}, nil
 }
 

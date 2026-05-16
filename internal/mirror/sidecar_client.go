@@ -72,12 +72,15 @@ type ActivationSeed struct {
 }
 
 type ActivationParams struct {
-	MaxHops             int
-	HopDecay            float64
-	MinEnergy           float64
-	MaxActiveNodes      int
-	HubSuppressionPower float64
-	IncludePaths        bool
+	MaxHops                   int
+	HopDecay                  float64
+	MinEnergy                 float64
+	MaxActiveNodes            int
+	HubSuppressionPower       float64
+	IncludePaths              bool
+	MaxEdgesScannedPerRequest int
+	MaxNeighborsPerNode       int
+	MaxActivationWallMs       float64
 }
 
 type ActivationCandidate struct {
@@ -749,12 +752,15 @@ func activationSeedsJSON(seeds []ActivationSeed) []map[string]any {
 
 func activationParamsJSON(params ActivationParams) map[string]any {
 	return map[string]any{
-		"max_hops":              params.MaxHops,
-		"hop_decay":             params.HopDecay,
-		"min_energy":            params.MinEnergy,
-		"max_active_nodes":      params.MaxActiveNodes,
-		"hub_suppression_power": params.HubSuppressionPower,
-		"include_paths":         params.IncludePaths,
+		"max_hops":                      params.MaxHops,
+		"hop_decay":                     params.HopDecay,
+		"min_energy":                    params.MinEnergy,
+		"max_active_nodes":              params.MaxActiveNodes,
+		"hub_suppression_power":         params.HubSuppressionPower,
+		"include_paths":                 params.IncludePaths,
+		"max_edges_scanned_per_request": params.MaxEdgesScannedPerRequest,
+		"max_neighbors_per_node":        params.MaxNeighborsPerNode,
+		"max_activation_wall_ms":        params.MaxActivationWallMs,
 	}
 }
 

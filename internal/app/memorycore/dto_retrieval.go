@@ -192,6 +192,9 @@ type AnchorSourceBreakdown struct {
 
 type MirrorRetrievalDiagnostics struct {
 	Status                string                       `json:"status"`
+	Degraded              bool                         `json:"degraded"`
+	FallbackReason        string                       `json:"fallback_reason,omitempty"`
+	LatencyMs             int64                        `json:"latency_ms,omitempty"`
 	SidecarCandidateCount int                          `json:"sidecar_candidate_count"`
 	MappedCandidateCount  int                          `json:"mapped_candidate_count"`
 	DroppedCandidateCount int                          `json:"dropped_candidate_count"`
@@ -209,6 +212,9 @@ type MirrorCandidateDiagnostics struct {
 
 type GraphActivationDiagnostics struct {
 	Status                string                                `json:"status"`
+	Degraded              bool                                  `json:"degraded"`
+	FallbackReason        string                                `json:"fallback_reason,omitempty"`
+	LatencyMs             int64                                 `json:"latency_ms,omitempty"`
 	SidecarCandidateCount int                                   `json:"sidecar_candidate_count"`
 	MappedCandidateCount  int                                   `json:"mapped_candidate_count"`
 	DroppedCandidateCount int                                   `json:"dropped_candidate_count"`
@@ -237,6 +243,7 @@ type RerankDiagnostics struct {
 	ResultCount        int    `json:"result_count"`
 	Degraded           bool   `json:"degraded"`
 	FallbackReason     string `json:"fallback_reason,omitempty"`
+	LatencyMs          int64  `json:"latency_ms,omitempty"`
 }
 
 type RebuildSearchDocumentsRequest struct {

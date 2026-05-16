@@ -78,6 +78,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 
 - `UseMirror=false`、sidecar 不可用、persona mirror 未 ready、sidecar degraded 或候选 unmapped/stale 时，读取链路退回 SQLite search / anchor / Go ranking。
 - TriviumDB mirror candidates、Graph Activation 和 sidecar rerank 都只是候选或排序信号；SQLite authority filter 仍是 Prompt 注入前的最终安全边界。
+- Sidecar retrieval 是可选增强路径。Mirror candidates、Graph Activation 和 rerank 受 Go 侧短 stage timeout、总 sidecar budget、persona/stage circuit breaker 约束；timeout 或 degraded 状态会回退到 SQLite authority retrieval，并保留在检索 diagnostics 中。
 - Reranker 默认 `provider=none`，DashScope provider 需要显式配置环境变量；缺 key、超时、HTTP 错误或 malformed response 时不阻断检索，只是不提供 rerank boost。
 - 真实 mirror 质量、夜间大规模延迟评估仍属于可选增强；SQLite-only deterministic eval 是当前基线。
 - 写入侧预过滤、真实 LLM 抽取、周/月叙事生成不属于 Phase 5 已实现读取链路。

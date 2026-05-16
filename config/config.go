@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"gopkg.in/yaml.v3"
@@ -40,9 +41,20 @@ type RetrievalConfig struct {
 }
 
 type SidecarConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	URL     string `yaml:"url" json:"url"`
-	Adapter string `yaml:"adapter" json:"adapter"`
+	Enabled                             bool   `yaml:"enabled" json:"enabled"`
+	URL                                 string `yaml:"url" json:"url"`
+	Adapter                             string `yaml:"adapter" json:"adapter"`
+	TotalTimeoutMS                      int    `yaml:"total_timeout_ms" json:"total_timeout_ms"`
+	MirrorTimeoutMS                     int    `yaml:"mirror_timeout_ms" json:"mirror_timeout_ms"`
+	ActivationTimeoutMS                 int    `yaml:"activation_timeout_ms" json:"activation_timeout_ms"`
+	RerankTimeoutMS                     int    `yaml:"rerank_timeout_ms" json:"rerank_timeout_ms"`
+	BreakerEnabled                      bool   `yaml:"breaker_enabled" json:"breaker_enabled"`
+	BreakerWindow                       int    `yaml:"breaker_window" json:"breaker_window"`
+	BreakerFailureThreshold             int    `yaml:"breaker_failure_threshold" json:"breaker_failure_threshold"`
+	BreakerOpenMS                       int    `yaml:"breaker_open_ms" json:"breaker_open_ms"`
+	ActivationMaxEdgesScannedPerRequest int    `yaml:"activation_max_edges_scanned_per_request" json:"activation_max_edges_scanned_per_request"`
+	ActivationMaxNeighborsPerNode       int    `yaml:"activation_max_neighbors_per_node" json:"activation_max_neighbors_per_node"`
+	ActivationMaxWallMS                 int    `yaml:"activation_max_wall_ms" json:"activation_max_wall_ms"`
 }
 
 type RetentionConfig struct {
@@ -79,9 +91,20 @@ func Default() Config {
 			SensitivityPermission: memorycore.SensitivityNormal,
 		},
 		Sidecar: SidecarConfig{
-			Enabled: false,
-			URL:     "",
-			Adapter: "trivium",
+			Enabled:                             false,
+			URL:                                 "",
+			Adapter:                             "trivium",
+			TotalTimeoutMS:                      400,
+			MirrorTimeoutMS:                     80,
+			ActivationTimeoutMS:                 150,
+			RerankTimeoutMS:                     100,
+			BreakerEnabled:                      true,
+			BreakerWindow:                       20,
+			BreakerFailureThreshold:             3,
+			BreakerOpenMS:                       60000,
+			ActivationMaxEdgesScannedPerRequest: 10000,
+			ActivationMaxNeighborsPerNode:       100,
+			ActivationMaxWallMS:                 120,
 		},
 		Retention: RetentionConfig{
 			Jobs:                 []string{string(memorycore.RetentionJobDailyTTLExpiry)},
@@ -115,6 +138,36 @@ func (c *Config) ApplyDefaults() {
 	}
 	if strings.TrimSpace(c.Sidecar.Adapter) == "" {
 		c.Sidecar.Adapter = defaults.Sidecar.Adapter
+	}
+	if c.Sidecar.TotalTimeoutMS == 0 {
+		c.Sidecar.TotalTimeoutMS = defaults.Sidecar.TotalTimeoutMS
+	}
+	if c.Sidecar.MirrorTimeoutMS == 0 {
+		c.Sidecar.MirrorTimeoutMS = defaults.Sidecar.MirrorTimeoutMS
+	}
+	if c.Sidecar.ActivationTimeoutMS == 0 {
+		c.Sidecar.ActivationTimeoutMS = defaults.Sidecar.ActivationTimeoutMS
+	}
+	if c.Sidecar.RerankTimeoutMS == 0 {
+		c.Sidecar.RerankTimeoutMS = defaults.Sidecar.RerankTimeoutMS
+	}
+	if c.Sidecar.BreakerWindow == 0 {
+		c.Sidecar.BreakerWindow = defaults.Sidecar.BreakerWindow
+	}
+	if c.Sidecar.BreakerFailureThreshold == 0 {
+		c.Sidecar.BreakerFailureThreshold = defaults.Sidecar.BreakerFailureThreshold
+	}
+	if c.Sidecar.BreakerOpenMS == 0 {
+		c.Sidecar.BreakerOpenMS = defaults.Sidecar.BreakerOpenMS
+	}
+	if c.Sidecar.ActivationMaxEdgesScannedPerRequest == 0 {
+		c.Sidecar.ActivationMaxEdgesScannedPerRequest = defaults.Sidecar.ActivationMaxEdgesScannedPerRequest
+	}
+	if c.Sidecar.ActivationMaxNeighborsPerNode == 0 {
+		c.Sidecar.ActivationMaxNeighborsPerNode = defaults.Sidecar.ActivationMaxNeighborsPerNode
+	}
+	if c.Sidecar.ActivationMaxWallMS == 0 {
+		c.Sidecar.ActivationMaxWallMS = defaults.Sidecar.ActivationMaxWallMS
 	}
 	if c.Retention.Jobs == nil {
 		c.Retention.Jobs = append([]string(nil), defaults.Retention.Jobs...)
@@ -163,6 +216,40 @@ func (c Config) Validate() error {
 			return fmt.Errorf("sidecar.url must be a loopback HTTP URL: %w", err)
 		}
 	}
+	if c.Sidecar.Enabled || c.Retrieval.UseMirror {
+		if c.Sidecar.TotalTimeoutMS <= 0 {
+			return fmt.Errorf("sidecar.total_timeout_ms must be > 0")
+		}
+		if c.Sidecar.MirrorTimeoutMS <= 0 {
+			return fmt.Errorf("sidecar.mirror_timeout_ms must be > 0")
+		}
+		if c.Sidecar.ActivationTimeoutMS <= 0 {
+			return fmt.Errorf("sidecar.activation_timeout_ms must be > 0")
+		}
+		if c.Sidecar.RerankTimeoutMS <= 0 {
+			return fmt.Errorf("sidecar.rerank_timeout_ms must be > 0")
+		}
+		if c.Sidecar.ActivationMaxEdgesScannedPerRequest <= 0 {
+			return fmt.Errorf("sidecar.activation_max_edges_scanned_per_request must be > 0")
+		}
+		if c.Sidecar.ActivationMaxNeighborsPerNode <= 0 {
+			return fmt.Errorf("sidecar.activation_max_neighbors_per_node must be > 0")
+		}
+		if c.Sidecar.ActivationMaxWallMS <= 0 {
+			return fmt.Errorf("sidecar.activation_max_wall_ms must be > 0")
+		}
+		if c.Sidecar.BreakerEnabled {
+			if c.Sidecar.BreakerWindow <= 0 {
+				return fmt.Errorf("sidecar.breaker_window must be > 0 when sidecar.breaker_enabled=true")
+			}
+			if c.Sidecar.BreakerFailureThreshold <= 0 {
+				return fmt.Errorf("sidecar.breaker_failure_threshold must be > 0 when sidecar.breaker_enabled=true")
+			}
+			if c.Sidecar.BreakerOpenMS <= 0 {
+				return fmt.Errorf("sidecar.breaker_open_ms must be > 0 when sidecar.breaker_enabled=true")
+			}
+		}
+	}
 	for _, job := range c.Retention.Jobs {
 		switch memorycore.RetentionJobName(job) {
 		case memorycore.RetentionJobDailyTTLExpiry:
@@ -195,12 +282,35 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 	if err != nil {
 		return memorycore.Options{}, err
 	}
+	breakerMode := memorycore.SidecarBreakerModeEnabled
+	if !c.Sidecar.BreakerEnabled {
+		breakerMode = memorycore.SidecarBreakerModeDisabled
+	}
 	return memorycore.Options{
 		DBPath:        c.Core.DBPath,
 		PersonaID:     c.Core.PersonaID,
 		AutoMigrate:   c.Core.AutoMigrate,
 		EnableFTS:     c.Core.EnableFTS,
 		MirrorAdapter: adapter,
+		SidecarResilience: memorycore.SidecarResilienceOptions{
+			Timeouts: memorycore.SidecarStageTimeouts{
+				Total:      time.Duration(c.Sidecar.TotalTimeoutMS) * time.Millisecond,
+				Mirror:     time.Duration(c.Sidecar.MirrorTimeoutMS) * time.Millisecond,
+				Activation: time.Duration(c.Sidecar.ActivationTimeoutMS) * time.Millisecond,
+				Rerank:     time.Duration(c.Sidecar.RerankTimeoutMS) * time.Millisecond,
+			},
+			Breaker: memorycore.SidecarBreakerOptions{
+				Mode:             breakerMode,
+				Window:           c.Sidecar.BreakerWindow,
+				FailureThreshold: c.Sidecar.BreakerFailureThreshold,
+				OpenFor:          time.Duration(c.Sidecar.BreakerOpenMS) * time.Millisecond,
+			},
+			ActivationBudget: memorycore.SidecarActivationBudgetOptions{
+				MaxEdgesScannedPerRequest: c.Sidecar.ActivationMaxEdgesScannedPerRequest,
+				MaxNeighborsPerNode:       c.Sidecar.ActivationMaxNeighborsPerNode,
+				MaxActivationWall:         time.Duration(c.Sidecar.ActivationMaxWallMS) * time.Millisecond,
+			},
+		},
 	}, nil
 }
 
@@ -296,9 +406,20 @@ type retrievalPatch struct {
 }
 
 type sidecarPatch struct {
-	Enabled *bool   `yaml:"enabled" json:"enabled"`
-	URL     *string `yaml:"url" json:"url"`
-	Adapter *string `yaml:"adapter" json:"adapter"`
+	Enabled                             *bool   `yaml:"enabled" json:"enabled"`
+	URL                                 *string `yaml:"url" json:"url"`
+	Adapter                             *string `yaml:"adapter" json:"adapter"`
+	TotalTimeoutMS                      *int    `yaml:"total_timeout_ms" json:"total_timeout_ms"`
+	MirrorTimeoutMS                     *int    `yaml:"mirror_timeout_ms" json:"mirror_timeout_ms"`
+	ActivationTimeoutMS                 *int    `yaml:"activation_timeout_ms" json:"activation_timeout_ms"`
+	RerankTimeoutMS                     *int    `yaml:"rerank_timeout_ms" json:"rerank_timeout_ms"`
+	BreakerEnabled                      *bool   `yaml:"breaker_enabled" json:"breaker_enabled"`
+	BreakerWindow                       *int    `yaml:"breaker_window" json:"breaker_window"`
+	BreakerFailureThreshold             *int    `yaml:"breaker_failure_threshold" json:"breaker_failure_threshold"`
+	BreakerOpenMS                       *int    `yaml:"breaker_open_ms" json:"breaker_open_ms"`
+	ActivationMaxEdgesScannedPerRequest *int    `yaml:"activation_max_edges_scanned_per_request" json:"activation_max_edges_scanned_per_request"`
+	ActivationMaxNeighborsPerNode       *int    `yaml:"activation_max_neighbors_per_node" json:"activation_max_neighbors_per_node"`
+	ActivationMaxWallMS                 *int    `yaml:"activation_max_wall_ms" json:"activation_max_wall_ms"`
 }
 
 type retentionPatch struct {
@@ -383,6 +504,39 @@ func applySidecarPatch(cfg *SidecarConfig, patch sidecarPatch) {
 	if patch.Adapter != nil {
 		cfg.Adapter = *patch.Adapter
 	}
+	if patch.TotalTimeoutMS != nil {
+		cfg.TotalTimeoutMS = *patch.TotalTimeoutMS
+	}
+	if patch.MirrorTimeoutMS != nil {
+		cfg.MirrorTimeoutMS = *patch.MirrorTimeoutMS
+	}
+	if patch.ActivationTimeoutMS != nil {
+		cfg.ActivationTimeoutMS = *patch.ActivationTimeoutMS
+	}
+	if patch.RerankTimeoutMS != nil {
+		cfg.RerankTimeoutMS = *patch.RerankTimeoutMS
+	}
+	if patch.BreakerEnabled != nil {
+		cfg.BreakerEnabled = *patch.BreakerEnabled
+	}
+	if patch.BreakerWindow != nil {
+		cfg.BreakerWindow = *patch.BreakerWindow
+	}
+	if patch.BreakerFailureThreshold != nil {
+		cfg.BreakerFailureThreshold = *patch.BreakerFailureThreshold
+	}
+	if patch.BreakerOpenMS != nil {
+		cfg.BreakerOpenMS = *patch.BreakerOpenMS
+	}
+	if patch.ActivationMaxEdgesScannedPerRequest != nil {
+		cfg.ActivationMaxEdgesScannedPerRequest = *patch.ActivationMaxEdgesScannedPerRequest
+	}
+	if patch.ActivationMaxNeighborsPerNode != nil {
+		cfg.ActivationMaxNeighborsPerNode = *patch.ActivationMaxNeighborsPerNode
+	}
+	if patch.ActivationMaxWallMS != nil {
+		cfg.ActivationMaxWallMS = *patch.ActivationMaxWallMS
+	}
 }
 
 func applyRetentionPatch(cfg *RetentionConfig, patch retentionPatch) {
@@ -421,9 +575,20 @@ var configYAMLFields = yamlFieldSet{
 		"sensitivity_permission": nil,
 	},
 	"sidecar": {
-		"enabled": nil,
-		"url":     nil,
-		"adapter": nil,
+		"enabled":                   nil,
+		"url":                       nil,
+		"adapter":                   nil,
+		"total_timeout_ms":          nil,
+		"mirror_timeout_ms":         nil,
+		"activation_timeout_ms":     nil,
+		"rerank_timeout_ms":         nil,
+		"breaker_enabled":           nil,
+		"breaker_window":            nil,
+		"breaker_failure_threshold": nil,
+		"breaker_open_ms":           nil,
+		"activation_max_edges_scanned_per_request": nil,
+		"activation_max_neighbors_per_node":        nil,
+		"activation_max_wall_ms":                   nil,
 	},
 	"retention": {
 		"jobs":                    nil,

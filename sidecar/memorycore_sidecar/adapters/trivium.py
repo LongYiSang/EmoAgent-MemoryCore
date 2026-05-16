@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from memorycore_sidecar.activation import ActivationEdge, activate_graph
+from memorycore_sidecar.activation import ActivationEdge, activate_graph_with_diagnostics
 from memorycore_sidecar.config import SidecarConfig, load_config
 from memorycore_sidecar.embedding import (
     EmbeddingProvider,
@@ -206,13 +206,16 @@ class TriviumAdapter(MirrorAdapter):
             def degree(trivium_node_id: int) -> int:
                 return len(neighbors(trivium_node_id))
 
-            candidates = activate_graph(
+            run = activate_graph_with_diagnostics(
                 list(request.get("seeds", [])),
                 neighbors=neighbors,
                 degree=degree,
                 params=request.get("params", {}),
             )
-        return {"candidates": candidates, "degraded": False}
+        result = {"candidates": run.candidates, "degraded": run.degraded}
+        if run.fallback_reason:
+            result["fallback_reason"] = run.fallback_reason
+        return result
 
     def rerank(self, request: dict[str, Any]) -> dict[str, Any]:
         provider = getattr(self, "rerank_provider", None)

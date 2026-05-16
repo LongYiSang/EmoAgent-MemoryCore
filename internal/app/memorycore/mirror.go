@@ -433,12 +433,15 @@ func (a sidecarMirrorAdapter) ActivateGraph(ctx context.Context, req MirrorActiv
 		PersonaID: req.PersonaID,
 		Seeds:     activationSeedsToInternal(req.Seeds),
 		Params: internalmirror.ActivationParams{
-			MaxHops:             req.Params.MaxHops,
-			HopDecay:            req.Params.HopDecay,
-			MinEnergy:           req.Params.MinEnergy,
-			MaxActiveNodes:      req.Params.MaxActiveNodes,
-			HubSuppressionPower: req.Params.HubSuppressionPower,
-			IncludePaths:        req.Params.IncludePaths,
+			MaxHops:                   req.Params.MaxHops,
+			HopDecay:                  req.Params.HopDecay,
+			MinEnergy:                 req.Params.MinEnergy,
+			MaxActiveNodes:            req.Params.MaxActiveNodes,
+			HubSuppressionPower:       req.Params.HubSuppressionPower,
+			IncludePaths:              req.Params.IncludePaths,
+			MaxEdgesScannedPerRequest: req.Params.MaxEdgesScannedPerRequest,
+			MaxNeighborsPerNode:       req.Params.MaxNeighborsPerNode,
+			MaxActivationWallMs:       req.Params.MaxActivationWallMs,
 		},
 	})
 	if err != nil {

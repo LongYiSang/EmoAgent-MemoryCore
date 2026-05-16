@@ -82,6 +82,74 @@ def test_server_retrieval_activate_roundtrip_uses_trivium_seed_id():
         thread.join(timeout=2)
 
 
+def test_server_retrieval_activate_returns_budget_degraded_partial_candidates():
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        seed_id = _upsert_node(base_url, "fact-seed", "seed text")
+        _upsert_node(base_url, "fact-related-a", "related a")
+        _upsert_node(base_url, "fact-related-b", "related b")
+        for idx in ("a", "b"):
+            body = _post_json(
+                base_url,
+                "/mirror/operation",
+                {
+                    "schema_version": REQUEST_SCHEMA_VERSION,
+                    "operation_id": f"edge-{idx}",
+                    "persona_id": "default",
+                    "operation": "upsert_edge",
+                    "edge": {
+                        "persona_id": "default",
+                        "sqlite_edge_id": f"edge-{idx}",
+                        "link_type": "SUPPORTS",
+                        "from_node_type": "fact",
+                        "from_node_id": "fact-seed",
+                        "to_node_type": "fact",
+                        "to_node_id": f"fact-related-{idx}",
+                        "weight": 1.0,
+                    },
+                },
+            )
+            assert body["status"] == "ok"
+
+        body = _post_json(
+            base_url,
+            "/retrieval/activate",
+            {
+                "schema_version": ACTIVATION_REQUEST_SCHEMA_VERSION,
+                "request_id": "activate-budget",
+                "persona_id": "default",
+                "seeds": [
+                    {
+                        "trivium_node_id": seed_id,
+                        "sqlite_node_id": "fact-seed",
+                        "node_type": "fact",
+                        "seed_energy": 1.0,
+                    }
+                ],
+                "params": {
+                    "max_hops": 1,
+                    "max_edges_scanned_per_request": 1,
+                    "max_neighbors_per_node": 100,
+                    "max_activation_wall_ms": 120,
+                },
+            },
+        )
+
+        assert body["schema_version"] == ACTIVATION_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "activate-budget"
+        assert body["degraded"] is True
+        assert body["fallback_reason"] == "activation_budget_exceeded"
+        assert body["candidates"]
+        assert "Traceback" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_server_retrieval_rerank_roundtrip_orders_by_fake_adapter_score():
     server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
     thread = threading.Thread(target=server.serve_forever, daemon=True)

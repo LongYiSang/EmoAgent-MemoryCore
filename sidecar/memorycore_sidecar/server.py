@@ -23,6 +23,7 @@ from .protocol import (
     parse_clear_namespace_request,
     parse_operation_request,
     parse_rerank_request,
+    ProtocolError,
 )
 
 
@@ -100,8 +101,11 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
                     )
                     return
                 self._write_json(HTTPStatus.NOT_FOUND, build_error("not found"))
-            except Exception as exc:
+            except ProtocolError as exc:
                 self._write_json(HTTPStatus.BAD_REQUEST, build_error(str(exc)))
+                return
+            except Exception:
+                self._write_json(HTTPStatus.BAD_REQUEST, build_error("sidecar request failed"))
                 return
 
         def _read_json(self) -> Any:

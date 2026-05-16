@@ -327,6 +327,68 @@ def test_fake_adapter_activate_graph_expands_weighted_edges_with_paths():
     assert related_candidate["paths"][0]["link_types"] == ["CAUSED_BY"]
 
 
+def test_fake_adapter_activation_builds_persona_graph_once(monkeypatch):
+    adapter = FakeMirrorAdapter()
+    seed = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "seed",
+            "searchable_text": "seed",
+            "payload": {},
+        }
+    )
+    for idx in range(20):
+        adapter.upsert_node(
+            {
+                "persona_id": "default",
+                "node_type": "fact",
+                "sqlite_node_id": f"target-{idx}",
+                "searchable_text": f"target {idx}",
+                "payload": {},
+            }
+        )
+        adapter.upsert_edge(
+            {
+                "persona_id": "default",
+                "sqlite_edge_id": f"edge-{idx}",
+                "link_type": "SUPPORTS",
+                "from_node_type": "fact",
+                "from_node_id": "seed",
+                "to_node_type": "fact",
+                "to_node_id": f"target-{idx}",
+                "weight": 1.0,
+            }
+        )
+
+    calls = 0
+    original = adapter._build_persona_activation_graph
+
+    def counting_build(persona_id):
+        nonlocal calls
+        calls += 1
+        return original(persona_id)
+
+    monkeypatch.setattr(adapter, "_build_persona_activation_graph", counting_build)
+    result = adapter.activate_graph(
+        {
+            "persona_id": "default",
+            "seeds": [
+                {
+                    "trivium_node_id": seed["trivium_node_id"],
+                    "sqlite_node_id": "seed",
+                    "node_type": "fact",
+                    "seed_energy": 1.0,
+                }
+            ],
+            "params": {"max_hops": 1, "max_neighbors_per_node": 5},
+        }
+    )
+
+    assert calls == 1
+    assert result["degraded"] is False
+
+
 def test_fake_adapter_activate_graph_suppresses_hub_dominance():
     adapter = FakeMirrorAdapter()
     seed = adapter.upsert_node(

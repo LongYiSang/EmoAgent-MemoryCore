@@ -236,6 +236,9 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 	}
 	result := &MirrorRetrievalDiagnostics{
 		Status:                value.Status,
+		Degraded:              value.Degraded,
+		FallbackReason:        value.FallbackReason,
+		LatencyMs:             value.LatencyMs,
 		SidecarCandidateCount: value.SidecarCandidateCount,
 		MappedCandidateCount:  value.MappedCandidateCount,
 		DroppedCandidateCount: value.DroppedCandidateCount,
@@ -264,6 +267,9 @@ func graphActivationDiagnosticsFromStore(value *memsqlite.GraphActivationDiagnos
 	}
 	result := &GraphActivationDiagnostics{
 		Status:                value.Status,
+		Degraded:              value.Degraded,
+		FallbackReason:        value.FallbackReason,
+		LatencyMs:             value.LatencyMs,
 		SidecarCandidateCount: value.SidecarCandidateCount,
 		MappedCandidateCount:  value.MappedCandidateCount,
 		DroppedCandidateCount: value.DroppedCandidateCount,
@@ -309,6 +315,7 @@ func rerankDiagnosticsFromStore(value *memsqlite.RerankDiagnostics) *RerankDiagn
 		ResultCount:        value.ResultCount,
 		Degraded:           value.Degraded,
 		FallbackReason:     value.FallbackReason,
+		LatencyMs:          value.LatencyMs,
 	}
 }
 

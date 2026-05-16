@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
@@ -38,6 +39,15 @@ func TestDefaultValues(t *testing.T) {
 	}
 	if cfg.Sidecar.Enabled || cfg.Sidecar.URL != "" || cfg.Sidecar.Adapter != "trivium" {
 		t.Fatalf("sidecar defaults = %#v", cfg.Sidecar)
+	}
+	if cfg.Sidecar.TotalTimeoutMS != 400 || cfg.Sidecar.MirrorTimeoutMS != 80 || cfg.Sidecar.ActivationTimeoutMS != 150 || cfg.Sidecar.RerankTimeoutMS != 100 {
+		t.Fatalf("sidecar timeout defaults = %#v", cfg.Sidecar)
+	}
+	if !cfg.Sidecar.BreakerEnabled || cfg.Sidecar.BreakerWindow != 20 || cfg.Sidecar.BreakerFailureThreshold != 3 || cfg.Sidecar.BreakerOpenMS != 60000 {
+		t.Fatalf("sidecar breaker defaults = %#v", cfg.Sidecar)
+	}
+	if cfg.Sidecar.ActivationMaxEdgesScannedPerRequest != 10000 || cfg.Sidecar.ActivationMaxNeighborsPerNode != 100 || cfg.Sidecar.ActivationMaxWallMS != 120 {
+		t.Fatalf("sidecar activation budget defaults = %#v", cfg.Sidecar)
 	}
 	if len(cfg.Retention.Jobs) != 1 || cfg.Retention.Jobs[0] != string(memorycore.RetentionJobDailyTTLExpiry) {
 		t.Fatalf("retention jobs default = %#v", cfg.Retention.Jobs)
@@ -106,6 +116,56 @@ func TestLoadJSONFillsDefaultsAndPreservesExplicitFalse(t *testing.T) {
 	}
 	if cfg.Retrieval.FinalMemoryCount != 8 || cfg.Retrieval.ContextBudgetTokens != 900 {
 		t.Fatalf("retrieval count/budget = %d/%d", cfg.Retrieval.FinalMemoryCount, cfg.Retrieval.ContextBudgetTokens)
+	}
+}
+
+func TestLoadYAMLPreservesSidecarResilienceConfigAndMapsOptions(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+enabled: true
+retrieval:
+  use_mirror: true
+sidecar:
+  enabled: true
+  adapter: fake
+  total_timeout_ms: 401
+  mirror_timeout_ms: 81
+  activation_timeout_ms: 151
+  rerank_timeout_ms: 101
+  breaker_enabled: false
+  breaker_window: 21
+  breaker_failure_threshold: 4
+  breaker_open_ms: 61000
+  activation_max_edges_scanned_per_request: 10001
+  activation_max_neighbors_per_node: 101
+  activation_max_wall_ms: 121
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	if cfg.Sidecar.BreakerEnabled {
+		t.Fatal("breaker_enabled=false was not preserved")
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		t.Fatalf("ToOptions: %v", err)
+	}
+	if opts.SidecarResilience.Timeouts.Total != 401*time.Millisecond ||
+		opts.SidecarResilience.Timeouts.Mirror != 81*time.Millisecond ||
+		opts.SidecarResilience.Timeouts.Activation != 151*time.Millisecond ||
+		opts.SidecarResilience.Timeouts.Rerank != 101*time.Millisecond {
+		t.Fatalf("timeouts = %#v", opts.SidecarResilience.Timeouts)
+	}
+	if opts.SidecarResilience.Breaker.Mode != memorycore.SidecarBreakerModeDisabled {
+		t.Fatalf("breaker mode = %q, want disabled", opts.SidecarResilience.Breaker.Mode)
+	}
+	if opts.SidecarResilience.ActivationBudget.MaxActivationWall != 121*time.Millisecond {
+		t.Fatalf("activation wall = %s, want 121ms", opts.SidecarResilience.ActivationBudget.MaxActivationWall)
+	}
+	if opts.SidecarResilience.ActivationBudget.MaxEdgesScannedPerRequest != 10001 ||
+		opts.SidecarResilience.ActivationBudget.MaxNeighborsPerNode != 101 {
+		t.Fatalf("activation budget = %#v", opts.SidecarResilience.ActivationBudget)
 	}
 }
 
@@ -181,6 +241,44 @@ func TestValidateRules(t *testing.T) {
 		cfg.Mirror.SyncLimit = 0
 		requireErrorContains(t, cfg.Validate(), "mirror.sync_limit")
 	})
+
+	t.Run("sidecar timeouts must be positive when sidecar enabled", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.Sidecar.Enabled = true
+		cfg.Sidecar.Adapter = "fake"
+		cfg.Sidecar.MirrorTimeoutMS = 0
+		requireErrorContains(t, cfg.Validate(), "sidecar.mirror_timeout_ms")
+	})
+
+	t.Run("sidecar activation budget must be positive when mirror enabled", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.Retrieval.UseMirror = true
+		cfg.Sidecar.Enabled = true
+		cfg.Sidecar.Adapter = "fake"
+		cfg.Sidecar.ActivationMaxWallMS = -1
+		requireErrorContains(t, cfg.Validate(), "sidecar.activation_max_wall_ms")
+	})
+
+	t.Run("enabled sidecar breaker requires positive open interval", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.Sidecar.Enabled = true
+		cfg.Sidecar.Adapter = "fake"
+		cfg.Sidecar.BreakerOpenMS = 0
+		requireErrorContains(t, cfg.Validate(), "sidecar.breaker_open_ms")
+	})
+
+	t.Run("disabled breaker allows zero breaker numeric fields", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.Sidecar.Enabled = true
+		cfg.Sidecar.Adapter = "fake"
+		cfg.Sidecar.BreakerEnabled = false
+		cfg.Sidecar.BreakerWindow = 0
+		cfg.Sidecar.BreakerFailureThreshold = 0
+		cfg.Sidecar.BreakerOpenMS = 0
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
 }
 
 func TestEmbeddedYAMLRejectsUnknownFields(t *testing.T) {
@@ -212,6 +310,9 @@ func TestMappings(t *testing.T) {
 	cfg.Retrieval.SensitivityPermission = memorycore.SensitivitySensitive
 	cfg.Sidecar.Enabled = true
 	cfg.Sidecar.Adapter = "fake"
+	cfg.Sidecar.TotalTimeoutMS = 700
+	cfg.Sidecar.MirrorTimeoutMS = 70
+	cfg.Sidecar.BreakerEnabled = false
 	cfg.Retention.Jobs = []string{
 		string(memorycore.RetentionJobDailyTTLExpiry),
 		string(memorycore.RetentionJobMonthlyDeepArchive),
@@ -227,6 +328,12 @@ func TestMappings(t *testing.T) {
 	}
 	if opts.MirrorAdapter == nil {
 		t.Fatal("MirrorAdapter = nil, want fake adapter")
+	}
+	if opts.SidecarResilience.Timeouts.Total != 700*time.Millisecond || opts.SidecarResilience.Timeouts.Mirror != 70*time.Millisecond {
+		t.Fatalf("sidecar timeout options = %#v", opts.SidecarResilience.Timeouts)
+	}
+	if opts.SidecarResilience.Breaker.Mode != memorycore.SidecarBreakerModeDisabled {
+		t.Fatalf("sidecar breaker mode = %q, want disabled", opts.SidecarResilience.Breaker.Mode)
 	}
 
 	policy := cfg.RetrievalPolicy()
@@ -249,7 +356,7 @@ func TestDocsDescriptorIsStableAndJSONSerializable(t *testing.T) {
 		t.Fatal("FieldDescriptors returned no fields")
 	}
 	markdown := memconfig.MarkdownReference()
-	for _, want := range []string{"core.db_path", "retrieval.context_budget_tokens", "sidecar.url"} {
+	for _, want := range []string{"core.db_path", "retrieval.context_budget_tokens", "sidecar.url", "sidecar.activation_max_wall_ms"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("markdown reference missing %q:\n%s", want, markdown)
 		}

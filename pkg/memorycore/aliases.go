@@ -126,6 +126,11 @@ type (
 	RetrievalRequest                    = appcore.RetrievalRequest
 	RunMirrorSyncRequest                = appcore.RunMirrorSyncRequest
 	RunMirrorSyncResult                 = appcore.RunMirrorSyncResult
+	SidecarActivationBudgetOptions      = appcore.SidecarActivationBudgetOptions
+	SidecarBreakerMode                  = appcore.SidecarBreakerMode
+	SidecarBreakerOptions               = appcore.SidecarBreakerOptions
+	SidecarResilienceOptions            = appcore.SidecarResilienceOptions
+	SidecarStageTimeouts                = appcore.SidecarStageTimeouts
 	RunRetentionJobsRequest             = appcore.RunRetentionJobsRequest
 	RunRetentionJobsResult              = appcore.RunRetentionJobsResult
 	RunRetentionRequest                 = appcore.RunRetentionRequest
@@ -281,6 +286,9 @@ const (
 	SourceTypePlugin                    = appcore.SourceTypePlugin
 	SourceTypeSystem                    = appcore.SourceTypeSystem
 	SourceTypeWorkCandidate             = appcore.SourceTypeWorkCandidate
+	SidecarBreakerModeDefault           = appcore.SidecarBreakerModeDefault
+	SidecarBreakerModeEnabled           = appcore.SidecarBreakerModeEnabled
+	SidecarBreakerModeDisabled          = appcore.SidecarBreakerModeDisabled
 	ValidityInvalidated                 = appcore.ValidityInvalidated
 	ValidityUncertain                   = appcore.ValidityUncertain
 	ValidityValid                       = appcore.ValidityValid

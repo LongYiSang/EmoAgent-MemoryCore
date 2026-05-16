@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -815,6 +816,39 @@ func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testin
 	requirePublicGraphActivationCandidate(t, contextResult.GraphActivation, related.ID, "graph_activation", 1)
 }
 
+func TestServiceRetrieveGraphActivationUsesConfiguredBudgetParams(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{
+		ActivationBudget: memorycore.SidecarActivationBudgetOptions{
+			MaxEdgesScannedPerRequest: 321,
+			MaxNeighborsPerNode:       17,
+			MaxActivationWall:         99 * time.Millisecond,
+		},
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	seed := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, seed.ID, 8401, "indexed")
+
+	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	params := adapter.lastActivationRequest.Params
+	if params.MaxEdgesScannedPerRequest != 321 || params.MaxNeighborsPerNode != 17 || params.MaxActivationWallMs != 99 {
+		t.Fatalf("activation params = %#v, want configured budget values", params)
+	}
+}
+
 func TestServiceRetrieveGraphActivationFallsBackWhenAdapterFails(t *testing.T) {
 	ctx := context.Background()
 	adapter := &retrievalMirrorAdapter{activationErr: sql.ErrConnDone}
@@ -1100,21 +1134,134 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 	})
 }
 
+func TestServiceRetrieveMarksStageTimeoutWithoutTopLevelError(t *testing.T) {
+	ctx := context.Background()
+	adapter := &blockingRetrievalMirrorAdapter{}
+	svc, _ := openRetrievalMirrorServiceWithOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{
+		Timeouts: memorycore.SidecarStageTimeouts{
+			Total:  50 * time.Millisecond,
+			Mirror: 5 * time.Millisecond,
+		},
+		Breaker: memorycore.SidecarBreakerOptions{Mode: memorycore.SidecarBreakerModeDisabled},
+	})
+	defer svc.Close()
+
+	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText: "coffee",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if result.Mirror == nil || result.Mirror.Status != "sidecar_timeout" {
+		t.Fatalf("mirror diagnostics = %#v, want sidecar_timeout", result.Mirror)
+	}
+	if !result.Mirror.Degraded || result.Mirror.FallbackReason != "sidecar_timeout" {
+		t.Fatalf("mirror degradation = %#v, want timeout fallback", result.Mirror)
+	}
+	if result.Mirror.LatencyMs <= 0 {
+		t.Fatalf("latency_ms = %d, want positive", result.Mirror.LatencyMs)
+	}
+}
+
+func TestServiceRetrieveParentCancellationIsNotSidecarTimeout(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	adapter := &blockingRetrievalMirrorAdapter{}
+	svc, _ := openRetrievalMirrorServiceWithOptions(t, context.Background(), adapter, memorycore.SidecarResilienceOptions{
+		Breaker: memorycore.SidecarBreakerOptions{Mode: memorycore.SidecarBreakerModeEnabled, FailureThreshold: 1},
+	})
+	defer svc.Close()
+
+	_, err := svc.Retrieve(parent, memorycore.RetrievalRequest{
+		QueryText: "coffee",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("retrieve error = %v, want context.Canceled", err)
+	}
+}
+
+func TestServiceRetrieveBreakerDisabledDoesNotOpen(t *testing.T) {
+	ctx := context.Background()
+	adapter := &blockingRetrievalMirrorAdapter{}
+	svc, _ := openRetrievalMirrorServiceWithOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{
+		Timeouts: memorycore.SidecarStageTimeouts{Total: 30 * time.Millisecond, Mirror: 5 * time.Millisecond},
+		Breaker:  memorycore.SidecarBreakerOptions{Mode: memorycore.SidecarBreakerModeDisabled},
+	})
+	defer svc.Close()
+
+	for i := 0; i < 2; i++ {
+		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			QueryText: "coffee",
+			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+		})
+		if err != nil {
+			t.Fatalf("retrieve %d: %v", i, err)
+		}
+		if result.Mirror == nil || result.Mirror.Status != "sidecar_timeout" {
+			t.Fatalf("retrieve %d mirror = %#v, want sidecar_timeout", i, result.Mirror)
+		}
+	}
+	if adapter.mirrorCalls != 2 {
+		t.Fatalf("mirror calls = %d, want 2 with disabled breaker", adapter.mirrorCalls)
+	}
+}
+
+func TestServiceRetrieveGraphActivationBudgetDegradedKeepsPartialCandidates(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{activationDegraded: true}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡，也不喜欢早会。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	seed := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	partial := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, seed.ID, 9101, "indexed")
+	insertMirrorMapForFact(t, db, partial.ID, 9102, "indexed")
+	adapter.activationFallbackReason = "activation_budget_exceeded"
+	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+		{TriviumNodeID: 9102, Score: 0.77, Source: "graph_activation", Rank: 1},
+	}
+
+	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, result, partial.ID, "用户不喜欢早会。", "")
+	if result.GraphActivation == nil || !result.GraphActivation.Degraded || result.GraphActivation.FallbackReason != "activation_budget_exceeded" {
+		t.Fatalf("graph diagnostics = %#v, want budget degraded", result.GraphActivation)
+	}
+}
+
 type retrievalMirrorAdapter struct {
-	candidates            []memorycore.MirrorCandidate
-	activationCandidates  []memorycore.MirrorActivationCandidate
-	rerankItems           []memorycore.MirrorRerankItem
-	err                   error
-	activationErr         error
-	rerankErr             error
-	degraded              bool
-	activationDegraded    bool
-	rerankDegraded        bool
-	calls                 int
-	activationCalls       int
-	rerankCalls           int
-	lastActivationRequest memorycore.MirrorActivationRequest
-	lastRerankRequest     memorycore.MirrorRerankRequest
+	candidates               []memorycore.MirrorCandidate
+	activationCandidates     []memorycore.MirrorActivationCandidate
+	rerankItems              []memorycore.MirrorRerankItem
+	err                      error
+	fallbackReason           string
+	activationErr            error
+	activationFallbackReason string
+	rerankErr                error
+	rerankFallbackReason     string
+	degraded                 bool
+	activationDegraded       bool
+	rerankDegraded           bool
+	calls                    int
+	activationCalls          int
+	rerankCalls              int
+	lastActivationRequest    memorycore.MirrorActivationRequest
+	lastRerankRequest        memorycore.MirrorRerankRequest
 }
 
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
@@ -1122,7 +1269,7 @@ func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memoryc
 	if a.err != nil {
 		return nil, a.err
 	}
-	return &memorycore.MirrorCandidateResult{Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded}, nil
+	return &memorycore.MirrorCandidateResult{Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded, FallbackReason: a.fallbackReason}, nil
 }
 
 func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
@@ -1132,8 +1279,9 @@ func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memoryco
 		return nil, a.activationErr
 	}
 	return &memorycore.MirrorActivationResult{
-		Candidates: append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
-		Degraded:   a.activationDegraded,
+		Candidates:     append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
+		Degraded:       a.activationDegraded,
+		FallbackReason: a.activationFallbackReason,
 	}, nil
 }
 
@@ -1144,8 +1292,9 @@ func (a *retrievalMirrorAdapter) Rerank(ctx context.Context, req memorycore.Mirr
 		return nil, a.rerankErr
 	}
 	return &memorycore.MirrorRerankResult{
-		Items:    append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
-		Degraded: a.rerankDegraded,
+		Items:          append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
+		Degraded:       a.rerankDegraded,
+		FallbackReason: a.rerankFallbackReason,
 	}, nil
 }
 
@@ -1167,11 +1316,17 @@ func (a *retrievalMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.
 
 func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter) (memorycore.Service, string) {
 	t.Helper()
+	return openRetrievalMirrorServiceWithOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{})
+}
+
+func openRetrievalMirrorServiceWithOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions) (memorycore.Service, string) {
+	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	svc, err := memorycore.Open(ctx, memorycore.Options{
-		DBPath:        dbPath,
-		AutoMigrate:   true,
-		MirrorAdapter: adapter,
+		DBPath:            dbPath,
+		AutoMigrate:       true,
+		MirrorAdapter:     adapter,
+		SidecarResilience: resilience,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 		},
@@ -1180,6 +1335,31 @@ func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter memor
 		t.Fatalf("open service: %v", err)
 	}
 	return svc, dbPath
+}
+
+type blockingRetrievalMirrorAdapter struct {
+	retrievalMirrorAdapter
+	mirrorCalls     int
+	activationCalls int
+	rerankCalls     int
+}
+
+func (a *blockingRetrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+	a.mirrorCalls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (a *blockingRetrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+	a.activationCalls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (a *blockingRetrievalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+	a.rerankCalls++
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func insertMirrorMapForFact(t *testing.T, db *sql.DB, factID string, triviumNodeID int64, status string) {

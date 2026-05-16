@@ -14,6 +14,14 @@ Go / SQLite still owns authority filtering, final score, fatigue, MMR, context
 budget, context reconstruction, and prompt injection. Sidecar output is only a
 candidate or ranking signal and must be safe to ignore.
 
+Sidecar retrieval is an optional enhancement path. Go bounds mirror candidates,
+graph activation, and rerank with short stage timeouts, a total sidecar budget,
+and persona/stage circuit breakers. Timeout, budget, or degraded statuses fall
+back to SQLite authority retrieval and remain visible in retrieval diagnostics.
+Python graph activation also honors request budgets for wall time, scanned
+edges, and per-node neighbors, returning safe partial degraded results instead
+of spinning.
+
 ## Setup
 
 Use Python 3.12 with uv from this directory:

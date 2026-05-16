@@ -102,12 +102,15 @@ type MirrorActivationSeed struct {
 }
 
 type MirrorActivationParams struct {
-	MaxHops             int     `json:"max_hops"`
-	HopDecay            float64 `json:"hop_decay"`
-	MinEnergy           float64 `json:"min_energy"`
-	MaxActiveNodes      int     `json:"max_active_nodes"`
-	HubSuppressionPower float64 `json:"hub_suppression_power"`
-	IncludePaths        bool    `json:"include_paths"`
+	MaxHops                   int     `json:"max_hops"`
+	HopDecay                  float64 `json:"hop_decay"`
+	MinEnergy                 float64 `json:"min_energy"`
+	MaxActiveNodes            int     `json:"max_active_nodes"`
+	HubSuppressionPower       float64 `json:"hub_suppression_power"`
+	IncludePaths              bool    `json:"include_paths"`
+	MaxEdgesScannedPerRequest int     `json:"max_edges_scanned_per_request"`
+	MaxNeighborsPerNode       int     `json:"max_neighbors_per_node"`
+	MaxActivationWallMs       float64 `json:"max_activation_wall_ms"`
 }
 
 type MirrorActivationCandidate struct {
