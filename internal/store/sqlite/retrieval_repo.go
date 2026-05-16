@@ -497,17 +497,21 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			}
 		}
 	}
+	pf, err := r.buildScoringPrefetch(ctx, req, policy, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
+	candidateIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		fact, err := r.getFact(ctx, req.PersonaID, candidate.FactID)
-		if errors.Is(err, sql.ErrNoRows) {
+		candidateIDs = append(candidateIDs, candidate.FactID)
+	}
+	for _, factID := range uniqueSortedStrings(candidateIDs) {
+		candidate := candidates[factID]
+		fact, ok := pf.facts[candidate.FactID]
+		if !ok {
 			continue
 		}
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok, err := r.authorityAllows(ctx, fact, policy); err != nil {
-			return nil, nil, err
-		} else if !ok {
+		if !authorityAllowsFromPrefetch(fact, policy, pf) {
 			if req.MirrorDiagnostics != nil {
 				if idx, ok := mirrorCandidateIndexByFact[fact.ID]; ok {
 					if req.MirrorDiagnostics.Candidates[idx].DropReason == "" {
@@ -548,14 +552,8 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			}
 			continue
 		}
-		fatigue, err := r.fatigueCount(ctx, req.SessionID, fact.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		evidenceStrength, sourceEpisodeIDs, err := r.evidenceStrength(ctx, fact)
-		if err != nil {
-			return nil, nil, err
-		}
+		fatigue := pf.fatigue[fact.ID]
+		evidenceStrength, sourceEpisodeIDs := evidenceStrengthFromPrefetch(fact, pf)
 		recency := recencyScore(fact, now)
 		typePrior := factTypePrior(fact.FactType)
 		pinned := pinnedScore(fact)

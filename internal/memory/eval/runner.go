@@ -320,6 +320,16 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			return fmt.Errorf("case %s step %s mirror sync: %w", s.caseID, step.ID, err)
 		}
 		s.steps[step.ID] = stepResult{MirrorSync: result}
+	case "link":
+		if err := s.runLink(ctx, step); err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{}
+	case "fact":
+		if err := s.runFact(ctx, step); err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{}
 	default:
 		return fmt.Errorf("case %s step %s unknown action %q", s.caseID, step.ID, step.Action)
 	}
@@ -398,6 +408,146 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 		return nil, fmt.Errorf("case %s step %s consolidate: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
+}
+
+func (s *runState) runFact(ctx context.Context, step Step) error {
+	body := step.Fact
+	factID := strings.TrimSpace(body.ID)
+	if factID == "" {
+		factID = step.ID
+	}
+	subjectEntityID, err := s.resolveOptionalString(body.SubjectEntityID)
+	if err != nil {
+		return err
+	}
+	objectEntityID, err := s.resolveOptionalString(body.ObjectEntityID)
+	if err != nil {
+		return err
+	}
+	validFrom, err := parseOptionalTime(body.ValidFrom)
+	if err != nil {
+		return fmt.Errorf("case %s step %s fact valid_from: %w", s.caseID, step.ID, err)
+	}
+	validTo, err := parseOptionalTime(body.ValidTo)
+	if err != nil {
+		return fmt.Errorf("case %s step %s fact valid_to: %w", s.caseID, step.ID, err)
+	}
+	confidenceScore := body.ConfidenceScore
+	if confidenceScore == 0 {
+		confidenceScore = 0.5
+	}
+	importance := body.Importance
+	if importance == 0 {
+		importance = 0.5
+	}
+	searchable := true
+	if body.Searchable != nil {
+		searchable = *body.Searchable
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO facts (
+    id, persona_id, subject_entity_id, predicate, object_entity_id, object_literal,
+    content_summary, fact_type, valid_from, valid_to,
+    extraction_confidence, extraction_confidence_score, extraction_reasoning,
+    importance, valence, arousal, sensitivity_level,
+    validity_status, visibility_status, lifecycle_status,
+    pinned, pin_reason, pin_actor, searchable
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		factID,
+		defaultString(body.PersonaID, s.persona),
+		nullableStringValue(subjectEntityID),
+		body.Predicate,
+		nullableStringValue(objectEntityID),
+		nullableStringPointer(body.ObjectLiteral),
+		body.ContentSummary,
+		defaultString(body.FactType, "stable_preference"),
+		nullableTimeValue(validFrom),
+		nullableTimeValue(validTo),
+		defaultString(body.Confidence, "explicit"),
+		confidenceScore,
+		importance,
+		body.Valence,
+		body.Arousal,
+		defaultString(body.SensitivityLevel, "normal"),
+		defaultString(body.ValidityStatus, "valid"),
+		defaultString(body.VisibilityStatus, "visible"),
+		defaultString(body.LifecycleStatus, "active"),
+		boolToInt(body.Pinned),
+		nullableStringValue(body.PinReason),
+		nullableStringValue(body.PinActor),
+		boolToInt(searchable),
+	)
+	if err != nil {
+		return fmt.Errorf("case %s step %s fact: %w", s.caseID, step.ID, err)
+	}
+	s.refs[step.ID+".fact_id"] = factID
+	for index, rawSourceID := range body.SourceEpisodeIDs {
+		sourceID, err := s.resolveString(rawSourceID)
+		if err != nil {
+			return err
+		}
+		linkID := fmt.Sprintf("%s_source_%d", step.ID, index+1)
+		if _, err := s.db.ExecContext(ctx, `
+INSERT INTO memory_links (
+    id, persona_id, from_node_type, from_node_id, link_type,
+    to_node_type, to_node_id, direction, confidence, weight,
+    created_by, visibility_status, searchable
+) VALUES (?, ?, 'fact', ?, 'EVIDENCED_BY', 'episode', ?, 'forward', 1.0, 1.0, 'system', 'visible', 1)`,
+			linkID,
+			defaultString(body.PersonaID, s.persona),
+			factID,
+			sourceID,
+		); err != nil {
+			return fmt.Errorf("case %s step %s fact evidence link: %w", s.caseID, step.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *runState) runLink(ctx context.Context, step Step) error {
+	body := step.Link
+	linkID := strings.TrimSpace(body.ID)
+	if linkID == "" {
+		linkID = step.ID
+	}
+	fromNodeID, err := s.resolveString(body.FromNodeID)
+	if err != nil {
+		return err
+	}
+	toNodeID, err := s.resolveString(body.ToNodeID)
+	if err != nil {
+		return err
+	}
+	weight := body.Weight
+	if weight == 0 {
+		weight = 1
+	}
+	searchable := true
+	if body.Searchable != nil {
+		searchable = *body.Searchable
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO memory_links (
+    id, persona_id, from_node_type, from_node_id, link_type,
+    to_node_type, to_node_id, direction, confidence, weight,
+    created_by, visibility_status, searchable
+) VALUES (?, ?, ?, ?, ?, ?, ?, 'forward', 1.0, ?, 'system', ?, ?)`,
+		linkID,
+		defaultString(body.PersonaID, s.persona),
+		defaultString(body.FromNodeType, "fact"),
+		fromNodeID,
+		body.LinkType,
+		defaultString(body.ToNodeType, "fact"),
+		toNodeID,
+		weight,
+		defaultString(body.VisibilityStatus, "visible"),
+		boolToInt(searchable),
+	)
+	if err != nil {
+		return fmt.Errorf("case %s step %s link: %w", s.caseID, step.ID, err)
+	}
+	s.refs[step.ID+".link_id"] = linkID
+	return nil
 }
 
 func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.MemoryContext, error) {
@@ -803,6 +953,13 @@ func (s *runState) resolveString(value string) (string, error) {
 	return resolved, nil
 }
 
+func (s *runState) resolveOptionalString(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	return s.resolveString(value)
+}
+
 func (s *runState) resolveOrLiteral(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -840,6 +997,27 @@ func parseOptionalTimePointer(value string) (*time.Time, error) {
 		return nil, nil
 	}
 	return &parsed, nil
+}
+
+func nullableStringValue(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableStringPointer(value *string) any {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return nil
+	}
+	return *value
+}
+
+func nullableTimeValue(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func allowedFactOverrideColumn(column string) bool {

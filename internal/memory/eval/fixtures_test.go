@@ -27,6 +27,24 @@ func TestEvalFixtures(t *testing.T) {
 	}
 }
 
+func TestR012BatchAuthorityEquivalence(t *testing.T) {
+	runFixtureFile(t, filepath.Join("retrieval", "R012_batch_authority_equivalence.yaml"))
+}
+
+func TestR013BatchReconstructionEquivalence(t *testing.T) {
+	runFixtureFile(t, filepath.Join("retrieval", "R013_batch_reconstruction_equivalence.yaml"))
+}
+
+func runFixtureFile(t *testing.T, relativePath string) {
+	t.Helper()
+	ctx := context.Background()
+	path := filepath.Join(repoRoot(t), "testdata", "memory_eval", relativePath)
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).RunFile(ctx, path)
+	if report.Failed() {
+		t.Fatal(report.Error())
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 

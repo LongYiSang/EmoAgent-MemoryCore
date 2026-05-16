@@ -1,0 +1,209 @@
+case_id: R012_batch_authority_equivalence
+description: Batch prefetch authority keeps visible, pinned, mirror and graph candidates behind the same hard gates.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_visible
+      session_id: s1
+      content: 我喜欢安全咖啡，也手动固定了一条长期偏好。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep_hidden
+      session_id: s1
+      content: 这条来源不可搜索。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+      visibility_status: hidden
+steps:
+  - id: visible
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 安全咖啡
+        content_summary: 用户喜欢安全咖啡。
+        source_episode_ids: [ep_visible]
+        confidence: explicit
+        importance: 0.9
+  - id: pinned_no_evidence
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 手动固定偏好
+        content_summary: 用户手动固定了一条长期偏好。
+        confidence: explicit
+        importance: 0.8
+        pinned: true
+        user_requested: true
+      policy:
+        allow_manual_pin_without_source: true
+  - id: missing_entity
+    action: fact
+    fact:
+      subject_entity_id: ent_missing
+      predicate: likes
+      object_literal: 缺失实体偏好
+      content_summary: 用户喜欢缺失实体偏好。
+      source_episode_ids: [ep_visible]
+      confidence: explicit
+      importance: 1.0
+  - id: hidden_source
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 隐藏来源偏好
+      content_summary: 用户喜欢隐藏来源偏好。
+      source_episode_ids: [ep_hidden]
+      confidence: explicit
+      importance: 1.0
+  - id: hidden
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 隐藏偏好
+        content_summary: 用户喜欢隐藏偏好。
+        source_episode_ids: [ep_visible]
+        confidence: explicit
+        importance: 1.0
+  - id: sensitive
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 敏感偏好
+        content_summary: 用户喜欢敏感偏好。
+        source_episode_ids: [ep_visible]
+        confidence: explicit
+        importance: 1.0
+        sensitivity: sensitive
+  - id: mirror_denied
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 镜像拒绝偏好
+        content_summary: 用户喜欢镜像拒绝偏好。
+        source_episode_ids: [ep_visible]
+        confidence: explicit
+        importance: 1.0
+  - id: graph_denied
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 图拒绝偏好
+        content_summary: 用户喜欢图拒绝偏好。
+        source_episode_ids: [ep_visible]
+        confidence: explicit
+        importance: 1.0
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $pinned_no_evidence.fact_id
+          node_type: fact
+        - node_id: $missing_entity.fact_id
+          node_type: fact
+        - node_id: $hidden_source.fact_id
+          node_type: fact
+        - node_id: $mirror_denied.fact_id
+          node_type: fact
+        - node_id: $graph_denied.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $pinned_no_evidence.fact_id
+          node_type: fact
+          score: 0.95
+          rank: 1
+          source: pinned_manual
+        - node_id: $missing_entity.fact_id
+          node_type: fact
+          score: 0.99
+          rank: 2
+          source: missing_entity
+        - node_id: $hidden_source.fact_id
+          node_type: fact
+          score: 0.98
+          rank: 3
+          source: hidden_source
+        - node_id: $mirror_denied.fact_id
+          node_type: fact
+          score: 0.97
+          rank: 4
+          source: hidden_fact
+    graph_activation_stub:
+      candidates:
+        - node_id: $graph_denied.fact_id
+          node_type: fact
+          score: 0.98
+          source: graph_activation
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: 安全咖啡 手动固定偏好 隐藏偏好 敏感偏好
+      policy:
+        use_mirror: true
+        sensitivity_permission: normal
+        final_memory_count: 4
+assertions:
+  - type: memory_contains
+    step: retrieve
+    node_id: $visible.fact_id
+  - type: memory_contains
+    step: retrieve
+    node_id: $pinned_no_evidence.fact_id
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids:
+      - $hidden.fact_id
+      - $sensitive.fact_id
+      - $missing_entity.fact_id
+      - $hidden_source.fact_id
+      - $mirror_denied.fact_id
+      - $graph_denied.fact_id
+  - type: mirror_candidate
+    step: retrieve
+    source: missing_entity
+    rank: 2
+    suppression_reason: dropped_by_authority_filter
+  - type: mirror_candidate
+    step: retrieve
+    source: hidden_source
+    rank: 3
+    suppression_reason: dropped_by_authority_filter
+  - type: mirror_candidate
+    step: retrieve
+    source: hidden_fact
+    rank: 4
+    suppression_reason: dropped_by_authority_filter
+  - type: graph_activation_candidate
+    step: retrieve
+    node_type: fact
+    source: graph_activation
+    rank: 1
+    suppression_reason: dropped_by_authority_filter

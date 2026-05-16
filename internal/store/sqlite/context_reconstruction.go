@@ -29,16 +29,26 @@ func (r *RetrievalRepository) reconstructMemoryBlocks(ctx context.Context, req R
 
 	for _, candidate := range selected {
 		blockType := contextBlockType(query, candidate.Fact)
-		item, err := r.reconstructMemoryContextItem(ctx, candidate.Fact, blockType, policy)
-		if err != nil {
-			return nil, nil, 0, err
-		}
 		if _, ok := blocksByType[blockType]; !ok {
 			blocksByType[blockType] = &MemoryBlock{BlockType: blockType}
 			blockOrder = append(blockOrder, blockType)
 		}
-		blocksByType[blockType].Items = append(blocksByType[blockType].Items, item)
 		blockTypeByFactID[candidate.Fact.ID] = blockType
+	}
+
+	personaID := req.PersonaID
+	if personaID == "" {
+		personaID = selected[0].Fact.PersonaID
+	}
+	pf, err := r.buildReconstructionPrefetch(ctx, personaID, selected, blockTypeByFactID, policy)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	for _, candidate := range selected {
+		blockType := blockTypeByFactID[candidate.Fact.ID]
+		item := reconstructMemoryContextItemFromPrefetch(candidate.Fact, blockType, policy, pf)
+		blocksByType[blockType].Items = append(blocksByType[blockType].Items, item)
 		tokenEstimate += estimateMemoryContextItemTokens(item)
 	}
 

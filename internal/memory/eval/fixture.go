@@ -81,6 +81,8 @@ type Step struct {
 	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
 	MirrorRebuild *MirrorRebuildStep  `yaml:"mirror_rebuild"`
 	MirrorSync    *MirrorSyncStep     `yaml:"mirror_sync"`
+	Link          *LinkStep           `yaml:"link"`
+	Fact          *FactStep           `yaml:"fact"`
 	FactOverride  *FactOverride       `yaml:"fact_override"`
 	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
 	GraphStub     *GraphStubSettings  `yaml:"graph_activation_stub"`
@@ -213,6 +215,48 @@ type MirrorSyncStep struct {
 	Limit     int    `yaml:"limit"`
 }
 
+type LinkStep struct {
+	ID               string  `yaml:"id"`
+	PersonaID        string  `yaml:"persona_id"`
+	FromNodeType     string  `yaml:"from_node_type"`
+	FromNodeID       string  `yaml:"from_node_id"`
+	LinkType         string  `yaml:"link_type"`
+	ToNodeType       string  `yaml:"to_node_type"`
+	ToNodeID         string  `yaml:"to_node_id"`
+	Weight           float64 `yaml:"weight"`
+	VisibilityStatus string  `yaml:"visibility_status"`
+	Searchable       *bool   `yaml:"searchable"`
+}
+
+// FactStep seeds facts that normal consolidation intentionally rejects, such as
+// missing-entity or hidden-source authority edge cases.
+type FactStep struct {
+	ID               string   `yaml:"id"`
+	PersonaID        string   `yaml:"persona_id"`
+	SubjectEntityID  string   `yaml:"subject_entity_id"`
+	Predicate        string   `yaml:"predicate"`
+	ObjectEntityID   string   `yaml:"object_entity_id"`
+	ObjectLiteral    *string  `yaml:"object_literal"`
+	ContentSummary   string   `yaml:"content_summary"`
+	FactType         string   `yaml:"fact_type"`
+	ValidFrom        string   `yaml:"valid_from"`
+	ValidTo          string   `yaml:"valid_to"`
+	Confidence       string   `yaml:"confidence"`
+	ConfidenceScore  float64  `yaml:"confidence_score"`
+	Importance       float64  `yaml:"importance"`
+	Valence          float64  `yaml:"valence"`
+	Arousal          float64  `yaml:"arousal"`
+	SensitivityLevel string   `yaml:"sensitivity_level"`
+	ValidityStatus   string   `yaml:"validity_status"`
+	VisibilityStatus string   `yaml:"visibility_status"`
+	LifecycleStatus  string   `yaml:"lifecycle_status"`
+	Searchable       *bool    `yaml:"searchable"`
+	Pinned           bool     `yaml:"pinned"`
+	PinReason        string   `yaml:"pin_reason"`
+	PinActor         string   `yaml:"pin_actor"`
+	SourceEpisodeIDs []string `yaml:"source_episode_ids"`
+}
+
 type FactOverride struct {
 	FactID           string `yaml:"fact_id"`
 	VisibilityStatus string `yaml:"visibility_status"`
@@ -283,49 +327,50 @@ type RerankItemStub struct {
 }
 
 type Assertion struct {
-	Type                  string   `yaml:"type"`
-	Name                  string   `yaml:"name"`
-	Step                  string   `yaml:"step"`
-	NodeID                string   `yaml:"node_id"`
-	NodeType              string   `yaml:"node_type"`
-	NodeIDs               []string `yaml:"node_ids"`
-	RelevantNodeIDs       []string `yaml:"relevant_node_ids"`
-	ForbiddenNodeIDs      []string `yaml:"forbidden_node_ids"`
-	BlockType             string   `yaml:"block_type"`
-	Summary               string   `yaml:"summary"`
-	UsageGuidanceContains string   `yaml:"usage_guidance_contains"`
-	Action                string   `yaml:"action"`
-	Status                string   `yaml:"status"`
-	Content               string   `yaml:"content"`
-	FactID                string   `yaml:"fact_id"`
-	Predicate             string   `yaml:"predicate"`
-	Column                string   `yaml:"column"`
-	Equals                string   `yaml:"equals"`
-	FromNodeID            string   `yaml:"from_node_id"`
-	FromNodeType          string   `yaml:"from_node_type"`
-	LinkType              string   `yaml:"link_type"`
-	Direction             string   `yaml:"direction"`
-	ToNodeID              string   `yaml:"to_node_id"`
-	ToNodeType            string   `yaml:"to_node_type"`
-	SearchText            string   `yaml:"search_text"`
-	DeletionEventID       string   `yaml:"deletion_event_id"`
-	ForbiddenContains     []string `yaml:"forbidden_contains"`
-	EpisodeID             string   `yaml:"episode_id"`
-	TimeMode              string   `yaml:"time_mode"`
-	Signals               []string `yaml:"signals"`
-	MemoryDomain          string   `yaml:"memory_domain"`
-	MemoryAbility         string   `yaml:"memory_ability"`
-	EvidenceNeed          string   `yaml:"evidence_need"`
-	EntityMentions        []string `yaml:"entity_mentions"`
-	Source                string   `yaml:"source"`
-	Rank                  int      `yaml:"rank"`
-	At                    int      `yaml:"at"`
-	Min                   float64  `yaml:"min"`
-	Max                   float64  `yaml:"max"`
-	CompareStep           string   `yaml:"compare_step"`
-	HistoricalStatus      string   `yaml:"historical_status"`
-	SourceRefCount        int      `yaml:"source_ref_count"`
-	SuppressionReason     string   `yaml:"suppression_reason"`
+	Type                    string   `yaml:"type"`
+	Name                    string   `yaml:"name"`
+	Step                    string   `yaml:"step"`
+	NodeID                  string   `yaml:"node_id"`
+	NodeType                string   `yaml:"node_type"`
+	NodeIDs                 []string `yaml:"node_ids"`
+	RelevantNodeIDs         []string `yaml:"relevant_node_ids"`
+	ForbiddenNodeIDs        []string `yaml:"forbidden_node_ids"`
+	BlockType               string   `yaml:"block_type"`
+	Summary                 string   `yaml:"summary"`
+	UsageGuidanceContains   string   `yaml:"usage_guidance_contains"`
+	Action                  string   `yaml:"action"`
+	Status                  string   `yaml:"status"`
+	Content                 string   `yaml:"content"`
+	FactID                  string   `yaml:"fact_id"`
+	Predicate               string   `yaml:"predicate"`
+	Column                  string   `yaml:"column"`
+	Equals                  string   `yaml:"equals"`
+	FromNodeID              string   `yaml:"from_node_id"`
+	FromNodeType            string   `yaml:"from_node_type"`
+	LinkType                string   `yaml:"link_type"`
+	Direction               string   `yaml:"direction"`
+	ToNodeID                string   `yaml:"to_node_id"`
+	ToNodeType              string   `yaml:"to_node_type"`
+	SearchText              string   `yaml:"search_text"`
+	DeletionEventID         string   `yaml:"deletion_event_id"`
+	ForbiddenContains       []string `yaml:"forbidden_contains"`
+	EpisodeID               string   `yaml:"episode_id"`
+	TimeMode                string   `yaml:"time_mode"`
+	Signals                 []string `yaml:"signals"`
+	MemoryDomain            string   `yaml:"memory_domain"`
+	MemoryAbility           string   `yaml:"memory_ability"`
+	EvidenceNeed            string   `yaml:"evidence_need"`
+	EntityMentions          []string `yaml:"entity_mentions"`
+	Source                  string   `yaml:"source"`
+	Rank                    int      `yaml:"rank"`
+	At                      int      `yaml:"at"`
+	Min                     float64  `yaml:"min"`
+	Max                     float64  `yaml:"max"`
+	CompareStep             string   `yaml:"compare_step"`
+	HistoricalStatus        string   `yaml:"historical_status"`
+	RelatedHistoricalStatus string   `yaml:"related_historical_status"`
+	SourceRefCount          int      `yaml:"source_ref_count"`
+	SuppressionReason       string   `yaml:"suppression_reason"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -421,6 +466,14 @@ func (f *Fixture) Validate() error {
 			if step.MirrorSync == nil {
 				return fmt.Errorf("case %s step %s missing mirror_sync body", caseID, step.ID)
 			}
+		case "link":
+			if step.Link == nil {
+				return fmt.Errorf("case %s step %s missing link body", caseID, step.ID)
+			}
+		case "fact":
+			if step.Fact == nil {
+				return fmt.Errorf("case %s step %s missing fact body", caseID, step.ID)
+			}
 		default:
 			return fmt.Errorf("case %s step %s unknown action %q", caseID, step.ID, step.Action)
 		}
@@ -459,6 +512,7 @@ func knownAssertionType(value string) bool {
 		"block_not_contains",
 		"selected_chain_correct",
 		"suppression_event",
+		"mirror_candidate",
 		"graph_activation_candidate",
 		"rerank_status",
 		"rerank_input",

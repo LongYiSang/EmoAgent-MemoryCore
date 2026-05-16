@@ -35,6 +35,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertSelectedChainCorrect(assertion)
 	case "suppression_event":
 		return s.assertSuppressionEvent(ctx, assertion)
+	case "mirror_candidate":
+		return s.assertMirrorCandidate(assertion)
 	case "graph_activation_candidate":
 		return s.assertGraphActivationCandidate(assertion)
 	case "rerank_status":
@@ -324,8 +326,8 @@ func (s *runState) assertSelectedChainCorrect(assertion Assertion) error {
 		return err
 	}
 	for _, relatedID := range relatedIDs {
-		if !hasRelatedFact(item, relatedID, assertion.LinkType, assertion.Direction) {
-			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: relatedExpectation(relatedID, assertion.LinkType, assertion.Direction), Actual: relatedFactsDebug(item.RelatedFacts)}
+		if !hasRelatedFact(item, relatedID, assertion.LinkType, assertion.Direction, assertion.RelatedHistoricalStatus) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: relatedExpectation(relatedID, assertion.LinkType, assertion.Direction, assertion.RelatedHistoricalStatus), Actual: relatedFactsDebug(item.RelatedFacts)}
 		}
 	}
 	return nil
@@ -365,6 +367,51 @@ WHERE persona_id = ?
 		return fmt.Errorf("case %s assertion %s access events: %w", s.caseID, assertion.Type, err)
 	}
 	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "suppressed access event reason=" + wantReason, Actual: "missing"}
+}
+
+func (s *runState) assertMirrorCandidate(assertion Assertion) error {
+	result, err := s.retrievalResult(assertion)
+	if err != nil {
+		return err
+	}
+	diagnostics := result.Mirror
+	if diagnostics == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "mirror diagnostics present", Actual: "nil"}
+	}
+	if assertion.Status != "" && diagnostics.Status != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "status=" + assertion.Status, Actual: "status=" + diagnostics.Status}
+	}
+	statusOnly := assertion.NodeID == "" &&
+		assertion.Source == "" &&
+		assertion.Rank == 0 &&
+		assertion.SuppressionReason == ""
+	if statusOnly {
+		return nil
+	}
+	nodeID := assertion.NodeID
+	if nodeID != "" {
+		resolved, err := s.resolveString(nodeID)
+		if err != nil {
+			return err
+		}
+		nodeID = resolved
+	}
+	for _, candidate := range diagnostics.Candidates {
+		if nodeID != "" && candidate.SQLiteFactID != nodeID {
+			continue
+		}
+		if assertion.Source != "" && candidate.Source != assertion.Source {
+			continue
+		}
+		if assertion.Rank > 0 && candidate.Rank != assertion.Rank {
+			continue
+		}
+		if assertion.SuppressionReason != "" && candidate.DropReason != assertion.SuppressionReason {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "drop_reason=" + assertion.SuppressionReason, Actual: "drop_reason=" + candidate.DropReason}
+		}
+		return nil
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "mirror candidate " + nodeID, Actual: mirrorCandidatesDebug(diagnostics)}
 }
 
 func (s *runState) assertGraphActivationCandidate(assertion Assertion) error {
@@ -663,7 +710,7 @@ func findMemoryItem(context *memorycore.MemoryContext, blockType string, nodeID 
 	return memorycore.MemoryContextItem{}, false
 }
 
-func hasRelatedFact(item memorycore.MemoryContextItem, nodeID string, linkType string, direction string) bool {
+func hasRelatedFact(item memorycore.MemoryContextItem, nodeID string, linkType string, direction string, historicalStatus string) bool {
 	for _, related := range item.RelatedFacts {
 		if related.NodeID != nodeID {
 			continue
@@ -674,18 +721,24 @@ func hasRelatedFact(item memorycore.MemoryContextItem, nodeID string, linkType s
 		if direction != "" && related.Direction != direction {
 			continue
 		}
+		if historicalStatus != "" && related.HistoricalStatus != historicalStatus {
+			continue
+		}
 		return true
 	}
 	return false
 }
 
-func relatedExpectation(nodeID string, linkType string, direction string) string {
+func relatedExpectation(nodeID string, linkType string, direction string, historicalStatus string) string {
 	parts := []string{"related_node=" + nodeID}
 	if linkType != "" {
 		parts = append(parts, "link_type="+linkType)
 	}
 	if direction != "" {
 		parts = append(parts, "direction="+direction)
+	}
+	if historicalStatus != "" {
+		parts = append(parts, "historical_status="+historicalStatus)
 	}
 	return strings.Join(parts, " ")
 }
@@ -697,6 +750,17 @@ func relatedFactsDebug(items []memorycore.MemoryRelatedFactRef) string {
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		parts = append(parts, fmt.Sprintf("%s/%s/%s/%s", item.NodeID, item.LinkType, item.Direction, item.HistoricalStatus))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func mirrorCandidatesDebug(diagnostics *memorycore.MirrorRetrievalDiagnostics) string {
+	if diagnostics == nil || len(diagnostics.Candidates) == 0 {
+		return "no mirror candidates"
+	}
+	parts := make([]string, 0, len(diagnostics.Candidates))
+	for _, candidate := range diagnostics.Candidates {
+		parts = append(parts, fmt.Sprintf("%s#%d source=%s drop=%s", candidate.SQLiteFactID, candidate.Rank, candidate.Source, candidate.DropReason))
 	}
 	return strings.Join(parts, ", ")
 }

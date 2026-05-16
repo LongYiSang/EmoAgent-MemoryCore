@@ -1,0 +1,168 @@
+case_id: R013_batch_reconstruction_equivalence
+description: Batch prefetch reconstruction keeps source cap/count behavior and authority-filtered related facts.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 早会会让我焦虑。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 早会安排是不喜欢上班的原因之一。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+    - id: ep3
+      session_id: s1
+      content: 我再次确认早会安排会影响状态。
+      occurred_at: "2026-04-28T11:00:00+08:00"
+steps:
+  - id: selected
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会安排
+        content_summary: 用户因为早会安排而焦虑。
+        source_episode_ids: [ep1, ep2, ep3]
+        confidence: explicit
+        importance: 1.0
+  - id: related
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会
+        content_summary: 用户不喜欢早会安排。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 0.5
+  - id: related_without_authorized_superseder
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 早会通知
+        content_summary: 用户不喜欢早会通知。
+        source_episode_ids: [ep2]
+        confidence: explicit
+        importance: 0.5
+  - id: hidden_related
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 隐藏早会原因
+        content_summary: 用户有隐藏的早会原因。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+  - id: superseding_related
+    action: consolidate
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 已调整早会
+        content_summary: 用户已经调整早会安排。
+        source_episode_ids: [ep3]
+        confidence: explicit
+        importance: 0.7
+  - id: hidden_superseding_related
+    action: consolidate
+    fact_override:
+      visibility_status: hidden
+    consolidate:
+      session_id: s1
+      candidate:
+        subject_entity_id: user
+        predicate: dislikes
+        object_literal: 已隐藏调整早会通知
+        content_summary: 用户已经隐藏调整早会通知。
+        source_episode_ids: [ep3]
+        confidence: explicit
+        importance: 0.7
+  - id: link_hidden_related
+    action: link
+    link:
+      from_node_id: $selected.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $hidden_related.fact_id
+      weight: 1.0
+  - id: link_related
+    action: link
+    link:
+      from_node_id: $selected.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $related.fact_id
+      weight: 0.9
+  - id: link_related_without_authorized_superseder
+    action: link
+    link:
+      from_node_id: $selected.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $related_without_authorized_superseder.fact_id
+      weight: 0.8
+  - id: link_supersedes_related
+    action: link
+    link:
+      from_node_id: $superseding_related.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $related.fact_id
+      weight: 0.8
+  - id: link_hidden_supersedes_related
+    action: link
+    link:
+      from_node_id: $hidden_superseding_related.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $related_without_authorized_superseder.fact_id
+      weight: 0.8
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 为什么 早会 焦虑
+      policy:
+        use_fts: true
+        final_memory_count: 1
+assertions:
+  - type: selected_chain_correct
+    step: retrieve
+    block_type: causal_context
+    node_id: $selected.fact_id
+    node_ids: [$related.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: superseded
+    source_ref_count: 2
+  - type: selected_chain_correct
+    step: retrieve
+    block_type: causal_context
+    node_id: $selected.fact_id
+    node_ids: [$related_without_authorized_superseder.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids:
+      - $hidden_related.fact_id
+      - $hidden_superseding_related.fact_id
