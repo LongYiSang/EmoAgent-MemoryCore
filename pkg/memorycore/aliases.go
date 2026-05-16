@@ -291,6 +291,11 @@ const (
 	VisibilityVisible                   = appcore.VisibilityVisible
 )
 
+const (
+	MemorySuppressionReasonContextBudget = appcore.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonMMRDuplicate  = appcore.MemorySuppressionReasonMMRDuplicate
+)
+
 var (
 	ErrInvalidOptions = appcore.ErrInvalidOptions
 	ErrInvalidRequest = appcore.ErrInvalidRequest

@@ -172,3 +172,9 @@ const (
 	SearchTierCold     SearchTier = "cold"
 	SearchTierDeepCold SearchTier = "deep_cold"
 )
+
+const (
+	MemorySuppressionReasonFatigue       = "fatigue"
+	MemorySuppressionReasonMMRDuplicate  = "mmr_duplicate"
+	MemorySuppressionReasonContextBudget = "context_budget"
+)

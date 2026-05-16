@@ -124,6 +124,99 @@ def test_trivium_adapter_find_candidates_clamps_and_filters_scores():
     }
 
 
+def test_trivium_adapter_close_clears_registry_before_closing_handles():
+    close_state: list[tuple[str, list[str]]] = []
+
+    class CloseDB:
+        def __init__(self, name: str, adapter: TriviumAdapter) -> None:
+            self.name = name
+            self.adapter = adapter
+
+        def close(self) -> None:
+            close_state.append((self.name, list(self.adapter._dbs)))
+
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter._lock = threading.RLock()
+    adapter._dbs = {}
+    adapter._dbs["alice"] = CloseDB("alice", adapter)
+    adapter._dbs["bob"] = CloseDB("bob", adapter)
+
+    adapter.close()
+
+    assert adapter._dbs == {}
+    assert close_state == [("alice", []), ("bob", [])]
+
+
+def test_trivium_adapter_close_attempts_remaining_handles_after_close_error():
+    closed: list[str] = []
+
+    class CloseDB:
+        def __init__(self, name: str, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+
+        def close(self) -> None:
+            closed.append(self.name)
+            if self.fail:
+                raise RuntimeError(f"{self.name} close failed")
+
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter._lock = threading.RLock()
+    adapter._dbs = {
+        "alice": CloseDB("alice", fail=True),
+        "bob": CloseDB("bob"),
+    }
+
+    with pytest.raises(RuntimeError, match="alice close failed"):
+        adapter.close()
+
+    assert adapter._dbs == {}
+    assert closed == ["alice", "bob"]
+
+
+def test_trivium_adapter_activation_reuses_filtered_neighbors_for_degree():
+    class Edge:
+        def __init__(self, target_id: int, label: str = "ABOUT_ENTITY") -> None:
+            self.target_id = target_id
+            self.label = label
+            self.weight = 1.0
+
+    class GraphDB:
+        def __init__(self) -> None:
+            self.edge_calls: dict[int, int] = {}
+
+        def get(self, node_id: int):
+            return {"id": node_id} if node_id in {1, 2, 4, 5} else None
+
+        def get_edges(self, node_id: int):
+            self.edge_calls[node_id] = self.edge_calls.get(node_id, 0) + 1
+            return {
+                1: [Edge(2)],
+                2: [Edge(4), Edge(5), Edge(999)],
+            }.get(node_id, [])
+
+    db = GraphDB()
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter._lock = threading.RLock()
+    adapter._dbs = {"alice": db}
+
+    result = adapter.activate_graph(
+        {
+            "persona_id": "alice",
+            "seeds": [{"trivium_node_id": 1, "seed_energy": 1.0}],
+            "params": {
+                "max_hops": 2,
+                "hop_decay": 1.0,
+                "hub_suppression_power": 1.0,
+            },
+        }
+    )
+    by_id = {candidate["trivium_node_id"]: candidate for candidate in result["candidates"]}
+
+    assert db.edge_calls[2] == 1
+    assert by_id[2]["score"] == pytest.approx(0.4)
+
+
 def test_trivium_adapter_clear_namespace_removes_only_persona_files(tmp_path: Path):
     adapter = TriviumAdapter(
         _config(tmp_path),

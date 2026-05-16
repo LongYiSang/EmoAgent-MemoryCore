@@ -1,6 +1,10 @@
 package memorycore
 
-import "time"
+import (
+	"time"
+
+	"github.com/longyisang/emoagent-memorycore/internal/core"
+)
 
 const (
 	MemoryBlockTypeFacts             = "facts"
@@ -14,7 +18,9 @@ const (
 	MemoryHistoricalStatusHistorical = "historical"
 	MemoryHistoricalStatusSuperseded = "superseded"
 
-	MemorySuppressionReasonFatigue = "fatigue"
+	MemorySuppressionReasonFatigue       = core.MemorySuppressionReasonFatigue
+	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
+	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
 )
 
 type QueryTimeMode string

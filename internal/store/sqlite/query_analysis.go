@@ -157,6 +157,10 @@ func queryMemoryAbility(normalized string) MemoryAbility {
 		return MemoryAbilityWorkflow
 	case queryTimeMode(normalized) == QueryTimeModeHistorical:
 		return MemoryAbilityHistorical
+	case hasDynamicStateIntent(normalized):
+		return MemoryAbilityDynamicState
+	case hasStaticStateIntent(normalized):
+		return MemoryAbilityStaticState
 	case containsAny(normalized, "计划", "规划", "planning"):
 		return MemoryAbilityPlanning
 	default:
@@ -176,9 +180,45 @@ func queryEvidenceNeed(normalized string) EvidenceNeed {
 		return EvidenceNeedProcedureNote
 	case queryTimeMode(normalized) == QueryTimeModeHistorical:
 		return EvidenceNeedStateTransition
+	case hasDynamicStateIntent(normalized):
+		return EvidenceNeedStateTransition
 	default:
 		return EvidenceNeedExactObservation
 	}
+}
+
+func hasDynamicStateIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"最近状态",
+		"当前状态",
+		"最新状态",
+		"进度",
+		"进展",
+		"变化",
+		"有没有变",
+		"latest status",
+		"current status",
+		"progress",
+		"update",
+		"changed",
+	)
+}
+
+func hasStaticStateIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"身份",
+		"偏好",
+		"默认配置",
+		"住址",
+		"常驻状态",
+		"profile",
+		"preference",
+		"default",
+		"address",
+		"stable setting",
+	)
 }
 
 func (r *RetrievalRepository) matchEntityMentions(ctx context.Context, personaID string, normalizedQuery string, policy RetrievalPolicy) ([]QueryEntityMention, error) {

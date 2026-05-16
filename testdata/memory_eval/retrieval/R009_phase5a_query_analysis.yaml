@@ -23,6 +23,14 @@ steps:
     action: retrieve
     retrieve:
       query_text: 我是不是一直都讨厌上班
+  - id: static_state
+    action: retrieve
+    retrieve:
+      query_text: 我现在的偏好是什么
+  - id: dynamic_state
+    action: retrieve
+    retrieve:
+      query_text: 这个项目最近进展怎么样
 assertions:
   - type: query_analysis
     step: historical_provenance
@@ -48,3 +56,14 @@ assertions:
     memory_domain: user_profile_memory
     memory_ability: premise_check
     evidence_need: premise_counterexample
+  - type: query_analysis
+    step: static_state
+    time_mode: current
+    memory_domain: user_profile_memory
+    memory_ability: static_state
+    evidence_need: exact_observation
+  - type: query_analysis
+    step: dynamic_state
+    time_mode: current
+    memory_ability: dynamic_state
+    evidence_need: state_transition

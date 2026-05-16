@@ -73,6 +73,12 @@ func TestQueryAnalysisMemoryAbilityPriorityCurrentRules(t *testing.T) {
 		{name: "workflow", query: "操作步骤是什么", want: MemoryAbilityWorkflow},
 		{name: "historical", query: "上次部署结果", want: MemoryAbilityHistorical},
 		{name: "planning", query: "后续计划", want: MemoryAbilityPlanning},
+		{name: "dynamic state", query: "这个项目最近进展怎么样", want: MemoryAbilityDynamicState},
+		{name: "static preference with current wording", query: "我现在的偏好是什么", want: MemoryAbilityStaticState},
+		{name: "static default config", query: "我的默认配置是什么", want: MemoryAbilityStaticState},
+		{name: "historical beats static", query: "我以前住在哪里", want: MemoryAbilityHistorical},
+		{name: "causal beats dynamic", query: "为什么我的状态变了", want: MemoryAbilityCausalExplain},
+		{name: "premise beats static", query: "我是不是一直不喜欢早会", want: MemoryAbilityPremiseCheck},
 		{name: "direct fact", query: "咖啡", want: MemoryAbilityDirectFact},
 	}
 
@@ -96,6 +102,8 @@ func TestQueryAnalysisEvidenceNeedCurrentRules(t *testing.T) {
 		{name: "gotcha note", query: "这次失败的坑", want: EvidenceNeedGotchaNote},
 		{name: "procedure note", query: "部署流程步骤", want: EvidenceNeedProcedureNote},
 		{name: "historical state transition", query: "以前住在哪里", want: EvidenceNeedStateTransition},
+		{name: "dynamic state transition", query: "这个项目最近进展怎么样", want: EvidenceNeedStateTransition},
+		{name: "static exact observation", query: "我的默认配置是什么", want: EvidenceNeedExactObservation},
 		{name: "exact observation default", query: "喜欢咖啡", want: EvidenceNeedExactObservation},
 	}
 
@@ -106,12 +114,6 @@ func TestQueryAnalysisEvidenceNeedCurrentRules(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestQueryAnalysisKnownIntentGapsRemainUnasserted(t *testing.T) {
-	// Current rules do not expose QuerySignalForget, static_state, or dynamic_state.
-	// Keep forget/delete routing and static/dynamic state classification out of this
-	// regression file until production classifier behavior is intentionally changed.
 }
 
 func equalQuerySignals(a []QuerySignal, b []QuerySignal) bool {

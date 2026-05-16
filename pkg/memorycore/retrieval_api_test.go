@@ -520,6 +520,18 @@ func TestServiceRetrieveFatigueSuppression(t *testing.T) {
 	}
 }
 
+func TestPublicSuppressionReasonConstants(t *testing.T) {
+	if memorycore.MemorySuppressionReasonFatigue != "fatigue" {
+		t.Fatalf("fatigue suppression reason = %q, want fatigue", memorycore.MemorySuppressionReasonFatigue)
+	}
+	if memorycore.MemorySuppressionReasonMMRDuplicate != "mmr_duplicate" {
+		t.Fatalf("mmr suppression reason = %q, want mmr_duplicate", memorycore.MemorySuppressionReasonMMRDuplicate)
+	}
+	if memorycore.MemorySuppressionReasonContextBudget != "context_budget" {
+		t.Fatalf("context budget suppression reason = %q, want context_budget", memorycore.MemorySuppressionReasonContextBudget)
+	}
+}
+
 func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 	ctx := context.Background()
 	adapter := &retrievalMirrorAdapter{}

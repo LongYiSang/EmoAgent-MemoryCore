@@ -65,6 +65,21 @@ func TestMMRBestCandidateIndexTieBreaksByScoreThenFactID(t *testing.T) {
 	}
 }
 
+func TestAppendSuppressionDeduplicatesByNodeTypeNodeIDAndReason(t *testing.T) {
+	suppressions := []MemorySuppression{
+		{NodeType: string(core.NodeTypeFact), NodeID: "fact_same", Reason: MemorySuppressionReasonFatigue},
+	}
+	suppressions = appendSuppression(suppressions, MemorySuppression{NodeType: string(core.NodeTypeFact), NodeID: "fact_same", Reason: MemorySuppressionReasonFatigue})
+	suppressions = appendSuppression(suppressions, MemorySuppression{NodeType: string(core.NodeTypeFact), NodeID: "fact_same", Reason: MemorySuppressionReasonContextBudget})
+
+	if len(suppressions) != 2 {
+		t.Fatalf("suppressions = %#v, want duplicate reason removed but distinct reason preserved", suppressions)
+	}
+	if suppressions[0].Reason != MemorySuppressionReasonFatigue || suppressions[1].Reason != MemorySuppressionReasonContextBudget {
+		t.Fatalf("suppression reasons = %#v, want fatigue then context_budget", suppressions)
+	}
+}
+
 func testScoredFact(id string, summary string, entityID string, predicate string, sourceEpisodeID string, validity core.ValidityStatus, lifecycle core.LifecycleStatus, score float64) scoredFact {
 	entity := entityID
 	return scoredFact{

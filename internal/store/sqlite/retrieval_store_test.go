@@ -412,7 +412,7 @@ func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != "fact_like_coffee" {
 		t.Fatalf("retrieval result = %#v, want fact_like_coffee", result)
 	}
-	requireAccessEventRow(t, db.SQLDB(), "fact_like_coffee", "retrieved", 0)
+	requireAccessEventRow(t, db.SQLDB(), "fact_like_coffee", "retrieved", 1)
 }
 
 func TestRetrievalRepositoryQueryAnalysisUsesEntityMentionsForCandidates(t *testing.T) {
@@ -935,7 +935,7 @@ func TestRetrievalRepositoryRerankCannotBypassContextBudget(t *testing.T) {
 	}
 }
 
-func TestRetrievalRepositoryMMRSuppressesDuplicateWithoutDoNotMention(t *testing.T) {
+func TestRetrievalRepositoryMMRSuppressesDuplicateAddsDoNotMention(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
 	defer db.Close()
@@ -965,9 +965,7 @@ func TestRetrievalRepositoryMMRSuppressesDuplicateWithoutDoNotMention(t *testing
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if len(result.DoNotMention) != 0 {
-		t.Fatalf("do_not_mention = %#v, want empty for MMR duplicate suppression", result.DoNotMention)
-	}
+	requireSuppression(t, result.DoNotMention, "fact_meeting_duplicate", memsqlite.MemorySuppressionReasonMMRDuplicate)
 	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 2 {
 		t.Fatalf("retrieval result = %#v, want two selected facts", result.Blocks)
 	}
@@ -1011,9 +1009,7 @@ func TestRetrievalRepositoryContextBudgetSkipsLongCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	if len(result.DoNotMention) != 0 {
-		t.Fatalf("do_not_mention = %#v, want empty for context budget suppression", result.DoNotMention)
-	}
+	requireSuppression(t, result.DoNotMention, "fact_long_budget", memsqlite.MemorySuppressionReasonContextBudget)
 	if len(result.Blocks) != 1 || len(result.Blocks[0].Items) != 1 || result.Blocks[0].Items[0].NodeID != "fact_short_budget" {
 		t.Fatalf("retrieval result = %#v, want short budget fact selected after long candidate skipped", result.Blocks)
 	}
@@ -1361,6 +1357,16 @@ WHERE node_type = 'fact' AND node_id = ? AND access_type = ?`
 	if count != 1 {
 		t.Fatalf("access event count = %d, want 1", count)
 	}
+}
+
+func requireSuppression(t *testing.T, suppressions []memsqlite.MemorySuppression, factID string, reason string) {
+	t.Helper()
+	for _, suppression := range suppressions {
+		if suppression.NodeType == string(core.NodeTypeFact) && suppression.NodeID == factID && suppression.Reason == reason {
+			return
+		}
+	}
+	t.Fatalf("suppressions = %#v, want fact %s reason %s", suppressions, factID, reason)
 }
 
 func requireAccessEventBlockType(t *testing.T, db *sql.DB, factID string, accessType string, blockType string) {

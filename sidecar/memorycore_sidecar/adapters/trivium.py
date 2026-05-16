@@ -130,8 +130,8 @@ class TriviumAdapter(MirrorAdapter):
         return {}
 
     def clear_namespace(self, persona_id: str) -> dict[str, Any]:
+        self._close_db_handles([self._pop_persona_db(persona_id)])
         with self._lock:
-            self._close_persona(persona_id)
             db_path = self._db_path_for_persona(persona_id)
             for path in db_path.parent.glob(db_path.name + "*"):
                 if path.is_file():
@@ -178,9 +178,13 @@ class TriviumAdapter(MirrorAdapter):
         persona_id = str(request["persona_id"])
         with self._lock:
             db = self._db_for_persona(persona_id)
+            neighbor_cache: dict[int, list[ActivationEdge]] = {}
 
             def neighbors(trivium_node_id: int) -> list[ActivationEdge]:
+                if trivium_node_id in neighbor_cache:
+                    return neighbor_cache[trivium_node_id]
                 if db.get(trivium_node_id) is None:
+                    neighbor_cache[trivium_node_id] = []
                     return []
                 out: list[ActivationEdge] = []
                 for edge in db.get_edges(trivium_node_id):
@@ -196,12 +200,11 @@ class TriviumAdapter(MirrorAdapter):
                             weight=_finite_edge_weight(getattr(edge, "weight", 1.0)),
                         )
                     )
+                neighbor_cache[trivium_node_id] = out
                 return out
 
             def degree(trivium_node_id: int) -> int:
-                if db.get(trivium_node_id) is None:
-                    return 0
-                return len(list(db.get_edges(trivium_node_id)))
+                return len(neighbors(trivium_node_id))
 
             candidates = activate_graph(
                 list(request.get("seeds", [])),
@@ -233,8 +236,9 @@ class TriviumAdapter(MirrorAdapter):
 
     def close(self) -> None:
         with self._lock:
-            for persona_id in list(self._dbs):
-                self._close_persona(persona_id)
+            dbs = list(self._dbs.values())
+            self._dbs.clear()
+        self._close_db_handles(dbs)
 
     def _db_for_persona(self, persona_id: str) -> Any:
         with self._lock:
@@ -259,10 +263,24 @@ class TriviumAdapter(MirrorAdapter):
         return path
 
     def _close_persona(self, persona_id: str) -> None:
+        self._close_db_handles([self._pop_persona_db(persona_id)])
+
+    def _pop_persona_db(self, persona_id: str) -> Any | None:
         with self._lock:
-            db = self._dbs.pop(persona_id, None)
-            if db is not None:
+            return self._dbs.pop(persona_id, None)
+
+    def _close_db_handles(self, dbs: list[Any | None]) -> None:
+        first_error: Exception | None = None
+        for db in dbs:
+            if db is None:
+                continue
+            try:
                 db.close()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
 
 def _stable_node_id(persona_id: str, node_type: str, sqlite_node_id: str) -> int:

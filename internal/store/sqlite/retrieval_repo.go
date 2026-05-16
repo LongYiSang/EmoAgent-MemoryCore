@@ -26,10 +26,9 @@ const (
 	MemoryHistoricalStatusHistorical = "historical"
 	MemoryHistoricalStatusSuperseded = "superseded"
 
-	MemorySuppressionReasonFatigue = "fatigue"
-
-	memorySuppressionReasonMMRDuplicate  = "mmr_duplicate"
-	memorySuppressionReasonContextBudget = "context_budget"
+	MemorySuppressionReasonFatigue       = core.MemorySuppressionReasonFatigue
+	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
+	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
 
 	defaultMMRLambda          = 0.72
 	defaultDuplicateThreshold = 0.88
@@ -183,6 +182,15 @@ type MemorySuppression struct {
 	NodeType string
 	NodeID   string
 	Reason   string
+}
+
+func appendSuppression(suppressions []MemorySuppression, next MemorySuppression) []MemorySuppression {
+	for _, existing := range suppressions {
+		if existing.NodeType == next.NodeType && existing.NodeID == next.NodeID && existing.Reason == next.Reason {
+			return suppressions
+		}
+	}
+	return append(suppressions, next)
 }
 
 type retrievalCandidate struct {
@@ -388,14 +396,24 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 		remaining = removeScoredFactAt(remaining, bestIndex)
 
 		if maxFactSimilarity(candidate, selected) > defaultDuplicateThreshold {
-			candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
+			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonMMRDuplicate
+			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   candidate.Fact.ID,
+				Reason:   MemorySuppressionReasonMMRDuplicate,
+			})
 			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
 			continue
 		}
 		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
-			candidate.Breakdown.SuppressionReason = memorySuppressionReasonContextBudget
+			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonContextBudget
+			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   candidate.Fact.ID,
+				Reason:   MemorySuppressionReasonContextBudget,
+			})
 			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 				return MemoryContext{}, err
 			}
@@ -408,7 +426,12 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 		if maxFactSimilarity(candidate, selected) <= defaultDuplicateThreshold {
 			continue
 		}
-		candidate.Breakdown.SuppressionReason = memorySuppressionReasonMMRDuplicate
+		candidate.Breakdown.SuppressionReason = MemorySuppressionReasonMMRDuplicate
+		contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+			NodeType: string(core.NodeTypeFact),
+			NodeID:   candidate.Fact.ID,
+			Reason:   MemorySuppressionReasonMMRDuplicate,
+		})
 		if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
 			return MemoryContext{}, err
 		}
@@ -422,7 +445,7 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 		contextResult.TokenEstimate = tokenEstimate
 	}
 	for rank, candidate := range selected {
-		rank := rank
+		rank := rank + 1
 		blockType := blockTypeByFactID[candidate.Fact.ID]
 		if blockType == "" {
 			blockType = MemoryBlockTypeFacts
@@ -566,7 +589,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if fatigue > 0 {
 			item.Suppressed = true
 			item.Suppression = MemorySuppressionReasonFatigue
-			suppressions = append(suppressions, MemorySuppression{
+			suppressions = appendSuppression(suppressions, MemorySuppression{
 				NodeType: string(core.NodeTypeFact),
 				NodeID:   fact.ID,
 				Reason:   MemorySuppressionReasonFatigue,
