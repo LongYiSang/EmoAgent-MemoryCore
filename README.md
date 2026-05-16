@@ -60,42 +60,42 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
   → 定期晋升为 Narrative（规划中）
 ```
 
-**读取路径（当前实现）**（存储 → 对话）：
+**读取路径（当前实现，Phase 5 读取增强已接入）**（存储 → 对话）：
 
 ```
 新对话开始
-  → 轻量查询分析（关键词 / entity alias）
-  → SQLite search documents / FTS fallback + 可选 TriviumDB mirror candidate
-  → SQLite 权威过滤（visibility / lifecycle / sensitivity / provenance）
-  → Go 侧打分、fatigue、context budget
-  → facts memory block → System Prompt 注入
-```
-
-**读取路径（Phase 5 目标）**：
-
-```
-新对话开始
-  → 查询分析（实体、关键词、意图提取）
-  → 多源 Anchor 召回（entity exact / SQLite FTS5 / TriviumDB dense / pinned / recent / narrative）
+  → QueryAnalysis（关键词 / entity alias / time / causality / provenance / memory ability）
+  → 多源 Anchor 召回（SQLite search / FTS fallback / entity exact / pinned / recent / narrative-insight + 可选 TriviumDB mirror）
   → Weighted RRF 融合为 seed 分布
-  → 图激活扩散 + SQLite 权威过滤
-  → 可选模型重排 + Go 最终排序 / MMR / context budget
-  → 上下文组装 → System Prompt 注入
+  → 可选 Graph Activation Sidecar（UseMirror 且 persona mirror ready 时）
+  → SQLite 权威过滤（visibility / lifecycle / sensitivity / provenance / linked entities）
+  → Go 侧 final score、fatigue、MMR、context budget
+  → 可选 Safe Sidecar Reranker boost（只接收 safe summary，失败时退化）
+  → context reconstruction blocks（facts / causal / historical / provenance / supportive / experience）→ System Prompt 注入
 ```
+
+**Phase 5 可选 / 退化路径**：
+
+- `UseMirror=false`、sidecar 不可用、persona mirror 未 ready、sidecar degraded 或候选 unmapped/stale 时，读取链路退回 SQLite search / anchor / Go ranking。
+- TriviumDB mirror candidates、Graph Activation 和 sidecar rerank 都只是候选或排序信号；SQLite authority filter 仍是 Prompt 注入前的最终安全边界。
+- Reranker 默认 `provider=none`，DashScope provider 需要显式配置环境变量；缺 key、超时、HTTP 错误或 malformed response 时不阻断检索，只是不提供 rerank boost。
+- 真实 mirror 质量、夜间大规模延迟评估仍属于可选增强；SQLite-only deterministic eval 是当前基线。
+- 写入侧预过滤、真实 LLM 抽取、周/月叙事生成不属于 Phase 5 已实现读取链路。
 
 ### 系统拓扑
 
 ```
 ┌───────────────────────────────┐         ┌──────────────────────────────────┐
-│         Go Service            │  HTTP   │      Python Sidecar（部分实现）     │
+│         Go Service            │  HTTP   │      Python Sidecar（可选辅助）      │
 │                               │◄───────►│                                  │
-│  • 触发检测                    │         │  • 预过滤（低成本 LLM）              │
-│  • Episode 同步写入            │         │  • 记忆抽取（主力 LLM）              │
-│  • 整合逻辑                    │         │  • Embedding 生成                  │
-│  • SQLite（权威记忆库）        │         │  • TriviumDB 检索镜像（Phase 4）      │
-│  • FTS5 / fallback 检索        │         │  • 向量 / 图激活检索（Phase 5 规划中） │
-│  • 衰减懒计算                  │         │  • 周度整合（LLM）                  │
-│  • 上下文组装 → prompt         │         │  • 叙事生成（LLM）                  │
+│  • 触发检测                    │         │  • Embedding 生成                  │
+│  • Episode 同步写入            │         │  • TriviumDB 检索镜像（Phase 4）      │
+│  • 整合逻辑                    │         │  • Graph Activation（Phase 5C，可选） │
+│  • SQLite（权威记忆库）        │         │  • 只返回候选 / signal               │
+│  • FTS5 / fallback 检索        │         │  • Safe Rerank（Phase 5G，可选）      │
+│  • 衰减懒计算                  │         │  • DashScope provider（默认关闭）     │
+│  • Go final ranking / MMR      │         │  • degraded fallback               │
+│  • 上下文组装 → prompt         │         │                                   │
 │  • Pin / Forget 通道          │         │                                   │
 └───────────────────────────────┘         └──────────────────────────────────┘
 ```
@@ -140,7 +140,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 3A Privacy / Purge MVP：exact fact / episode purge、search/FTS cleanup、safe deletion audit、purged-only evidence retrieval block。
 - [x] Phase 3B Retention Lifecycle MVP：manual `RunRetention` / `memoryctl retention-run`、`valid_to` expiry、invalidated + archived state transition、search tier sync、historical retrieval gate。
 - [x] Phase 3C Retention 后续：SQLite-only deep archive transition、retention job runner、compression storage contract、narrative / insight provenance integration。
-- [x] Phase 4 TriviumDB Retrieval Mirror：sidecar adapter / sync worker / mirror rebuild / upsert-delete node-edge / UseMirror diagnostics；SQLite 权威过滤保持最后防线。运维说明见 `docs/operations/phase4_retrieval_mirror.md`。
+- [x] Phase 4 TriviumDB Retrieval Mirror：sidecar adapter / sync worker / mirror rebuild / upsert-delete node-edge / UseMirror diagnostics；SQLite 权威过滤保持最后防线。当前运维说明见 `sidecar/README.md`。
 - [x] Phase 5 高级 Retrieval Activation：Phase 4 mirror 之后的安全检索激活层；SQLite 仍是权威库，TriviumDB / sidecar 只产出候选、activation 或可选 rerank signal。当前 5A-5G-B 已落地；MVP 只增强读取与上下文组装，不新增 Work / 环境经验主存储，不引入外部 memory framework 依赖。边界说明见 `docs/Phase5参考/phase5_mvp_scope_and_anti_overdesign.md`。
   - [x] Phase 5A Retrieval Contract / QueryAnalyzer：扩展 `RetrievalRequest` / `QueryAnalysis`，识别 entity、time、causal、historical、provenance、sensitivity、debug 等检索控制信号；补充轻量 `memory_domain`、`memory_ability`、`evidence_need`，区分关系记忆、用户画像、Work / 环境经验、workflow / gotcha / premise check 等查询。这些字段只作为检索路由和 anchor 开关。参考设计见 `docs/Phase5参考/phase5a_query_contract_memory_experience.md`。
   - [x] Phase 5B Hybrid Anchor / Weighted RRF：各 anchor source 独立产生 ranked hits，保留 source / rank / raw_score / debug_reason；通过 Weighted RRF 融合 entity exact、SQLite FTS / sparse、Trivium dense、pinned / core、recent important、narrative / insight 等异构来源，输出 `fused_anchor_score`、`seed_energy`、`source_breakdown`；不直接混加不同 source 的 raw score。参考设计见 `docs/Phase5参考/phase5b_rrf_anchor_fusion.md`。
@@ -150,6 +150,10 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
   - [x] Phase 5F Eval / Regression Baseline：已扩展 fixture / eval，覆盖 forbidden recall = 0、selected_recall@8、context_precision、MMR 去重、graph activation fallback、selected chain correctness、premise check 与 deterministic ablation；SQLite-only deterministic eval 已可作为基线，真实 mirror 质量、夜间大规模延迟评估保留为后续增强。参考设计见 `docs/Phase5参考/phase5e_context_reconstruction_eval_notes.md`。
   - [x] Phase 5G-A Optional Safe Sidecar Reranker MVP：已落地协议、安全接入、fake / deterministic reranker 与 eval；reranker 仅接收 SQLite authority filter 后的 safe summary，不接收未授权候选或 episode 原文，只返回 `rerank_score` / `debug_reason` / fallback 信息。Go 仍负责 final score、MMR、fatigue、lifecycle、context budget 与最终 Prompt 注入；5G-A 不需要真实 API key，真实 provider 接入留作后续阶段。参考设计见 `docs/Phase5参考/phase5g_safe_sidecar_reranker.md`。
   - [x] Phase 5G-B DashScope qwen3-vl-rerank Provider：可选接入真实 DashScope rerank provider，默认不启用且不要求 API key；API key 仅通过环境变量注入，CI 仍使用 fake / mocked deterministic tests。真实 smoke 需手动设置 `MEMORYCORE_RERANK_SMOKE=1` 与 `DASHSCOPE_API_KEY`；provider 失败、超时、未配置或 degraded 时完全 fallback，且只发送 SQLite authority filter 后的 safe summary。
+
+**Phase 5 当前对外口径**
+
+已实现的是读取增强链路：QueryAnalysis、Hybrid Anchor / Weighted RRF、可选 Graph Activation Sidecar、Go authority ranking + MMR、Context Reconstruction、deterministic eval、Safe Sidecar Reranker 协议与可选 DashScope provider。默认和安全退化路径仍是 SQLite-only retrieval；任何 sidecar、TriviumDB、activation 或 rerank 结果都必须经过 SQLite 权威过滤，并且只能影响候选或排序信号，不能直接决定 Prompt 注入。
 
 ---
 

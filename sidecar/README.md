@@ -1,11 +1,18 @@
 # MemoryCore Python Sidecar
 
-Loopback HTTP sidecar for the disposable TriviumDB retrieval mirror. SQLite
-remains the authoritative memory store; TriviumDB can be cleared and rebuilt
-from SQLite at any time. Phase 5 activation, PPR, and MMR are not part of this
-sidecar.
+Loopback HTTP sidecar for optional retrieval assistance. SQLite remains the
+authoritative memory store; TriviumDB can be cleared and rebuilt from SQLite at
+any time.
 
-Phase 4 operator notes live in `docs/operations/phase4_retrieval_mirror.md`.
+Current sidecar responsibilities:
+
+- Phase 4 mirror indexing and dense candidate retrieval.
+- Phase 5C graph activation from Go-provided seed energy.
+- Phase 5G safe rerank endpoint, with the real provider disabled by default.
+
+Go / SQLite still owns authority filtering, final score, fatigue, MMR, context
+budget, context reconstruction, and prompt injection. Sidecar output is only a
+candidate or ranking signal and must be safe to ignore.
 
 ## Setup
 
@@ -43,6 +50,19 @@ Do not put plaintext API keys in config. Set the environment variable named by
 
 TriviumDB files default to `../data/trivium`, relative to `sidecar/`. The real
 adapter initializes one sanitized `.tdb` file per persona under that directory.
+
+Rerank defaults to disabled:
+
+```toml
+[rerank]
+provider = "none"
+```
+
+Use `provider = "dashscope-vl"` only when you explicitly want the optional
+DashScope `qwen3-vl-rerank` provider. The API key is still read from the env var
+named by `api_key_env`; missing key, timeout, HTTP error, malformed response, or
+degraded provider status returns a fallback result instead of blocking Go
+retrieval.
 
 ## Run Fake Adapter
 
@@ -82,6 +102,11 @@ go run ./cmd/memoryctl mirror-rebuild --db ./data/memory.db --sidecar-url http:/
 go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference" --use-mirror --sidecar-url http://127.0.0.1:8765
 ```
 
+`retrieve --use-mirror` can exercise Phase 4 mirror candidates, Phase 5C graph
+activation, and Phase 5G rerank depending on persona mirror readiness and sidecar
+configuration. With the default rerank provider (`none`), rerank returns a
+degraded fallback and Go final ranking continues without a rerank boost.
+
 `mirror-sync-run` processes queued `upsert_node`, `delete_node`, `upsert_edge`,
 and `delete_edge` rows. `rebuild_persona` is not worker-supported in this pass;
 use explicit rebuild instead.
@@ -103,6 +128,10 @@ let retrieval fall back to SQLite. SQLite stays authoritative.
 - `POST /mirror/clear-namespace` clears one persona namespace.
 - `POST /retrieval/candidates` returns mirror candidates for Go to map back
   through SQLite before prompt use.
+- `POST /retrieval/activate` accepts Phase 5B activation seeds and returns graph
+  activation candidates plus optional paths.
+- `POST /retrieval/rerank` accepts only safe summaries after Go / SQLite
+  authority filtering and returns optional rerank scores or a degraded fallback.
 
 ## Test
 
