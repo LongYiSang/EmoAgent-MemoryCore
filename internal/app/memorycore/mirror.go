@@ -404,6 +404,10 @@ func (a sidecarMirrorAdapter) ClearNamespace(ctx context.Context, personaID stri
 	return a.client.ClearNamespace(ctx, personaID)
 }
 
+func (a sidecarMirrorAdapter) Health(ctx context.Context) error {
+	return a.client.Health(ctx)
+}
+
 func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCandidateRequest) (*MirrorCandidateResult, error) {
 	result, err := a.client.FindCandidates(ctx, internalmirror.CandidateRequest{
 		PersonaID: req.PersonaID,
@@ -414,9 +418,12 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 		return nil, err
 	}
 	out := &MirrorCandidateResult{
-		Candidates:     make([]MirrorCandidate, 0, len(result.Candidates)),
-		Degraded:       result.Degraded,
-		FallbackReason: result.FallbackReason,
+		Candidates:             make([]MirrorCandidate, 0, len(result.Candidates)),
+		Degraded:               result.Degraded,
+		FallbackReason:         result.FallbackReason,
+		EmbeddingCacheHits:     result.EmbeddingCacheHits,
+		EmbeddingCacheMisses:   result.EmbeddingCacheMisses,
+		EmbeddingLiveCallCount: result.EmbeddingLiveCallCount,
 	}
 	for _, candidate := range result.Candidates {
 		out.Candidates = append(out.Candidates, MirrorCandidate{
@@ -489,6 +496,35 @@ func (a sidecarMirrorAdapter) Rerank(ctx context.Context, req MirrorRerankReques
 	return out, nil
 }
 
+func (a sidecarMirrorAdapter) ConfigureEval(ctx context.Context, req MirrorEvalConfigRequest) (*MirrorEvalConfigResult, error) {
+	result, err := a.client.ConfigureEval(ctx, internalmirror.EvalConfigRequest{
+		TriviumDir:               req.TriviumDir,
+		EmbeddingCacheMode:       req.EmbeddingCacheMode,
+		EmbeddingCacheDBPath:     req.EmbeddingCacheDBPath,
+		SearchableTextVersion:    req.SearchableTextVersion,
+		TextNormalizationVersion: req.TextNormalizationVersion,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &MirrorEvalConfigResult{
+		TriviumDir:              result.TriviumDir,
+		EmbeddingCacheMode:      result.EmbeddingCacheMode,
+		EmbeddingCacheDBPath:    result.EmbeddingCacheDBPath,
+		Embedding:               cloneStringMap(result.Embedding),
+		TriviumAdapterVersion:   result.TriviumAdapterVersion,
+		TriviumDBVersion:        result.TriviumDBVersion,
+		RerankProviderAvailable: result.RerankProviderAvailable,
+		RerankProviderMode:      result.RerankProviderMode,
+		RerankCapabilityReason:  result.RerankCapabilityReason,
+		RerankCache:             result.RerankCache,
+		MirrorStatsAvailable:    result.MirrorStatsAvailable,
+		MirrorStatsError:        result.MirrorStatsError,
+		MirrorNodeCount:         result.MirrorNodeCount,
+		MirrorEdgeCount:         result.MirrorEdgeCount,
+	}, nil
+}
+
 func activationSeedsToInternal(seeds []MirrorActivationSeed) []internalmirror.ActivationSeed {
 	result := make([]internalmirror.ActivationSeed, 0, len(seeds))
 	for _, seed := range seeds {
@@ -526,4 +562,15 @@ func activationPathsFromInternal(paths []internalmirror.ActivationPath) []Mirror
 		})
 	}
 	return result
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

@@ -191,14 +191,17 @@ type AnchorSourceBreakdown struct {
 }
 
 type MirrorRetrievalDiagnostics struct {
-	Status                string                       `json:"status"`
-	Degraded              bool                         `json:"degraded"`
-	FallbackReason        string                       `json:"fallback_reason,omitempty"`
-	LatencyMs             int64                        `json:"latency_ms,omitempty"`
-	SidecarCandidateCount int                          `json:"sidecar_candidate_count"`
-	MappedCandidateCount  int                          `json:"mapped_candidate_count"`
-	DroppedCandidateCount int                          `json:"dropped_candidate_count"`
-	Candidates            []MirrorCandidateDiagnostics `json:"candidates,omitempty"`
+	Status                 string                       `json:"status"`
+	Degraded               bool                         `json:"degraded"`
+	FallbackReason         string                       `json:"fallback_reason,omitempty"`
+	LatencyMs              int64                        `json:"latency_ms,omitempty"`
+	SidecarCandidateCount  int                          `json:"sidecar_candidate_count"`
+	MappedCandidateCount   int                          `json:"mapped_candidate_count"`
+	DroppedCandidateCount  int                          `json:"dropped_candidate_count"`
+	EmbeddingCacheHits     int                          `json:"embedding_cache_hits,omitempty"`
+	EmbeddingCacheMisses   int                          `json:"embedding_cache_misses,omitempty"`
+	EmbeddingLiveCallCount int                          `json:"embedding_live_call_count,omitempty"`
+	Candidates             []MirrorCandidateDiagnostics `json:"candidates,omitempty"`
 }
 
 type MirrorCandidateDiagnostics struct {

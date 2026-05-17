@@ -12,6 +12,14 @@ dimensions = 1024
 timeout_seconds = 30
 encoding_format = "float"
 
+[embedding_cache]
+mode = "off"
+db_path = "../data/embedding_cache.sqlite3"
+text_normalization_version = "v1"
+searchable_text_version = "v1"
+ttl_days_for_query = 14
+store_raw_text = false
+
 [rerank]
 provider = "none"
 endpoint_url = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"

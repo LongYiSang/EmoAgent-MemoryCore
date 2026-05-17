@@ -66,6 +66,34 @@ func TestQualityFixturesDoNotUseEvalStubs(t *testing.T) {
 	}
 }
 
+func TestQualityRetrievalFixturesDeclareQualityMetadata(t *testing.T) {
+	paths := discoverSuiteFixtures(t, filepath.Join("quality", "retrieval"))
+	if len(paths) == 0 {
+		t.Fatal("quality retrieval fixture count = 0, want at least 1")
+	}
+	for _, path := range paths {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			fixture, err := LoadFixtureFile(path)
+			if err != nil {
+				t.Fatalf("load fixture: %v", err)
+			}
+			if fixture.SchemaVersion != "memory_eval.v0.2" {
+				t.Fatalf("schema_version = %q, want memory_eval.v0.2", fixture.SchemaVersion)
+			}
+			if fixture.Suite != "quality_retrieval" {
+				t.Fatalf("suite = %q, want quality_retrieval", fixture.Suite)
+			}
+			if !fixture.QualityMode {
+				t.Fatalf("quality_mode = false, want true")
+			}
+			if fixture.AllowStub {
+				t.Fatalf("allow_stub = true, want false")
+			}
+		})
+	}
+}
+
 type fixtureRegressionSuite struct {
 	Dir        string
 	StubPolicy FixtureStubPolicy

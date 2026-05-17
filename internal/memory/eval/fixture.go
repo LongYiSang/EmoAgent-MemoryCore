@@ -2,6 +2,8 @@ package eval
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,11 +15,15 @@ import (
 )
 
 type Fixture struct {
-	CaseID      string      `yaml:"case_id"`
-	Description string      `yaml:"description"`
-	Seed        Seed        `yaml:"seed"`
-	Steps       []Step      `yaml:"steps"`
-	Assertions  []Assertion `yaml:"assertions"`
+	SchemaVersion string      `yaml:"schema_version"`
+	Suite         string      `yaml:"suite"`
+	QualityMode   bool        `yaml:"quality_mode"`
+	AllowStub     bool        `yaml:"allow_stub"`
+	CaseID        string      `yaml:"case_id"`
+	Description   string      `yaml:"description"`
+	Seed          Seed        `yaml:"seed"`
+	Steps         []Step      `yaml:"steps"`
+	Assertions    []Assertion `yaml:"assertions"`
 }
 
 type FixtureStubPolicy string
@@ -515,6 +521,9 @@ func (f *Fixture) ValidateStubPolicy(policy FixtureStubPolicy) error {
 		caseID = f.CaseID
 	}
 	usesStub := f.UsesEvalStub()
+	if f != nil && f.AllowStub && policy == FixtureStubPolicyForbid {
+		return fmt.Errorf("case %s allow_stub=true but suite forbids mirror_stub, graph_activation_stub, and rerank_stub", caseID)
+	}
 	switch policy {
 	case FixtureStubPolicyForbid:
 		if usesStub {
@@ -532,6 +541,18 @@ func (f *Fixture) ValidateStubPolicy(policy FixtureStubPolicy) error {
 
 func (s Step) UsesEvalStub() bool {
 	return s.MirrorStub != nil || s.GraphStub != nil || s.RerankStub != nil
+}
+
+func (f *Fixture) StableHash() string {
+	if f == nil {
+		return ""
+	}
+	data, err := yaml.Marshal(f)
+	if err != nil {
+		data = []byte(fmt.Sprintf("%#v", f))
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func knownAssertionType(value string) bool {

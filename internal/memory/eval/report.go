@@ -8,10 +8,11 @@ import (
 )
 
 type Report struct {
-	CaseID  string
-	Steps   []StepReport
-	Results []AssertionResult
-	Err     error
+	CaseID         string
+	MirrorArtifact MirrorArtifactReport
+	Steps          []StepReport
+	Results        []AssertionResult
+	Err            error
 }
 
 type StepReport struct {

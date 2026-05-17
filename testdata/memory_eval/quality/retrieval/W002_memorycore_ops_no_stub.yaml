@@ -1,3 +1,7 @@
+schema_version: memory_eval.v0.2
+suite: quality_retrieval
+quality_mode: true
+allow_stub: false
 case_id: W002_memorycore_ops_no_stub
 description: No-stub offline retrieval world for MemoryCore operations; retrieval must come from SQLite search/anchor paths, not mirror stubs.
 seed:

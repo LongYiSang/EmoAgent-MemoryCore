@@ -207,6 +207,11 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 				{"trivium_node_id": 42, "score": 0.88, "source": "fake_sparse"},
 			},
 			"degraded": false,
+			"embedding_cache_stats": map[string]any{
+				"hits":            2,
+				"misses":          1,
+				"live_call_count": 1,
+			},
 		})
 	}))
 	defer server.Close()
@@ -222,6 +227,65 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 	}
 	if len(result.Candidates) != 1 || result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 0.88 {
 		t.Fatalf("candidates = %#v", result.Candidates)
+	}
+	if result.EmbeddingCacheHits != 2 || result.EmbeddingCacheMisses != 1 || result.EmbeddingLiveCallCount != 1 {
+		t.Fatalf("embedding stats = hits:%d misses:%d live:%d", result.EmbeddingCacheHits, result.EmbeddingCacheMisses, result.EmbeddingLiveCallCount)
+	}
+}
+
+func TestSidecarClientConfigureEvalReadsCapabilitiesAndMirrorStats(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/eval/configure" {
+			t.Fatalf("path = %s, want /eval/configure", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request["schema_version"] != "memory_eval_sidecar_config.v0.1" {
+			t.Fatalf("schema_version = %v", request["schema_version"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version":            "memory_eval_sidecar_config_result.v0.1",
+			"status":                    "ok",
+			"trivium_dir":               "C:/tmp/trivium",
+			"embedding_cache_mode":      "read_only",
+			"embedding_cache_db_path":   "C:/tmp/cache.sqlite3",
+			"embedding":                 map[string]any{"fingerprint": "fp"},
+			"trivium_adapter_version":   "adapter-v1",
+			"triviumdb_version":         "0.7.1",
+			"rerank_provider_available": true,
+			"rerank_provider_mode":      "live",
+			"rerank_cache":              false,
+			"mirror_stats_available":    true,
+			"mirror_node_count":         2,
+			"mirror_edge_count":         1,
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.ConfigureEval(context.Background(), EvalConfigRequest{
+		TriviumDir:               "C:/tmp/trivium",
+		EmbeddingCacheMode:       "read_only",
+		EmbeddingCacheDBPath:     "C:/tmp/cache.sqlite3",
+		SearchableTextVersion:    "search-v1",
+		TextNormalizationVersion: "norm-v1",
+	})
+	if err != nil {
+		t.Fatalf("configure eval: %v", err)
+	}
+	if !result.RerankProviderAvailable || result.RerankProviderMode != "live" || result.RerankCache {
+		t.Fatalf("rerank capability = available:%t mode:%q cache:%t", result.RerankProviderAvailable, result.RerankProviderMode, result.RerankCache)
+	}
+	if !result.MirrorStatsAvailable || result.MirrorNodeCount != 2 || result.MirrorEdgeCount != 1 {
+		t.Fatalf("mirror stats = available:%t nodes:%d edges:%d", result.MirrorStatsAvailable, result.MirrorNodeCount, result.MirrorEdgeCount)
+	}
+	if result.Embedding["fingerprint"] != "fp" {
+		t.Fatalf("embedding = %#v", result.Embedding)
 	}
 }
 

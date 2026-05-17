@@ -20,6 +20,14 @@ def test_load_config_without_file_uses_defaults_relative_to_sidecar_project(monk
     assert config.embedding.dimensions == 1024
     assert config.embedding.timeout_seconds == 30
     assert config.embedding.encoding_format == "float"
+    assert config.embedding_cache.mode == "off"
+    assert config.embedding_cache.db_path == (
+        Path(__file__).parents[2] / "data/embedding_cache.sqlite3"
+    ).resolve()
+    assert config.embedding_cache.text_normalization_version == "v1"
+    assert config.embedding_cache.searchable_text_version == "v1"
+    assert config.embedding_cache.ttl_days_for_query == 14
+    assert config.embedding_cache.store_raw_text is False
     assert config.rerank.provider == "none"
     assert (
         config.rerank.endpoint_url
@@ -48,6 +56,14 @@ def test_load_config_reads_example_defaults():
     assert config.embedding.dimensions == 1024
     assert config.embedding.timeout_seconds == 30
     assert config.embedding.encoding_format == "float"
+    assert config.embedding_cache.mode == "off"
+    assert config.embedding_cache.db_path == (
+        Path(__file__).parents[2] / "data/embedding_cache.sqlite3"
+    ).resolve()
+    assert config.embedding_cache.text_normalization_version == "v1"
+    assert config.embedding_cache.searchable_text_version == "v1"
+    assert config.embedding_cache.ttl_days_for_query == 14
+    assert config.embedding_cache.store_raw_text is False
     assert config.rerank.provider == "none"
     assert (
         config.rerank.endpoint_url
@@ -73,6 +89,23 @@ def test_load_config_resolves_relative_trivium_dir_from_config_file(tmp_path):
     assert config.trivium.dir == (config_path.parent / "mirror").resolve()
 
 
+def test_load_config_resolves_relative_embedding_cache_db_path_from_config_file(
+    tmp_path,
+):
+    config_path = tmp_path / "conf" / "sidecar.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "[embedding_cache]\ndb_path = \"cache/embeddings.sqlite3\"\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env={})
+
+    assert config.embedding_cache.db_path == (
+        config_path.parent / "cache/embeddings.sqlite3"
+    ).resolve()
+
+
 def test_load_config_applies_environment_overrides(tmp_path):
     config_path = tmp_path / "sidecar.toml"
     config_path.write_text(
@@ -91,6 +124,12 @@ def test_load_config_applies_environment_overrides(tmp_path):
         "MEMORYCORE_EMBEDDING_DIMENSIONS": "256",
         "MEMORYCORE_EMBEDDING_TIMEOUT_SECONDS": "45",
         "MEMORYCORE_EMBEDDING_ENCODING_FORMAT": "float",
+        "MEMORYCORE_EMBEDDING_CACHE_MODE": "read_write",
+        "MEMORYCORE_EMBEDDING_CACHE_DB_PATH": "cache-from-env.sqlite3",
+        "MEMORYCORE_EMBEDDING_CACHE_TEXT_NORMALIZATION_VERSION": "norm-env",
+        "MEMORYCORE_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION": "search-env",
+        "MEMORYCORE_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY": "3",
+        "MEMORYCORE_EMBEDDING_CACHE_STORE_RAW_TEXT": "true",
         "MEMORYCORE_RERANK_PROVIDER": "dashscope-vl",
         "MEMORYCORE_RERANK_ENDPOINT_URL": "https://example.test/rerank",
         "MEMORYCORE_RERANK_API_KEY_ENV": "RERANK_KEY",
@@ -112,6 +151,14 @@ def test_load_config_applies_environment_overrides(tmp_path):
     assert config.embedding.dimensions == 256
     assert config.embedding.timeout_seconds == 45
     assert config.embedding.encoding_format == "float"
+    assert config.embedding_cache.mode == "read_write"
+    assert config.embedding_cache.db_path == (
+        config_path.parent / "cache-from-env.sqlite3"
+    ).resolve()
+    assert config.embedding_cache.text_normalization_version == "norm-env"
+    assert config.embedding_cache.searchable_text_version == "search-env"
+    assert config.embedding_cache.ttl_days_for_query == 3
+    assert config.embedding_cache.store_raw_text is True
     assert config.rerank.provider == "dashscope-vl"
     assert config.rerank.endpoint_url == "https://example.test/rerank"
     assert config.rerank.api_key_env == "RERANK_KEY"
@@ -205,6 +252,24 @@ def test_load_config_rejects_non_loopback_http_embedding_base_url(tmp_path):
         ("[embedding]\ndimensions = 0\n", "embedding.dimensions"),
         ("[embedding]\ntimeout_seconds = 0\n", "embedding.timeout_seconds"),
         ("[embedding]\nencoding_format = 'base64'\n", "embedding.encoding_format"),
+        ("[embedding_cache]\nmode = 'invalid'\n", "embedding_cache.mode"),
+        ("[embedding_cache]\ndb_path = ''\n", "embedding_cache.db_path"),
+        (
+            "[embedding_cache]\ntext_normalization_version = ''\n",
+            "embedding_cache.text_normalization_version",
+        ),
+        (
+            "[embedding_cache]\nsearchable_text_version = ''\n",
+            "embedding_cache.searchable_text_version",
+        ),
+        (
+            "[embedding_cache]\nttl_days_for_query = 0\n",
+            "embedding_cache.ttl_days_for_query",
+        ),
+        (
+            "[embedding_cache]\nstore_raw_text = 'maybe'\n",
+            "embedding_cache.store_raw_text",
+        ),
         ("[rerank]\nprovider = 'other'\n", "rerank.provider"),
         ("[rerank]\nendpoint_url = ''\n", "rerank.endpoint_url"),
         ("[rerank]\napi_key_env = ''\n", "rerank.api_key_env"),

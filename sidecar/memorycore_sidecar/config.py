@@ -18,6 +18,12 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_EMBEDDING_DIMENSIONS = 1024
 DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 30
 DEFAULT_EMBEDDING_ENCODING_FORMAT = "float"
+DEFAULT_EMBEDDING_CACHE_MODE = "off"
+DEFAULT_EMBEDDING_CACHE_DB_PATH = "../data/embedding_cache.sqlite3"
+DEFAULT_EMBEDDING_CACHE_TEXT_NORMALIZATION_VERSION = "v1"
+DEFAULT_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION = "v1"
+DEFAULT_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY = 14
+DEFAULT_EMBEDDING_CACHE_STORE_RAW_TEXT = False
 DEFAULT_RERANK_PROVIDER = "none"
 DEFAULT_RERANK_ENDPOINT_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
@@ -33,6 +39,7 @@ _SIDECAR_PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 _VALID_DTYPES = {"f32", "f16", "u64"}
 _VALID_SYNC_MODES = {"full", "normal", "off"}
+_VALID_EMBEDDING_CACHE_MODES = {"off", "read_write", "read_only", "refresh"}
 _VALID_RERANK_PROVIDERS = {"none", "dashscope-vl"}
 _LOOPBACK_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -56,6 +63,16 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class EmbeddingCacheConfig:
+    mode: str
+    db_path: Path
+    text_normalization_version: str
+    searchable_text_version: str
+    ttl_days_for_query: int
+    store_raw_text: bool
+
+
+@dataclass(frozen=True)
 class RerankConfig:
     provider: str
     endpoint_url: str
@@ -70,6 +87,7 @@ class RerankConfig:
 class SidecarConfig:
     trivium: TriviumConfig
     embedding: EmbeddingConfig
+    embedding_cache: EmbeddingCacheConfig
     rerank: RerankConfig
 
 
@@ -89,6 +107,7 @@ def load_config(
     env_values = os.environ if env is None else env
     trivium_data = _table(data, "trivium")
     embedding_data = _table(data, "embedding")
+    embedding_cache_data = _table(data, "embedding_cache")
     rerank_data = _table(data, "rerank")
 
     trivium_dir_value = _env_or_value(
@@ -189,6 +208,71 @@ def load_config(
                     embedding_data,
                     "encoding_format",
                     DEFAULT_EMBEDDING_ENCODING_FORMAT,
+                ),
+            ),
+        ),
+        embedding_cache=EmbeddingCacheConfig(
+            mode=_string(
+                "embedding_cache.mode",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_EMBEDDING_CACHE_MODE",
+                    embedding_cache_data,
+                    "mode",
+                    DEFAULT_EMBEDDING_CACHE_MODE,
+                ),
+            ),
+            db_path=_resolve_path(
+                _string(
+                    "embedding_cache.db_path",
+                    _env_or_value(
+                        env_values,
+                        "MEMORYCORE_EMBEDDING_CACHE_DB_PATH",
+                        embedding_cache_data,
+                        "db_path",
+                        DEFAULT_EMBEDDING_CACHE_DB_PATH,
+                    ),
+                ),
+                base_dir,
+            ),
+            text_normalization_version=_string(
+                "embedding_cache.text_normalization_version",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_EMBEDDING_CACHE_TEXT_NORMALIZATION_VERSION",
+                    embedding_cache_data,
+                    "text_normalization_version",
+                    DEFAULT_EMBEDDING_CACHE_TEXT_NORMALIZATION_VERSION,
+                ),
+            ),
+            searchable_text_version=_string(
+                "embedding_cache.searchable_text_version",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION",
+                    embedding_cache_data,
+                    "searchable_text_version",
+                    DEFAULT_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION,
+                ),
+            ),
+            ttl_days_for_query=_positive_int(
+                "embedding_cache.ttl_days_for_query",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY",
+                    embedding_cache_data,
+                    "ttl_days_for_query",
+                    DEFAULT_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY,
+                ),
+            ),
+            store_raw_text=_bool(
+                "embedding_cache.store_raw_text",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_EMBEDDING_CACHE_STORE_RAW_TEXT",
+                    embedding_cache_data,
+                    "store_raw_text",
+                    DEFAULT_EMBEDDING_CACHE_STORE_RAW_TEXT,
                 ),
             ),
         ),
@@ -309,7 +393,26 @@ def _positive_int(name: str, value: Any) -> int:
     return value
 
 
+def _bool(name: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 def _resolve_dir(value: str, base_dir: Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    return (base_dir / path).resolve()
+
+
+def _resolve_path(value: str, base_dir: Path) -> Path:
     path = Path(value)
     if path.is_absolute():
         return path.resolve()
@@ -328,6 +431,10 @@ def _validate(config: SidecarConfig) -> None:
     )
     if config.embedding.encoding_format != "float":
         raise ValueError("embedding.encoding_format must be float")
+    if config.embedding_cache.mode not in _VALID_EMBEDDING_CACHE_MODES:
+        raise ValueError(
+            "embedding_cache.mode must be one of off, read_write, read_only, refresh"
+        )
     if config.rerank.provider not in _VALID_RERANK_PROVIDERS:
         raise ValueError("rerank.provider must be one of none, dashscope-vl")
     _validate_https_or_loopback_http_url(

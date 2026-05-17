@@ -38,7 +38,9 @@ class FakeMirrorAdapter(MirrorAdapter):
         self._edges.pop(_edge_key(edge), None)
         return {}
 
-    def clear_namespace(self, persona_id: str) -> dict[str, Any]:
+    def clear_namespace(
+        self, persona_id: str, purge_embedding_cache: bool = False
+    ) -> dict[str, Any]:
         for key in list(self._nodes):
             if key[0] == persona_id:
                 del self._nodes[key]

@@ -116,6 +116,9 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
+	diagnostics.EmbeddingCacheHits = result.EmbeddingCacheHits
+	diagnostics.EmbeddingCacheMisses = result.EmbeddingCacheMisses
+	diagnostics.EmbeddingLiveCallCount = result.EmbeddingLiveCallCount
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
 		diagnostics.Degraded = true

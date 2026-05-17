@@ -16,6 +16,7 @@ from memorycore_sidecar.protocol import (
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
     CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION,
     CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION,
+    EVAL_CONFIG_REQUEST_SCHEMA_VERSION,
     RERANK_REQUEST_SCHEMA_VERSION,
     RERANK_RESPONSE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
@@ -27,6 +28,7 @@ from memorycore_sidecar.protocol import (
     parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
+    parse_eval_config_request,
     parse_operation_request,
     parse_rerank_request,
 )
@@ -147,6 +149,17 @@ def test_parse_candidate_request_requires_query_text():
                 "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
                 "request_id": "req-1",
                 "persona_id": "default",
+            }
+        )
+
+
+def test_parse_eval_config_request_rejects_unknown_embedding_cache_mode():
+    with pytest.raises(ProtocolError, match="embedding_cache_mode"):
+        parse_eval_config_request(
+            {
+                "schema_version": EVAL_CONFIG_REQUEST_SCHEMA_VERSION,
+                "trivium_dir": "/tmp/mirror",
+                "embedding_cache_mode": "typo",
             }
         )
 

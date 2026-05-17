@@ -235,14 +235,17 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 		return nil
 	}
 	result := &MirrorRetrievalDiagnostics{
-		Status:                value.Status,
-		Degraded:              value.Degraded,
-		FallbackReason:        value.FallbackReason,
-		LatencyMs:             value.LatencyMs,
-		SidecarCandidateCount: value.SidecarCandidateCount,
-		MappedCandidateCount:  value.MappedCandidateCount,
-		DroppedCandidateCount: value.DroppedCandidateCount,
-		Candidates:            make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
+		Status:                 value.Status,
+		Degraded:               value.Degraded,
+		FallbackReason:         value.FallbackReason,
+		LatencyMs:              value.LatencyMs,
+		SidecarCandidateCount:  value.SidecarCandidateCount,
+		MappedCandidateCount:   value.MappedCandidateCount,
+		DroppedCandidateCount:  value.DroppedCandidateCount,
+		EmbeddingCacheHits:     value.EmbeddingCacheHits,
+		EmbeddingCacheMisses:   value.EmbeddingCacheMisses,
+		EmbeddingLiveCallCount: value.EmbeddingLiveCallCount,
+		Candidates:             make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
 	}
 	for _, item := range value.Candidates {
 		sqliteFactID := item.SQLiteFactID

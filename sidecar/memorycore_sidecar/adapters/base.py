@@ -33,7 +33,9 @@ class MirrorAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def clear_namespace(self, persona_id: str) -> dict[str, Any]:
+    def clear_namespace(
+        self, persona_id: str, purge_embedding_cache: bool = False
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod

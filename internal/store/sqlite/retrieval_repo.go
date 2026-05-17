@@ -85,14 +85,17 @@ type MemoryContext struct {
 }
 
 type MirrorDiagnostics struct {
-	Status                string
-	Degraded              bool
-	FallbackReason        string
-	LatencyMs             int64
-	SidecarCandidateCount int
-	MappedCandidateCount  int
-	DroppedCandidateCount int
-	Candidates            []MirrorCandidateDiagnostic
+	Status                 string
+	Degraded               bool
+	FallbackReason         string
+	LatencyMs              int64
+	SidecarCandidateCount  int
+	MappedCandidateCount   int
+	DroppedCandidateCount  int
+	EmbeddingCacheHits     int
+	EmbeddingCacheMisses   int
+	EmbeddingLiveCallCount int
+	Candidates             []MirrorCandidateDiagnostic
 }
 
 type GraphActivationDiagnostics struct {

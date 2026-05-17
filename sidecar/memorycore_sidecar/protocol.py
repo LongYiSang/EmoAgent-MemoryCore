@@ -14,6 +14,11 @@ ACTIVATION_REQUEST_SCHEMA_VERSION = "memory_graph_activation_request.v0.1"
 ACTIVATION_RESPONSE_SCHEMA_VERSION = "memory_graph_activation_result.v0.1"
 RERANK_REQUEST_SCHEMA_VERSION = "memory_rerank_request.v0.1"
 RERANK_RESPONSE_SCHEMA_VERSION = "memory_rerank_result.v0.1"
+EVAL_CONFIG_REQUEST_SCHEMA_VERSION = "memory_eval_sidecar_config.v0.1"
+EVAL_CONFIG_RESPONSE_SCHEMA_VERSION = "memory_eval_sidecar_config_result.v0.1"
+VALID_EMBEDDING_CACHE_MODES = frozenset(
+    {"off", "read_write", "read_only", "refresh"}
+)
 
 SUPPORTED_OPERATIONS = frozenset(
     {"upsert_node", "delete_node", "upsert_edge", "delete_edge"}
@@ -116,6 +121,48 @@ def parse_clear_namespace_request(data: Any) -> str:
     if not isinstance(persona_id, str) or not persona_id.strip():
         raise ProtocolError("persona_id is required")
     return persona_id.strip()
+
+
+def parse_clear_namespace_payload(data: Any) -> dict[str, Any]:
+    persona_id = parse_clear_namespace_request(data)
+    purge_embedding_cache = False
+    if isinstance(data, dict):
+        purge_embedding_cache = bool(data.get("purge_embedding_cache", False))
+    return {
+        "persona_id": persona_id,
+        "purge_embedding_cache": purge_embedding_cache,
+    }
+
+
+def parse_eval_config_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != EVAL_CONFIG_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(
+            f"schema_version must be {EVAL_CONFIG_REQUEST_SCHEMA_VERSION}"
+        )
+    result: dict[str, Any] = {}
+    for field in (
+        "trivium_dir",
+        "embedding_cache_mode",
+        "embedding_cache_db_path",
+        "searchable_text_version",
+        "text_normalization_version",
+    ):
+        value = data.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ProtocolError(f"{field} must be a string")
+        value = value.strip()
+        if value:
+            if field == "embedding_cache_mode" and value not in VALID_EMBEDDING_CACHE_MODES:
+                raise ProtocolError(
+                    "embedding_cache_mode must be one of off, read_write, read_only, refresh"
+                )
+            result[field] = value
+    return result
 
 
 def parse_candidate_request(data: Any) -> dict[str, Any]:
@@ -350,6 +397,7 @@ def build_candidates_result(
     candidates: list[dict[str, Any]] | None = None,
     degraded: bool = False,
     fallback_reason: str | None = None,
+    embedding_cache_stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     result = {
         "schema_version": CANDIDATE_RESPONSE_SCHEMA_VERSION,
@@ -359,6 +407,17 @@ def build_candidates_result(
     }
     if fallback_reason:
         result["fallback_reason"] = fallback_reason
+    if embedding_cache_stats is not None:
+        result["embedding_cache_stats"] = embedding_cache_stats
+    return result
+
+
+def build_eval_config_result(**fields: Any) -> dict[str, Any]:
+    result = {
+        "schema_version": EVAL_CONFIG_RESPONSE_SCHEMA_VERSION,
+        "status": "ok",
+    }
+    result.update(fields)
     return result
 
 

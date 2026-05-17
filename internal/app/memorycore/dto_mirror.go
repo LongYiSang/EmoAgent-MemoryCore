@@ -83,9 +83,12 @@ type MirrorCandidate struct {
 }
 
 type MirrorCandidateResult struct {
-	Candidates     []MirrorCandidate `json:"candidates"`
-	Degraded       bool              `json:"degraded"`
-	FallbackReason string            `json:"fallback_reason,omitempty"`
+	Candidates             []MirrorCandidate `json:"candidates"`
+	Degraded               bool              `json:"degraded"`
+	FallbackReason         string            `json:"fallback_reason,omitempty"`
+	EmbeddingCacheHits     int               `json:"embedding_cache_hits,omitempty"`
+	EmbeddingCacheMisses   int               `json:"embedding_cache_misses,omitempty"`
+	EmbeddingLiveCallCount int               `json:"embedding_live_call_count,omitempty"`
 }
 
 type MirrorActivationRequest struct {
@@ -160,6 +163,31 @@ type MirrorRerankItem struct {
 	DebugReason string  `json:"debug_reason,omitempty"`
 }
 
+type MirrorEvalConfigRequest struct {
+	TriviumDir               string `json:"trivium_dir,omitempty"`
+	EmbeddingCacheMode       string `json:"embedding_cache_mode,omitempty"`
+	EmbeddingCacheDBPath     string `json:"embedding_cache_db_path,omitempty"`
+	SearchableTextVersion    string `json:"searchable_text_version,omitempty"`
+	TextNormalizationVersion string `json:"text_normalization_version,omitempty"`
+}
+
+type MirrorEvalConfigResult struct {
+	TriviumDir              string            `json:"trivium_dir,omitempty"`
+	EmbeddingCacheMode      string            `json:"embedding_cache_mode,omitempty"`
+	EmbeddingCacheDBPath    string            `json:"embedding_cache_db_path,omitempty"`
+	Embedding               map[string]string `json:"embedding,omitempty"`
+	TriviumAdapterVersion   string            `json:"trivium_adapter_version,omitempty"`
+	TriviumDBVersion        string            `json:"triviumdb_version,omitempty"`
+	RerankProviderAvailable bool              `json:"rerank_provider_available"`
+	RerankProviderMode      string            `json:"rerank_provider_mode,omitempty"`
+	RerankCapabilityReason  string            `json:"rerank_capability_reason,omitempty"`
+	RerankCache             bool              `json:"rerank_cache"`
+	MirrorStatsAvailable    bool              `json:"mirror_stats_available"`
+	MirrorStatsError        string            `json:"mirror_stats_error,omitempty"`
+	MirrorNodeCount         int               `json:"mirror_node_count"`
+	MirrorEdgeCount         int               `json:"mirror_edge_count"`
+}
+
 type MirrorAdapter interface {
 	UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error)
 	DeleteNode(ctx context.Context, ref MirrorNodeRef) error
@@ -181,4 +209,12 @@ type MirrorActivationAdapter interface {
 
 type MirrorRerankAdapter interface {
 	Rerank(ctx context.Context, req MirrorRerankRequest) (*MirrorRerankResult, error)
+}
+
+type MirrorEvalConfigurator interface {
+	ConfigureEval(ctx context.Context, req MirrorEvalConfigRequest) (*MirrorEvalConfigResult, error)
+}
+
+type MirrorHealthChecker interface {
+	Health(ctx context.Context) error
 }

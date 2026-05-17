@@ -8,11 +8,14 @@ from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
 from memorycore_sidecar.protocol import (
     ACTIVATION_REQUEST_SCHEMA_VERSION,
     ACTIVATION_RESPONSE_SCHEMA_VERSION,
+    CANDIDATE_REQUEST_SCHEMA_VERSION,
+    CANDIDATE_RESPONSE_SCHEMA_VERSION,
     RERANK_REQUEST_SCHEMA_VERSION,
     RERANK_RESPONSE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
     RESPONSE_SCHEMA_VERSION,
 )
+from memorycore_sidecar.embedding import EmbeddingCacheMiss
 from memorycore_sidecar.server import create_server
 
 
@@ -190,6 +193,40 @@ def test_server_retrieval_rerank_roundtrip_orders_by_fake_adapter_score():
         assert "token_overlap=2/2" in body["results"][0]["debug_reason"]
         assert body["results"][1]["rerank_score"] == pytest.approx(0.9)
         assert "configured_score=0.9" in body["results"][1]["debug_reason"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_retrieval_candidates_returns_safe_cache_miss_degraded():
+    class CacheMissAdapter(FakeMirrorAdapter):
+        def find_candidates(self, request):
+            raise EmbeddingCacheMiss("embedding cache miss: secret-cache-key")
+
+    server = create_server(("127.0.0.1", 0), CacheMissAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        body = _post_json(
+            base_url,
+            "/retrieval/candidates",
+            {
+                "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
+                "request_id": "cache-miss-1",
+                "persona_id": "default",
+                "query_text": "private query",
+                "limit": 5,
+            },
+        )
+
+        assert body["schema_version"] == CANDIDATE_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "cache-miss-1"
+        assert body["candidates"] == []
+        assert body["degraded"] is True
+        assert body["fallback_reason"] == "embedding_cache_miss"
+        assert "secret-cache-key" not in str(body)
     finally:
         server.shutdown()
         server.server_close()

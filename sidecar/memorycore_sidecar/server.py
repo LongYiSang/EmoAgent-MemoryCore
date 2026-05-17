@@ -11,16 +11,19 @@ from .adapters.base import MirrorAdapter
 from .adapters.fake import FakeMirrorAdapter
 from .adapters.trivium import TriviumAdapter
 from .config import load_config
+from .embedding import EmbeddingCacheMiss
 from .protocol import (
     build_activation_result,
     build_clear_namespace_result,
     build_candidates_result,
+    build_eval_config_result,
     build_error,
     build_rerank_result,
     build_result,
     parse_activation_request,
     parse_candidate_request,
-    parse_clear_namespace_request,
+    parse_clear_namespace_payload,
+    parse_eval_config_request,
     parse_operation_request,
     parse_rerank_request,
     ProtocolError,
@@ -66,15 +69,30 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
                     )
                     return
                 if self.path == "/mirror/clear-namespace":
-                    persona_id = parse_clear_namespace_request(request)
-                    result = adapter.clear_namespace(persona_id)
+                    clear_request = parse_clear_namespace_payload(request)
+                    result = adapter.clear_namespace(**clear_request)
                     self._write_json(
                         HTTPStatus.OK, build_clear_namespace_result(**result)
                     )
                     return
+                if self.path == "/eval/configure":
+                    config_request = parse_eval_config_request(request)
+                    configure = getattr(adapter, "configure_eval", None)
+                    if not callable(configure):
+                        raise ProtocolError("adapter does not support eval configure")
+                    result = configure(config_request)
+                    self._write_json(HTTPStatus.OK, build_eval_config_result(**result))
+                    return
                 if self.path == "/retrieval/candidates":
                     candidate_request = parse_candidate_request(request)
-                    result = adapter.find_candidates(candidate_request)
+                    try:
+                        result = adapter.find_candidates(candidate_request)
+                    except EmbeddingCacheMiss:
+                        result = {
+                            "candidates": [],
+                            "degraded": True,
+                            "fallback_reason": "embedding_cache_miss",
+                        }
                     self._write_json(
                         HTTPStatus.OK,
                         build_candidates_result(

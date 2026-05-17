@@ -25,6 +25,8 @@ const (
 	sidecarActivationResponseSchemaVersion = "memory_graph_activation_result.v0.1"
 	sidecarRerankRequestSchemaVersion      = "memory_rerank_request.v0.1"
 	sidecarRerankResponseSchemaVersion     = "memory_rerank_result.v0.1"
+	sidecarEvalConfigRequestSchemaVersion  = "memory_eval_sidecar_config.v0.1"
+	sidecarEvalConfigResponseSchemaVersion = "memory_eval_sidecar_config_result.v0.1"
 	defaultSidecarTimeout                  = 10 * time.Second
 	maxRerankDebugReasonRunes              = 160
 )
@@ -53,9 +55,12 @@ type Candidate struct {
 }
 
 type CandidateResult struct {
-	Candidates     []Candidate
-	Degraded       bool
-	FallbackReason string
+	Candidates             []Candidate
+	Degraded               bool
+	FallbackReason         string
+	EmbeddingCacheHits     int
+	EmbeddingCacheMisses   int
+	EmbeddingLiveCallCount int
 }
 
 type ActivationRequest struct {
@@ -130,6 +135,31 @@ type RerankItem struct {
 	DebugReason string
 }
 
+type EvalConfigRequest struct {
+	TriviumDir               string
+	EmbeddingCacheMode       string
+	EmbeddingCacheDBPath     string
+	SearchableTextVersion    string
+	TextNormalizationVersion string
+}
+
+type EvalConfigResult struct {
+	TriviumDir              string
+	EmbeddingCacheMode      string
+	EmbeddingCacheDBPath    string
+	Embedding               map[string]string
+	TriviumAdapterVersion   string
+	TriviumDBVersion        string
+	RerankProviderAvailable bool
+	RerankProviderMode      string
+	RerankCapabilityReason  string
+	RerankCache             bool
+	MirrorStatsAvailable    bool
+	MirrorStatsError        string
+	MirrorNodeCount         int
+	MirrorEdgeCount         int
+}
+
 func NewSidecarClient(options SidecarClientOptions) *SidecarClient {
 	timeout := options.Timeout
 	if timeout <= 0 {
@@ -201,6 +231,71 @@ func (c *SidecarClient) Health(ctx context.Context) error {
 		return fmt.Errorf("sidecar health status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func (c *SidecarClient) ConfigureEval(ctx context.Context, request EvalConfigRequest) (EvalConfigResult, error) {
+	endpoint, err := c.endpoint("/eval/configure")
+	if err != nil {
+		return EvalConfigResult{}, err
+	}
+	body, err := json.Marshal(map[string]any{
+		"schema_version":             sidecarEvalConfigRequestSchemaVersion,
+		"trivium_dir":                strings.TrimSpace(request.TriviumDir),
+		"embedding_cache_mode":       strings.TrimSpace(request.EmbeddingCacheMode),
+		"embedding_cache_db_path":    strings.TrimSpace(request.EmbeddingCacheDBPath),
+		"searchable_text_version":    strings.TrimSpace(request.SearchableTextVersion),
+		"text_normalization_version": strings.TrimSpace(request.TextNormalizationVersion),
+	})
+	if err != nil {
+		return EvalConfigResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return EvalConfigResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return EvalConfigResult{}, fmt.Errorf("sidecar eval configure request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			return EvalConfigResult{}, fmt.Errorf("sidecar eval configure status %d", resp.StatusCode)
+		}
+		return EvalConfigResult{}, fmt.Errorf("sidecar eval configure status %d: %s", resp.StatusCode, message)
+	}
+	var response sidecarEvalConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return EvalConfigResult{}, fmt.Errorf("sidecar eval configure response decode: %w", err)
+	}
+	if response.SchemaVersion != sidecarEvalConfigResponseSchemaVersion {
+		return EvalConfigResult{}, fmt.Errorf("sidecar eval configure response schema mismatch: %q", response.SchemaVersion)
+	}
+	if response.Status != "ok" {
+		if strings.TrimSpace(response.Error) != "" {
+			return EvalConfigResult{}, fmt.Errorf("sidecar eval configure error: %s", response.Error)
+		}
+		return EvalConfigResult{}, fmt.Errorf("sidecar eval configure error status %q", response.Status)
+	}
+	return EvalConfigResult{
+		TriviumDir:              response.TriviumDir,
+		EmbeddingCacheMode:      response.EmbeddingCacheMode,
+		EmbeddingCacheDBPath:    response.EmbeddingCacheDBPath,
+		Embedding:               cloneStringMap(response.Embedding),
+		TriviumAdapterVersion:   response.TriviumAdapterVersion,
+		TriviumDBVersion:        response.TriviumDBVersion,
+		RerankProviderAvailable: response.RerankProviderAvailable,
+		RerankProviderMode:      response.RerankProviderMode,
+		RerankCapabilityReason:  response.RerankCapabilityReason,
+		RerankCache:             response.RerankCache,
+		MirrorStatsAvailable:    response.MirrorStatsAvailable,
+		MirrorStatsError:        response.MirrorStatsError,
+		MirrorNodeCount:         response.MirrorNodeCount,
+		MirrorEdgeCount:         response.MirrorEdgeCount,
+	}, nil
 }
 
 func (c *SidecarClient) UpsertNode(ctx context.Context, payload NodePayload) (NodeUpsertResult, error) {
@@ -320,9 +415,12 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 		return CandidateResult{}, fmt.Errorf("sidecar candidates response request_id mismatch: %q", response.RequestID)
 	}
 	result := CandidateResult{
-		Candidates:     make([]Candidate, 0, len(response.Candidates)),
-		Degraded:       response.Degraded,
-		FallbackReason: response.FallbackReason,
+		Candidates:             make([]Candidate, 0, len(response.Candidates)),
+		Degraded:               response.Degraded,
+		FallbackReason:         response.FallbackReason,
+		EmbeddingCacheHits:     response.EmbeddingCacheStats.Hits,
+		EmbeddingCacheMisses:   response.EmbeddingCacheStats.Misses,
+		EmbeddingLiveCallCount: response.EmbeddingCacheStats.LiveCallCount,
 	}
 	limit := request.Limit
 	if limit <= 0 {
@@ -537,8 +635,13 @@ type sidecarCandidateResponse struct {
 		Score         float64 `json:"score"`
 		Source        string  `json:"source"`
 	} `json:"candidates"`
-	Degraded       bool   `json:"degraded"`
-	FallbackReason string `json:"fallback_reason,omitempty"`
+	Degraded            bool   `json:"degraded"`
+	FallbackReason      string `json:"fallback_reason,omitempty"`
+	EmbeddingCacheStats struct {
+		Hits          int `json:"hits"`
+		Misses        int `json:"misses"`
+		LiveCallCount int `json:"live_call_count"`
+	} `json:"embedding_cache_stats"`
 }
 
 type sidecarActivationResponse struct {
@@ -569,6 +672,26 @@ type sidecarRerankResponse struct {
 	} `json:"results"`
 	Degraded       bool   `json:"degraded"`
 	FallbackReason string `json:"fallback_reason,omitempty"`
+}
+
+type sidecarEvalConfigResponse struct {
+	SchemaVersion           string            `json:"schema_version"`
+	Status                  string            `json:"status"`
+	Error                   string            `json:"error,omitempty"`
+	TriviumDir              string            `json:"trivium_dir,omitempty"`
+	EmbeddingCacheMode      string            `json:"embedding_cache_mode,omitempty"`
+	EmbeddingCacheDBPath    string            `json:"embedding_cache_db_path,omitempty"`
+	Embedding               map[string]string `json:"embedding,omitempty"`
+	TriviumAdapterVersion   string            `json:"trivium_adapter_version,omitempty"`
+	TriviumDBVersion        string            `json:"triviumdb_version,omitempty"`
+	RerankProviderAvailable bool              `json:"rerank_provider_available"`
+	RerankProviderMode      string            `json:"rerank_provider_mode,omitempty"`
+	RerankCapabilityReason  string            `json:"rerank_capability_reason,omitempty"`
+	RerankCache             bool              `json:"rerank_cache"`
+	MirrorStatsAvailable    bool              `json:"mirror_stats_available"`
+	MirrorStatsError        string            `json:"mirror_stats_error,omitempty"`
+	MirrorNodeCount         int               `json:"mirror_node_count"`
+	MirrorEdgeCount         int               `json:"mirror_edge_count"`
 }
 
 func (c *SidecarClient) doOperation(ctx context.Context, operation Operation, node any, edge any) (sidecarOperationResponse, error) {
@@ -788,6 +911,17 @@ func mapStringField(value any, field string) string {
 	}
 	stringValue, _ := item[field].(string)
 	return stringValue
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func nodePayloadJSON(payload NodePayload) map[string]any {

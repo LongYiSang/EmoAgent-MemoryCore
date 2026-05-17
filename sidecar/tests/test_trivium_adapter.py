@@ -10,6 +10,7 @@ triviumdb = pytest.importorskip("triviumdb")
 
 from memorycore_sidecar.adapters.trivium import TriviumAdapter
 from memorycore_sidecar.config import (
+    EmbeddingCacheConfig,
     EmbeddingConfig,
     RerankConfig,
     SidecarConfig,
@@ -371,7 +372,265 @@ def test_trivium_adapter_delete_edge_uses_unlink_when_supported():
     assert flushed == [True]
 
 
-def _config(tmp_path: Path) -> SidecarConfig:
+def test_trivium_adapter_wraps_embedding_provider_and_records_node_and_query_refs(
+    tmp_path: Path,
+):
+    cache_path = tmp_path / "embedding-cache.sqlite3"
+    adapter = TriviumAdapter(
+        _config(tmp_path / "trivium", cache_mode="read_write", cache_path=cache_path),
+        FakeEmbeddingProvider(
+            {
+                "node text": [1.0, 0.0, 0.0],
+                "query text": [1.0, 0.0, 0.0],
+            }
+        ),
+    )
+
+    upserted = adapter.upsert_node(_node("alice", "fact-1", "node text"))
+    adapter.find_candidates(
+        {
+            "request_id": "query-1",
+            "persona_id": "alice",
+            "query_text": "query text",
+            "limit": 5,
+        }
+    )
+    result = adapter.find_candidates(
+        {
+            "request_id": "query-1",
+            "persona_id": "alice",
+            "query_text": "query text",
+            "limit": 5,
+        }
+    )
+
+    import sqlite3
+
+    with sqlite3.connect(cache_path) as db:
+        refs = db.execute(
+            "SELECT ref_kind, ref_id FROM embedding_cache_refs ORDER BY ref_kind, ref_id"
+        ).fetchall()
+
+    assert upserted["trivium_node_id"] > 0
+    assert refs == [("node", "fact-1"), ("query", "query-1")]
+    assert result["embedding_cache_stats"]["hits"] >= 1
+    assert result["embedding_cache_stats"]["live_call_count"] >= 2
+
+
+def test_trivium_adapter_delete_node_removes_only_matching_cache_ref(
+    tmp_path: Path,
+):
+    cache_path = tmp_path / "embedding-cache.sqlite3"
+    adapter = TriviumAdapter(
+        _config(tmp_path / "trivium", cache_mode="read_write", cache_path=cache_path),
+        FakeEmbeddingProvider({"shared text": [1.0, 0.0, 0.0]}),
+    )
+    adapter.upsert_node(_node("alice", "fact-1", "shared text"))
+    adapter.upsert_node(_node("bob", "fact-1", "shared text"))
+
+    assert adapter.delete_node(
+        {"persona_id": "alice", "node_type": "fact", "sqlite_node_id": "fact-1"}
+    ) == {}
+
+    import sqlite3
+
+    with sqlite3.connect(cache_path) as db:
+        refs = db.execute(
+            """
+            SELECT ref_kind, persona_id, node_type, node_id, ref_id
+            FROM embedding_cache_refs
+            ORDER BY persona_id, node_type, node_id
+            """
+        ).fetchall()
+        embedding_count = db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+
+    assert refs == [("node", "bob", "fact", "fact-1", "fact-1")]
+    assert embedding_count == 1
+
+    assert adapter.delete_node(
+        {"persona_id": "bob", "node_type": "fact", "sqlite_node_id": "fact-1"}
+    ) == {}
+    with sqlite3.connect(cache_path) as db:
+        refs = db.execute("SELECT ref_kind, ref_id FROM embedding_cache_refs").fetchall()
+        embedding_count = db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+
+    assert refs == []
+    assert embedding_count == 0
+
+
+def test_trivium_adapter_clear_namespace_removes_cache_refs_and_orphans(
+    tmp_path: Path,
+):
+    cache_path = tmp_path / "embedding-cache.sqlite3"
+    adapter = TriviumAdapter(
+        _config(tmp_path / "trivium", cache_mode="read_write", cache_path=cache_path),
+        FakeEmbeddingProvider(
+            {
+                "alice text": [1.0, 0.0, 0.0],
+                "bob text": [0.0, 1.0, 0.0],
+            }
+        ),
+    )
+    adapter.upsert_node(_node("alice", "fact-1", "alice text"))
+    adapter.upsert_node(_node("bob", "fact-1", "bob text"))
+
+    assert adapter.clear_namespace("alice", purge_embedding_cache=True) == {}
+
+    import sqlite3
+
+    with sqlite3.connect(cache_path) as db:
+        refs = db.execute(
+            """
+            SELECT ref_kind, persona_id, node_type, node_id, ref_id
+            FROM embedding_cache_refs
+            ORDER BY persona_id, node_type, node_id
+            """
+        ).fetchall()
+        embedding_count = db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+
+    assert refs == [("node", "bob", "fact", "fact-1", "fact-1")]
+    assert embedding_count == 1
+
+
+def test_trivium_adapter_clear_namespace_preserves_embedding_cache_by_default(
+    tmp_path: Path,
+):
+    cache_path = tmp_path / "embedding-cache.sqlite3"
+    adapter = TriviumAdapter(
+        _config(tmp_path / "trivium", cache_mode="read_write", cache_path=cache_path),
+        FakeEmbeddingProvider({"alice text": [1.0, 0.0, 0.0]}),
+    )
+    adapter.upsert_node(_node("alice", "fact-1", "alice text"))
+
+    assert adapter.clear_namespace("alice") == {}
+
+    import sqlite3
+
+    with sqlite3.connect(cache_path) as db:
+        refs = db.execute(
+            "SELECT ref_kind, persona_id, node_type, node_id FROM embedding_cache_refs"
+        ).fetchall()
+        embedding_count = db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+
+    assert refs == [("node", "alice", "fact", "fact-1")]
+    assert embedding_count == 1
+
+
+def test_trivium_adapter_configure_eval_switches_trivium_dir_and_cache_mode(
+    tmp_path: Path,
+):
+    cache_path = tmp_path / "embedding-cache.sqlite3"
+    adapter = TriviumAdapter(
+        _config(tmp_path / "initial", cache_mode="off", cache_path=cache_path),
+        FakeEmbeddingProvider({"node text": [1.0, 0.0, 0.0]}),
+    )
+    artifact_dir = tmp_path / "artifact" / "trivium"
+    configured = adapter.configure_eval(
+        {
+            "trivium_dir": str(artifact_dir),
+            "embedding_cache_mode": "read_write",
+            "embedding_cache_db_path": str(cache_path),
+            "searchable_text_version": "memorycore_searchable_text_v1",
+            "text_normalization_version": "norm-v2",
+        }
+    )
+
+    upserted = adapter.upsert_node(_node("alice", "fact-1", "node text"))
+
+    assert configured["trivium_dir"] == str(artifact_dir.resolve())
+    assert configured["embedding_cache_mode"] == "read_write"
+    assert configured["embedding_cache_db_path"] == str(cache_path.resolve())
+    assert configured["embedding"]["model"] == "test-embedding"
+    assert configured["embedding"]["dimensions"] == "3"
+    assert configured["embedding"]["encoding_format"] == "float"
+    assert configured["embedding"]["searchable_text_version"] == "memorycore_searchable_text_v1"
+    assert configured["embedding"]["text_normalization_version"] == "norm-v2"
+    assert configured["embedding"]["fingerprint"]
+    assert configured["trivium_adapter_version"]
+    assert configured["triviumdb_version"]
+    assert upserted["trivium_node_id"] > 0
+    assert any(artifact_dir.glob("*"))
+    assert cache_path.exists()
+
+
+def test_trivium_adapter_configure_eval_reports_rerank_capability_and_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TEST_RERANK_KEY", "test-key")
+    adapter = TriviumAdapter(
+        _config(
+            tmp_path / "trivium",
+            rerank_provider="dashscope-vl",
+            rerank_api_key_env="TEST_RERANK_KEY",
+        ),
+        FakeEmbeddingProvider(
+            {
+                "source": [1.0, 0.0, 0.0],
+                "target": [0.0, 1.0, 0.0],
+            }
+        ),
+    )
+    adapter.upsert_node(_node("alice", "fact-1", "source"))
+    adapter.upsert_node(_node("alice", "fact-2", "target"))
+    adapter.upsert_edge(
+        {
+            "persona_id": "alice",
+            "sqlite_edge_id": "edge-1",
+            "from_node_type": "fact",
+            "from_node_id": "fact-1",
+            "to_node_type": "fact",
+            "to_node_id": "fact-2",
+            "link_type": "CAUSES",
+            "weight": 1.0,
+        }
+    )
+
+    configured = adapter.configure_eval({"trivium_dir": str(tmp_path / "trivium")})
+
+    assert configured["rerank_provider_available"] is True
+    assert configured["rerank_provider_mode"] == "live"
+    assert configured["rerank_cache"] is False
+    assert configured["mirror_stats_available"] is True
+    assert configured["mirror_node_count"] == 2
+    assert configured["mirror_edge_count"] == 1
+
+
+def test_trivium_adapter_configure_eval_reports_missing_rerank_provider(
+    tmp_path: Path,
+):
+    adapter = TriviumAdapter(
+        _config(tmp_path / "trivium"),
+        FakeEmbeddingProvider({"node text": [1.0, 0.0, 0.0]}),
+    )
+
+    configured = adapter.configure_eval({"trivium_dir": str(tmp_path / "trivium")})
+
+    assert configured["rerank_provider_available"] is False
+    assert configured["rerank_provider_mode"] == "none"
+    assert configured["rerank_capability_reason"] == "rerank_provider_none"
+
+
+def test_trivium_adapter_configure_eval_rejects_unknown_embedding_cache_mode(
+    tmp_path: Path,
+):
+    adapter = TriviumAdapter(
+        _config(tmp_path / "initial", cache_mode="off"),
+        FakeEmbeddingProvider({"node text": [1.0, 0.0, 0.0]}),
+    )
+
+    with pytest.raises(ValueError, match="embedding_cache.mode"):
+        adapter.configure_eval({"embedding_cache_mode": "typo"})
+
+
+def _config(
+    tmp_path: Path,
+    *,
+    cache_mode: str = "off",
+    cache_path: Path | None = None,
+    rerank_provider: str = "none",
+    rerank_api_key_env: str = "DASHSCOPE_API_KEY",
+) -> SidecarConfig:
     return SidecarConfig(
         trivium=TriviumConfig(dir=tmp_path, dtype="f32", sync_mode="normal"),
         embedding=EmbeddingConfig(
@@ -383,10 +642,20 @@ def _config(tmp_path: Path) -> SidecarConfig:
             timeout_seconds=2,
             encoding_format="float",
         ),
+        embedding_cache=EmbeddingCacheConfig(
+            mode=cache_mode,
+            db_path=tmp_path / "embedding-cache.sqlite3"
+            if cache_path is None
+            else cache_path,
+            text_normalization_version="norm-v1",
+            searchable_text_version="search-v1",
+            ttl_days_for_query=14,
+            store_raw_text=False,
+        ),
         rerank=RerankConfig(
-            provider="none",
+            provider=rerank_provider,
             endpoint_url="https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-            api_key_env="DASHSCOPE_API_KEY",
+            api_key_env=rerank_api_key_env,
             model="qwen3-vl-rerank",
             timeout_seconds=30,
             top_n=30,

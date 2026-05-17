@@ -17,7 +17,13 @@ const defaultPersonaID = "default"
 var fixedNow = time.Date(2026, 4, 28, 12, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 
 type RunnerOptions struct {
-	TempDir string
+	TempDir            string
+	Profile            Profile
+	MirrorAdapter      memorycore.MirrorAdapter
+	MirrorArtifact     *MirrorArtifactManager
+	Strict             bool
+	EmbeddingCacheMode string
+	SidecarResilience  memorycore.SidecarResilienceOptions
 }
 
 type Runner struct {
@@ -25,17 +31,22 @@ type Runner struct {
 }
 
 type runState struct {
-	fixture       *Fixture
-	service       memorycore.Service
-	db            *sql.DB
-	refs          map[string]string
-	steps         map[string]stepResult
-	persona       string
-	stepID        string
-	caseID        string
-	tempRoot      string
-	nextTriviumID int64
-	mirror        *evalMirrorAdapter
+	fixture        *Fixture
+	service        memorycore.Service
+	db             *sql.DB
+	refs           map[string]string
+	steps          map[string]stepResult
+	persona        string
+	stepID         string
+	caseID         string
+	tempRoot       string
+	nextTriviumID  int64
+	mirror         *evalMirrorAdapter
+	profile        Profile
+	mirrorReady    bool
+	artifact       *MirrorArtifactManager
+	mirrorArtifact MirrorArtifactReport
+	mirrorAdapter  memorycore.MirrorAdapter
 }
 
 type stepResult struct {
@@ -52,6 +63,59 @@ type stepResult struct {
 
 func NewRunner(opts RunnerOptions) *Runner {
 	return &Runner{opts: opts}
+}
+
+func defaultEvalSidecarResilience(overrides memorycore.SidecarResilienceOptions) memorycore.SidecarResilienceOptions {
+	out := memorycore.SidecarResilienceOptions{
+		Timeouts: memorycore.SidecarStageTimeouts{
+			Total:      45 * time.Second,
+			Mirror:     15 * time.Second,
+			Activation: 15 * time.Second,
+			Rerank:     15 * time.Second,
+		},
+		Breaker: memorycore.SidecarBreakerOptions{
+			Mode: memorycore.SidecarBreakerModeDisabled,
+		},
+		ActivationBudget: memorycore.SidecarActivationBudgetOptions{
+			MaxEdgesScannedPerRequest: 50000,
+			MaxNeighborsPerNode:       500,
+			MaxActivationWall:         5 * time.Second,
+		},
+	}
+	if overrides.Timeouts.Total > 0 {
+		out.Timeouts.Total = overrides.Timeouts.Total
+	}
+	if overrides.Timeouts.Mirror > 0 {
+		out.Timeouts.Mirror = overrides.Timeouts.Mirror
+	}
+	if overrides.Timeouts.Activation > 0 {
+		out.Timeouts.Activation = overrides.Timeouts.Activation
+	}
+	if overrides.Timeouts.Rerank > 0 {
+		out.Timeouts.Rerank = overrides.Timeouts.Rerank
+	}
+	if overrides.Breaker.Mode != "" {
+		out.Breaker.Mode = overrides.Breaker.Mode
+	}
+	if overrides.Breaker.Window > 0 {
+		out.Breaker.Window = overrides.Breaker.Window
+	}
+	if overrides.Breaker.FailureThreshold > 0 {
+		out.Breaker.FailureThreshold = overrides.Breaker.FailureThreshold
+	}
+	if overrides.Breaker.OpenFor > 0 {
+		out.Breaker.OpenFor = overrides.Breaker.OpenFor
+	}
+	if overrides.ActivationBudget.MaxEdgesScannedPerRequest > 0 {
+		out.ActivationBudget.MaxEdgesScannedPerRequest = overrides.ActivationBudget.MaxEdgesScannedPerRequest
+	}
+	if overrides.ActivationBudget.MaxNeighborsPerNode > 0 {
+		out.ActivationBudget.MaxNeighborsPerNode = overrides.ActivationBudget.MaxNeighborsPerNode
+	}
+	if overrides.ActivationBudget.MaxActivationWall > 0 {
+		out.ActivationBudget.MaxActivationWall = overrides.ActivationBudget.MaxActivationWall
+	}
+	return out
 }
 
 func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
@@ -80,13 +144,23 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 	}
 
 	dbPath := filepath.Join(tempRoot, sanitizeFileName(fixture.CaseID)+".db")
-	mirror := &evalMirrorAdapter{nextID: 1000}
+	var mirror *evalMirrorAdapter
+	adapter := r.opts.MirrorAdapter
+	if adapter == nil && strings.TrimSpace(string(r.opts.Profile)) == "" {
+		mirror = &evalMirrorAdapter{nextID: 1000}
+		adapter = mirror
+	}
+	if adapter == nil && r.opts.Profile.UsesMirror() {
+		report.Err = fmt.Errorf("profile %s requires a mirror adapter", r.opts.Profile)
+		return report
+	}
 	svc, err := memorycore.Open(ctx, memorycore.Options{
-		DBPath:        dbPath,
-		PersonaID:     defaultPersonaID,
-		AutoMigrate:   true,
-		EnableFTS:     true,
-		MirrorAdapter: mirror,
+		DBPath:            dbPath,
+		PersonaID:         defaultPersonaID,
+		AutoMigrate:       true,
+		EnableFTS:         true,
+		MirrorAdapter:     adapter,
+		SidecarResilience: defaultEvalSidecarResilience(r.opts.SidecarResilience),
 		Now: func() time.Time {
 			return fixedNow
 		},
@@ -115,6 +189,9 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		tempRoot:      tempRoot,
 		nextTriviumID: 1,
 		mirror:        mirror,
+		profile:       r.opts.Profile,
+		artifact:      r.opts.MirrorArtifact,
+		mirrorAdapter: adapter,
 	}
 	if err := state.seed(ctx); err != nil {
 		report.Err = err
@@ -137,6 +214,7 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		result.Err = state.assert(ctx, assertion)
 		report.Results = append(report.Results, result)
 	}
+	report.MirrorArtifact = state.mirrorArtifact
 	return report
 }
 
@@ -238,7 +316,9 @@ VALUES (?, ?)`, id, displayName); err != nil {
 }
 
 func (s *runState) runStep(ctx context.Context, step Step) error {
-	s.mirror.resetForStep()
+	if s.mirror != nil {
+		s.mirror.resetForStep()
+	}
 	if err := s.applyMirrorStub(ctx, step); err != nil {
 		return err
 	}
@@ -270,12 +350,18 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			}
 		}
 	case "retrieve":
+		if err := s.prepareProfileMirror(ctx); err != nil {
+			return err
+		}
 		result, err := s.runRetrieve(ctx, step)
 		if err != nil {
 			return err
 		}
+		if err := s.validateProfileRetrieval(result); err != nil {
+			return err
+		}
 		var rerankRequest *memorycore.MirrorRerankRequest
-		if s.mirror.lastRerankRequest.PersonaID != "" {
+		if s.mirror != nil && s.mirror.lastRerankRequest.PersonaID != "" {
 			captured := s.mirror.lastRerankRequest
 			rerankRequest = &captured
 		}
@@ -591,6 +677,9 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	if body.Policy.UseMirror != nil {
 		policy.UseMirror = *body.Policy.UseMirror
 	}
+	if strings.TrimSpace(string(s.profile)) != "" {
+		policy.UseMirror = s.profile.UsesMirror()
+	}
 	result, err := s.service.Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
 		SessionID: sessionID,
@@ -606,6 +695,98 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 		return nil, fmt.Errorf("case %s step %s retrieve: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
+}
+
+func (s *runState) prepareProfileMirror(ctx context.Context) error {
+	if !s.profile.UsesMirror() || s.mirrorReady {
+		return nil
+	}
+	if s.artifact != nil {
+		artifactReport, err := s.artifact.Ensure(ctx, s)
+		if err != nil {
+			return fmt.Errorf("case %s profile %s prepare mirror artifact: %w", s.caseID, s.profile, err)
+		}
+		s.mirrorArtifact = artifactReport
+		s.mirrorReady = true
+		return nil
+	}
+	result, err := s.service.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: s.persona})
+	if err != nil {
+		return fmt.Errorf("case %s profile %s rebuild mirror: %w", s.caseID, s.profile, err)
+	}
+	if result.Failed > 0 {
+		return fmt.Errorf("case %s profile %s rebuild mirror failed nodes=%d", s.caseID, s.profile, result.Failed)
+	}
+	s.mirrorReady = true
+	return nil
+}
+
+func (s *runState) validateProfileRetrieval(result *memorycore.MemoryContext) error {
+	switch s.profile {
+	case "", ProfileSQLiteGo:
+		return nil
+	case ProfileMirrorRealDense:
+		return requireMirrorUsed(s.caseID, s.profile, result)
+	case ProfileMirrorRealGraph:
+		if err := requireMirrorUsed(s.caseID, s.profile, result); err != nil {
+			return err
+		}
+		return requireGraphUsed(s.caseID, s.profile, result)
+	case ProfileMirrorRealGraphRerank:
+		if err := requireMirrorUsed(s.caseID, s.profile, result); err != nil {
+			return err
+		}
+		if err := requireGraphUsed(s.caseID, s.profile, result); err != nil {
+			return err
+		}
+		return requireRerankUsed(s.caseID, s.profile, result)
+	case ProfileMirrorRealRerankNoGraph:
+		if err := requireMirrorUsed(s.caseID, s.profile, result); err != nil {
+			return err
+		}
+		return requireRerankUsed(s.caseID, s.profile, result)
+	default:
+		return nil
+	}
+}
+
+func requireMirrorUsed(caseID string, profile Profile, result *memorycore.MemoryContext) error {
+	if result == nil || result.Mirror == nil {
+		return fmt.Errorf("case %s profile %s requires mirror diagnostics", caseID, profile)
+	}
+	if result.Mirror.Status != "used" {
+		return fmt.Errorf("case %s profile %s requires mirror status used, got %s", caseID, profile, result.Mirror.Status)
+	}
+	if result.Mirror.Degraded {
+		return fmt.Errorf("case %s profile %s mirror degraded: %s", caseID, profile, result.Mirror.FallbackReason)
+	}
+	return nil
+}
+
+func requireGraphUsed(caseID string, profile Profile, result *memorycore.MemoryContext) error {
+	if result == nil || result.GraphActivation == nil {
+		return fmt.Errorf("case %s profile %s requires graph activation diagnostics", caseID, profile)
+	}
+	if result.GraphActivation.Status != "used" {
+		return fmt.Errorf("case %s profile %s requires graph activation status used, got %s", caseID, profile, result.GraphActivation.Status)
+	}
+	if result.GraphActivation.Degraded {
+		return fmt.Errorf("case %s profile %s graph activation degraded: %s", caseID, profile, result.GraphActivation.FallbackReason)
+	}
+	return nil
+}
+
+func requireRerankUsed(caseID string, profile Profile, result *memorycore.MemoryContext) error {
+	if result == nil || result.Rerank == nil {
+		return fmt.Errorf("case %s profile %s requires rerank diagnostics", caseID, profile)
+	}
+	if result.Rerank.Status != "used" {
+		return fmt.Errorf("case %s profile %s requires rerank status used, got %s", caseID, profile, result.Rerank.Status)
+	}
+	if result.Rerank.Degraded {
+		return fmt.Errorf("case %s profile %s rerank degraded: %s", caseID, profile, result.Rerank.FallbackReason)
+	}
+	return nil
 }
 
 func (s *runState) runForget(ctx context.Context, step Step) (*memorycore.ForgetResult, error) {
@@ -760,6 +941,9 @@ func (s *runState) applyMirrorStub(ctx context.Context, step Step) error {
 	if step.MirrorStub == nil {
 		return nil
 	}
+	if s.mirror == nil {
+		return fmt.Errorf("case %s step %s mirror_stub requires eval stub adapter", s.caseID, s.stepID)
+	}
 	if step.MirrorStub.Unavailable {
 		s.mirror.unavailable = true
 	}
@@ -851,6 +1035,9 @@ func (s *runState) applyGraphStub(ctx context.Context, step Step) error {
 	if step.GraphStub == nil {
 		return nil
 	}
+	if s.mirror == nil {
+		return fmt.Errorf("case %s step %s graph_activation_stub requires eval stub adapter", s.caseID, s.stepID)
+	}
 	if step.GraphStub.Unavailable {
 		s.mirror.activationUnavailable = true
 	}
@@ -871,6 +1058,9 @@ func (s *runState) applyGraphStub(ctx context.Context, step Step) error {
 func (s *runState) applyRerankStub(ctx context.Context, step Step) error {
 	if step.RerankStub == nil {
 		return nil
+	}
+	if s.mirror == nil {
+		return fmt.Errorf("case %s step %s rerank_stub requires eval stub adapter", s.caseID, s.stepID)
 	}
 	if step.RerankStub.Unavailable {
 		s.mirror.rerankUnavailable = true

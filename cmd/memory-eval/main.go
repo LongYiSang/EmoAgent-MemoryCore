@@ -13,11 +13,21 @@ import (
 )
 
 type options struct {
-	mode    memoryeval.QualityBenchmarkMode
-	suite   string
-	root    string
-	fixture string
-	tempDir string
+	mode                     string
+	reportMode               memoryeval.QualityBenchmarkMode
+	suite                    string
+	root                     string
+	fixture                  string
+	tempDir                  string
+	profiles                 []memoryeval.Profile
+	qualityNoStub            bool
+	strictCapabilities       bool
+	allowSkipMissingProvider bool
+	sidecarURL               string
+	mirrorArtifactDir        string
+	embeddingCacheMode       string
+	reuseMirror              string
+	reportDir                string
 }
 
 func main() {
@@ -41,6 +51,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
+	if opts.mode == "matrix" {
+		return runMatrix(ctx, opts, paths, stdout, stderr)
+	}
 	cases := make([]memoryeval.QualityBenchmarkCase, 0, len(paths))
 	for _, path := range paths {
 		fixture, err := memoryeval.LoadFixtureFile(path)
@@ -54,16 +67,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			})
 			continue
 		}
-		if err := fixture.ValidateStubPolicy(memoryeval.FixtureStubPolicyForbid); err != nil {
-			cases = append(cases, memoryeval.QualityBenchmarkCase{
-				Path:    path,
-				Fixture: fixture,
-				Report: memoryeval.Report{
-					CaseID: fixture.CaseID,
-					Err:    err,
-				},
-			})
-			continue
+		if opts.qualityNoStub {
+			if err := fixture.ValidateStubPolicy(memoryeval.FixtureStubPolicyForbid); err != nil {
+				cases = append(cases, memoryeval.QualityBenchmarkCase{
+					Path:    path,
+					Fixture: fixture,
+					Report: memoryeval.Report{
+						CaseID: fixture.CaseID,
+						Err:    err,
+					},
+				})
+				continue
+			}
 		}
 		report := memoryeval.NewRunner(memoryeval.RunnerOptions{TempDir: opts.tempDir}).Run(ctx, fixture)
 		cases = append(cases, memoryeval.QualityBenchmarkCase{
@@ -73,9 +88,54 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		})
 	}
 
-	output := memoryeval.FormatQualityBenchmarkReport(cases, memoryeval.QualityBenchmarkReportOptions{Mode: opts.mode})
+	output := memoryeval.FormatQualityBenchmarkReport(cases, memoryeval.QualityBenchmarkReportOptions{Mode: opts.reportMode})
 	fmt.Fprintln(stdout, output)
 	if qualityFailed(cases) {
+		return 1
+	}
+	return 0
+}
+
+func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writer, stderr io.Writer) int {
+	failed := false
+	for index, path := range paths {
+		fixture, err := memoryeval.LoadFixtureFile(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", path, err)
+			failed = true
+			continue
+		}
+		if opts.qualityNoStub {
+			if err := fixture.ValidateStubPolicy(memoryeval.FixtureStubPolicyForbid); err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", path, err)
+				failed = true
+				continue
+			}
+		}
+		reportDir := opts.reportDir
+		if reportDir != "" && len(paths) > 1 {
+			reportDir = filepath.Join(reportDir, sanitizePathName(fixture.CaseID))
+		}
+		report := memoryeval.NewMatrixRunner(memoryeval.MatrixRunnerOptions{
+			TempDir:                  opts.tempDir,
+			Profiles:                 opts.profiles,
+			SidecarURL:               opts.sidecarURL,
+			Strict:                   opts.strictCapabilities,
+			AllowSkipMissingProvider: opts.allowSkipMissingProvider,
+			MirrorArtifactDir:        opts.mirrorArtifactDir,
+			EmbeddingCacheMode:       opts.embeddingCacheMode,
+			ReuseMirror:              opts.reuseMirror,
+			ReportDir:                reportDir,
+		}).Run(ctx, fixture)
+		if index > 0 {
+			fmt.Fprintln(stdout)
+		}
+		fmt.Fprintln(stdout, memoryeval.FormatMatrixReport(report))
+		if report.Failed() {
+			failed = true
+		}
+	}
+	if failed {
 		return 1
 	}
 	return 0
@@ -87,38 +147,78 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		repoRoot = "."
 	}
 	var rawMode string
-	opts := options{suite: "retrieval"}
+	var rawProfiles string
+	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&rawMode, "mode", string(memoryeval.QualityBenchmarkModeBrief), "output mode: brief or full")
+	fs.StringVar(&rawMode, "mode", string(memoryeval.QualityBenchmarkModeBrief), "output mode: brief, full, or matrix")
 	fs.StringVar(&opts.suite, "suite", opts.suite, "quality suite under testdata/memory_eval/quality")
 	fs.StringVar(&opts.root, "root", "", "directory containing quality benchmark fixtures")
 	fs.StringVar(&opts.fixture, "fixture", "", "single fixture file to run instead of --root")
 	fs.StringVar(&opts.tempDir, "temp-dir", "", "optional temp directory for per-fixture SQLite databases")
+	fs.StringVar(&rawProfiles, "profiles", "sqlite_go", "comma-separated eval profiles")
+	fs.BoolVar(&opts.qualityNoStub, "quality-no-stub", opts.qualityNoStub, "forbid mirror_stub, graph_activation_stub, and rerank_stub")
+	fs.BoolVar(&opts.strictCapabilities, "strict-capabilities", opts.strictCapabilities, "fail requested profiles when required capabilities are missing")
+	fs.BoolVar(&opts.allowSkipMissingProvider, "allow-skip-missing-provider", false, "skip missing sidecar/provider profiles without counting as pass")
+	fs.StringVar(&opts.sidecarURL, "sidecar-url", "", "loopback HTTP URL for real mirror profiles")
+	fs.StringVar(&opts.mirrorArtifactDir, "mirror-artifact-dir", "", "directory for mirror artifacts")
+	fs.StringVar(&opts.embeddingCacheMode, "embedding-cache-mode", opts.embeddingCacheMode, "embedding cache mode: off, read_write, read_only, or refresh")
+	fs.StringVar(&opts.reuseMirror, "reuse-mirror", opts.reuseMirror, "mirror reuse mode: auto or never")
+	fs.StringVar(&opts.reportDir, "report-dir", "", "optional directory for matrix report.json and report.md")
 	if err := fs.Parse(args); err != nil {
 		return options{}, false
 	}
-	mode, ok := parseMode(rawMode)
+	mode, reportMode, ok := parseMode(rawMode)
 	if !ok {
-		fmt.Fprintln(stderr, "mode must be brief or full")
+		fmt.Fprintln(stderr, "mode must be brief, full, or matrix")
+		return options{}, false
+	}
+	profiles, err := memoryeval.ParseProfiles(rawProfiles)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return options{}, false
+	}
+	if err := memoryeval.ValidateEmbeddingCacheMode(opts.embeddingCacheMode); err != nil {
+		fmt.Fprintln(stderr, err)
 		return options{}, false
 	}
 	opts.mode = mode
+	opts.reportMode = reportMode
+	opts.profiles = profiles
+	opts.embeddingCacheMode = memoryeval.NormalizeEmbeddingCacheMode(opts.embeddingCacheMode)
 	if strings.TrimSpace(opts.root) == "" {
 		opts.root = filepath.Join(repoRoot, "testdata", "memory_eval", "quality", opts.suite)
 	}
 	return opts, true
 }
 
-func parseMode(value string) (memoryeval.QualityBenchmarkMode, bool) {
+func parseMode(value string) (string, memoryeval.QualityBenchmarkMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "brief", "short":
-		return memoryeval.QualityBenchmarkModeBrief, true
+		return "brief", memoryeval.QualityBenchmarkModeBrief, true
 	case "full", "all":
-		return memoryeval.QualityBenchmarkModeFull, true
+		return "full", memoryeval.QualityBenchmarkModeFull, true
+	case "matrix":
+		return "matrix", memoryeval.QualityBenchmarkModeFull, true
 	default:
-		return "", false
+		return "", "", false
 	}
+}
+
+func sanitizePathName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "case"
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			builder.WriteRune(r)
+		} else {
+			builder.WriteByte('_')
+		}
+	}
+	return builder.String()
 }
 
 func fixturePaths(opts options) ([]string, error) {
