@@ -574,6 +574,192 @@ func TestFormatMatrixReportIncludesCacheStats(t *testing.T) {
 	}
 }
 
+func TestFormatMatrixDetailReportComparesProfilesByQuestion(t *testing.T) {
+	fixture := &Fixture{
+		CaseID: "quality_case",
+		Steps: []Step{
+			{
+				ID:     "f_target",
+				Action: "fact",
+				Fact: &FactStep{
+					ContentSummary: "用户晚上九点后更适合深度工作。",
+				},
+			},
+			{
+				ID:     "q001_fact",
+				Action: "retrieve",
+				Retrieve: &RetrieveStep{
+					QueryText: "晚上九点 深度工作",
+				},
+			},
+			{
+				ID:     "q002_fact",
+				Action: "retrieve",
+				Retrieve: &RetrieveStep{
+					QueryText: "下午 邮件",
+				},
+			},
+		},
+		Assertions: []Assertion{
+			{
+				Type:            "selected_recall_at_k",
+				Name:            "q001 recalls target",
+				Step:            "q001_fact",
+				RelevantNodeIDs: []string{"$f_target.fact_id"},
+				At:              4,
+				Min:             1,
+			},
+			{
+				Type:            "selected_recall_at_k",
+				Name:            "q002 recalls other",
+				Step:            "q002_fact",
+				RelevantNodeIDs: []string{"f_other"},
+				At:              4,
+				Min:             1,
+			},
+		},
+	}
+	report := MatrixReport{
+		CaseID: fixture.CaseID,
+		Profiles: []ProfileMatrixReport{
+			{
+				Profile: ProfileSQLiteGo,
+				Status:  ProfileStatusPass,
+				Report: Report{
+					CaseID: fixture.CaseID,
+					Steps: []StepReport{{
+						ID:        "q001_fact",
+						Action:    "retrieve",
+						QueryText: "晚上九点 深度工作",
+						Retrieval: &memorycore.MemoryContext{
+							Blocks: []memorycore.MemoryBlock{{
+								BlockType: "experience_context",
+								Items: []memorycore.MemoryContextItem{{
+									NodeType:         "fact",
+									NodeID:           "f_target",
+									Summary:          "用户晚上九点后更适合深度工作。",
+									HistoricalStatus: "current",
+								}},
+							}},
+						},
+					}, {
+						ID:        "q002_fact",
+						Action:    "retrieve",
+						QueryText: "下午 邮件",
+						Retrieval: &memorycore.MemoryContext{
+							Blocks: []memorycore.MemoryBlock{{
+								BlockType: "experience_context",
+								Items: []memorycore.MemoryContextItem{{
+									NodeType:         "fact",
+									NodeID:           "f_other",
+									Summary:          "用户下午适合处理邮件。",
+									HistoricalStatus: "current",
+								}},
+							}},
+						},
+					}},
+					Results: []AssertionResult{
+						{Name: "q001 recalls target", Type: "selected_recall_at_k"},
+						{Name: "q002 recalls other", Type: "selected_recall_at_k"},
+					},
+				},
+			},
+			{
+				Profile: ProfileMirrorRealDense,
+				Status:  ProfileStatusFail,
+				Error:   "selected_recall_at_8 below threshold",
+				Report: Report{
+					CaseID: fixture.CaseID,
+					Steps: []StepReport{{
+						ID:        "q001_fact",
+						Action:    "retrieve",
+						QueryText: "晚上九点 深度工作",
+						Retrieval: &memorycore.MemoryContext{
+							Blocks: []memorycore.MemoryBlock{{
+								BlockType: "experience_context",
+								Items: []memorycore.MemoryContextItem{{
+									NodeType:         "fact",
+									NodeID:           "f_other",
+									Summary:          "用户上午适合处理邮件。",
+									HistoricalStatus: "current",
+								}},
+							}},
+						},
+					}, {
+						ID:        "q002_fact",
+						Action:    "retrieve",
+						QueryText: "下午 邮件",
+						Retrieval: &memorycore.MemoryContext{
+							Blocks: []memorycore.MemoryBlock{{
+								BlockType: "experience_context",
+								Items: []memorycore.MemoryContextItem{{
+									NodeType:         "fact",
+									NodeID:           "f_other",
+									Summary:          "用户下午适合处理邮件。",
+									HistoricalStatus: "current",
+								}},
+							}},
+						},
+					}},
+					Results: []AssertionResult{{
+						Name: "q001 recalls target",
+						Type: "selected_recall_at_k",
+						Err: AssertionFailure{
+							CaseID:    fixture.CaseID,
+							Assertion: "selected_recall_at_k",
+							Expected:  "recall@4 >= 1.000",
+							Actual:    "recall=0.000 selected=f_other relevant=f_target",
+						},
+					}, {
+						Name: "q002 recalls other",
+						Type: "selected_recall_at_k",
+					}},
+				},
+			},
+		},
+	}
+
+	out := FormatMatrixDetailReport(fixture, report)
+	for _, want := range []string{
+		"matrix_detail_report",
+		"case_id: quality_case",
+		"profile_summary:",
+		"| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | graph_activation_used_count | rerank_live_call_count |",
+		"| mirror_real_dense | fail |  | 1 | 0.000 | 0.000 | 0 | 0 | 0 |",
+		"failure_index:",
+		"| question_id | sqlite_go | mirror_real_dense |",
+		"| q001_fact | PASS | FAIL selected_recall_at_k |",
+		"| q002_fact | PASS | PASS |",
+		"question_id: q001_fact",
+		"问题: 晚上九点 深度工作",
+		"期望:",
+		"relevant_node_ids=f_target",
+		"结果对比:",
+		"| profile | result | failed_assertions |",
+		"| sqlite_go | PASS | - |",
+		"| mirror_real_dense | FAIL | selected_recall_at_k |",
+		"实际结果:",
+		"profile: sqlite_go",
+		"PASS [selected_recall_at_k] q001 recalls target",
+		"experience_context fact:f_target current 用户晚上九点后更适合深度工作。",
+		"profile: mirror_real_dense",
+		"FAIL [selected_recall_at_k] q001 recalls target: expected=recall@4 >= 1.000 actual=recall=0.000 selected=f_other relevant=f_target",
+		"experience_context fact:f_other current 用户上午适合处理邮件。",
+		"question_id: q002_fact",
+		"| mirror_real_dense | PASS | - |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("detail report =\n%s\nwant %q", out, want)
+		}
+	}
+	if strings.Contains(out, "error: selected_recall_at_8 below threshold") {
+		t.Fatalf("detail report should not repeat profile-level errors inside question blocks:\n%s", out)
+	}
+	if strings.Contains(out, "\nstatus: ") || strings.Contains(out, "\ncapability: ") {
+		t.Fatalf("detail report should keep status and capability only in profile summary:\n%s", out)
+	}
+}
+
 func TestComputeMatrixMetricsUsesCandidatePoolForCandidateRecall(t *testing.T) {
 	fixture := minimalRetrievalFixture()
 	report := Report{

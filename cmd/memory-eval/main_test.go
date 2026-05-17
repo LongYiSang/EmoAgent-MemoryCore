@@ -39,6 +39,90 @@ func TestRunMatrixSQLiteProfile(t *testing.T) {
 	}
 }
 
+func TestRunMatrixWritesDetailReport(t *testing.T) {
+	root := t.TempDir()
+	fixturePath := filepath.Join(root, "quality_case.yaml")
+	if err := os.WriteFile(fixturePath, []byte(minimalCLIQualityFixture()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reportDir := filepath.Join(t.TempDir(), "reports")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--suite", "retrieval",
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+		"--quality-no-stub",
+		"--root", root,
+		"--temp-dir", t.TempDir(),
+		"--report-dir", reportDir,
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	detail, err := os.ReadFile(filepath.Join(reportDir, "detail.md"))
+	if err != nil {
+		t.Fatalf("read detail report: %v", err)
+	}
+	for _, want := range []string{
+		"matrix_detail_report",
+		"question_id: q1",
+		"问题: 咖啡",
+		"期望:",
+		"profile: sqlite_go",
+		"PASS [selected_recall_at_k] finds coffee",
+	} {
+		if !strings.Contains(string(detail), want) {
+			t.Fatalf("detail report =\n%s\nwant %q", string(detail), want)
+		}
+	}
+}
+
+func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "case_a.yaml"), []byte(minimalCLIQualityFixture()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := strings.ReplaceAll(minimalCLIQualityFixture(), "cli_matrix_sqlite", "cli_matrix_sqlite_second")
+	if err := os.WriteFile(filepath.Join(root, "case_b.yaml"), []byte(second), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reportDir := filepath.Join(t.TempDir(), "reports")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--suite", "retrieval",
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+		"--quality-no-stub",
+		"--root", root,
+		"--temp-dir", t.TempDir(),
+		"--report-dir", reportDir,
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	for _, name := range []string{"report.md", "detail.md", "report.json"} {
+		if _, err := os.Stat(filepath.Join(reportDir, name)); err != nil {
+			t.Fatalf("expected combined %s: %v", name, err)
+		}
+	}
+	detail, err := os.ReadFile(filepath.Join(reportDir, "detail.md"))
+	if err != nil {
+		t.Fatalf("read combined detail report: %v", err)
+	}
+	for _, want := range []string{
+		"case_id: cli_matrix_sqlite",
+		"case_id: cli_matrix_sqlite_second",
+		"question_id: q1",
+		"profile: sqlite_go",
+	} {
+		if !strings.Contains(string(detail), want) {
+			t.Fatalf("combined detail report =\n%s\nwant %q", string(detail), want)
+		}
+	}
+}
+
 func TestParseOptionsRejectsInvalidEmbeddingCacheMode(t *testing.T) {
 	var stderr bytes.Buffer
 	_, ok := parseOptions([]string{"--embedding-cache-mode", "typo"}, &stderr)

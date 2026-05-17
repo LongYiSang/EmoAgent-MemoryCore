@@ -95,6 +95,7 @@ func (r *MatrixRunner) Run(ctx context.Context, fixture *Fixture) MatrixReport {
 		_ = os.MkdirAll(r.opts.ReportDir, 0o755)
 		_ = writeJSONFile(filepath.Join(r.opts.ReportDir, "report.json"), report)
 		_ = os.WriteFile(filepath.Join(r.opts.ReportDir, "report.md"), []byte(FormatMatrixReport(report)+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(r.opts.ReportDir, "detail.md"), []byte(FormatMatrixDetailReport(fixture, report)+"\n"), 0o644)
 	}
 	return report
 }

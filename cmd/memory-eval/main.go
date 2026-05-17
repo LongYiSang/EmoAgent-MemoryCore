@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -96,8 +97,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+type matrixRunOutput struct {
+	Fixture *memoryeval.Fixture
+	Report  memoryeval.MatrixReport
+}
+
 func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writer, stderr io.Writer) int {
 	failed := false
+	outputs := make([]matrixRunOutput, 0, len(paths))
 	for index, path := range paths {
 		fixture, err := memoryeval.LoadFixtureFile(path)
 		if err != nil {
@@ -127,6 +134,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			ReuseMirror:              opts.reuseMirror,
 			ReportDir:                reportDir,
 		}).Run(ctx, fixture)
+		outputs = append(outputs, matrixRunOutput{Fixture: fixture, Report: report})
 		if index > 0 {
 			fmt.Fprintln(stdout)
 		}
@@ -135,10 +143,45 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			failed = true
 		}
 	}
+	if opts.reportDir != "" && len(outputs) > 1 {
+		if err := writeCombinedMatrixReports(opts.reportDir, outputs); err != nil {
+			fmt.Fprintf(stderr, "write combined matrix reports: %v\n", err)
+			failed = true
+		}
+	}
 	if failed {
 		return 1
 	}
 	return 0
+}
+
+func writeCombinedMatrixReports(reportDir string, outputs []matrixRunOutput) error {
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		return err
+	}
+	reports := make([]memoryeval.MatrixReport, 0, len(outputs))
+	var summary strings.Builder
+	var detail strings.Builder
+	for index, output := range outputs {
+		if index > 0 {
+			summary.WriteString("\n\n")
+			detail.WriteString("\n\n")
+		}
+		summary.WriteString(memoryeval.FormatMatrixReport(output.Report))
+		detail.WriteString(memoryeval.FormatMatrixDetailReport(output.Fixture, output.Report))
+		reports = append(reports, output.Report)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "report.md"), []byte(summary.String()+"\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "detail.md"), []byte(detail.String()+"\n"), 0o644); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(reports, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(reportDir, "report.json"), append(data, '\n'), 0o644)
 }
 
 func parseOptions(args []string, stderr io.Writer) (options, bool) {
