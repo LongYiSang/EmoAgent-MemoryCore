@@ -183,6 +183,17 @@ go run ./cmd/memoryctl config-docs --format markdown
 
 `enabled` 是嵌入方开关；`memoryctl --config` 执行显式命令时不会因为 `enabled: false` 被拦截。显式 CLI flags 会覆盖配置文件中的对应字段，并在 stderr 输出 warning。
 
+### 检索质量评测
+
+`cmd/memory-eval` 是人工观察检索质量的入口，默认运行 `testdata/memory_eval/quality/retrieval/` 下的 no-stub fixture：
+
+```powershell
+scripts\memory_eval_quality.cmd -Mode full
+go run ./cmd/memory-eval --suite retrieval --mode full
+```
+
+质量评测 fixture 禁止使用 `mirror_stub`、`graph_activation_stub`、`rerank_stub`。需要 stub 隔离下游行为的用例放在 `testdata/memory_eval/controlled/`，由 `go test ./internal/memory/eval` 作为受控回归执行。
+
 ### Public API 使用示例
 
 ```go
@@ -247,13 +258,14 @@ go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference
 ```
 EmoAgent-MemoryCore/
 ├── cmd/
-│   └── memoryctl/             # CLI 入口，数据库管理与运维
+│   ├── memoryctl/             # CLI 入口，数据库管理与运维
+│   └── memory-eval/           # 人工检索质量评测入口
 ├── internal/
 │   ├── app/
 │   │   └── memorycore/            # Application service 层：Service 实现、DTO、use case 编排
 │   ├── core/                  # 领域类型：Episode、Fact、Entity、Link 等
 │   ├── memory/
-│   │   └── eval/              # YAML fixture 回归测试框架
+│   │   └── eval/              # YAML fixture 回归框架与质量报告格式化
 │   └── store/
 │       └── sqlite/            # SQLite 驱动、迁移、仓储层
 ├── pkg/
@@ -264,7 +276,10 @@ EmoAgent-MemoryCore/
 │   ├── 0003_affect_audit.sql  # 情绪状态、Agent Affect 占位、删除审计
 │   └── 0004_search_fallback.sql  # SQLite FTS5 降级搜索
 ├── testdata/
-│   └── memory_eval/           # consolidation / retrieval / forgetting fixtures
+│   └── memory_eval/
+│       ├── controlled/        # 允许 stub 的受控回归 fixture
+│       ├── quality/retrieval/ # 禁止 stub 的人工检索质量评测 fixture
+│       └── ...                # consolidation / retrieval / forgetting / retention fixtures
 ├── docs/
 │   └── architecture/          # 完整架构文档
 ├── go.mod

@@ -20,6 +20,14 @@ type Fixture struct {
 	Assertions  []Assertion `yaml:"assertions"`
 }
 
+type FixtureStubPolicy string
+
+const (
+	FixtureStubPolicyAllow   FixtureStubPolicy = "allow"
+	FixtureStubPolicyForbid  FixtureStubPolicy = "forbid"
+	FixtureStubPolicyRequire FixtureStubPolicy = "require"
+)
+
 type Seed struct {
 	Personas []PersonaSeed `yaml:"personas"`
 	Sessions []SessionSeed `yaml:"sessions"`
@@ -484,6 +492,46 @@ func (f *Fixture) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (f *Fixture) UsesEvalStub() bool {
+	if f == nil {
+		return false
+	}
+	for _, step := range f.Steps {
+		if step.UsesEvalStub() {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *Fixture) ValidateStubPolicy(policy FixtureStubPolicy) error {
+	if policy == "" || policy == FixtureStubPolicyAllow {
+		return nil
+	}
+	caseID := "<nil>"
+	if f != nil && strings.TrimSpace(f.CaseID) != "" {
+		caseID = f.CaseID
+	}
+	usesStub := f.UsesEvalStub()
+	switch policy {
+	case FixtureStubPolicyForbid:
+		if usesStub {
+			return fmt.Errorf("case %s uses eval stubs but suite forbids mirror_stub, graph_activation_stub, and rerank_stub", caseID)
+		}
+	case FixtureStubPolicyRequire:
+		if !usesStub {
+			return fmt.Errorf("case %s does not use eval stubs but controlled suite requires at least one", caseID)
+		}
+	default:
+		return fmt.Errorf("unknown fixture stub policy %q", policy)
+	}
+	return nil
+}
+
+func (s Step) UsesEvalStub() bool {
+	return s.MirrorStub != nil || s.GraphStub != nil || s.RerankStub != nil
 }
 
 func knownAssertionType(value string) bool {

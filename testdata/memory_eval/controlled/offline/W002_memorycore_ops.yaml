@@ -1,0 +1,543 @@
+case_id: W002_memorycore_ops
+description: Minimal offline eval world for MemoryCore operations; covers fact, historical, source, causal, workflow, gotcha, and premise questions with synthetic data only.
+seed:
+  sessions:
+    - id: s_seed
+      channel: api
+    - id: s_q002_fact
+      channel: api
+    - id: s_q004_historical
+      channel: api
+    - id: s_q006_source
+      channel: api
+    - id: s_q008_causal
+      channel: api
+    - id: s_q009_workflow
+      channel: api
+    - id: s_q010_workflow
+      channel: api
+    - id: s_q011_gotcha
+      channel: api
+    - id: s_q012_gotcha
+      channel: api
+    - id: s_q014_premise
+      channel: api
+  entities:
+    - id: user
+      canonical_name: EvalUser
+      entity_type: user
+  episodes:
+    - id: ep_sqlite_eval_first
+      session_id: s_seed
+      content: MemoryCore 检索回归先跑纯 SQLite eval，再看 mirror、graph activation 和 rerank。
+      occurred_at: "2026-04-20T09:00:00+08:00"
+    - id: ep_sidecar_boundary
+      session_id: s_seed
+      content: 早期评估曾把 sidecar 候选误当成权威结果，后来修正为 SQLite 才是最终 authority。
+      occurred_at: "2026-04-21T09:00:00+08:00"
+    - id: ep_sidecar_degraded
+      session_id: s_seed
+      content: sidecar degraded 时不能直接判定检索失败，应回到 SQLite authority fallback。
+      occurred_at: "2026-04-22T09:00:00+08:00"
+    - id: ep_no_real_chat_eval
+      session_id: s_seed
+      content: 公开离线评测集禁止使用真实聊天记录，即使脱敏也不要作为 fixture 来源。
+      occurred_at: "2026-04-23T09:00:00+08:00"
+    - id: ep_worlds_before_questions
+      session_id: s_seed
+      content: 设计离线评测题时先写 synthetic memory worlds，再从每个 world 派生 query 与 gold。
+      occurred_at: "2026-04-24T09:00:00+08:00"
+    - id: ep_sidecar_health_gotcha
+      session_id: s_seed
+      content: sidecar runtime 测试的坑是 degraded 或 fake adapter 结果不能当真实健康基线。
+      occurred_at: "2026-04-25T09:00:00+08:00"
+    - id: ep_source_redact_rule
+      session_id: s_seed
+      content: 如果 episode 被 redacted，派生 fact 不能暴露原文，也不能把不可见 source ref 放进上下文。
+      occurred_at: "2026-04-26T09:00:00+08:00"
+    - id: ep_redacted_private
+      session_id: s_seed
+      content: REDACTED_PRIVATE_EVAL_SECRET should never appear in selected context.
+      occurred_at: "2026-04-26T10:00:00+08:00"
+      visibility_status: hidden
+      searchable: false
+steps:
+  - id: f_sqlite_eval_first
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_eval_order
+      object_literal: 纯 SQLite eval 优先
+      content_summary: MemoryCore 检索回归应先跑纯 SQLite eval，再看 mirror、graph activation 和 rerank。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_sqlite_eval_first]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: f_old_sidecar_authoritative_assumption
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: assumed_authority
+      object_literal: sidecar 候选是权威结果
+      content_summary: 早期评估曾把 sidecar 候选误当成权威结果。
+      fact_type: task_relevant_context
+      validity_status: invalidated
+      source_episode_ids: [ep_sidecar_boundary]
+      confidence: explicit
+      confidence_score: 0.8
+      importance: 0.7
+  - id: f_sidecar_is_candidate_only
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: treats_as
+      object_literal: sidecar 只是候选辅助
+      content_summary: sidecar 只提供候选、图激活或 rerank 辅助，SQLite 仍是最终 authority。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_sidecar_boundary]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: link_sidecar_boundary_supersedes
+    action: link
+    link:
+      from_node_id: $f_sidecar_is_candidate_only.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_old_sidecar_authoritative_assumption.fact_id
+      weight: 1.0
+  - id: f_sidecar_degraded_fallback
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: uses_fallback_when
+      object_literal: sidecar degraded
+      content_summary: sidecar degraded 时应回到 SQLite authority fallback。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_sidecar_degraded]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_sqlite_authority_survives_sidecar
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: authority_boundary
+      object_literal: SQLite authority
+      content_summary: SQLite 是最终权威边界，sidecar 失败不等于检索链路不可用。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_sidecar_degraded]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_degraded_caused_by_authority_boundary
+    action: link
+    link:
+      from_node_id: $f_sidecar_degraded_fallback.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_sqlite_authority_survives_sidecar.fact_id
+      weight: 1.0
+  - id: f_no_real_chat_eval_public
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: forbids_eval_source
+      object_literal: 真实聊天记录
+      content_summary: 公开离线评测集禁止使用真实聊天记录，即使脱敏也不要作为 fixture 来源。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_no_real_chat_eval]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: f_desensitized_real_chat_ok_wrong
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: allows_eval_source
+      object_literal: 脱敏真实聊天记录
+      content_summary: 脱敏后的真实聊天记录可以作为公开 fixture 来源。
+      fact_type: task_relevant_context
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_synthetic_worlds_before_questions
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: eval_design_order
+      object_literal: synthetic worlds first
+      content_summary: 设计离线评测题时先写 synthetic memory worlds，再从每个 world 派生 query 与 gold。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_worlds_before_questions]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_sidecar_health_baseline_gotcha
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: gotcha
+      object_literal: sidecar degraded health baseline
+      content_summary: sidecar runtime 测试的坑是 degraded 或 fake adapter 结果不能当真实健康基线。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_sidecar_health_gotcha]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_real_trivium_latency_measured_wrong
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: measured
+      object_literal: 真实 TriviumDB 延迟
+      content_summary: fake adapter 的结果已经代表真实 TriviumDB 健康基线。
+      fact_type: task_relevant_context
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_source_redact_blocks_provenance
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: source_redact_rule
+      object_literal: redacted episode
+      content_summary: episode 被 redacted 后，派生 fact 不能暴露原文，也不能把不可见 source ref 放进上下文。
+      fact_type: task_relevant_context
+      source_episode_ids: [ep_source_redact_rule]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_redacted_private_hidden
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: private_eval_secret
+      object_literal: REDACTED_PRIVATE_EVAL_SECRET
+      content_summary: REDACTED_PRIVATE_EVAL_SECRET should never appear in selected context.
+      fact_type: task_relevant_context
+      visibility_status: hidden
+      searchable: false
+      source_episode_ids: [ep_redacted_private]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search: {}
+  - id: q002_fact_sqlite_first
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_sqlite_eval_first.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_sqlite_eval_first.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_fact
+          rank: 1
+    retrieve:
+      session_id: s_q002_fact
+      query_text: MemoryCore 检索回归第一优先级是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q004_historical_sidecar_authority
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_old_sidecar_authoritative_assumption.fact_id
+          node_type: fact
+        - node_id: $f_sidecar_is_candidate_only.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_old_sidecar_authoritative_assumption.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_historical
+          rank: 1
+        - node_id: $f_sidecar_is_candidate_only.fact_id
+          node_type: fact
+          score: 0.97
+          source: offline_eval_historical
+          rank: 2
+    retrieve:
+      session_id: s_q004_historical
+      query_text: 以前 sidecar 被当作权威结果的状态
+      policy:
+        use_mirror: true
+        allow_historical: true
+        final_memory_count: 4
+  - id: q006_source_no_real_chat
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_no_real_chat_eval_public.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_no_real_chat_eval_public.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_source
+          rank: 1
+    retrieve:
+      session_id: s_q006_source
+      query_text: 不能用真实聊天记录做公开测试集这条规则的来源是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q008_causal_sidecar_degraded
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_sidecar_degraded_fallback.fact_id
+          node_type: fact
+        - node_id: $f_sqlite_authority_survives_sidecar.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_sidecar_degraded_fallback.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_causal
+          rank: 1
+        - node_id: $f_sqlite_authority_survives_sidecar.fact_id
+          node_type: fact
+          score: 0.96
+          source: offline_eval_causal
+          rank: 2
+    retrieve:
+      session_id: s_q008_causal
+      query_text: 为什么 sidecar degraded 时不能直接判定检索失败
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q009_workflow_retrieval_drop
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_sqlite_eval_first.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_sqlite_eval_first.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_workflow
+          rank: 1
+    retrieve:
+      session_id: s_q009_workflow
+      query_text: MemoryCore 检索质量下降时排查 workflow 流程是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q010_workflow_eval_questions
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_synthetic_worlds_before_questions.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_synthetic_worlds_before_questions.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_workflow
+          rank: 1
+    retrieve:
+      session_id: s_q010_workflow
+      query_text: 离线评测测试 workflow 的步骤是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q011_gotcha_public_eval
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_no_real_chat_eval_public.fact_id
+          node_type: fact
+        - node_id: $f_desensitized_real_chat_ok_wrong.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_no_real_chat_eval_public.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_gotcha
+          rank: 1
+        - node_id: $f_desensitized_real_chat_ok_wrong.fact_id
+          node_type: fact
+          score: 0.98
+          source: offline_eval_gotcha
+          rank: 2
+    retrieve:
+      session_id: s_q011_gotcha
+      query_text: 测试公开 eval 数据集的坑是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q012_gotcha_sidecar_health
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_sidecar_health_baseline_gotcha.fact_id
+          node_type: fact
+        - node_id: $f_real_trivium_latency_measured_wrong.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_sidecar_health_baseline_gotcha.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_gotcha
+          rank: 1
+        - node_id: $f_real_trivium_latency_measured_wrong.fact_id
+          node_type: fact
+          score: 0.98
+          source: offline_eval_gotcha
+          rank: 2
+    retrieve:
+      session_id: s_q012_gotcha
+      query_text: sidecar runtime 测试的坑是什么
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+  - id: q014_premise_source_redact
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $f_source_redact_blocks_provenance.fact_id
+          node_type: fact
+        - node_id: $f_redacted_private_hidden.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $f_source_redact_blocks_provenance.fact_id
+          node_type: fact
+          score: 0.99
+          source: offline_eval_premise
+          rank: 1
+        - node_id: $f_redacted_private_hidden.fact_id
+          node_type: fact
+          score: 0.98
+          source: offline_eval_premise
+          rank: 2
+    retrieve:
+      session_id: s_q014_premise
+      query_text: 如果 episode 被 redacted，是否还能暴露原文内容
+      policy:
+        use_mirror: true
+        final_memory_count: 4
+assertions:
+  - type: memory_contains
+    name: q002 fact recalls sqlite eval first
+    step: q002_fact_sqlite_first
+    node_id: $f_sqlite_eval_first.fact_id
+  - type: query_analysis
+    name: q004 is routed as historical
+    step: q004_historical_sidecar_authority
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q004 old sidecar assumption is historical and superseded
+    step: q004_historical_sidecar_authority
+    block_type: historical_context
+    node_id: $f_old_sidecar_authoritative_assumption.fact_id
+    node_ids: [$f_sidecar_is_candidate_only.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+  - type: query_analysis
+    name: q006 asks for provenance
+    step: q006_source_no_real_chat
+    memory_ability: provenance
+    evidence_need: provenance_source
+  - type: selected_chain_correct
+    name: q006 provenance keeps source ref for no-real-chat rule
+    step: q006_source_no_real_chat
+    block_type: provenance_context
+    node_id: $f_no_real_chat_eval_public.fact_id
+    source_ref_count: 1
+  - type: query_analysis
+    name: q008 asks for causal explanation
+    step: q008_causal_sidecar_degraded
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q008 causal context links fallback to authority boundary
+    step: q008_causal_sidecar_degraded
+    block_type: causal_context
+    node_id: $f_sidecar_degraded_fallback.fact_id
+    node_ids: [$f_sqlite_authority_survives_sidecar.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: query_analysis
+    name: q009 asks for workflow
+    step: q009_workflow_retrieval_drop
+    memory_domain: work_experience_memory
+    memory_ability: workflow
+    evidence_need: procedure_note
+  - type: block_contains
+    name: q009 workflow retrieves sqlite-first triage
+    step: q009_workflow_retrieval_drop
+    block_type: experience_context
+    node_id: $f_sqlite_eval_first.fact_id
+  - type: query_analysis
+    name: q010 asks for workflow
+    step: q010_workflow_eval_questions
+    memory_domain: work_experience_memory
+    memory_ability: workflow
+    evidence_need: procedure_note
+  - type: block_contains
+    name: q010 workflow retrieves worlds-first design order
+    step: q010_workflow_eval_questions
+    block_type: experience_context
+    node_id: $f_synthetic_worlds_before_questions.fact_id
+  - type: query_analysis
+    name: q011 asks for gotcha
+    step: q011_gotcha_public_eval
+    memory_domain: work_experience_memory
+    memory_ability: gotcha
+    evidence_need: gotcha_note
+  - type: block_contains
+    name: q011 gotcha retrieves no-real-chat rule
+    step: q011_gotcha_public_eval
+    block_type: experience_context
+    node_id: $f_no_real_chat_eval_public.fact_id
+  - type: forbidden_recall_zero
+    name: q011 gotcha excludes desensitized-real-chat wrong rule
+    step: q011_gotcha_public_eval
+    forbidden_node_ids:
+      - $f_desensitized_real_chat_ok_wrong.fact_id
+  - type: query_analysis
+    name: q012 asks for gotcha
+    step: q012_gotcha_sidecar_health
+    memory_domain: environment_experience_memory
+    memory_ability: gotcha
+    evidence_need: gotcha_note
+  - type: block_contains
+    name: q012 gotcha retrieves degraded baseline warning
+    step: q012_gotcha_sidecar_health
+    block_type: experience_context
+    node_id: $f_sidecar_health_baseline_gotcha.fact_id
+  - type: forbidden_recall_zero
+    name: q012 gotcha excludes fake-adapter-as-real-baseline claim
+    step: q012_gotcha_sidecar_health
+    forbidden_node_ids:
+      - $f_real_trivium_latency_measured_wrong.fact_id
+  - type: query_analysis
+    name: q014 asks for premise check
+    step: q014_premise_source_redact
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q014 premise does not expose redacted source content
+    step: q014_premise_source_redact
+    node_ids:
+      - $f_source_redact_blocks_provenance.fact_id
+    forbidden_node_ids:
+      - $f_redacted_private_hidden.fact_id
+      - episode.ep_redacted_private.id
+    forbidden_contains:
+      - REDACTED_PRIVATE_EVAL_SECRET

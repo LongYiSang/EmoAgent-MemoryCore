@@ -126,6 +126,7 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 			report.Err = err
 			return report
 		}
+		report.Steps = append(report.Steps, state.stepReport(step))
 	}
 	for _, assertion := range fixture.Assertions {
 		name := assertion.Name
@@ -137,6 +138,19 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		report.Results = append(report.Results, result)
 	}
 	return report
+}
+
+func (s *runState) stepReport(step Step) StepReport {
+	result := s.steps[step.ID]
+	out := StepReport{
+		ID:     step.ID,
+		Action: step.Action,
+	}
+	if step.Retrieve != nil {
+		out.QueryText = step.Retrieve.QueryText
+		out.Retrieval = result.Retrieval
+	}
+	return out
 }
 
 func (r *Runner) RunFile(ctx context.Context, path string) Report {

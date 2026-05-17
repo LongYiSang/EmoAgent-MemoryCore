@@ -1,0 +1,269 @@
+case_id: W001_work_rhythm_no_stub
+description: No-stub offline retrieval world for work rhythm memory; retrieval must come from SQLite search/anchor paths, not mirror stubs.
+seed:
+  sessions:
+    - id: s_seed
+      channel: api
+    - id: s_q001_fact
+      channel: api
+    - id: s_q003_historical
+      channel: api
+    - id: s_q005_source
+      channel: api
+    - id: s_q007_causal
+      channel: api
+    - id: s_q013_premise
+      channel: api
+  entities:
+    - id: user
+      canonical_name: EvalUser
+      entity_type: user
+    - id: qinghe_garden
+      canonical_name: 青禾园
+      entity_type: place
+    - id: xingqiao_apartment
+      canonical_name: 星桥公寓
+      entity_type: place
+  episodes:
+    - id: ep_evening_deep_work
+      session_id: s_seed
+      content: 我通常晚上九点以后更适合处理深度工作。
+      occurred_at: "2026-04-20T21:00:00+08:00"
+    - id: ep_old_location
+      session_id: s_seed
+      content: 我以前住在青禾园。
+      occurred_at: "2026-04-21T09:00:00+08:00"
+    - id: ep_new_location
+      session_id: s_seed
+      content: 我现在住在星桥公寓。
+      occurred_at: "2026-04-22T09:00:00+08:00"
+    - id: ep_early_meeting_pressure
+      session_id: s_seed
+      content: 8点早会会打断睡眠，导致我上午回避重要任务。
+      occurred_at: "2026-04-23T08:00:00+08:00"
+    - id: ep_pair_debug_positive
+      session_id: s_seed
+      content: 我其实喜欢上班时的结对调试，不是讨厌工作本身。
+      occurred_at: "2026-04-24T10:00:00+08:00"
+steps:
+  - id: f_evening_deep_work
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_work_time
+      object_literal: 晚上九点以后深度工作
+      content_summary: 用户通常晚上九点以后更适合处理深度工作。
+      fact_type: stable_preference
+      source_episode_ids: [ep_evening_deep_work]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_morning_work_preference_wrong
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_work_time
+      object_literal: 早上深度工作
+      content_summary: 用户更适合早上处理深度工作。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.2
+      importance: 0.1
+  - id: f_old_location_qinghe
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: lives_in
+      object_entity_id: qinghe_garden
+      content_summary: 用户以前住在青禾园。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_old_location]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.7
+  - id: f_current_location_xingqiao
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: lives_in
+      object_entity_id: xingqiao_apartment
+      content_summary: 用户现在住在星桥公寓。
+      fact_type: relational_state
+      source_episode_ids: [ep_new_location]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: link_location_supersedes
+    action: link
+    link:
+      from_node_id: $f_current_location_xingqiao.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_old_location_qinghe.fact_id
+      weight: 1.0
+  - id: f_dislikes_8am_meeting
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: dislikes
+      object_literal: 8点早会
+      content_summary: 用户不喜欢8点早会，因为它会打断睡眠。
+      fact_type: stable_preference
+      source_episode_ids: [ep_early_meeting_pressure]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_morning_task_avoidance
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: avoids
+      object_literal: 上午重要任务
+      content_summary: 用户上午会回避重要任务。
+      fact_type: significant_event
+      source_episode_ids: [ep_early_meeting_pressure]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.85
+  - id: link_morning_avoidance_caused_by_meeting
+    action: link
+    link:
+      from_node_id: $f_morning_task_avoidance.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_dislikes_8am_meeting.fact_id
+      weight: 1.0
+  - id: f_pair_debug_positive_counterexample
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 上班时的结对调试
+      content_summary: 用户喜欢上班时的结对调试。
+      fact_type: stable_preference
+      source_episode_ids: [ep_pair_debug_positive]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_hates_work_generalization
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: dislikes
+      object_literal: 一直都讨厌上班
+      content_summary: 用户一直都讨厌上班。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search: {}
+  - id: q001_fact_deep_work_time
+    action: retrieve
+    retrieve:
+      session_id: s_q001_fact
+      query_text: 晚上九点以后 深度工作
+      policy:
+        final_memory_count: 4
+  - id: q003_historical_old_location
+    action: retrieve
+    retrieve:
+      session_id: s_q003_historical
+      query_text: 青禾园 以前住在哪里
+      policy:
+        allow_historical: true
+        final_memory_count: 4
+  - id: q005_source_early_meeting
+    action: retrieve
+    retrieve:
+      session_id: s_q005_source
+      query_text: 8点早会 来源
+      policy:
+        final_memory_count: 4
+  - id: q007_causal_morning_avoidance
+    action: retrieve
+    retrieve:
+      session_id: s_q007_causal
+      query_text: 为什么 上午 回避 重要任务
+      policy:
+        final_memory_count: 4
+  - id: q013_premise_hates_work
+    action: retrieve
+    retrieve:
+      session_id: s_q013_premise
+      query_text: 结对调试 是不是 一直 讨厌 上班
+      policy:
+        final_memory_count: 4
+assertions:
+  - type: selected_recall_at_k
+    name: q001 no-stub recall finds evening deep work preference
+    step: q001_fact_deep_work_time
+    relevant_node_ids:
+      - $f_evening_deep_work.fact_id
+    at: 4
+    min: 1.0
+  - type: forbidden_recall_zero
+    name: q001 no-stub excludes hidden wrong morning preference
+    step: q001_fact_deep_work_time
+    forbidden_node_ids:
+      - $f_morning_work_preference_wrong.fact_id
+  - type: query_analysis
+    name: q003 no-stub is routed as historical
+    step: q003_historical_old_location
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q003 no-stub marks old location as superseded
+    step: q003_historical_old_location
+    block_type: historical_context
+    node_id: $f_old_location_qinghe.fact_id
+    node_ids: [$f_current_location_xingqiao.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  - type: query_analysis
+    name: q005 no-stub asks for provenance
+    step: q005_source_early_meeting
+    memory_ability: provenance
+    evidence_need: provenance_source
+  - type: selected_chain_correct
+    name: q005 no-stub provenance keeps source ref
+    step: q005_source_early_meeting
+    block_type: provenance_context
+    node_id: $f_dislikes_8am_meeting.fact_id
+    source_ref_count: 1
+  - type: query_analysis
+    name: q007 no-stub asks for causal explanation
+    step: q007_causal_morning_avoidance
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q007 no-stub causal context includes cause link
+    step: q007_causal_morning_avoidance
+    block_type: causal_context
+    node_id: $f_morning_task_avoidance.fact_id
+    node_ids: [$f_dislikes_8am_meeting.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: query_analysis
+    name: q013 no-stub asks for premise check
+    step: q013_premise_hates_work
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q013 no-stub selects counterexample and avoids broad premise
+    step: q013_premise_hates_work
+    node_ids:
+      - $f_pair_debug_positive_counterexample.fact_id
+    forbidden_node_ids:
+      - $f_hates_work_generalization.fact_id
+    forbidden_contains:
+      - 一直都讨厌上班

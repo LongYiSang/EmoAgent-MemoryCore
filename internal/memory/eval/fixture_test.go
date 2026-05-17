@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 func TestLoadFixtureBytesValidatesRequiredCaseID(t *testing.T) {
@@ -572,6 +575,79 @@ func TestAssertionFailureIncludesExpectedAndActual(t *testing.T) {
 	for _, want := range []string{"ASSERT_FORMAT", "memory_contains", "expected=node fact_01 present", "actual=no memory items"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error = %q, want %q", message, want)
+		}
+	}
+}
+
+func TestReportDebugStringIncludesRetrievalDetails(t *testing.T) {
+	occurredAt := time.Date(2026, 4, 28, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	report := Report{
+		CaseID: "DEBUG_CASE",
+		Steps: []StepReport{
+			{
+				ID:        "retrieve",
+				Action:    "retrieve",
+				QueryText: "为什么上午会回避重要任务",
+				Retrieval: &memorycore.MemoryContext{
+					QueryAnalysis: &memorycore.QueryAnalysis{
+						TimeMode:      memorycore.QueryTimeModeCurrent,
+						MemoryDomain:  memorycore.MemoryDomainUserProfile,
+						MemoryAbility: memorycore.MemoryAbilityCausalExplain,
+						EvidenceNeed:  memorycore.EvidenceNeedExactObservation,
+					},
+					Blocks: []memorycore.MemoryBlock{
+						{
+							BlockType: "causal_context",
+							Items: []memorycore.MemoryContextItem{
+								{
+									NodeType:         "fact",
+									NodeID:           "fact_morning_task_avoidance",
+									Summary:          "用户上午会回避重要任务。",
+									HistoricalStatus: "current",
+									SourceRefs: []memorycore.MemorySourceRef{
+										{
+											EpisodeID:     "ep_early_meeting_pressure",
+											SessionID:     "s_seed",
+											OccurredAt:    occurredAt,
+											SourceStatus:  "visible",
+											EvidenceCount: 1,
+										},
+									},
+									RelatedFacts: []memorycore.MemoryRelatedFactRef{
+										{
+											NodeType:         "fact",
+											NodeID:           "fact_dislikes_8am_meeting",
+											LinkType:         "CAUSED_BY",
+											Direction:        "outbound",
+											HistoricalStatus: "current",
+											Summary:          "用户不喜欢8点早会。",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Results: []AssertionResult{
+			{Name: "causal link selected", Type: "selected_chain_correct"},
+		},
+	}
+
+	debug := report.DebugString()
+	for _, want := range []string{
+		"case_id=DEBUG_CASE",
+		"step=retrieve action=retrieve query=\"为什么上午会回避重要任务\"",
+		"analysis time_mode=current domain=user_profile_memory ability=causal_explain evidence=exact_observation",
+		"block=causal_context",
+		"fact:fact_morning_task_avoidance status=current summary=\"用户上午会回避重要任务。\"",
+		"source episode=ep_early_meeting_pressure session=s_seed",
+		"related fact:fact_dislikes_8am_meeting link=CAUSED_BY direction=outbound status=current",
+		"PASS causal link selected (selected_chain_correct)",
+	} {
+		if !strings.Contains(debug, want) {
+			t.Fatalf("DebugString() =\n%s\nwant substring %q", debug, want)
 		}
 	}
 }
