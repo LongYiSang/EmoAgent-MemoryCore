@@ -37,6 +37,30 @@ func TestQueryAnalysisSignalsAccumulateCurrentRules(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisProvenanceQuestionVariantsCurrentRules(t *testing.T) {
+	tests := []string{
+		"你是从哪里知道我喜欢Laufey的",
+		"这件事你哪里知道的",
+		"我喜欢Laufey是什么时候说的",
+		"最早什么时候提过Laufey",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			timeMode := queryTimeMode(query)
+			if got := querySignals(query, timeMode); !equalQuerySignals(got, []QuerySignal{QuerySignalProvenance}) {
+				t.Fatalf("querySignals(%q) = %#v, want provenance", query, got)
+			}
+			if got := queryMemoryAbility(query); got != MemoryAbilityProvenance {
+				t.Fatalf("queryMemoryAbility(%q) = %q, want %q", query, got, MemoryAbilityProvenance)
+			}
+			if got := queryEvidenceNeed(query); got != EvidenceNeedProvenanceSource {
+				t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", query, got, EvidenceNeedProvenanceSource)
+			}
+		})
+	}
+}
+
 func TestQueryAnalysisMemoryDomainPriorityCurrentRules(t *testing.T) {
 	tests := []struct {
 		name  string

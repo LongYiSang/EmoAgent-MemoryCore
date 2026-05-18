@@ -114,7 +114,7 @@ func querySignals(normalized string, timeMode QueryTimeMode) []QuerySignal {
 	if timeMode == QueryTimeModeHistorical {
 		signals = append(signals, QuerySignalHistorical)
 	}
-	if containsAny(normalized, "证据", "来源", "根据", "我什么时候说过", "哪次说过", "什么时候说过", "source", "evidence", "provenance") {
+	if containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance") {
 		signals = append(signals, QuerySignalProvenance)
 	}
 	if containsAny(normalized, "隐私", "敏感", "不要提", "别提", "不要再提", "忘掉", "边界", "boundary", "private", "sensitive") {
@@ -141,7 +141,7 @@ func queryMemoryDomain(normalized string) MemoryDomain {
 
 func queryMemoryAbility(normalized string) MemoryAbility {
 	switch {
-	case containsAny(normalized, "证据", "来源", "根据", "我什么时候说过", "哪次说过", "什么时候说过", "source", "evidence", "provenance"):
+	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
 		return MemoryAbilityProvenance
 	case containsAny(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause", "caused", "because"):
 		return MemoryAbilityCausalExplain
@@ -170,7 +170,7 @@ func queryMemoryAbility(normalized string) MemoryAbility {
 
 func queryEvidenceNeed(normalized string) EvidenceNeed {
 	switch {
-	case containsAny(normalized, "证据", "来源", "根据", "我什么时候说过", "哪次说过", "什么时候说过", "source", "evidence", "provenance"):
+	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
 		return EvidenceNeedProvenanceSource
 	case containsAny(normalized, "是不是", "是否", "真的", "一直", "always"):
 		return EvidenceNeedPremiseCounterexample
