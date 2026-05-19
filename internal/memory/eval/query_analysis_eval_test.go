@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -383,5 +384,137 @@ assertions:
 	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
 	if report.Failed() {
 		t.Fatalf("run fixture:\n%s", report.DebugString())
+	}
+}
+
+func TestQueryAnalysisEvalRunnerAssertsDroppedEnglishRewriteDiagnostics(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: QA_DROP_ENGLISH_REWRITE_ASSERTIONS
+allow_stub: true
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 用户喜欢手冲咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: coffee_fact
+    action: fact
+    fact:
+      id: fact_pour_over
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 手冲咖啡
+      content_summary: 用户喜欢手冲咖啡。
+      source_episode_ids: [ep1]
+      confidence: explicit
+      importance: 0.8
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      analysis:
+        time_mode: current
+        memory_domain: user_profile_memory
+        memory_ability: direct_fact
+        evidence_need: exact_observation
+        confidence: 0.95
+        query_rewrites:
+          - text: when did the user say they enjoy pour over coffee in the morning
+            purpose: semantic_recall
+            weight: 0.8
+          - text: 用户喜欢手冲咖啡
+            purpose: semantic_recall
+            weight: 0.7
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $coffee_fact.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $coffee_fact.fact_id
+          node_type: fact
+          score: 0.99
+          source: semantic_rewrite_dense
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: 我是不是喜欢手冲咖啡
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    step: retrieve
+    source: merged
+    status: ok
+    query_rewrites: [用户喜欢手冲咖啡]
+    dropped_rewrite_count: 1
+    dropped_rewrite_reasons: [rewrite_language_mismatch]
+    english_rewrite_count: 1
+  - type: mirror_candidate
+    step: retrieve
+    status: used
+    query_count: 2
+    raw_query_count: 1
+    rewrite_query_count: 1
+  - type: memory_contains
+    step: retrieve
+    node_id: $coffee_fact.fact_id
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture:\n%s", report.DebugString())
+	}
+	debug := report.DebugString()
+	for _, want := range []string{
+		"english_rewrite_count=1",
+		"dropped_rewrite_count=1",
+		"dropped_rewrite_reasons=rewrite_language_mismatch",
+	} {
+		if !strings.Contains(debug, want) {
+			t.Fatalf("DebugString() =\n%s\nwant substring %q", debug, want)
+		}
+	}
+	if strings.Contains(debug, "when did the user say they enjoy pour over coffee") {
+		t.Fatalf("DebugString leaked dropped English rewrite:\n%s", debug)
+	}
+}
+
+func TestControlledPhase6CompletionPremiseNarrativeChainFixtures(t *testing.T) {
+	for _, name := range []string{
+		"RET_historical_supersedes_completion_q004_style.yaml",
+		"RET_causal_completion_q015_style.yaml",
+		"RET_premise_counterexample_q011_style.yaml",
+		"RET_relationship_narrative_source_completion_q020_style.yaml",
+	} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			runFixtureFile(t, filepath.Join("controlled", "phase6", name))
+		})
+	}
+}
+
+func TestControlledPhase6QueryAnalysisFixtures(t *testing.T) {
+	for _, name := range []string{
+		"QA_drop_english_rewrite_for_chinese_query.yaml",
+		"QA_state_transition_clamp_q009_style.yaml",
+	} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			runFixtureFile(t, filepath.Join("controlled", "phase6", name))
+		})
 	}
 }

@@ -297,14 +297,17 @@ func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics
 		return nil
 	}
 	return &QueryAnalysisDiagnostics{
-		SemanticStatus:      value.SemanticStatus,
-		SemanticProvider:    value.SemanticProvider,
-		SemanticModel:       value.SemanticModel,
-		PromptVersion:       value.PromptVersion,
-		SemanticLatencyMs:   value.SemanticLatencyMs,
-		FallbackReason:      value.FallbackReason,
-		RewriteCount:        value.RewriteCount,
-		SemanticAnchorCount: value.SemanticAnchorCount,
+		SemanticStatus:        value.SemanticStatus,
+		SemanticProvider:      value.SemanticProvider,
+		SemanticModel:         value.SemanticModel,
+		PromptVersion:         value.PromptVersion,
+		SemanticLatencyMs:     value.SemanticLatencyMs,
+		FallbackReason:        value.FallbackReason,
+		RewriteCount:          value.RewriteCount,
+		SemanticAnchorCount:   value.SemanticAnchorCount,
+		DroppedRewriteCount:   value.DroppedRewriteCount,
+		DroppedRewriteReasons: append([]string(nil), value.DroppedRewriteReasons...),
+		EnglishRewriteCount:   value.EnglishRewriteCount,
 	}
 }
 

@@ -1,0 +1,137 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: RET_relationship_narrative_source_completion_q020_style
+description: Relationship-result retrieval keeps selected fact recall while narrative and insight anchors are available as completion sources.
+seed:
+  personas:
+    - id: default
+      display_name: Default
+  sessions:
+    - id: s1
+      persona_id: default
+      channel: api
+      started_at: "2026-04-28T09:00:00Z"
+  entities:
+    - id: user
+      persona_id: default
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_one
+      persona_id: default
+      session_id: s1
+      role: user
+      content: 小星陪伴后我没那么孤单。
+      occurred_at: "2026-04-28T09:10:00Z"
+      source_type: chat
+    - id: ep_two
+      persona_id: default
+      session_id: s1
+      role: user
+      content: 我开始更愿意把小星当朋友。
+      occurred_at: "2026-04-28T09:20:00Z"
+      source_type: chat
+steps:
+  - id: feeling_less_lonely
+    action: fact
+    fact:
+      id: f_feeling_less_lonely
+      subject_entity_id: user
+      predicate: feels
+      object_literal: 没那么孤单
+      content_summary: 小星陪伴后用户没那么孤单。
+      fact_type: stable_preference
+      confidence: explicit
+      importance: 0.9
+      source_episode_ids: [ep_one]
+  - id: agent_as_friend
+    action: fact
+    fact:
+      id: f_agent_as_friend
+      subject_entity_id: user
+      predicate: views_ai_as
+      object_literal: 朋友
+      content_summary: 用户更愿意把小星当朋友。
+      fact_type: stable_preference
+      confidence: explicit
+      importance: 0.8
+      source_episode_ids: [ep_two]
+  - id: compress_relationship_arc
+    action: compression_apply
+    compression_apply:
+      now: "2026-04-28T10:30:00Z"
+      source_fact_ids:
+        - f_feeling_less_lonely
+        - f_agent_as_friend
+      narrative:
+        id: narrative_relationship_arc
+        scope: relationship_phase
+        scope_ref: xiaoxing_companionship
+        summary: 小星从工具感转向陪伴感，用户感到没那么孤单。
+        emotional_tone: trust
+        importance: 0.85
+        sensitivity_level: normal
+      insights:
+        - id: insight_relationship_trust_companionship
+          insight_type: pattern
+          content: 持续陪伴让用户更容易把小星视作朋友。
+          confidence: 0.82
+          importance: 0.82
+          valence: 0.5
+          arousal: 0.2
+          sensitivity_level: normal
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      analysis:
+        time_mode: current
+        memory_domain: relationship_memory
+        memory_ability: relationship_arc
+        evidence_need: relationship_timeline
+        confidence: 0.9
+        query_rewrites:
+          - text: 小星 陪伴 没那么孤单
+            purpose: relationship_timeline
+            weight: 0.8
+        context_block_hints: [relationship_arc_memory]
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: f_feeling_less_lonely
+          node_type: fact
+      candidates:
+        - node_id: f_feeling_less_lonely
+          node_type: fact
+          score: 0.99
+          source: semantic_rewrite_dense
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: 小星陪伴对我有什么影响
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 4
+assertions:
+  - type: narrative_exists
+    name: relationship narrative row is available
+    node_id: narrative_relationship_arc
+    summary: 小星从工具感转向陪伴感，用户感到没那么孤单。
+  - type: insight_exists
+    name: relationship insight row is available
+    node_id: insight_relationship_trust_companionship
+    content: 持续陪伴让用户更容易把小星视作朋友。
+  - type: query_analysis
+    name: relationship query keeps arc semantics
+    step: retrieve
+    memory_domain: relationship_memory
+    memory_ability: relationship_arc
+    evidence_need: relationship_timeline
+  - type: selected_recall_at_k
+    name: q020 selected context recalls feeling less lonely
+    step: retrieve
+    relevant_node_ids: [f_feeling_less_lonely]
+    at: 4
+    min: 1.0

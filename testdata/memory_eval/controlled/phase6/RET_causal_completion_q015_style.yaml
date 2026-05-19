@@ -1,0 +1,87 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: RET_causal_completion_q015_style
+description: Causal retrieval completes the selected trigger fact with its causal source fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_grandma
+      session_id: s1
+      content: 奶奶以前养过一只橘猫。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep_trigger
+      session_id: s1
+      content: 团子让我想起奶奶。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: grandma_cat
+    action: fact
+    fact:
+      id: f_grandma_had_orange_cat
+      subject_entity_id: user
+      predicate: remembers
+      object_literal: 奶奶养过橘猫
+      content_summary: 奶奶以前养过一只橘猫。
+      source_episode_ids: [ep_grandma]
+      confidence: explicit
+      importance: 0.8
+  - id: memory_trigger
+    action: fact
+    fact:
+      id: f_grandma_memory_triggered_by_tuanzi
+      subject_entity_id: user
+      predicate: triggered_by
+      object_literal: 团子让我想起奶奶
+      content_summary: 团子让用户想起奶奶。
+      source_episode_ids: [ep_trigger]
+      confidence: explicit
+      importance: 0.9
+  - id: link_cause
+    action: link
+    link:
+      from_node_id: f_grandma_memory_triggered_by_tuanzi
+      link_type: CAUSED_BY
+      to_node_id: f_grandma_had_orange_cat
+      weight: 0.9
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: f_grandma_memory_triggered_by_tuanzi
+          node_type: fact
+        - node_id: f_grandma_had_orange_cat
+          node_type: fact
+      candidates:
+        - node_id: f_grandma_memory_triggered_by_tuanzi
+          node_type: fact
+          score: 0.99
+          source: controlled_causal
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: 为什么团子会让我想起奶奶
+      policy:
+        use_mirror: true
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    name: causal question asks for explanation
+    step: retrieve
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: trigger fact is completed with causal source
+    step: retrieve
+    block_type: causal_context
+    node_id: f_grandma_memory_triggered_by_tuanzi
+    node_ids: [f_grandma_had_orange_cat]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current

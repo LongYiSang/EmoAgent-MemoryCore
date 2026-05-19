@@ -268,8 +268,8 @@ func TestRetrievalBatchPrefetchGoldenBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildRerankCandidates: %v", err)
 	}
-	if got := prefetchRerankIDs(safeCandidates); !reflect.DeepEqual(got, []string{"fact_visible_batch", "fact_pinned_batch"}) {
-		t.Fatalf("safe rerank candidates = %#v, want visible then pinned", got)
+	if got := prefetchRerankIDs(safeCandidates); !reflect.DeepEqual(got, []string{"fact_visible_batch", "fact_pinned_batch", "fact_related_batch"}) {
+		t.Fatalf("safe rerank candidates = %#v, want visible, pinned, then completed related", got)
 	}
 	if mirrorDiagnostics.DroppedCandidateCount != 1 || mirrorDiagnostics.Candidates[0].DropReason != "dropped_by_authority_filter" {
 		t.Fatalf("mirror diagnostics = %#v, want one authority drop", mirrorDiagnostics)
@@ -318,6 +318,134 @@ func TestRetrievalBatchPrefetchGoldenBehavior(t *testing.T) {
 	requirePrefetchBreakdownNumber(t, breakdown, "lifecycle_multiplier", 1)
 	if finalScore, ok := breakdown["final_score"].(float64); !ok || finalScore <= 0 {
 		t.Fatalf("final_score = %#v, want positive number", breakdown["final_score"])
+	}
+}
+
+func TestRetrievalCompletionPrefetchFiltersUnauthorizedLinkedFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	for _, fact := range []core.Fact{
+		prefetchFact("fact_completion_source", "用户因为早会安排而焦虑。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_completion_visible", "早会安排触发了用户焦虑。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_completion_hidden", "隐藏的触发原因。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_completion_unsearchable", "不可搜索的触发原因。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_completion_sensitive", "敏感的触发原因。", ptrForPrefetch("ent_user")),
+	} {
+		insertPrefetchFact(t, ctx, db, fact)
+		addPrefetchEvidence(t, ctx, db, "link_"+fact.ID+"_evidence", fact.ID, "ep_visible")
+	}
+	mustExecPrefetch(t, db, `UPDATE facts SET visibility_status = 'hidden' WHERE id = 'fact_completion_hidden'`)
+	mustExecPrefetch(t, db, `UPDATE facts SET searchable = 0 WHERE id = 'fact_completion_unsearchable'`)
+	mustExecPrefetch(t, db, `UPDATE facts SET sensitivity_level = 'sensitive' WHERE id = 'fact_completion_sensitive'`)
+	addPrefetchFactLink(t, ctx, db, "link_completion_visible", "fact_completion_source", "CAUSED_BY", "fact_completion_visible", 1.0)
+	addPrefetchFactLink(t, ctx, db, "link_completion_hidden", "fact_completion_source", "CAUSED_BY", "fact_completion_hidden", 1.0)
+	addPrefetchFactLink(t, ctx, db, "link_completion_unsearchable", "fact_completion_source", "CAUSED_BY", "fact_completion_unsearchable", 1.0)
+	addPrefetchFactLink(t, ctx, db, "link_completion_sensitive", "fact_completion_source", "CAUSED_BY", "fact_completion_sensitive", 1.0)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	sourceFact, err := repo.getFact(ctx, "default", "fact_completion_source")
+	if err != nil {
+		t.Fatalf("get source fact: %v", err)
+	}
+	completed, err := repo.completeLinkedCandidates(ctx, RetrievalRequest{
+		PersonaID: "default",
+	}, QueryAnalysis{
+		Raw:           "为什么早会焦虑",
+		Normalized:    "为什么早会焦虑",
+		Terms:         []string{"早会", "焦虑"},
+		MemoryAbility: MemoryAbilityCausalExplain,
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+	}, []scoredFact{{
+		Fact: sourceFact,
+	}})
+	if err != nil {
+		t.Fatalf("completeLinkedCandidates: %v", err)
+	}
+	if _, ok := completed["fact_completion_visible"]; !ok {
+		t.Fatalf("visible linked fact missing from completion candidates: %#v", completed)
+	}
+	for _, factID := range []string{"fact_completion_hidden", "fact_completion_unsearchable", "fact_completion_sensitive"} {
+		if _, ok := completed[factID]; ok {
+			t.Fatalf("unauthorized fact %s entered completion candidates: %#v", factID, completed)
+		}
+	}
+}
+
+func TestNarrativeInsightCompletionDiscoveryIsBounded(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	mustExecPrefetch(t, db, `
+INSERT INTO narratives (
+    id, persona_id, scope, scope_ref, summary, importance,
+    visibility_status, sensitivity_level, lifecycle_status, searchable
+) VALUES ('narrative_bounded_completion', 'default', 'topic', 'relationship', '关系变化：陪伴感增强，用户提到不孤独。', 0.8, 'visible', 'normal', 'active', 1)`)
+	if err := NewSearchRepository(db.SQLDB()).UpsertNarrativeDocument(ctx, "default", "narrative_bounded_completion"); err != nil {
+		t.Fatalf("upsert bounded narrative search document: %v", err)
+	}
+
+	for i := 0; i < maxCompletionCandidates*4; i++ {
+		suffix := formatInt(i)
+		if i < 10 {
+			suffix = "0" + suffix
+		}
+		factID := "fact_bounded_completion_" + suffix
+		fact := prefetchFact(factID, "普通关系补全候选。", ptrForPrefetch("ent_user"))
+		insertPrefetchFact(t, ctx, db, fact)
+		addPrefetchEvidence(t, ctx, db, "link_"+factID+"_evidence", factID, "ep_visible")
+		if err := NewLinkRepository(db.SQLDB()).Insert(ctx, core.MemoryLink{
+			ID:           "link_bounded_completion_" + suffix,
+			PersonaID:    "default",
+			FromNodeType: core.NodeTypeNarrative,
+			FromNodeID:   "narrative_bounded_completion",
+			LinkType:     core.LinkType("DERIVED_FROM"),
+			ToNodeType:   core.NodeTypeFact,
+			ToNodeID:     factID,
+			Weight:       0.1,
+		}); err != nil {
+			t.Fatalf("insert bounded completion link %s: %v", factID, err)
+		}
+	}
+	priorityFact := prefetchFact("fact_zz_bounded_priority_outcome", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", ptrForPrefetch("ent_user"))
+	priorityFact.FactType = core.FactTypeRelationalState
+	insertPrefetchFact(t, ctx, db, priorityFact)
+	addPrefetchEvidence(t, ctx, db, "link_fact_zz_bounded_priority_outcome_evidence", "fact_zz_bounded_priority_outcome", "ep_visible")
+	if err := NewLinkRepository(db.SQLDB()).Insert(ctx, core.MemoryLink{
+		ID:           "link_bounded_priority_outcome",
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeNarrative,
+		FromNodeID:   "narrative_bounded_completion",
+		LinkType:     core.LinkType("DERIVED_FROM"),
+		ToNodeType:   core.NodeTypeFact,
+		ToNodeID:     "fact_zz_bounded_priority_outcome",
+		Weight:       1,
+	}); err != nil {
+		t.Fatalf("insert bounded priority outcome link: %v", err)
+	}
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	acc := map[string]retrievalCompletionCandidate{}
+	err := repo.addNarrativeInsightCompletions(ctx, "default", QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: MemoryAbilityRelationshipArc,
+		EvidenceNeed:  EvidenceNeedRelationshipTimeline,
+	}, RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal)}, acc)
+	if err != nil {
+		t.Fatalf("addNarrativeInsightCompletions: %v", err)
+	}
+	if len(acc) > maxCompletionCandidates*2 {
+		t.Fatalf("completion discovery accumulated %d candidates, want bounded to <= %d", len(acc), maxCompletionCandidates*2)
+	}
+	if _, ok := acc["fact_zz_bounded_priority_outcome"]; !ok {
+		t.Fatalf("high-priority outcome was not retained in bounded completion candidates")
 	}
 }
 

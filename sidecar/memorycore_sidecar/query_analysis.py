@@ -25,6 +25,20 @@ _REQUIRED_ANALYSIS_FIELDS = (
     "policy_hints",
 )
 
+_ENUM_ANALYSIS_FIELDS = (
+    "time_mode",
+    "memory_domain",
+    "memory_ability",
+    "evidence_need",
+)
+
+_ALLOWED_ENUM_KEYS = {
+    "time_mode": ("time_mode", "time_modes"),
+    "memory_domain": ("memory_domain", "memory_domains"),
+    "memory_ability": ("memory_ability", "memory_abilities"),
+    "evidence_need": ("evidence_need", "evidence_needs"),
+}
+
 
 def analyze_query(
     request: dict[str, Any],
@@ -38,6 +52,7 @@ def analyze_query(
     if not api_key.strip():
         return _fallback(request, config, "missing_api_key")
 
+    first_failure_reason: str | None = None
     for attempt in range(2):
         try:
             payload = _call_openai_compatible(
@@ -47,25 +62,61 @@ def analyze_query(
                 retry_after_validation_failure=attempt > 0,
             )
         except json.JSONDecodeError:
-            return _fallback(request, config, "invalid_json")
-        except (UnicodeDecodeError, ValueError):
-            return _fallback(request, config, "invalid_response")
+            failure_reason = "invalid_json"
+        except UnicodeDecodeError:
+            failure_reason = "invalid_response"
+        except ValueError:
+            failure_reason = "validation_failed"
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
             if _is_provider_timeout_error(exc):
-                return _fallback(request, config, "provider_timeout")
-            return _fallback(request, config, "provider_error")
-
-        try:
-            return _validate_provider_analysis(
-                payload,
+                return _fallback(
+                    request,
+                    config,
+                    "provider_timeout",
+                    first_failure_reason=first_failure_reason,
+                    final_fallback_reason="provider_timeout",
+                )
+            return _fallback(
                 request,
                 config,
-                include_rationale=bool(request.get("include_rationale", False)),
+                "provider_error",
+                first_failure_reason=first_failure_reason,
+                final_fallback_reason="provider_error",
             )
-        except ValueError:
-            if attempt == 1:
-                return _fallback(request, config, "validation_failed")
-    return _fallback(request, config, "validation_failed")
+        else:
+            try:
+                result = _validate_provider_analysis(
+                    payload,
+                    request,
+                    config,
+                    include_rationale=bool(request.get("include_rationale", False)),
+                )
+            except ValueError:
+                failure_reason = "validation_failed"
+            else:
+                if first_failure_reason:
+                    result["diagnostics"] = {
+                        "first_failure_reason": first_failure_reason[:64],
+                    }
+                return result
+
+        if first_failure_reason is None:
+            first_failure_reason = failure_reason
+        if attempt == 1:
+            return _fallback(
+                request,
+                config,
+                failure_reason,
+                first_failure_reason=first_failure_reason,
+                final_fallback_reason=failure_reason,
+            )
+    return _fallback(
+        request,
+        config,
+        "validation_failed",
+        first_failure_reason=first_failure_reason,
+        final_fallback_reason="validation_failed",
+    )
 
 
 def _call_openai_compatible(
@@ -85,11 +136,10 @@ def _call_openai_compatible(
             {
                 "role": "user",
                 "content": json.dumps(
-                    {
-                        "query_text": request["query_text"],
-                        "include_rationale": bool(request.get("include_rationale", False)),
-                        "retry_schema_validation": retry_after_validation_failure,
-                    },
+                    _provider_user_payload(
+                        request,
+                        retry_after_validation_failure=retry_after_validation_failure,
+                    ),
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
@@ -116,13 +166,67 @@ def _call_openai_compatible(
 
 def _system_prompt(prompt_version: str) -> str:
     return (
-        f"Memory query analysis {prompt_version}. Return compact JSON only with: "
-        "time_mode,memory_domain,memory_ability,evidence_need,signals,confidence,"
-        "field_confidence,entity_mentions as objects with entity_id/canonical_name/"
-        "alias/match_text/match_kind/confidence,query_rewrites,semantic_anchors "
-        "as objects with text/anchor_type/entity_id/weight/confidence,"
-        "context_block_hints,policy_hints as an object,and optional rationale_summary."
+        f"You are EmoAgent SemanticQueryAnalyzer ({prompt_version}). "
+        "Do not answer the user. Return strict JSON object only. No markdown. "
+        "No code fences. Return only the analysis object. Do not wrap it. "
+        "Use only allowed enum values from allowed_enums. Use only query_text, "
+        "input_language, now, timezone, rule_analysis, visible_entity_hints, "
+        "conversation_window, retrieval_policy, allowed_enums, and output_contract. "
+        "Do not use hidden, purged, sensitive-disallowed, provider, environment, "
+        "or API-key data. Query rewrites are for memory retrieval, not general "
+        "encyclopedia search. Query rewrites must stay in the same language/script "
+        "as the input query. Do not translate Chinese queries into English. "
+        "Proper nouns may be kept as-is, e.g. Laufey. If input query is Chinese, "
+        "every non-empty query_rewrite should contain Chinese characters unless it "
+        "is a short entity anchor. "
+        "For temporal transition questions using phrases such as 一开始, 后来, "
+        "以前, 曾经, 从前, 发生变化, 变成, or 从 X 到 Y, prefer time_mode=historical "
+        "or bitemporal, evidence_need=state_transition, and memory_ability=historical, "
+        "relationship_arc, or dynamic_state according to the domain. "
+        "For relationship development, 心路历程, 相处之后, or companionship changes, "
+        "prefer memory_ability=relationship_arc or dynamic_state, prefer "
+        "evidence_need=relationship_timeline or state_transition, and include "
+        "relationship_arc signal when appropriate. "
+        "For questionable premises, set memory_ability=premise_check and "
+        "evidence_need=premise_counterexample; generate at least one "
+        "counterexample-oriented rewrite, not only a restatement of the premise. "
+        "Universal words like 所有, 一直, 什么都, 必须, 从头到尾, or 任何 should "
+        "trigger counterexample retrieval. For provenance questions, set "
+        "memory_ability=provenance and evidence_need=provenance_source. "
+        "For causal why questions, set memory_ability=causal_explain and include "
+        "a causal signal. Include required fields: time_mode, memory_domain, "
+        "memory_ability, evidence_need, signals, confidence, field_confidence, "
+        "entity_mentions, query_rewrites, semantic_anchors, context_block_hints, "
+        "and policy_hints."
     )
+
+
+def _provider_user_payload(
+    request: dict[str, Any],
+    *,
+    retry_after_validation_failure: bool,
+) -> dict[str, Any]:
+    query_text = str(request.get("query_text", ""))
+    return {
+        "query_text": query_text,
+        "input_language": _optional_string(request.get("input_language"))
+        or _input_language(query_text),
+        "now": _optional_string(request.get("now")),
+        "timezone": _optional_string(request.get("timezone")),
+        "rule_analysis": _optional_object(request.get("rule_analysis")),
+        "allowed_enums": _optional_object(request.get("allowed_enums")),
+        "visible_entity_hints": _optional_array(request.get("visible_entity_hints")),
+        "retrieval_policy": _optional_object(request.get("retrieval_policy")),
+        "conversation_window": _optional_array(request.get("conversation_window")),
+        "include_rationale": bool(request.get("include_rationale", False)),
+        "retry_schema_validation": retry_after_validation_failure,
+        "output_contract": {
+            "return_only": "analysis_object",
+            "rewrite_language": "same_as_query",
+            "max_query_rewrites": 3,
+            "max_semantic_anchors": 4,
+        },
+    }
 
 
 def _extract_content(payload: Any) -> str:
@@ -166,13 +270,18 @@ def _validate_provider_analysis(
         if field not in payload:
             raise ValueError(f"analysis missing {field}")
 
+    parsed_enums = {
+        field: _string(payload[field], field) for field in _ENUM_ANALYSIS_FIELDS
+    }
+    _validate_allowed_enums(parsed_enums, request.get("allowed_enums"))
+
     result = _base_result(config, degraded=False, fallback_reason=None)
     result.update(
         {
-            "time_mode": _string(payload["time_mode"], "time_mode"),
-            "memory_domain": _string(payload["memory_domain"], "memory_domain"),
-            "memory_ability": _string(payload["memory_ability"], "memory_ability"),
-            "evidence_need": _string(payload["evidence_need"], "evidence_need"),
+            "time_mode": parsed_enums["time_mode"],
+            "memory_domain": parsed_enums["memory_domain"],
+            "memory_ability": parsed_enums["memory_ability"],
+            "evidence_need": parsed_enums["evidence_need"],
             "signals": _string_list(payload["signals"], "signals")[:12],
             "confidence": round(
                 clamp_float(payload["confidence"], 0.0, 1.0, 0.0), 6
@@ -196,6 +305,9 @@ def _fallback(
     request: dict[str, Any],
     config: QueryAnalysisConfig,
     reason: str,
+    *,
+    first_failure_reason: str | None = None,
+    final_fallback_reason: str | None = None,
 ) -> dict[str, Any]:
     query_text = str(request.get("query_text", ""))
     signals = []
@@ -230,6 +342,13 @@ def _fallback(
             "policy_hints": {},
         }
     )
+    diagnostics: dict[str, str] = {}
+    if first_failure_reason:
+        diagnostics["first_failure_reason"] = first_failure_reason[:64]
+    if final_fallback_reason:
+        diagnostics["final_fallback_reason"] = final_fallback_reason[:64]
+    if diagnostics:
+        result["diagnostics"] = diagnostics
     return result
 
 
@@ -275,6 +394,24 @@ def _field_confidence(value: Any) -> dict[str, float]:
         if isinstance(key, str) and key.strip():
             out[key.strip()[:64]] = round(clamp_float(score, 0.0, 1.0, 0.0), 6)
     return out
+
+
+def _validate_allowed_enums(values: dict[str, str], allowed_enums: Any) -> None:
+    if not isinstance(allowed_enums, dict):
+        return
+    for field, value in values.items():
+        allowed = None
+        for enum_key in _ALLOWED_ENUM_KEYS.get(field, (field,)):
+            if enum_key in allowed_enums:
+                allowed = allowed_enums[enum_key]
+                break
+        if allowed is None:
+            continue
+        if not isinstance(allowed, list):
+            raise ValueError("allowed enum list must be an array")
+        allowed_values = {item for item in allowed if isinstance(item, str) and item}
+        if allowed_values and value not in allowed_values:
+            raise ValueError("analysis enum value is not allowed")
 
 
 def _entity_mention_list(value: Any) -> list[dict[str, Any]]:
@@ -342,6 +479,24 @@ def _optional_string(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
     return ""
+
+
+def _optional_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _optional_array(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _input_language(query_text: str) -> str:
+    cjk = sum(1 for ch in query_text if "\u4e00" <= ch <= "\u9fff")
+    letters = sum(1 for ch in query_text if ch.isalpha())
+    return "zh-Hans" if cjk > 0 and cjk >= max(1, letters // 3) else "unknown"
 
 
 def _query_rewrites(value: Any) -> list[dict[str, Any]]:

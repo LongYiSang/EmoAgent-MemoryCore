@@ -224,10 +224,13 @@ func appendSuppression(suppressions []MemorySuppression, next MemorySuppression)
 }
 
 type retrievalCandidate struct {
-	FactID           string
-	FusedAnchorScore float64
-	AnchorEnergy     float64
-	GraphEnergy      float64
+	FactID             string
+	FusedAnchorScore   float64
+	AnchorEnergy       float64
+	GraphEnergy        float64
+	CompletionSource   string
+	CompletionLinkType string
+	CompletionBonus    float64
 }
 
 type RetrievalActivationCandidate struct {
@@ -282,6 +285,9 @@ type retrievalScoreBreakdown struct {
 	RerankBoost         float64 `json:"rerank_boost"`
 	RerankStatus        string  `json:"rerank_status,omitempty"`
 	RerankDebugReason   string  `json:"rerank_debug_reason,omitempty"`
+	CompletionBonus     float64 `json:"completion_bonus,omitempty"`
+	CompletionSource    string  `json:"completion_source,omitempty"`
+	CompletionLinkType  string  `json:"completion_link_type,omitempty"`
 	FinalScore          float64 `json:"final_score"`
 	SuppressionReason   string  `json:"suppression_reason,omitempty"`
 }
@@ -371,6 +377,17 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 	scored, suppressions, err := r.scoreCandidates(ctx, req, query, policy, now, candidates)
 	if err != nil {
 		return PreparedFinalCandidates{}, nil, err
+	}
+	completionCandidates, err := r.completeLinkedCandidates(ctx, req, query, policy, scored)
+	if err != nil {
+		return PreparedFinalCandidates{}, nil, err
+	}
+	mergeRetrievalCompletionCandidates(candidates, completionCandidates)
+	if len(completionCandidates) > 0 {
+		scored, suppressions, err = r.scoreCandidates(ctx, req, query, policy, now, candidates)
+		if err != nil {
+			return PreparedFinalCandidates{}, nil, err
+		}
 	}
 	finalCandidates := PreparedFinalCandidates{
 		Request:      req,
@@ -535,6 +552,10 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 	for _, candidate := range candidates {
 		candidateIDs = append(candidateIDs, candidate.FactID)
 	}
+	searchTextByFact, err := r.loadFactSearchTextByFactID(ctx, req.PersonaID, candidateIDs, policy)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, factID := range uniqueSortedStrings(candidateIDs) {
 		candidate := candidates[factID]
 		fact, ok := pf.facts[candidate.FactID]
@@ -592,13 +613,15 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		fatiguePenalty := fatiguePenalty(fatigue)
 		sensitivityPenalty := sensitivityPenalty(fact.SensitivityLevel)
 		lifecycleMultiplier := lifecycleScoreMultiplier(fact.LifecycleStatus)
+		completionBonus, completionSource, completionLinkType := retrievalCandidateCompletionBonus(query, fact, searchTextByFact[fact.ID], candidate, mirrorByFact[fact.ID])
 		baseScore := 0.55*candidate.AnchorEnergy +
 			0.25*candidate.GraphEnergy +
 			0.20*fact.Importance +
 			0.10*recency +
 			0.10*typePrior +
 			0.10*evidenceStrength +
-			0.05*pinned -
+			0.05*pinned +
+			completionBonus -
 			fatiguePenalty -
 			sensitivityPenalty
 		score := baseScore * lifecycleMultiplier
@@ -614,6 +637,9 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			FatiguePenalty:      fatiguePenalty,
 			SensitivityPenalty:  sensitivityPenalty,
 			RerankStatus:        "not_requested",
+			CompletionBonus:     completionBonus,
+			CompletionSource:    completionSource,
+			CompletionLinkType:  completionLinkType,
 			FinalScore:          score,
 		}
 		item := scoredFact{
@@ -632,7 +658,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 				Reason:   MemorySuppressionReasonFatigue,
 			})
 		}
-		if len(query.Terms) == 0 && candidate.AnchorEnergy == 0 && candidate.GraphEnergy == 0 && candidate.FusedAnchorScore == 0 {
+		if len(query.Terms) == 0 && candidate.AnchorEnergy == 0 && candidate.GraphEnergy == 0 && candidate.FusedAnchorScore == 0 && completionBonus == 0 {
 			continue
 		}
 		scored = append(scored, item)
@@ -994,7 +1020,7 @@ func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 }
 
 func effectiveRetrievalPolicy(policy RetrievalPolicy, analysis QueryAnalysis) RetrievalPolicy {
-	if analysis.TimeMode == QueryTimeModeHistorical {
+	if analysis.TimeMode == QueryTimeModeHistorical || analysis.EvidenceNeed == EvidenceNeedStateTransition {
 		policy.AllowHistorical = true
 	}
 	return policy

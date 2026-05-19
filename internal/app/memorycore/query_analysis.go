@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	internalmirror "github.com/longyisang/emoagent-memorycore/internal/mirror"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
@@ -26,6 +27,8 @@ const (
 	defaultQueryAnalysisSemanticEnergyCap       = 5.0
 	defaultQueryAnalysisGeneratedDenseWeightSum = 3.0
 )
+
+const rewriteDropReasonLanguageMismatch = "rewrite_language_mismatch"
 
 type QueryAnalyzer interface {
 	AnalyzeQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error)
@@ -333,22 +336,27 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 		out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
 	}
 	out.Signals = mergeQuerySignals(rule.Signals, analysis.Signals)
+	applyHistoricalTransitionClamp(&out, rule)
 	out.EntityMentions = mergeSemanticEntityMentions(rule.EntityMentions, analysis.EntityMentions, hints, options.MinEntitySemanticConfidence)
 	budget := generatedWeightBudget(options)
-	out.QueryRewrites = sanitizedQueryRewrites(analysis.QueryRewrites, options.MaxQueryRewrites, &budget)
+	var rewriteDiagnostics rewriteSanitizationDiagnostics
+	out.QueryRewrites, rewriteDiagnostics = sanitizedQueryRewrites(out.Raw, analysis.QueryRewrites, options.MaxQueryRewrites, &budget)
 	out.SemanticAnchors = sanitizedSemanticAnchors(analysis.SemanticAnchors, hints, options, &budget)
 	out.ContextBlockHints = sanitizedContextBlockHints(analysis.ContextBlockHints)
 	out.PolicyHints = queryPolicyHintsToStore(analysis.PolicyHints)
 	out.Source = memsqlite.QueryAnalysisSourceMerged
 	out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{
-		SemanticStatus:      defaultString(semantic.Status, "ok"),
-		SemanticProvider:    semantic.Provider,
-		SemanticModel:       semantic.Model,
-		PromptVersion:       semantic.PromptVersion,
-		SemanticLatencyMs:   semantic.LatencyMs,
-		FallbackReason:      semantic.FallbackReason,
-		RewriteCount:        len(out.QueryRewrites),
-		SemanticAnchorCount: len(out.SemanticAnchors),
+		SemanticStatus:        defaultString(semantic.Status, "ok"),
+		SemanticProvider:      semantic.Provider,
+		SemanticModel:         semantic.Model,
+		PromptVersion:         semantic.PromptVersion,
+		SemanticLatencyMs:     semantic.LatencyMs,
+		FallbackReason:        semantic.FallbackReason,
+		RewriteCount:          len(out.QueryRewrites),
+		SemanticAnchorCount:   len(out.SemanticAnchors),
+		DroppedRewriteCount:   rewriteDiagnostics.DroppedCount,
+		DroppedRewriteReasons: rewriteDiagnostics.DroppedReasons,
+		EnglishRewriteCount:   rewriteDiagnostics.EnglishCount,
 	}
 	return out
 }
@@ -585,17 +593,34 @@ func mergeSemanticEntityMentions(rule []memsqlite.QueryEntityMention, semantic [
 	return out
 }
 
-func sanitizedQueryRewrites(values []QueryRewrite, limit int, budget *float64) []memsqlite.QueryRewrite {
+type rewriteSanitizationDiagnostics struct {
+	DroppedCount   int
+	DroppedReasons []string
+	EnglishCount   int
+}
+
+func sanitizedQueryRewrites(rawQuery string, values []QueryRewrite, limit int, budget *float64) ([]memsqlite.QueryRewrite, rewriteSanitizationDiagnostics) {
+	var diagnostics rewriteSanitizationDiagnostics
 	if limit <= 0 || len(values) == 0 {
-		return nil
+		return nil, diagnostics
 	}
 	out := make([]memsqlite.QueryRewrite, 0, minInt(len(values), limit))
+	rawCJKHeavy := isCJKHeavy(rawQuery)
 	for _, value := range values {
 		if len(out) >= limit {
 			break
 		}
 		text := strings.TrimSpace(value.Text)
 		if text == "" {
+			continue
+		}
+		textCJKHeavy := isCJKHeavy(text)
+		if !textCJKHeavy && hasASCIILetter(text) {
+			diagnostics.EnglishCount++
+		}
+		if rawCJKHeavy && !textCJKHeavy && runeLen(text) > 12 {
+			diagnostics.DroppedCount++
+			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, rewriteDropReasonLanguageMismatch)
 			continue
 		}
 		weight, ok := consumeGeneratedWeight(clampFloat(value.Weight, 0.1, 0.9), 0.1, budget)
@@ -608,7 +633,69 @@ func sanitizedQueryRewrites(values []QueryRewrite, limit int, budget *float64) [
 			Weight:  weight,
 		})
 	}
-	return out
+	return out, diagnostics
+}
+
+func applyHistoricalTransitionClamp(out *memsqlite.QueryAnalysis, rule memsqlite.QueryAnalysis) {
+	if out == nil {
+		return
+	}
+	if !hasHistoricalTransitionIntent(out.Raw) && !hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalHistorical) {
+		return
+	}
+	if out.EvidenceNeed != memsqlite.EvidenceNeedStateTransition && rule.EvidenceNeed != memsqlite.EvidenceNeedStateTransition {
+		return
+	}
+	if out.TimeMode == memsqlite.QueryTimeModeCurrent {
+		out.TimeMode = memsqlite.QueryTimeModeHistorical
+	}
+	switch out.MemoryAbility {
+	case memsqlite.MemoryAbilityDirectFact, memsqlite.MemoryAbilityDynamicState:
+		if hasStoreQuerySignal(out.Signals, memsqlite.QuerySignalRelationshipArc) {
+			out.MemoryAbility = memsqlite.MemoryAbilityRelationshipArc
+		} else {
+			out.MemoryAbility = memsqlite.MemoryAbilityHistorical
+		}
+	}
+}
+
+func hasHistoricalTransitionIntent(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if containsAny(normalized, "一开始", "后来", "以前", "曾经", "从前", "发生变化", "变成") {
+		return true
+	}
+	if containsAny(normalized, "变", "变化") && (strings.Contains(normalized, "从") || strings.Contains(normalized, "到")) {
+		return true
+	}
+	return false
+}
+
+func isCJKHeavy(value string) bool {
+	var cjk int
+	var letters int
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			cjk++
+			continue
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			letters++
+		}
+	}
+	return cjk > 0 && cjk >= maxInt(1, letters/3)
+}
+
+func runeLen(value string) int {
+	return len([]rune(value))
+}
+
+func hasASCIILetter(value string) bool {
+	for _, r := range value {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint, options QueryAnalysisOptions, budget *float64) []memsqlite.SemanticAnchor {
@@ -1011,6 +1098,7 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
+		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		out.Diagnostics = &diagnostics
 	}
 	return out
@@ -1046,4 +1134,20 @@ func minInt(a int, b int) int {
 		return a
 	}
 	return b
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }

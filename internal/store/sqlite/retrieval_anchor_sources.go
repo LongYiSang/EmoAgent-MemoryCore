@@ -355,6 +355,10 @@ func queryAllowsRecentImportantAnchors(query QueryAnalysis) bool {
 }
 
 func queryAllowsNarrativeInsightAnchors(query QueryAnalysis) bool {
+	if (query.MemoryAbility == MemoryAbilityRelationshipArc || query.MemoryAbility == MemoryAbilityDynamicState) &&
+		(query.EvidenceNeed == EvidenceNeedStateTransition || query.EvidenceNeed == EvidenceNeedRelationshipTimeline) {
+		return true
+	}
 	switch query.MemoryAbility {
 	case MemoryAbilityCausalExplain,
 		MemoryAbilitySupportive,

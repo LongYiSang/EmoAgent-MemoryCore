@@ -184,14 +184,17 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	SemanticStatus      string
-	SemanticProvider    string
-	SemanticModel       string
-	PromptVersion       string
-	SemanticLatencyMs   int64
-	FallbackReason      string
-	RewriteCount        int
-	SemanticAnchorCount int
+	SemanticStatus        string
+	SemanticProvider      string
+	SemanticModel         string
+	PromptVersion         string
+	SemanticLatencyMs     int64
+	FallbackReason        string
+	RewriteCount          int
+	SemanticAnchorCount   int
+	DroppedRewriteCount   int
+	DroppedRewriteReasons []string
+	EnglishRewriteCount   int
 }
 
 type MemoryBlock struct {

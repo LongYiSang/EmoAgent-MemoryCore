@@ -5,6 +5,7 @@ import urllib.request
 import pytest
 
 from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
+from memorycore_sidecar.config import QueryAnalysisConfig
 from memorycore_sidecar.protocol import (
     ACTIVATION_REQUEST_SCHEMA_VERSION,
     ACTIVATION_RESPONSE_SCHEMA_VERSION,
@@ -265,6 +266,87 @@ def test_server_query_analysis_provider_none_returns_degraded_fallback():
         thread.join(timeout=2)
 
 
+def test_server_query_analysis_preserves_go_context_for_provider(monkeypatch):
+    calls = []
+    original_urlopen = urllib.request.urlopen
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "time_mode": "historical",
+                                        "memory_domain": "relationship",
+                                        "memory_ability": "relationship_arc",
+                                        "evidence_need": "relationship_timeline",
+                                        "signals": ["relationship_arc"],
+                                        "confidence": 0.8,
+                                        "field_confidence": {"time_mode": 0.8},
+                                        "entity_mentions": [],
+                                        "query_rewrites": [],
+                                        "semantic_anchors": [],
+                                        "context_block_hints": [],
+                                        "policy_hints": {},
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if "example.test" not in request.full_url:
+            return original_urlopen(request, timeout=timeout)
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.setenv("QUERY_KEY", "secret")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter(), _query_config())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        body = _post_json(
+            base_url,
+            "/retrieval/query-analysis",
+            {
+                "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+                "request_id": "qa-1",
+                "persona_id": "default",
+                "query_text": "我一开始把AI助手当成什么？",
+                "rule_analysis": {"evidence_need": "state_transition"},
+                "allowed_enums": {"memory_ability": ["relationship_arc"]},
+                "visible_entity_hints": [{"entity_id": "ent_ai"}],
+                "retrieval_policy": {"allow_historical": True},
+            },
+        )
+
+        assert body["schema_version"] == QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION
+        assert body["status"] == "ok"
+        user_payload = json.loads(calls[0]["messages"][1]["content"])
+        assert user_payload["input_language"] == "zh-Hans"
+        assert user_payload["rule_analysis"] == {"evidence_need": "state_transition"}
+        assert user_payload["allowed_enums"] == {"memory_ability": ["relationship_arc"]}
+        assert user_payload["visible_entity_hints"] == [{"entity_id": "ent_ai"}]
+        assert user_payload["retrieval_policy"] == {"allow_historical": True}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def _upsert_node(base_url, sqlite_node_id, searchable_text):
     body = _post_json(
         base_url,
@@ -299,3 +381,16 @@ def _post_json(base_url, path, payload):
     with urllib.request.urlopen(request, timeout=2) as response:
         assert response.status == 200
         return json.load(response)
+
+
+def _query_config():
+    return QueryAnalysisConfig(
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        api_key_env="QUERY_KEY",
+        model="test-model",
+        timeout_seconds=2,
+        temperature=0.0,
+        response_format="json_object",
+        prompt_version="query-analysis-v0.1",
+    )

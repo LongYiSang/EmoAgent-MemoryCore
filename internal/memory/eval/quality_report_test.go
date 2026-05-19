@@ -143,3 +143,62 @@ func TestQualityReportBriefOnlyShowsFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestQualityReportFullShowsQueryAnalysisDiagnostics(t *testing.T) {
+	fixture := &Fixture{
+		CaseID: "quality_query_analysis_diagnostics",
+		Steps: []Step{{
+			ID:     "retrieve",
+			Action: "retrieve",
+			Retrieve: &RetrieveStep{
+				QueryText: "我是不是喜欢 coffee",
+			},
+		}},
+		Assertions: []Assertion{{
+			Type:                  "query_analysis",
+			Name:                  "dropped rewrite is reported",
+			Step:                  "retrieve",
+			Source:                "merged",
+			DroppedRewriteCount:   1,
+			DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
+			EnglishRewriteCount:   2,
+		}},
+	}
+	report := Report{
+		CaseID: fixture.CaseID,
+		Steps: []StepReport{{
+			ID:        "retrieve",
+			Action:    "retrieve",
+			QueryText: "我是不是喜欢 coffee",
+			Retrieval: &memorycore.MemoryContext{
+				QueryAnalysis: &memorycore.QueryAnalysis{
+					Source: memorycore.QueryAnalysisSourceSemanticFallback,
+					Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+						SemanticStatus:        "ok",
+						FallbackReason:        "validation_failed",
+						SemanticLatencyMs:     23,
+						DroppedRewriteCount:   1,
+						DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
+						EnglishRewriteCount:   2,
+					},
+				},
+			},
+		}},
+		Results: []AssertionResult{{
+			Name: "dropped rewrite is reported",
+			Type: "query_analysis",
+		}},
+	}
+
+	out := FormatQualityBenchmarkReport([]QualityBenchmarkCase{{Fixture: fixture, Report: report}}, QualityBenchmarkReportOptions{Mode: QualityBenchmarkModeFull})
+	for _, want := range []string{
+		"dropped_rewrite_count=1",
+		"dropped_rewrite_reasons=rewrite_language_mismatch",
+		"english_rewrite_count=2",
+		"analysis: source=semantic_failed_rule_fallback semantic_status=ok fallback=validation_failed semantic_latency_ms=23 query_analysis_validation_failed_count=1 english_rewrite_count=2 dropped_rewrite_count=1 dropped_rewrite_reasons=rewrite_language_mismatch",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("quality report =\n%s\nwant %q", out, want)
+		}
+	}
+}

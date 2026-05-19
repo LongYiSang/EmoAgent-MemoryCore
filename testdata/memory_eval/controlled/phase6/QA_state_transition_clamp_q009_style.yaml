@@ -1,0 +1,113 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: QA_state_transition_clamp_q009_style
+description: q009-style historical relationship queries clamp semantic output to state-transition retrieval.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我以前只把小星当工具。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 现在我把小星当朋友。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: old_view
+    action: fact
+    fact:
+      id: f_ai_as_tool_old
+      subject_entity_id: user
+      predicate: views_ai_as
+      object_literal: 工具
+      content_summary: 用户以前只把小星当工具。
+      source_episode_ids: [ep1]
+      confidence: explicit
+      importance: 0.8
+  - id: new_view
+    action: fact
+    fact:
+      id: f_agent_as_friend
+      subject_entity_id: user
+      predicate: views_ai_as
+      object_literal: 朋友
+      content_summary: 用户现在把小星当朋友。
+      source_episode_ids: [ep2]
+      confidence: explicit
+      importance: 0.9
+  - id: link_supersedes
+    action: link
+    link:
+      from_node_id: f_agent_as_friend
+      link_type: SUPERSEDES
+      to_node_id: f_ai_as_tool_old
+      weight: 0.9
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      model: stub-v1
+      prompt_version: phase6-controlled
+      analysis:
+        time_mode: current
+        memory_domain: relationship_memory
+        memory_ability: direct_fact
+        evidence_need: state_transition
+        confidence: 0.95
+        query_rewrites:
+          - text: 小星 关系 看法 变化
+            purpose: semantic_recall
+            weight: 0.7
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: f_ai_as_tool_old
+          node_type: fact
+        - node_id: f_agent_as_friend
+          node_type: fact
+      candidates:
+        - node_id: f_ai_as_tool_old
+          node_type: fact
+          score: 0.99
+          source: semantic_rewrite_dense
+          rank: 1
+        - node_id: f_agent_as_friend
+          node_type: fact
+          score: 0.97
+          source: semantic_rewrite_dense
+          rank: 2
+    retrieve:
+      session_id: s1
+      query_text: 以前我对小星的看法怎么变化
+      policy:
+        use_mirror: true
+        allow_historical: true
+        final_memory_count: 4
+assertions:
+  - type: query_analysis
+    name: historical query is clamped to state transition
+    step: retrieve
+    source: merged
+    time_mode: historical
+    memory_domain: relationship_memory
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: old view is selected as superseded by current view
+    step: retrieve
+    block_type: historical_context
+    node_id: f_ai_as_tool_old
+    node_ids: [f_agent_as_friend]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1

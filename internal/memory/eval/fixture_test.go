@@ -634,6 +634,11 @@ func TestReportDebugStringIncludesRetrievalDetails(t *testing.T) {
 						MemoryDomain:  memorycore.MemoryDomainUserProfile,
 						MemoryAbility: memorycore.MemoryAbilityCausalExplain,
 						EvidenceNeed:  memorycore.EvidenceNeedExactObservation,
+						Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+							SemanticStatus:    "failed",
+							FallbackReason:    "invalid_json",
+							SemanticLatencyMs: 17,
+						},
 					},
 					Blocks: []memorycore.MemoryBlock{
 						{
@@ -680,6 +685,7 @@ func TestReportDebugStringIncludesRetrievalDetails(t *testing.T) {
 		"case_id=DEBUG_CASE",
 		"step=retrieve action=retrieve query=\"为什么上午会回避重要任务\"",
 		"analysis time_mode=current domain=user_profile_memory ability=causal_explain evidence=exact_observation",
+		"semantic_status=failed fallback=invalid_json semantic_latency_ms=17 query_analysis_invalid_json_count=1",
 		"block=causal_context",
 		"fact:fact_morning_task_avoidance status=current summary=\"用户上午会回避重要任务。\"",
 		"source episode=ep_early_meeting_pressure session=s_seed",

@@ -305,6 +305,11 @@ func qualityExpectationDetails(assertion Assertion) string {
 	appendInt("raw_query_count", assertion.RawQueryCount)
 	appendInt("rewrite_query_count", assertion.RewriteQueryCount)
 	appendInt("anchor_query_count", assertion.AnchorQueryCount)
+	appendInt("dropped_rewrite_count", assertion.DroppedRewriteCount)
+	appendInt("english_rewrite_count", assertion.EnglishRewriteCount)
+	if len(assertion.DroppedRewriteReasons) > 0 {
+		details = append(details, "dropped_rewrite_reasons="+strings.Join(assertion.DroppedRewriteReasons, ","))
+	}
 	return strings.Join(details, " ")
 }
 
@@ -433,6 +438,24 @@ func writeQualityAnalysis(b *strings.Builder, analysis *memorycore.QueryAnalysis
 	}
 	if analysis.Diagnostics != nil && analysis.Diagnostics.FallbackReason != "" {
 		parts = append(parts, "fallback="+analysis.Diagnostics.FallbackReason)
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.SemanticLatencyMs > 0 {
+		parts = append(parts, fmt.Sprintf("semantic_latency_ms=%d", analysis.Diagnostics.SemanticLatencyMs))
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.FallbackReason == "invalid_json" {
+		parts = append(parts, "query_analysis_invalid_json_count=1")
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.FallbackReason == "validation_failed" {
+		parts = append(parts, "query_analysis_validation_failed_count=1")
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.EnglishRewriteCount > 0 {
+		parts = append(parts, fmt.Sprintf("english_rewrite_count=%d", analysis.Diagnostics.EnglishRewriteCount))
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.DroppedRewriteCount > 0 {
+		parts = append(parts, fmt.Sprintf("dropped_rewrite_count=%d", analysis.Diagnostics.DroppedRewriteCount))
+	}
+	if analysis.Diagnostics != nil && len(analysis.Diagnostics.DroppedRewriteReasons) > 0 {
+		parts = append(parts, "dropped_rewrite_reasons="+strings.Join(analysis.Diagnostics.DroppedRewriteReasons, ","))
 	}
 	if len(analysis.QueryRewrites) > 0 {
 		parts = append(parts, "rewrites="+strings.Join(queryRewritesToStrings(analysis.QueryRewrites), ","))

@@ -29,6 +29,14 @@ def test_parse_query_analysis_request_accepts_optional_rationale_flag():
         "request_id": "qa-1",
         "persona_id": "default",
         "query_text": "昨天我说过的咖啡偏好是什么？",
+        "input_language": "zh-Hans",
+        "now": "",
+        "timezone": "",
+        "rule_analysis": {},
+        "allowed_enums": {},
+        "visible_entity_hints": [],
+        "retrieval_policy": {},
+        "conversation_window": [],
         "include_rationale": True,
     }
 
@@ -241,6 +249,369 @@ def test_analyze_query_retries_once_after_schema_validation_failure(monkeypatch)
     assert "secret" not in str(result)
 
 
+def test_analyze_query_retries_invalid_json_then_ok(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response("{not-json"),
+        _provider_response(json.dumps(_valid_analysis(query_rewrites=["咖啡偏好"]))),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "咖啡偏好是什么？",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "ok"
+    assert result["degraded"] is False
+    assert _user_payload(calls[0])["retry_schema_validation"] is False
+    assert _user_payload(calls[1])["retry_schema_validation"] is True
+
+
+def test_analyze_query_retries_missing_field_then_ok(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(json.dumps({"time_mode": "recent"})),
+        _provider_response(json.dumps(_valid_analysis())),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "ok"
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert len(result["diagnostics"]["first_failure_reason"]) <= 64
+
+
+def test_analyze_query_retries_invalid_enum_then_ok(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(json.dumps(_valid_analysis(time_mode="NOT_ALLOWED"))),
+        _provider_response(json.dumps(_valid_analysis(time_mode="historical"))),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "我以前喜欢什么音乐？",
+            "allowed_enums": {"time_mode": ["historical"]},
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "ok"
+    assert result["time_mode"] == "historical"
+    assert _user_payload(calls[1])["retry_schema_validation"] is True
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert "NOT_ALLOWED" not in str(result)
+    assert "secret" not in str(result)
+
+
+def test_analyze_query_retries_go_shaped_invalid_enums_then_ok(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(
+            json.dumps(
+                _valid_analysis(
+                    time_mode="NOT_ALLOWED",
+                    memory_domain="relationship_memory",
+                    memory_ability="relationship_arc",
+                    evidence_need="state_transition",
+                )
+            )
+        ),
+        _provider_response(
+            json.dumps(
+                _valid_analysis(
+                    time_mode="historical",
+                    memory_domain="relationship_memory",
+                    memory_ability="relationship_arc",
+                    evidence_need="state_transition",
+                )
+            )
+        ),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "我和AI助手的关系发生了什么变化？",
+            "allowed_enums": _go_shaped_allowed_enums(),
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "ok"
+    assert result["time_mode"] == "historical"
+    assert result["memory_domain"] == "relationship_memory"
+    assert result["memory_ability"] == "relationship_arc"
+    assert result["evidence_need"] == "state_transition"
+    assert _user_payload(calls[1])["retry_schema_validation"] is True
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert "NOT_ALLOWED" not in str(result)
+
+
+def test_analyze_query_two_invalid_json_falls_back(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response("{not-json"),
+        _provider_response("also not json"),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "degraded"
+    assert result["fallback_reason"] == "invalid_json"
+    assert result["diagnostics"]["final_fallback_reason"] == "invalid_json"
+
+
+def test_analyze_query_two_validation_failures_falls_back(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(json.dumps({"time_mode": "recent"})),
+        _provider_response(json.dumps({"time_mode": "recent"})),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "degraded"
+    assert result["fallback_reason"] == "validation_failed"
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert result["diagnostics"]["final_fallback_reason"] == "validation_failed"
+
+
+def test_analyze_query_two_invalid_enum_failures_falls_back(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(json.dumps(_valid_analysis(time_mode="NOT_ALLOWED"))),
+        _provider_response(json.dumps(_valid_analysis(time_mode="ALSO_NOT_ALLOWED"))),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "我以前喜欢什么音乐？",
+            "allowed_enums": {"time_mode": ["historical"]},
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "degraded"
+    assert result["fallback_reason"] == "validation_failed"
+    assert result["diagnostics"]["final_fallback_reason"] == "validation_failed"
+    assert "NOT_ALLOWED" not in str(result)
+    assert "ALSO_NOT_ALLOWED" not in str(result)
+
+
+def test_analyze_query_two_go_shaped_invalid_enum_failures_falls_back(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(
+            json.dumps(
+                _valid_analysis(
+                    time_mode="NOT_ALLOWED",
+                    memory_domain="relationship_memory",
+                    memory_ability="relationship_arc",
+                    evidence_need="state_transition",
+                )
+            )
+        ),
+        _provider_response(
+            json.dumps(
+                _valid_analysis(
+                    time_mode="historical",
+                    memory_domain="NOT_A_DOMAIN",
+                    memory_ability="relationship_arc",
+                    evidence_need="state_transition",
+                )
+            )
+        ),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "我和AI助手的关系发生了什么变化？",
+            "allowed_enums": _go_shaped_allowed_enums(),
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 2
+    assert result["status"] == "degraded"
+    assert result["fallback_reason"] == "validation_failed"
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert result["diagnostics"]["final_fallback_reason"] == "validation_failed"
+    assert "NOT_ALLOWED" not in str(result)
+    assert "NOT_A_DOMAIN" not in str(result)
+
+
+def test_analyze_query_sends_rich_request_payload_and_strict_prompt(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(_provider_response(json.dumps(_valid_analysis(time_mode="historical"))))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "我一开始喜欢什么音乐？",
+            "now": "2026-05-19T12:00:00+08:00",
+            "timezone": "Asia/Shanghai",
+            "rule_analysis": {"time_mode": "historical", "signals": ["transition"]},
+            "allowed_enums": {"time_mode": ["historical", "bitemporal"]},
+            "visible_entity_hints": [{"entity_id": "ent_laufey", "canonical_name": "Laufey"}],
+            "retrieval_policy": {"allow_historical": True},
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["status"] == "ok"
+    user_payload = _user_payload(calls[0])
+    assert user_payload["query_text"] == "我一开始喜欢什么音乐？"
+    assert user_payload["input_language"] == "zh-Hans"
+    assert user_payload["now"] == "2026-05-19T12:00:00+08:00"
+    assert user_payload["timezone"] == "Asia/Shanghai"
+    assert user_payload["rule_analysis"] == {"time_mode": "historical", "signals": ["transition"]}
+    assert user_payload["allowed_enums"] == {"time_mode": ["historical", "bitemporal"]}
+    assert user_payload["visible_entity_hints"] == [
+        {"entity_id": "ent_laufey", "canonical_name": "Laufey"}
+    ]
+    assert user_payload["retrieval_policy"] == {"allow_historical": True}
+    assert user_payload["conversation_window"] == []
+    assert user_payload["include_rationale"] is False
+    assert user_payload["output_contract"] == {
+        "return_only": "analysis_object",
+        "rewrite_language": "same_as_query",
+        "max_query_rewrites": 3,
+        "max_semantic_anchors": 4,
+    }
+    prompt = calls[0]["messages"][0]["content"]
+    assert "Return strict JSON object only" in prompt
+    assert "Do not translate Chinese queries into English" in prompt
+    assert "premise_counterexample" in prompt
+    assert "causal" in prompt
+
+
+def test_analyze_query_public_diagnostics_do_not_include_raw_provider_response(monkeypatch):
+    secret_raw = "raw provider response with api key secret-token"
+
+    def fake_urlopen(request, timeout):
+        return _Response(_provider_response(secret_raw))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["status"] == "degraded"
+    assert result["diagnostics"]["final_fallback_reason"] == "invalid_json"
+    assert "raw provider response" not in str(result)
+    assert "secret-token" not in str(result)
+
+
 def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch):
     calls = []
 
@@ -311,7 +682,7 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
     assert calls[0]["max_tokens"] == 384
 
 
-def test_analyze_query_invalid_json_returns_fallback_without_retry(monkeypatch):
+def test_analyze_query_invalid_json_provider_wrapper_retries_then_falls_back(monkeypatch):
     calls = 0
 
     class Response:
@@ -351,7 +722,7 @@ def test_analyze_query_invalid_json_returns_fallback_without_retry(monkeypatch):
         env={"QUERY_KEY": "secret"},
     )
 
-    assert calls == 1
+    assert calls == 2
     assert result["degraded"] is True
     assert result["fallback_reason"] == "invalid_json"
 
@@ -365,7 +736,7 @@ def test_analyze_query_invalid_json_returns_fallback_without_retry(monkeypatch):
         {"choices": [{"message": {"content": 42}}]},
     ],
 )
-def test_analyze_query_malformed_provider_wrapper_does_not_retry(
+def test_analyze_query_retries_malformed_provider_wrapper_then_falls_back(
     monkeypatch, provider_payload
 ):
     calls = 0
@@ -407,9 +778,10 @@ def test_analyze_query_malformed_provider_wrapper_does_not_retry(
         env={"QUERY_KEY": "secret"},
     )
 
-    assert calls == 1
+    assert calls == 2
     assert result["degraded"] is True
-    assert result["fallback_reason"] == "invalid_response"
+    assert result["fallback_reason"] == "validation_failed"
+    assert result["diagnostics"]["final_fallback_reason"] == "validation_failed"
 
 
 @pytest.mark.parametrize(
@@ -498,3 +870,66 @@ def test_analyze_query_provider_timeout_returns_distinct_fallback_without_retry(
     assert calls == 1
     assert result["degraded"] is True
     assert result["fallback_reason"] == "provider_timeout"
+
+
+class _Response:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def _provider_response(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _valid_analysis(**overrides):
+    analysis = {
+        "time_mode": "unspecified",
+        "memory_domain": "general",
+        "memory_ability": "recall",
+        "evidence_need": "medium",
+        "signals": [],
+        "confidence": 0.5,
+        "field_confidence": {"time_mode": 0.5},
+        "entity_mentions": [],
+        "query_rewrites": [],
+        "semantic_anchors": [],
+        "context_block_hints": [],
+        "policy_hints": {},
+    }
+    analysis.update(overrides)
+    return analysis
+
+
+def _query_config():
+    return QueryAnalysisConfig(
+        provider="openai-compatible",
+        base_url="https://example.test/v1",
+        api_key_env="QUERY_KEY",
+        model="test-model",
+        timeout_seconds=2,
+        temperature=0.0,
+        response_format="json_object",
+        prompt_version="query-analysis-v0.1",
+    )
+
+
+def _go_shaped_allowed_enums():
+    return {
+        "time_modes": ["historical"],
+        "memory_abilities": ["relationship_arc"],
+        "evidence_needs": ["state_transition"],
+        "memory_domains": ["relationship_memory"],
+    }
+
+
+def _user_payload(call: dict):
+    return json.loads(call["messages"][1]["content"])

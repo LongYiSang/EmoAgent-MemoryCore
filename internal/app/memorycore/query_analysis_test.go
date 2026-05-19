@@ -250,6 +250,50 @@ func TestQueryAnalysisSemanticFailureFallsBackToRule(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSemanticFailurePreservesStateTransitionRuleFallback(t *testing.T) {
+	raw := "我一开始把AI助手当成什么？后来这种看法发生了什么变化？"
+	rule := memsqlite.QueryAnalysis{
+		Raw:           raw,
+		Normalized:    "我一开始把ai助手当成什么？后来这种看法发生了什么变化？",
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryDomain:  memsqlite.MemoryDomainRelationship,
+		MemoryAbility: memsqlite.MemoryAbilityHistorical,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalHistorical},
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.78,
+	}
+	pipeline := newQueryAnalysisPipeline(
+		staticRuleQueryAnalyzer{analysis: rule},
+		errorSemanticQueryAnalyzer{err: errors.New("sidecar down")},
+		QueryAnalysisOptions{Provider: QueryAnalysisProviderSidecar, Mode: QueryAnalysisModeSemanticAlways},
+	)
+
+	got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{
+		PersonaID: "default",
+		QueryText: raw,
+		Now:       fixedQueryAnalysisNow(),
+	})
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if got.Source != memsqlite.QueryAnalysisSourceSemanticFallback {
+		t.Fatalf("source = %q, want semantic_failed_rule_fallback", got.Source)
+	}
+	if got.TimeMode != memsqlite.QueryTimeModeHistorical {
+		t.Fatalf("time_mode = %q, want historical", got.TimeMode)
+	}
+	if got.EvidenceNeed != memsqlite.EvidenceNeedStateTransition {
+		t.Fatalf("evidence_need = %q, want state_transition", got.EvidenceNeed)
+	}
+	if got.MemoryAbility != memsqlite.MemoryAbilityHistorical && got.MemoryAbility != memsqlite.MemoryAbilityRelationshipArc {
+		t.Fatalf("memory_ability = %q, want historical or relationship_arc", got.MemoryAbility)
+	}
+	if got.Diagnostics == nil || got.Diagnostics.SemanticStatus != "failed" || got.Diagnostics.FallbackReason == "" {
+		t.Fatalf("diagnostics = %#v, want failed semantic diagnostics with fallback reason", got.Diagnostics)
+	}
+}
+
 func TestQueryAnalysisSidecarFailureFallbackReasonDoesNotLeakBodyText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "SECRET user private note: do not leak", http.StatusInternalServerError)
@@ -381,6 +425,95 @@ func TestQueryAnalysisGeneratedWeightsRespectCumulativeCaps(t *testing.T) {
 	}
 	if len(got.SemanticAnchors) != 0 {
 		t.Fatalf("semantic anchors = %#v, want trimmed after rewrite cap exhausted", got.SemanticAnchors)
+	}
+}
+
+func TestQueryAnalysisDropsLongEnglishRewriteForChineseQuery(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "我喜欢Laufey这件事是从哪里知道的？",
+		Normalized:    "我喜欢laufey这件事是从哪里知道的？",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityProvenance,
+		EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.78,
+	}
+	semantic := SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			QueryRewrites: []QueryRewrite{
+				{Text: "when did the user say they like Laufey", Purpose: "semantic_recall", Weight: 0.7},
+				{Text: "用户喜欢Laufey的来源", Purpose: "semantic_recall", Weight: 0.6},
+				{Text: "Laufey", Purpose: "entity_anchor", Weight: 0.5},
+			},
+		},
+	}
+
+	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{
+		MaxQueryRewrites:           5,
+		MaxGeneratedDenseWeightSum: 1.5,
+		SemanticTotalEnergyCap:     3,
+	}, nil)
+
+	if len(got.QueryRewrites) != 2 {
+		t.Fatalf("query rewrites = %#v, want long English rewrite dropped and two rewrites retained", got.QueryRewrites)
+	}
+	if got.QueryRewrites[0].Text != "用户喜欢Laufey的来源" || got.QueryRewrites[1].Text != "Laufey" {
+		t.Fatalf("query rewrites = %#v, want Chinese rewrite and short proper noun retained", got.QueryRewrites)
+	}
+	if got.Diagnostics == nil {
+		t.Fatal("diagnostics = nil")
+	}
+	if got.Diagnostics.DroppedRewriteCount != 1 {
+		t.Fatalf("dropped rewrite count = %d, want 1", got.Diagnostics.DroppedRewriteCount)
+	}
+	if got.Diagnostics.EnglishRewriteCount != 2 {
+		t.Fatalf("English rewrite count = %d, want 2", got.Diagnostics.EnglishRewriteCount)
+	}
+	if len(got.Diagnostics.DroppedRewriteReasons) != 1 || got.Diagnostics.DroppedRewriteReasons[0] != "rewrite_language_mismatch" {
+		t.Fatalf("dropped rewrite reasons = %#v, want rewrite_language_mismatch", got.Diagnostics.DroppedRewriteReasons)
+	}
+}
+
+func TestQueryAnalysisClampsHistoricalStateTransitionAfterSemanticMerge(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "我一开始把AI助手当成什么？后来这种看法发生了什么变化？",
+		Normalized:    "我一开始把ai助手当成什么？后来这种看法发生了什么变化？",
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryDomain:  memsqlite.MemoryDomainRelationship,
+		MemoryAbility: memsqlite.MemoryAbilityHistorical,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalHistorical},
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.78,
+	}
+	semantic := SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			TimeMode:      string(memsqlite.QueryTimeModeCurrent),
+			MemoryAbility: string(memsqlite.MemoryAbilityDynamicState),
+			EvidenceNeed:  string(memsqlite.EvidenceNeedStateTransition),
+			Confidence:    0.95,
+			FieldConfidence: QueryAnalysisConfidence{
+				Overall:       0.95,
+				TimeMode:      0.95,
+				MemoryAbility: 0.95,
+				EvidenceNeed:  0.95,
+			},
+		},
+	}
+
+	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{MinConfidenceToOverride: 0.72}, nil)
+
+	if got.TimeMode != memsqlite.QueryTimeModeHistorical {
+		t.Fatalf("time_mode = %q, want historical", got.TimeMode)
+	}
+	if got.EvidenceNeed != memsqlite.EvidenceNeedStateTransition {
+		t.Fatalf("evidence_need = %q, want state_transition", got.EvidenceNeed)
+	}
+	if got.MemoryAbility != memsqlite.MemoryAbilityHistorical && got.MemoryAbility != memsqlite.MemoryAbilityRelationshipArc {
+		t.Fatalf("memory_ability = %q, want historical or relationship_arc", got.MemoryAbility)
 	}
 }
 

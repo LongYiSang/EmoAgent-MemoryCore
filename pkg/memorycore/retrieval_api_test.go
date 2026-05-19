@@ -647,6 +647,85 @@ func TestServiceRetrieveRunsSemanticAnalysisBeforeMirrorAndPassesMergedAnalysis(
 	}
 }
 
+func TestRetrievalAPIDoesNotSendDroppedEnglishRewriteToMirrorCandidates(t *testing.T) {
+	ctx := context.Background()
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode query analysis request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "provenance",
+				"evidence_need":  "provenance_source",
+				"confidence":     0.95,
+				"field_confidence": map[string]any{
+					"overall":        0.95,
+					"time_mode":      0.95,
+					"memory_ability": 0.95,
+					"memory_domain":  0.95,
+					"evidence_need":  0.95,
+				},
+				"query_rewrites": []map[string]any{
+					{"text": "when did the user say they like Laufey", "purpose": "semantic_recall", "weight": 0.7},
+					{"text": "用户喜欢Laufey的来源", "purpose": "semantic_recall", "weight": 0.6},
+					{"text": "Laufey", "purpose": "entity_anchor", "weight": 0.5},
+				},
+			},
+		})
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢Laufey。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "Laufey", "用户喜欢Laufey。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7254, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7254, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "我喜欢Laufey这件事是从哪里知道的？",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢Laufey。", "")
+	if adapter.calls != 1 {
+		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
+	}
+	if len(adapter.lastCandidateRequest.Query.QueryRewrites) != 2 {
+		t.Fatalf("mirror query rewrites = %#v, want dropped English rewrite excluded", adapter.lastCandidateRequest.Query.QueryRewrites)
+	}
+	for _, rewrite := range adapter.lastCandidateRequest.Query.QueryRewrites {
+		if rewrite.Text == "when did the user say they like Laufey" {
+			t.Fatalf("mirror query rewrites leaked dropped English rewrite: %#v", adapter.lastCandidateRequest.Query.QueryRewrites)
+		}
+	}
+	if contextResult.QueryAnalysis == nil || contextResult.QueryAnalysis.Diagnostics == nil {
+		t.Fatalf("query analysis diagnostics = %#v, want rewrite drop diagnostics", contextResult.QueryAnalysis)
+	}
+	if contextResult.QueryAnalysis.Diagnostics.DroppedRewriteCount != 1 {
+		t.Fatalf("dropped rewrite count = %d, want 1", contextResult.QueryAnalysis.Diagnostics.DroppedRewriteCount)
+	}
+}
+
 func TestServiceRetrieveSemanticFailureStillCallsMirrorWithRuleFallbackAnalysis(t *testing.T) {
 	ctx := context.Background()
 	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

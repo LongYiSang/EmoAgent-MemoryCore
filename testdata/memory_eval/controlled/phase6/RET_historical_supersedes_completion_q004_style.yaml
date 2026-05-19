@@ -1,0 +1,91 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: RET_historical_supersedes_completion_q004_style
+description: Historical retrieval completes a selected superseded candidate with its current superseding fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_old
+      session_id: s1
+      content: 我以前不怎么运动。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep_new
+      session_id: s1
+      content: 我现在每周跑步三次。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: old_state
+    action: fact
+    fact:
+      id: f_no_exercise_before
+      subject_entity_id: user
+      predicate: exercise_habit
+      object_literal: 不怎么运动
+      content_summary: 用户以前不怎么运动。
+      source_episode_ids: [ep_old]
+      confidence: explicit
+      importance: 0.8
+  - id: current_state
+    action: fact
+    fact:
+      id: f_running_habit_weekly
+      subject_entity_id: user
+      predicate: exercise_habit
+      object_literal: 每周跑步三次
+      content_summary: 用户现在每周跑步三次。
+      source_episode_ids: [ep_new]
+      confidence: explicit
+      importance: 0.9
+  - id: link_supersedes
+    action: link
+    link:
+      from_node_id: f_running_habit_weekly
+      link_type: SUPERSEDES
+      to_node_id: f_no_exercise_before
+      weight: 0.9
+  - id: retrieve
+    action: retrieve
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: f_no_exercise_before
+          node_type: fact
+        - node_id: f_running_habit_weekly
+          node_type: fact
+      candidates:
+        - node_id: f_no_exercise_before
+          node_type: fact
+          score: 0.99
+          source: controlled_historical
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: 以前运动习惯是什么
+      policy:
+        use_mirror: true
+        allow_historical: true
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    name: historical question asks for transition
+    step: retrieve
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: superseded candidate is completed with current state
+    step: retrieve
+    block_type: historical_context
+    node_id: f_no_exercise_before
+    node_ids: [f_running_habit_weekly]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1

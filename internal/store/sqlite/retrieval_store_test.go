@@ -1155,6 +1155,258 @@ func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *
 	}
 }
 
+func TestRetrievalCompletesHistoricalSupersedesPairBeforeSelection(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_current_city", "用户现在住在上海。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_city_completed", "用户以前住在北京。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_city_evidence", "fact_current_city")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_city_completed_evidence", "fact_old_city_completed")
+	insertFactLink(t, ctx, db.SQLDB(), "link_current_supersedes_old_city", "fact_current_city", "SUPERSEDES", "fact_old_city_completed")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_city_completed", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_city_completed", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "住在哪里发生过变化",
+		Normalized:    "住在哪里发生过变化",
+		Terms:         []string{"住", "变化"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryAbility: memsqlite.MemoryAbilityDynamicState,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_current_city", TriviumNodeID: 9001, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	items := flattenMemoryItems(result)
+	if len(items) != 2 {
+		t.Fatalf("selected items = %#v, want current and completed historical facts", items)
+	}
+	historicalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
+	oldItem := requireBlockItem(t, historicalBlock, "fact_old_city_completed")
+	if oldItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
+		t.Fatalf("historical_status = %q, want superseded", oldItem.HistoricalStatus)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_old_city_completed", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.18)
+	if got := breakdown["completion_source"]; got != "historical_transition" {
+		t.Fatalf("completion_source = %#v, want historical_transition", got)
+	}
+	if got := breakdown["completion_link_type"]; got != "SUPERSEDES" {
+		t.Fatalf("completion_link_type = %#v, want SUPERSEDES", got)
+	}
+}
+
+func TestRetrievalCompletesHistoricalRelationshipStateTransitionIntoHistoricalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_current_relationship_trust", "用户现在更信任 Agent。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_relationship_trust", "用户以前不太信任 Agent。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_relationship_trust_evidence", "fact_current_relationship_trust")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_relationship_trust_evidence", "fact_old_relationship_trust")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_current_relationship_trust", "fact_type", string(core.FactTypeRelationalState))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_relationship_trust", "fact_type", string(core.FactTypeRelationalState))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_relationship_trust", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_relationship_trust", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+	insertFactLink(t, ctx, db.SQLDB(), "link_current_relationship_supersedes_old", "fact_current_relationship_trust", "SUPERSEDES", "fact_old_relationship_trust")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系信任发生了什么变化",
+		Normalized:    "我们的关系信任发生了什么变化",
+		Terms:         []string{"关系", "信任", "变化"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_current_relationship_trust", TriviumNodeID: 9051, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	historicalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
+	oldItem := requireBlockItem(t, historicalBlock, "fact_old_relationship_trust")
+	if oldItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
+		t.Fatalf("old relationship historical_status = %q, want superseded", oldItem.HistoricalStatus)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "fact_current_relationship_trust")
+}
+
+func TestRetrievalCompletesCausalPairBeforeSelection(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_anxious_after_meeting", "用户开完早会以后明显焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_morning_meeting_trigger", "早会安排触发了用户的焦虑。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_anxious_after_meeting_evidence", "fact_anxious_after_meeting")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_morning_meeting_trigger_evidence", "fact_morning_meeting_trigger")
+	insertFactLink(t, ctx, db.SQLDB(), "link_meeting_triggered_anxiety", "fact_anxious_after_meeting", "TRIGGERED_BY", "fact_morning_meeting_trigger")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_morning_meeting_trigger", "importance", 0.2)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "为什么早会后焦虑",
+		Normalized:    "为什么早会后焦虑",
+		Terms:         []string{"早会", "焦虑"},
+		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_anxious_after_meeting", TriviumNodeID: 9011, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	causalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelevantCausalMemory)
+	requireBlockItem(t, causalBlock, "fact_anxious_after_meeting")
+	requireBlockItem(t, causalBlock, "fact_morning_meeting_trigger")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_morning_meeting_trigger", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.36)
+	if got := breakdown["completion_source"]; got != "causal_chain" {
+		t.Fatalf("completion_source = %#v, want causal_chain", got)
+	}
+	if got := breakdown["completion_link_type"]; got != "TRIGGERED_BY" {
+		t.Fatalf("completion_link_type = %#v, want TRIGGERED_BY", got)
+	}
+}
+
+func TestRetrievalCausalCompletionBoostsAlreadyPresentSourceEndpoint(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_grandma_memory", "用户看到团子就会想起奶奶，因为奶奶也养过橘猫。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_grandma_orange_cat", "用户的奶奶以前也养了一只橘猫。", core.LifecycleActive)
+	for _, factID := range []string{"fact_cat_tuanzi", "fact_grandma_passed", "fact_cat_color", "fact_unrelated_pet"} {
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "用户提到团子、奶奶和橘猫相关背景。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID+"_evidence", factID)
+	}
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_grandma_memory_evidence", "fact_grandma_memory")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_grandma_orange_cat_evidence", "fact_grandma_orange_cat")
+	insertFactLink(t, ctx, db.SQLDB(), "link_grandma_memory_caused_by_cat", "fact_grandma_memory", "CAUSED_BY", "fact_grandma_orange_cat")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "为什么团子会让我想起奶奶",
+		Normalized:    "为什么团子会让我想起奶奶",
+		Terms:         []string{"团子", "奶奶"},
+		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 4,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_grandma_orange_cat", TriviumNodeID: 9011, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_cat_tuanzi", TriviumNodeID: 9012, Score: 0.98, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_grandma_passed", TriviumNodeID: 9013, Score: 0.97, Source: "trivium_dense", Rank: 3},
+			{FactID: "fact_cat_color", TriviumNodeID: 9014, Score: 0.96, Source: "trivium_dense", Rank: 4},
+			{FactID: "fact_unrelated_pet", TriviumNodeID: 9015, Score: 0.95, Source: "trivium_dense", Rank: 5},
+			{FactID: "fact_grandma_memory", TriviumNodeID: 9016, Score: 0.50, Source: "trivium_dense", Rank: 6},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	causalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelevantCausalMemory)
+	requireBlockItem(t, causalBlock, "fact_grandma_memory")
+	requireBlockItem(t, causalBlock, "fact_grandma_orange_cat")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_grandma_memory", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.36)
+	if got := breakdown["completion_source"]; got != "causal_chain" {
+		t.Fatalf("completion_source = %#v, want causal_chain", got)
+	}
+}
+
+func TestRetrievalCompletionDoesNotBypassAuthorityFilter(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_visible_effect", "用户因为早会安排而焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_hidden_completed_cause", "隐藏的早会触发原因。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_visible_effect_evidence", "fact_visible_effect")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_hidden_completed_cause_evidence", "fact_hidden_completed_cause")
+	insertFactLink(t, ctx, db.SQLDB(), "link_visible_effect_hidden_cause", "fact_visible_effect", "CAUSED_BY", "fact_hidden_completed_cause")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_hidden_completed_cause", "visibility_status", string(core.VisibilityHidden))
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "为什么早会焦虑",
+		Normalized:    "为什么早会焦虑",
+		Terms:         []string{"早会", "焦虑"},
+		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_visible_effect", TriviumNodeID: 9021, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_hidden_completed_cause" {
+			t.Fatalf("hidden completed fact leaked into selected items: %#v", result.Blocks)
+		}
+	}
+}
+
 func TestRetrievalRepositoryIgnoresUnauthorizedSupersedingSources(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1275,6 +1527,379 @@ func TestRetrievalRepositoryFatigueSuppressionWritesScoreBreakdown(t *testing.T)
 		t.Fatalf("suppression_reason = %#v, want fatigue", got)
 	}
 	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0.6)
+}
+
+func TestRetrievalPremiseCounterexampleBoostSelectsLowSpicyTolerance(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_same_domain_spicy", "用户喜欢川菜，也愿意尝试不同口味。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_low_spicy_tolerance", "用户不太能吃辣，辛辣耐受度低。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_same_domain_spicy_evidence", "fact_same_domain_spicy")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_low_spicy_tolerance_evidence", "fact_low_spicy_tolerance")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_same_domain_spicy", "importance", 0.3)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_low_spicy_tolerance", "importance", 0.1)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "是不是所有辣的都适合我",
+		Normalized:    "是不是所有辣的都适合我",
+		Terms:         []string{"辣", "适合"},
+		MemoryAbility: memsqlite.MemoryAbilityPremiseCheck,
+		EvidenceNeed:  memsqlite.EvidenceNeedPremiseCounterexample,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_same_domain_spicy", TriviumNodeID: 9031, Score: 0.99, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 1},
+			{FactID: "fact_low_spicy_tolerance", TriviumNodeID: 9032, Score: 0.70, Source: "semantic_rewrite_dense", PrimaryPurpose: "premise_counterexample_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	premiseBlock := requireBlock(t, result, memsqlite.MemoryBlockTypePremiseCheckMemory)
+	if got := premiseBlock.Items[0].NodeID; got != "fact_low_spicy_tolerance" {
+		t.Fatalf("selected item = %s, want low spicy tolerance counterexample; blocks=%#v", got, result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_low_spicy_tolerance", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.2)
+	if got := breakdown["completion_source"]; got != "premise_counterexample" {
+		t.Fatalf("completion_source = %#v, want premise_counterexample", got)
+	}
+}
+
+func TestRetrievalPremiseCounterexampleBoostUsesFactSearchText(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_generic_spicy_search_text", "用户喜欢尝试川菜。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_counterexample_search_text_only", "用户记录了一条饮食偏好。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_generic_spicy_search_text_evidence", "fact_generic_spicy_search_text")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_counterexample_search_text_only_evidence", "fact_counterexample_search_text_only")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_generic_spicy_search_text", "importance", 0.3)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_counterexample_search_text_only", "importance", 0.1)
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_counterexample_search_text_only"); err != nil {
+		t.Fatalf("upsert counterexample search document: %v", err)
+	}
+	setFactSearchDocumentText(t, db.SQLDB(), "fact_counterexample_search_text_only", "饮食偏好 反例 辛辣耐受度低")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "是不是所有辣的都适合我",
+		Normalized:    "是不是所有辣的都适合我",
+		Terms:         []string{"辣", "适合"},
+		MemoryAbility: memsqlite.MemoryAbilityPremiseCheck,
+		EvidenceNeed:  memsqlite.EvidenceNeedPremiseCounterexample,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_generic_spicy_search_text", TriviumNodeID: 9041, Score: 0.99, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 1},
+			{FactID: "fact_counterexample_search_text_only", TriviumNodeID: 9042, Score: 0.70, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	premiseBlock := requireBlock(t, result, memsqlite.MemoryBlockTypePremiseCheckMemory)
+	if got := premiseBlock.Items[0].NodeID; got != "fact_counterexample_search_text_only" {
+		t.Fatalf("selected item = %s, want search-text counterexample; blocks=%#v", got, result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_counterexample_search_text_only", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.2)
+	if got := breakdown["completion_source"]; got != "premise_counterexample" {
+		t.Fatalf("completion_source = %#v, want premise_counterexample", got)
+	}
+}
+
+func TestRetrievalPremiseCounterexampleDoesNotPreferHistoricalSupersededNegatives(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_negative_work", "用户之前还没勇气迈出独立开发的第一步。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_side_project_active", "用户已经开始做side project，周末推进，感觉很充实。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_unrelated_old_negative", "用户之前缺乏运动，身体都快生锈了。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_negative_work_evidence", "fact_old_negative_work")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_side_project_active_evidence", "fact_side_project_active")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_unrelated_old_negative_evidence", "fact_unrelated_old_negative")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_negative_work", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_unrelated_old_negative", "validity_status", string(core.ValidityInvalidated))
+	insertFactLink(t, ctx, db.SQLDB(), "link_side_project_supersedes_old_work", "fact_side_project_active", "SUPERSEDES", "fact_old_negative_work")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我在工作方面是不是从头到尾只有焦虑和负面情绪，没有过积极的变化？",
+		Normalized:    "我在工作方面是不是从头到尾只有焦虑和负面情绪，没有过积极的变化",
+		Terms:         []string{"工作", "焦虑", "负面", "积极", "变化"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityPremiseCheck,
+		EvidenceNeed:  memsqlite.EvidenceNeedPremiseCounterexample,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_old_negative_work", TriviumNodeID: 9051, Score: 0.99, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 1},
+			{FactID: "fact_unrelated_old_negative", TriviumNodeID: 9052, Score: 0.98, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 2},
+			{FactID: "fact_side_project_active", TriviumNodeID: 9053, Score: 0.70, Source: "semantic_rewrite_dense", PrimaryPurpose: "raw_query", Rank: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	premiseBlock := requireBlock(t, result, memsqlite.MemoryBlockTypePremiseCheckMemory)
+	if got := premiseBlock.Items[0].NodeID; got != "fact_side_project_active" {
+		t.Fatalf("selected item = %s, want side project counterexample; blocks=%#v", got, result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_side_project_active", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.45)
+	if got := breakdown["completion_source"]; got != "premise_counterexample" {
+		t.Fatalf("completion_source = %#v, want premise_counterexample", got)
+	}
+}
+
+func TestRetrievalNarrativeInsightAnchorCompletesSourceOutcomeFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_companionship_outcome", "关系变化：陪伴感增强，用户提到不孤独。")
+	insertSearchFact(t, ctx, db.SQLDB(), "f_feeling_less_lonely", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_less_lonely_evidence", "f_feeling_less_lonely")
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_feeling_less_lonely", "fact_type", string(core.FactTypeRelationalState))
+	insertNodeLink(t, ctx, db.SQLDB(), "link_narrative_derived_from_less_lonely", core.NodeTypeNarrative, "narrative_companionship_outcome", "DERIVED_FROM", core.NodeTypeFact, "f_feeling_less_lonely")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "f_feeling_less_lonely")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "f_feeling_less_lonely", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.4)
+	if got := breakdown["completion_source"]; got != "narrative_insight" {
+		t.Fatalf("completion_source = %#v, want narrative_insight", got)
+	}
+	if got := breakdown["completion_link_type"]; got != "DERIVED_FROM" {
+		t.Fatalf("completion_link_type = %#v, want DERIVED_FROM", got)
+	}
+}
+
+func TestRetrievalNarrativeInsightCompletionIgnoresWrongReverseDerivedFrom(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_companionship_direction", "关系变化：陪伴感增强，用户提到不孤独。")
+	insertSearchFact(t, ctx, db.SQLDB(), "f_feeling_less_lonely_direction", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "f_wrong_reverse_derived_from", "这条事实不应该通过反向 DERIVED_FROM 被补全。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_less_lonely_direction_evidence", "f_feeling_less_lonely_direction")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_wrong_reverse_derived_from_evidence", "f_wrong_reverse_derived_from")
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_feeling_less_lonely_direction", "fact_type", string(core.FactTypeRelationalState))
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_wrong_reverse_derived_from", "fact_type", string(core.FactTypeRelationalState))
+	insertNodeLink(t, ctx, db.SQLDB(), "link_direction_narrative_to_fact", core.NodeTypeNarrative, "narrative_companionship_direction", "DERIVED_FROM", core.NodeTypeFact, "f_feeling_less_lonely_direction")
+	insertNodeLink(t, ctx, db.SQLDB(), "link_wrong_fact_to_narrative", core.NodeTypeFact, "f_wrong_reverse_derived_from", "DERIVED_FROM", core.NodeTypeNarrative, "narrative_companionship_direction")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "f_feeling_less_lonely_direction")
+	for _, item := range relationshipBlock.Items {
+		if item.NodeID == "f_wrong_reverse_derived_from" {
+			t.Fatalf("wrong reverse DERIVED_FROM fact was selected: %#v", relationshipBlock.Items)
+		}
+	}
+}
+
+func TestRetrievalNarrativeInsightCompletionAllowsInboundSupports(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_companionship_inbound", "关系变化：陪伴感增强，用户提到不孤独。")
+	insertSearchFact(t, ctx, db.SQLDB(), "f_inbound_supports_companionship", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_inbound_supports_companionship_evidence", "f_inbound_supports_companionship")
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_inbound_supports_companionship", "fact_type", string(core.FactTypeRelationalState))
+	insertNodeLink(t, ctx, db.SQLDB(), "link_fact_supports_narrative", core.NodeTypeFact, "f_inbound_supports_companionship", "SUPPORTS", core.NodeTypeNarrative, "narrative_companionship_inbound")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "f_inbound_supports_companionship")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "f_inbound_supports_companionship", "retrieved")
+	if got := breakdown["completion_link_type"]; got != "SUPPORTS" {
+		t.Fatalf("completion_link_type = %#v, want SUPPORTS", got)
+	}
+}
+
+func TestRetrievalNarrativeInsightCompletionAllowsInboundAboutEntity(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_companionship_about_entity", "关系变化：陪伴感增强，用户提到不孤独。")
+	insertSearchFact(t, ctx, db.SQLDB(), "f_inbound_about_entity_companionship", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_inbound_about_entity_companionship_evidence", "f_inbound_about_entity_companionship")
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_inbound_about_entity_companionship", "fact_type", string(core.FactTypeRelationalState))
+	insertNodeLink(t, ctx, db.SQLDB(), "link_fact_about_entity_narrative", core.NodeTypeFact, "f_inbound_about_entity_companionship", "ABOUT_ENTITY", core.NodeTypeNarrative, "narrative_companionship_about_entity")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "f_inbound_about_entity_companionship")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "f_inbound_about_entity_companionship", "retrieved")
+	if got := breakdown["completion_link_type"]; got != "ABOUT_ENTITY" {
+		t.Fatalf("completion_link_type = %#v, want ABOUT_ENTITY", got)
+	}
+}
+
+func TestRetrievalNarrativeInsightCompletionCapKeepsHighPriorityOutcome(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_companionship_high_fanout", "关系变化：陪伴感增强，用户提到不孤独。")
+	for i := 0; i < 13; i++ {
+		factID := "f_generic_completion_"
+		if i < 10 {
+			factID += "0"
+		}
+		factID += strconv.Itoa(i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "一条普通关系补全候选。", core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID+"_evidence", factID)
+		updateFactRetrievalColumn(t, db.SQLDB(), factID, "importance", 0.1)
+		linkID := "link_narrative_generic_" + strconv.Itoa(i)
+		insertNodeLink(t, ctx, db.SQLDB(), linkID, core.NodeTypeNarrative, "narrative_companionship_high_fanout", "DERIVED_FROM", core.NodeTypeFact, factID)
+		updateLinkWeight(t, db.SQLDB(), linkID, 0.1)
+	}
+	insertSearchFact(t, ctx, db.SQLDB(), "f_zz_feeling_less_lonely_priority", "用户和 Agent 聊完以后感觉没那么孤独，有陪伴感。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_less_lonely_priority_evidence", "f_zz_feeling_less_lonely_priority")
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_zz_feeling_less_lonely_priority", "importance", 0.1)
+	updateFactRetrievalColumn(t, db.SQLDB(), "f_zz_feeling_less_lonely_priority", "fact_type", string(core.FactTypeRelationalState))
+	insertNodeLink(t, ctx, db.SQLDB(), "link_narrative_priority_outcome", core.NodeTypeNarrative, "narrative_companionship_high_fanout", "DERIVED_FROM", core.NodeTypeFact, "f_zz_feeling_less_lonely_priority")
+	updateLinkWeight(t, db.SQLDB(), "link_narrative_priority_outcome", 1)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我们的关系最近有什么变化，有没有陪伴感",
+		Normalized:    "我们的关系最近有什么变化，有没有陪伴感",
+		Terms:         []string{"关系", "变化", "陪伴"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
+	requireBlockItem(t, relationshipBlock, "f_zz_feeling_less_lonely_priority")
 }
 
 func TestSearchDocumentsForRetrievalRanksFTSByRelevanceBeforeRecency(t *testing.T) {
@@ -1563,19 +2188,47 @@ WHERE node_type = 'fact' AND node_id = ?`, updatedAt, factID); err != nil {
 	}
 }
 
+func setFactSearchDocumentText(t *testing.T, db *sql.DB, factID string, searchText string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE memory_search_documents
+SET search_text = ?
+WHERE node_type = 'fact' AND node_id = ?`, searchText, factID); err != nil {
+		t.Fatalf("set fact search document text: %v", err)
+	}
+}
+
 func insertFactLink(t *testing.T, ctx context.Context, db *sql.DB, linkID string, fromFactID string, linkType string, toFactID string) {
+	t.Helper()
+
+	insertNodeLink(t, ctx, db, linkID, core.NodeTypeFact, fromFactID, linkType, core.NodeTypeFact, toFactID)
+}
+
+func insertNodeLink(t *testing.T, ctx context.Context, db *sql.DB, linkID string, fromNodeType core.NodeType, fromNodeID string, linkType string, toNodeType core.NodeType, toNodeID string) {
 	t.Helper()
 
 	if err := memsqlite.NewLinkRepository(db).Insert(ctx, core.MemoryLink{
 		ID:           linkID,
 		PersonaID:    "default",
-		FromNodeType: core.NodeTypeFact,
-		FromNodeID:   fromFactID,
+		FromNodeType: fromNodeType,
+		FromNodeID:   fromNodeID,
 		LinkType:     core.LinkType(linkType),
-		ToNodeType:   core.NodeTypeFact,
-		ToNodeID:     toFactID,
+		ToNodeType:   toNodeType,
+		ToNodeID:     toNodeID,
 	}); err != nil {
-		t.Fatalf("insert fact link %s: %v", linkID, err)
+		t.Fatalf("insert node link %s: %v", linkID, err)
+	}
+}
+
+func updateLinkWeight(t *testing.T, db *sql.DB, linkID string, weight float64) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+UPDATE memory_links
+SET weight = ?
+WHERE id = ?`, weight, linkID); err != nil {
+		t.Fatalf("update link %s weight: %v", linkID, err)
 	}
 }
 

@@ -1,5 +1,48 @@
+import pytest
+
 from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
 from memorycore_sidecar.adapters.trivium import TriviumAdapter
+from memorycore_sidecar.candidates import (
+    DEFAULT_RRF_K,
+    DEFAULT_SUPPORT_BETA,
+    DenseHit,
+    fuse_dense_results,
+)
+
+
+def test_fuse_dense_results_weights_rrf_support_and_damps_by_primary_score():
+    request = {
+        "request_id": "candidate-1",
+        "persona_id": "alice",
+        "limit": 2,
+        "debug_scores": True,
+        "query": {
+            "raw_text": "raw",
+            "rewrites": [
+                {"text": "rewrite", "weight": 0.1, "purpose": "semantic_recall"}
+            ],
+        },
+    }
+
+    def search(query):
+        if query.source == "raw_dense":
+            return [DenseHit(1, 0.2)]
+        return [DenseHit(1, 1.0)]
+
+    result = fuse_dense_results(request, search)
+
+    breakdown = result["candidates"][0]["score_breakdown"]
+    expected_rrf_support = (1.0 / (DEFAULT_RRF_K + 1)) + (
+        0.1 / (DEFAULT_RRF_K + 1)
+    )
+    expected_rrf_norm = expected_rrf_support / (2 / (DEFAULT_RRF_K + 1))
+    expected_bonus = DEFAULT_SUPPORT_BETA * expected_rrf_norm * (1 - 0.2)
+    assert result["candidates"][0]["trivium_node_id"] == 1
+    assert breakdown["primary_score"] == pytest.approx(0.2)
+    assert breakdown["rrf_support_norm"] == pytest.approx(expected_rrf_norm)
+    assert breakdown["support_bonus"] == pytest.approx(expected_bonus)
+    assert breakdown["support_bonus"] < 0.12
+    assert breakdown["score_norm_method"] == "weighted_max_rrf"
 
 
 def test_fake_adapter_upsert_node_returns_stable_positive_trivium_id():
@@ -156,7 +199,8 @@ def test_fake_adapter_candidate_v02_dedupes_generated_queries_and_applies_suppor
     ]
     assert result["candidates"][0]["primary_source"] == "raw_dense"
     assert result["candidates"][0]["hit_count"] == 3
-    assert result["candidates"][0]["score_breakdown"]["support_bonus"] > 0
+    assert result["candidates"][0]["score_breakdown"]["primary_score"] == 1.0
+    assert result["candidates"][0]["score_breakdown"]["support_bonus"] == 0.0
     assert result["diagnostics"]["query_count"] == 3
     assert result["diagnostics"]["rewrite_query_count"] == 1
     assert result["diagnostics"]["anchor_query_count"] == 1

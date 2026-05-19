@@ -127,14 +127,17 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	SemanticStatus      string
-	SemanticProvider    string
-	SemanticModel       string
-	PromptVersion       string
-	SemanticLatencyMs   int64
-	FallbackReason      string
-	RewriteCount        int
-	SemanticAnchorCount int
+	SemanticStatus        string
+	SemanticProvider      string
+	SemanticModel         string
+	PromptVersion         string
+	SemanticLatencyMs     int64
+	FallbackReason        string
+	RewriteCount          int
+	SemanticAnchorCount   int
+	DroppedRewriteCount   int
+	DroppedRewriteReasons []string
+	EnglishRewriteCount   int
 }
 
 func (r *RetrievalRepository) AnalyzeQuery(ctx context.Context, personaID string, query string, policy RetrievalPolicy) (QueryAnalysis, error) {
@@ -175,12 +178,16 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
+		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		out.Diagnostics = &diagnostics
 	}
 	return out
 }
 
 func queryTimeMode(normalized string) QueryTimeMode {
+	if hasHistoricalTransitionIntent(normalized) {
+		return QueryTimeModeHistorical
+	}
 	if containsAny(normalized, "以前", "过去", "上次", "历史", "之前", "曾经", "从前", "prior", "previous", "last time", "historical", "history", "before") {
 		return QueryTimeModeHistorical
 	}
@@ -217,6 +224,16 @@ func querySignals(normalized string, timeMode QueryTimeMode) []QuerySignal {
 		signals = append(signals, QuerySignalDebug)
 	}
 	return signals
+}
+
+func hasHistoricalTransitionIntent(normalized string) bool {
+	if containsAny(normalized, "一开始", "后来", "以前", "曾经", "从前", "发生变化", "变成") {
+		return true
+	}
+	if containsAny(normalized, "变", "变化") && (strings.Contains(normalized, "从") || strings.Contains(normalized, "到")) {
+		return true
+	}
+	return false
 }
 
 func queryMemoryDomain(normalized string) MemoryDomain {

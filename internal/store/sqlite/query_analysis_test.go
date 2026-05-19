@@ -42,11 +42,11 @@ func TestQueryAnalysisSupportsSemanticFields(t *testing.T) {
 		Source:     QueryAnalysisSourceMerged,
 		Confidence: 0.81,
 		FieldConfidence: QueryAnalysisConfidence{
-			Overall:         0.81,
-			TimeMode:        0.75,
-			MemoryAbility:   0.82,
-			MemoryDomain:    0.8,
-			EvidenceNeed:    0.83,
+			Overall:          0.81,
+			TimeMode:         0.75,
+			MemoryAbility:    0.82,
+			MemoryDomain:     0.8,
+			EvidenceNeed:     0.83,
 			EntityResolution: 0.78,
 		},
 		QueryRewrites: []QueryRewrite{{
@@ -228,6 +228,36 @@ func TestQueryAnalysisEvidenceNeedCurrentRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := queryEvidenceNeed(tt.query); got != tt.want {
 				t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryAnalysisStateTransitionCurrentRules(t *testing.T) {
+	query := "我一开始把AI助手当成什么？后来这种看法发生了什么变化？"
+
+	if got := queryTimeMode(query); got != QueryTimeModeHistorical {
+		t.Fatalf("queryTimeMode(%q) = %q, want %q", query, got, QueryTimeModeHistorical)
+	}
+	if got := queryMemoryAbility(query); got != MemoryAbilityHistorical {
+		t.Fatalf("queryMemoryAbility(%q) = %q, want %q", query, got, MemoryAbilityHistorical)
+	}
+	if got := queryEvidenceNeed(query); got != EvidenceNeedStateTransition {
+		t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", query, got, EvidenceNeedStateTransition)
+	}
+	if !hasQuerySignal(QueryAnalysis{Signals: querySignals(query, queryTimeMode(query))}, QuerySignalHistorical) {
+		t.Fatalf("querySignals(%q) missing historical", query)
+	}
+}
+
+func TestQueryAnalysisStateTransitionDoesNotTreatBareFromToAsHistorical(t *testing.T) {
+	for _, query := range []string{"从北京到上海怎么走", "从 repo 到 docs 的路径"} {
+		t.Run(query, func(t *testing.T) {
+			if got := queryTimeMode(query); got != QueryTimeModeCurrent {
+				t.Fatalf("queryTimeMode(%q) = %q, want %q", query, got, QueryTimeModeCurrent)
+			}
+			if got := queryEvidenceNeed(query); got != EvidenceNeedExactObservation {
+				t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", query, got, EvidenceNeedExactObservation)
 			}
 		})
 	}

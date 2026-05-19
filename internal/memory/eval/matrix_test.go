@@ -120,7 +120,7 @@ func TestMatrixRunnerQueryAnalysisOnlyAppliesToMirrorProfiles(t *testing.T) {
 				"evidence_need":  "exact_observation",
 				"confidence":     0.9,
 				"query_rewrites": []map[string]any{{
-					"text":    "semantic coffee",
+					"text":    "语义 咖啡",
 					"purpose": "semantic_recall",
 					"weight":  0.8,
 				}},
@@ -186,7 +186,7 @@ func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
 				"evidence_need":  "exact_observation",
 				"confidence":     0.9,
 				"query_rewrites": []map[string]any{{
-					"text":    "semantic coffee",
+					"text":    "语义 咖啡",
 					"purpose": "semantic_recall",
 					"weight":  0.8,
 				}},
@@ -750,6 +750,162 @@ func TestFormatMatrixReportIncludesCacheStats(t *testing.T) {
 	}
 }
 
+func TestComputeMatrixMetricsIncludesQueryAnalysisDiagnostics(t *testing.T) {
+	report := Report{
+		Steps: []StepReport{
+			{
+				ID:     "q1",
+				Action: "retrieve",
+				Retrieval: &memorycore.MemoryContext{
+					QueryAnalysis: &memorycore.QueryAnalysis{
+						Source: memorycore.QueryAnalysisSourceMerged,
+						Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+							SemanticLatencyMs:     10,
+							EnglishRewriteCount:   2,
+							DroppedRewriteCount:   1,
+							DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
+						},
+					},
+					Mirror: &memorycore.MirrorRetrievalDiagnostics{
+						Status:            "used",
+						QueryCount:        3,
+						RewriteQueryCount: 2,
+						Candidates: []memorycore.MirrorCandidateDiagnostics{{
+							SQLiteFactID: "f1",
+							Source:       "semantic_rewrite_dense",
+						}},
+					},
+				},
+			},
+			{
+				ID:     "q2",
+				Action: "retrieve",
+				Retrieval: &memorycore.MemoryContext{
+					QueryAnalysis: &memorycore.QueryAnalysis{
+						Source: memorycore.QueryAnalysisSourceSemanticFallback,
+						Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+							SemanticLatencyMs: 50,
+							FallbackReason:    "invalid_json",
+						},
+					},
+				},
+			},
+			{
+				ID:     "q3",
+				Action: "retrieve",
+				Retrieval: &memorycore.MemoryContext{
+					QueryAnalysis: &memorycore.QueryAnalysis{
+						Source: memorycore.QueryAnalysisSourceSemanticFallback,
+						Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+							SemanticLatencyMs: 90,
+							FallbackReason:    "validation_failed",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	metrics := ComputeMatrixMetrics(nil, report)
+	if metrics.QueryAnalysisUsedCount != 1 {
+		t.Fatalf("query analysis used count = %d, want 1", metrics.QueryAnalysisUsedCount)
+	}
+	if metrics.QueryAnalysisFallbackCount != 2 {
+		t.Fatalf("query analysis fallback count = %d, want 2", metrics.QueryAnalysisFallbackCount)
+	}
+	if metrics.QueryAnalysisInvalidJSONCount != 1 {
+		t.Fatalf("invalid JSON count = %d, want 1", metrics.QueryAnalysisInvalidJSONCount)
+	}
+	if metrics.QueryAnalysisValidationFailedCount != 1 {
+		t.Fatalf("validation failed count = %d, want 1", metrics.QueryAnalysisValidationFailedCount)
+	}
+	if metrics.QueryAnalysisLatencyP50 != 50 || metrics.QueryAnalysisLatencyP95 != 90 {
+		t.Fatalf("query analysis latencies p50=%d p95=%d, want 50/90", metrics.QueryAnalysisLatencyP50, metrics.QueryAnalysisLatencyP95)
+	}
+	if metrics.EnglishRewriteCount != 2 || metrics.DroppedRewriteCount != 1 {
+		t.Fatalf("rewrite diagnostics english=%d dropped=%d, want 2/1", metrics.EnglishRewriteCount, metrics.DroppedRewriteCount)
+	}
+	if metrics.SemanticRewriteDenseCount != 2 {
+		t.Fatalf("semantic rewrite dense count = %d, want 2", metrics.SemanticRewriteDenseCount)
+	}
+	if metrics.CandidateQueryCount != 3 {
+		t.Fatalf("candidate query count = %d, want 3", metrics.CandidateQueryCount)
+	}
+	if metrics.FallbackCount != 0 {
+		t.Fatalf("fallback count = %d, want existing stage fallback metric unchanged", metrics.FallbackCount)
+	}
+}
+
+func TestFormatMatrixReportIncludesQueryAnalysisMetrics(t *testing.T) {
+	out := FormatMatrixReport(MatrixReport{
+		CaseID: "query_analysis_metrics_case",
+		Profiles: []ProfileMatrixReport{{
+			Profile: ProfileMirrorRealDense,
+			Status:  ProfileStatusPass,
+			Metrics: MatrixMetrics{
+				QueryAnalysisUsedCount:             2,
+				QueryAnalysisFallbackCount:         1,
+				QueryAnalysisInvalidJSONCount:      1,
+				QueryAnalysisValidationFailedCount: 1,
+				QueryAnalysisLatencyP50:            12,
+				QueryAnalysisLatencyP95:            34,
+				EnglishRewriteCount:                3,
+				DroppedRewriteCount:                2,
+				SemanticRewriteDenseCount:          4,
+				CandidateQueryCount:                5,
+			},
+		}},
+	})
+
+	for _, want := range []string{
+		"query_analysis_used_count: 2",
+		"query_analysis_fallback_count: 1",
+		"query_analysis_invalid_json_count: 1",
+		"query_analysis_validation_failed_count: 1",
+		"query_analysis_latency_p50: 12",
+		"query_analysis_latency_p95: 34",
+		"english_rewrite_count: 3",
+		"dropped_rewrite_count: 2",
+		"semantic_rewrite_dense_count: 4",
+		"candidate_query_count: 5",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report =\n%s\nwant %q", out, want)
+		}
+	}
+}
+
+func TestFormatMatrixDetailReportIncludesFullQueryAnalysisCompactMetrics(t *testing.T) {
+	out := FormatMatrixDetailReport(nil, MatrixReport{
+		CaseID: "query_analysis_detail_metrics_case",
+		Profiles: []ProfileMatrixReport{{
+			Profile: ProfileMirrorRealDense,
+			Status:  ProfileStatusPass,
+			Metrics: MatrixMetrics{
+				QueryAnalysisUsedCount:             2,
+				QueryAnalysisFallbackCount:         1,
+				QueryAnalysisInvalidJSONCount:      1,
+				QueryAnalysisValidationFailedCount: 1,
+				QueryAnalysisLatencyP50:            12,
+				QueryAnalysisLatencyP95:            34,
+				EnglishRewriteCount:                3,
+				DroppedRewriteCount:                2,
+				SemanticRewriteDenseCount:          4,
+				CandidateQueryCount:                5,
+			},
+		}},
+	})
+
+	for _, want := range []string{
+		"| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | query_analysis_used_count | query_analysis_fallback_count | query_analysis_invalid_json_count | query_analysis_validation_failed_count | query_analysis_latency_p50 | query_analysis_latency_p95 | english_rewrite_count | dropped_rewrite_count | semantic_rewrite_dense_count | candidate_query_count | graph_activation_used_count | rerank_live_call_count |",
+		"| mirror_real_dense | pass |  | 0 | 0.000 | 0.000 | 0 | 2 | 1 | 1 | 1 | 12 | 34 | 3 | 2 | 4 | 5 | 0 | 0 |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("detail report =\n%s\nwant %q", out, want)
+		}
+	}
+}
+
 func TestFormatMatrixDetailReportComparesProfilesByQuestion(t *testing.T) {
 	fixture := &Fixture{
 		CaseID: "quality_case",
@@ -901,8 +1057,8 @@ func TestFormatMatrixDetailReportComparesProfilesByQuestion(t *testing.T) {
 		"test_plan_version: memory_eval_matrix.v0.2",
 		"case_id: quality_case",
 		"profile_summary:",
-		"| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | graph_activation_used_count | rerank_live_call_count |",
-		"| mirror_real_dense | fail |  | 1 | 0.000 | 0.000 | 0 | 0 | 0 |",
+		"| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | query_analysis_used_count | query_analysis_fallback_count | query_analysis_invalid_json_count | query_analysis_validation_failed_count | query_analysis_latency_p50 | query_analysis_latency_p95 | english_rewrite_count | dropped_rewrite_count | semantic_rewrite_dense_count | candidate_query_count | graph_activation_used_count | rerank_live_call_count |",
+		"| mirror_real_dense | fail |  | 1 | 0.000 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |",
 		"failure_index:",
 		"| question_id | sqlite_go | mirror_real_dense |",
 		"| q001_fact | PASS | FAIL selected_recall_at_k |",

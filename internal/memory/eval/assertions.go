@@ -196,6 +196,33 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "context_block_hints=" + strings.Join(assertion.ContextBlockHints, ","), Actual: "context_block_hints=" + strings.Join(analysis.ContextBlockHints, ",")}
 		}
 	}
+	if assertion.DroppedRewriteCount > 0 {
+		actual := 0
+		if analysis.Diagnostics != nil {
+			actual = analysis.Diagnostics.DroppedRewriteCount
+		}
+		if actual != assertion.DroppedRewriteCount {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("dropped_rewrite_count=%d", assertion.DroppedRewriteCount), Actual: fmt.Sprintf("dropped_rewrite_count=%d", actual)}
+		}
+	}
+	if len(assertion.DroppedRewriteReasons) > 0 {
+		var actual []string
+		if analysis.Diagnostics != nil {
+			actual = analysis.Diagnostics.DroppedRewriteReasons
+		}
+		if !sameStringSet(actual, assertion.DroppedRewriteReasons) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "dropped_rewrite_reasons=" + strings.Join(assertion.DroppedRewriteReasons, ","), Actual: "dropped_rewrite_reasons=" + strings.Join(actual, ",")}
+		}
+	}
+	if assertion.EnglishRewriteCount > 0 {
+		actual := 0
+		if analysis.Diagnostics != nil {
+			actual = analysis.Diagnostics.EnglishRewriteCount
+		}
+		if actual != assertion.EnglishRewriteCount {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("english_rewrite_count=%d", assertion.EnglishRewriteCount), Actual: fmt.Sprintf("english_rewrite_count=%d", actual)}
+		}
+	}
 	return nil
 }
 

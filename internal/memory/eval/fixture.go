@@ -450,6 +450,9 @@ type Assertion struct {
 	RawQueryCount           int      `yaml:"raw_query_count"`
 	RewriteQueryCount       int      `yaml:"rewrite_query_count"`
 	AnchorQueryCount        int      `yaml:"anchor_query_count"`
+	DroppedRewriteCount     int      `yaml:"dropped_rewrite_count"`
+	DroppedRewriteReasons   []string `yaml:"dropped_rewrite_reasons"`
+	EnglishRewriteCount     int      `yaml:"english_rewrite_count"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {

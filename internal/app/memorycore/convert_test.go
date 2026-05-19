@@ -39,3 +39,51 @@ func TestQueryAnalysisFromStoreOmitsEmptySemanticFields(t *testing.T) {
 		t.Fatalf("json = %s, unexpected manufactured semantic text", jsonText)
 	}
 }
+
+func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
+	analysis := queryAnalysisFromStore(&memsqlite.QueryAnalysis{
+		Raw:           "我喜欢Laufey这件事是从哪里知道的？",
+		Normalized:    "我喜欢laufey这件事是从哪里知道的？",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityProvenance,
+		EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+		Source:        memsqlite.QueryAnalysisSourceMerged,
+		QueryRewrites: []memsqlite.QueryRewrite{{
+			Text:    "用户喜欢Laufey的来源",
+			Purpose: "semantic_recall",
+			Weight:  0.7,
+		}},
+		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+			SemanticStatus:        "ok",
+			RewriteCount:          1,
+			DroppedRewriteCount:   1,
+			DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
+			EnglishRewriteCount:   2,
+		},
+	})
+	if analysis == nil || analysis.Diagnostics == nil {
+		t.Fatalf("analysis diagnostics = %#v, want populated diagnostics", analysis)
+	}
+	if analysis.Diagnostics.DroppedRewriteCount != 1 {
+		t.Fatalf("dropped rewrite count = %d, want 1", analysis.Diagnostics.DroppedRewriteCount)
+	}
+	if analysis.Diagnostics.EnglishRewriteCount != 2 {
+		t.Fatalf("English rewrite count = %d, want 2", analysis.Diagnostics.EnglishRewriteCount)
+	}
+	if len(analysis.Diagnostics.DroppedRewriteReasons) != 1 || analysis.Diagnostics.DroppedRewriteReasons[0] != "rewrite_language_mismatch" {
+		t.Fatalf("dropped rewrite reasons = %#v, want rewrite_language_mismatch", analysis.Diagnostics.DroppedRewriteReasons)
+	}
+
+	raw, err := json.Marshal(analysis)
+	if err != nil {
+		t.Fatalf("marshal query analysis: %v", err)
+	}
+	jsonText := string(raw)
+	if strings.Contains(jsonText, "when did the user say they like Laufey") {
+		t.Fatalf("json leaked dropped rewrite text: %s", jsonText)
+	}
+	if !strings.Contains(jsonText, "rewrite_language_mismatch") {
+		t.Fatalf("json = %s, want public drop reason", jsonText)
+	}
+}

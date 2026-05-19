@@ -1,0 +1,100 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: RET_premise_counterexample_q011_style
+description: Premise-check retrieval selects the counterexample and does not select the broad unsupported premise.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_counter
+      session_id: s1
+      content: 我其实吃不了太辣。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep_wrong
+      session_id: s1
+      content: 不是所有辣都适合我。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: low_tolerance
+    action: fact
+    fact:
+      id: f_spicy_tolerance_low
+      subject_entity_id: user
+      predicate: tolerates
+      object_literal: 低辣度
+      content_summary: 用户吃不了太辣。
+      source_episode_ids: [ep_counter]
+      confidence: explicit
+      importance: 0.9
+  - id: wrong_all_spicy
+    action: fact
+    fact:
+      id: f_wrong_eats_all_spicy
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 所有辣食
+      content_summary: 用户能吃所有辣食。
+      source_episode_ids: [ep_wrong]
+      confidence: inferred
+      importance: 0.4
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      analysis:
+        time_mode: current
+        memory_domain: user_profile_memory
+        memory_ability: premise_check
+        evidence_need: premise_counterexample
+        confidence: 0.9
+        query_rewrites:
+          - text: 用户 吃不了 太辣 反例
+            purpose: premise_counterexample_dense
+            weight: 0.8
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $low_tolerance.fact_id
+          node_type: fact
+        - node_id: $wrong_all_spicy.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $low_tolerance.fact_id
+          node_type: fact
+          score: 0.99
+          source: semantic_rewrite_dense
+          rank: 1
+        - node_id: $wrong_all_spicy.fact_id
+          node_type: fact
+          score: 0.70
+          source: semantic_rewrite_dense
+          rank: 2
+    retrieve:
+      session_id: s1
+      query_text: 我是不是能吃所有辣
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    name: premise query asks for counterexample
+    step: retrieve
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: selected_recall_at_k
+    name: selected context recalls low spicy tolerance
+    step: retrieve
+    relevant_node_ids: [$low_tolerance.fact_id]
+    at: 4
+    min: 1.0
+  - type: forbidden_recall_zero
+    name: selected context excludes broad unsupported spicy premise
+    step: retrieve
+    forbidden_node_ids: [$wrong_all_spicy.fact_id]

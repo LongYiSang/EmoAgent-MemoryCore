@@ -245,11 +245,26 @@ def parse_query_analysis_request(data: Any) -> dict[str, Any]:
     query_text = data.get("query_text")
     if not isinstance(query_text, str) or not query_text.strip():
         raise ProtocolError("query_text is required")
+    debug = data.get("debug", {})
+    if not isinstance(debug, dict):
+        debug = {}
+    include_rationale = bool(data.get("include_rationale", False)) or bool(
+        debug.get("include_rationale_summary", False)
+    )
     return {
         "request_id": request_id.strip(),
         "persona_id": persona_id.strip(),
         "query_text": query_text,
-        "include_rationale": bool(data.get("include_rationale", False)),
+        "input_language": _optional_string(data.get("input_language"))
+        or _input_language(query_text),
+        "now": _optional_string(data.get("now")),
+        "timezone": _optional_string(data.get("timezone")),
+        "rule_analysis": _optional_object(data.get("rule_analysis")),
+        "allowed_enums": _optional_object(data.get("allowed_enums")),
+        "visible_entity_hints": _optional_array(data.get("visible_entity_hints")),
+        "retrieval_policy": _optional_object(data.get("retrieval_policy")),
+        "conversation_window": _optional_array(data.get("conversation_window")),
+        "include_rationale": include_rationale,
     }
 
 
@@ -353,6 +368,24 @@ def _optional_string(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _optional_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _optional_array(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _input_language(query_text: str) -> str:
+    cjk = sum(1 for ch in query_text if "\u4e00" <= ch <= "\u9fff")
+    letters = sum(1 for ch in query_text if ch.isalpha())
+    return "zh-Hans" if cjk > 0 and cjk >= max(1, letters // 3) else "unknown"
 
 
 def _string_list(value: Any, field_name: str) -> list[str]:
@@ -575,6 +608,8 @@ def build_query_analysis_result(
     ):
         if field in analysis:
             result[field] = analysis[field]
+    if "diagnostics" in analysis:
+        result["diagnostics"] = analysis["diagnostics"]
     result["analysis"] = {
         key: value
         for key, value in analysis.items()
@@ -587,6 +622,7 @@ def build_query_analysis_result(
             "model",
             "prompt_version",
             "rationale_summary",
+            "diagnostics",
         }
     }
     if "rationale_summary" in analysis:

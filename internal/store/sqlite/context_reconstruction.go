@@ -75,6 +75,8 @@ func contextBlockType(query QueryAnalysis, fact core.Fact) string {
 		query.MemoryAbility == MemoryAbilityPremiseCheck ||
 		hasQuerySignal(query, QuerySignalPremiseCheck):
 		return MemoryBlockTypePremiseCheckMemory
+	case query.EvidenceNeed == EvidenceNeedStateTransition && factLikelyHistorical(fact):
+		return MemoryBlockTypeHistoricalTransitionMemory
 	case hasContextBlockHint(query, MemoryBlockTypeRelationshipArcMemory) ||
 		query.MemoryAbility == MemoryAbilityRelationshipArc ||
 		hasQuerySignal(query, QuerySignalRelationshipArc):
@@ -373,6 +375,7 @@ func relatedLinkTypesForBlock(blockType string) map[string]bool {
 			"CONTRIBUTED_TO": true,
 			"EXPLAINS":       true,
 			"SUPPORTS":       true,
+			"TRIGGERED_BY":   true,
 		}
 	case MemoryBlockTypeHistoricalTransitionMemory:
 		return map[string]bool{

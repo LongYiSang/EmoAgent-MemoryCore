@@ -126,7 +126,7 @@ def fuse_dense_results(
                 },
             )
             item["hit_count"] += 1
-            item["rrf_support"] += 1.0 / (DEFAULT_RRF_K + rank)
+            item["rrf_support"] += query.weight / (DEFAULT_RRF_K + rank)
             if _is_better_primary(weighted_score, query, item):
                 item["primary_score"] = weighted_score
                 item["primary_source"] = query.source
@@ -139,12 +139,16 @@ def fuse_dense_results(
             1.0,
             item["rrf_support"] / (query_count / (DEFAULT_RRF_K + 1)),
         )
+        primary_score = max(0.0, item["primary_score"])
         support_bonus = (
-            min(DEFAULT_MAX_SUPPORT_BONUS, DEFAULT_SUPPORT_BETA * rrf_norm)
+            min(
+                DEFAULT_MAX_SUPPORT_BONUS,
+                DEFAULT_SUPPORT_BETA * rrf_norm * (1 - primary_score),
+            )
             if item["hit_count"] > 1
             else 0.0
         )
-        fused_score = min(1.0, max(0.0, item["primary_score"]) + support_bonus)
+        fused_score = min(1.0, primary_score + support_bonus)
         candidate = {
             "trivium_node_id": item["trivium_node_id"],
             "fused_score": round(fused_score, 6),
@@ -152,7 +156,7 @@ def fuse_dense_results(
             "primary_purpose": item["primary_purpose"],
             "rank": 0,
             "hit_count": item["hit_count"],
-            "_primary_score": round(max(0.0, item["primary_score"]), 6),
+            "_primary_score": round(primary_score, 6),
         }
         if debug_scores:
             candidate["score_breakdown"] = {

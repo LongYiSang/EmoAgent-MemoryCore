@@ -142,8 +142,26 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 			if analysis.Diagnostics.FallbackReason != "" {
 				fmt.Fprintf(b, " fallback=%s", analysis.Diagnostics.FallbackReason)
 			}
+			if analysis.Diagnostics.SemanticLatencyMs > 0 {
+				fmt.Fprintf(b, " semantic_latency_ms=%d", analysis.Diagnostics.SemanticLatencyMs)
+			}
+			if analysis.Diagnostics.FallbackReason == "invalid_json" {
+				fmt.Fprintf(b, " query_analysis_invalid_json_count=1")
+			}
+			if analysis.Diagnostics.FallbackReason == "validation_failed" {
+				fmt.Fprintf(b, " query_analysis_validation_failed_count=1")
+			}
 			if analysis.Diagnostics.RewriteCount > 0 {
 				fmt.Fprintf(b, " rewrite_count=%d", analysis.Diagnostics.RewriteCount)
+			}
+			if analysis.Diagnostics.EnglishRewriteCount > 0 {
+				fmt.Fprintf(b, " english_rewrite_count=%d", analysis.Diagnostics.EnglishRewriteCount)
+			}
+			if analysis.Diagnostics.DroppedRewriteCount > 0 {
+				fmt.Fprintf(b, " dropped_rewrite_count=%d", analysis.Diagnostics.DroppedRewriteCount)
+			}
+			if len(analysis.Diagnostics.DroppedRewriteReasons) > 0 {
+				fmt.Fprintf(b, " dropped_rewrite_reasons=%s", strings.Join(analysis.Diagnostics.DroppedRewriteReasons, ","))
 			}
 		}
 		b.WriteString("\n")

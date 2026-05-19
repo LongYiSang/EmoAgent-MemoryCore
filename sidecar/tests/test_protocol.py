@@ -17,12 +17,15 @@ from memorycore_sidecar.protocol import (
     CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION,
     CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION,
     EVAL_CONFIG_REQUEST_SCHEMA_VERSION,
+    QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+    QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION,
     RERANK_REQUEST_SCHEMA_VERSION,
     RERANK_RESPONSE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
     RESPONSE_SCHEMA_VERSION,
     ProtocolError,
     build_activation_result,
+    build_query_analysis_result,
     build_rerank_result,
     build_result,
     parse_activation_request,
@@ -30,6 +33,7 @@ from memorycore_sidecar.protocol import (
     parse_clear_namespace_request,
     parse_eval_config_request,
     parse_operation_request,
+    parse_query_analysis_request,
     parse_rerank_request,
 )
 from memorycore_sidecar.server import create_server, create_adapter
@@ -203,6 +207,92 @@ def test_parse_candidate_request_rejects_non_boolean_debug_scores():
                 "query": {"raw_text": "coffee"},
             }
         )
+
+
+def test_parse_query_analysis_request_preserves_go_context_fields():
+    request = parse_query_analysis_request(
+        {
+            "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+            "request_id": " qa-1 ",
+            "persona_id": " default ",
+            "query_text": "我一开始喜欢什么音乐？",
+            "input_language": "zh-Hans",
+            "now": "2026-05-19T12:00:00+08:00",
+            "timezone": "Asia/Shanghai",
+            "rule_analysis": {"time_mode": "historical"},
+            "allowed_enums": {"time_mode": ["historical", "bitemporal"]},
+            "visible_entity_hints": [{"entity_id": "ent_laufey"}],
+            "retrieval_policy": {"allow_historical": True},
+            "conversation_window": [{"role": "user", "safe_summary": "之前提到Laufey"}],
+            "debug": {"include_rationale_summary": True, "raw_prompt": "must not pass"},
+        }
+    )
+
+    assert request == {
+        "request_id": "qa-1",
+        "persona_id": "default",
+        "query_text": "我一开始喜欢什么音乐？",
+        "input_language": "zh-Hans",
+        "now": "2026-05-19T12:00:00+08:00",
+        "timezone": "Asia/Shanghai",
+        "rule_analysis": {"time_mode": "historical"},
+        "allowed_enums": {"time_mode": ["historical", "bitemporal"]},
+        "visible_entity_hints": [{"entity_id": "ent_laufey"}],
+        "retrieval_policy": {"allow_historical": True},
+        "conversation_window": [{"role": "user", "safe_summary": "之前提到Laufey"}],
+        "include_rationale": True,
+    }
+
+
+def test_parse_query_analysis_request_defaults_absent_conversation_window_to_empty():
+    request = parse_query_analysis_request(
+        {
+            "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        }
+    )
+
+    assert request["conversation_window"] == []
+    assert request["input_language"] == "unknown"
+
+
+def test_build_query_analysis_result_passes_through_compact_diagnostics():
+    result = build_query_analysis_result(
+        "qa-1",
+        {
+            "status": "degraded",
+            "degraded": True,
+            "fallback_reason": "invalid_json",
+            "provider": "openai-compatible",
+            "model": "test-model",
+            "prompt_version": "query-analysis-v0.1",
+            "diagnostics": {
+                "first_failure_reason": "invalid_json",
+                "final_fallback_reason": "invalid_json",
+            },
+            "time_mode": "unspecified",
+            "memory_domain": "general",
+            "memory_ability": "recall",
+            "evidence_need": "medium",
+            "signals": [],
+            "confidence": 0.1,
+            "field_confidence": {"time_mode": 0.1},
+            "entity_mentions": [],
+            "query_rewrites": [],
+            "semantic_anchors": [],
+            "context_block_hints": [],
+            "policy_hints": {},
+        },
+    )
+
+    assert result["schema_version"] == QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION
+    assert result["diagnostics"] == {
+        "first_failure_reason": "invalid_json",
+        "final_fallback_reason": "invalid_json",
+    }
+    assert "diagnostics" not in result["analysis"]
 
 
 def test_parse_eval_config_request_rejects_unknown_embedding_cache_mode():
