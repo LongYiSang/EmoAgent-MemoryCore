@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
@@ -62,19 +63,46 @@ func (r *RetrievalRepository) reconstructMemoryBlocks(ctx context.Context, req R
 
 func contextBlockType(query QueryAnalysis, fact core.Fact) string {
 	switch {
+	case hasContextBlockHint(query, MemoryBlockTypeProvenanceMemory) ||
+		query.MemoryAbility == MemoryAbilityProvenance ||
+		hasQuerySignal(query, QuerySignalProvenance):
+		return MemoryBlockTypeProvenanceMemory
+	case hasContextBlockHint(query, MemoryBlockTypeRelevantCausalMemory) ||
+		query.MemoryAbility == MemoryAbilityCausalExplain ||
+		hasQuerySignal(query, QuerySignalCausal):
+		return MemoryBlockTypeRelevantCausalMemory
+	case hasContextBlockHint(query, MemoryBlockTypePremiseCheckMemory) ||
+		query.MemoryAbility == MemoryAbilityPremiseCheck ||
+		hasQuerySignal(query, QuerySignalPremiseCheck):
+		return MemoryBlockTypePremiseCheckMemory
+	case hasContextBlockHint(query, MemoryBlockTypeRelationshipArcMemory) ||
+		query.MemoryAbility == MemoryAbilityRelationshipArc ||
+		hasQuerySignal(query, QuerySignalRelationshipArc):
+		return MemoryBlockTypeRelationshipArcMemory
+	case hasContextBlockHint(query, MemoryBlockTypeHistoricalTransitionMemory) ||
+		query.MemoryAbility == MemoryAbilityHistorical ||
+		query.TimeMode == QueryTimeModeHistorical ||
+		factLikelyHistorical(fact):
+		return MemoryBlockTypeHistoricalTransitionMemory
+	case hasContextBlockHint(query, MemoryBlockTypeSupportiveMemory) ||
+		query.MemoryAbility == MemoryAbilitySupportive ||
+		query.MemoryAbility == MemoryAbilityBoundary ||
+		hasQuerySignal(query, QuerySignalForgetDelete):
+		return MemoryBlockTypeSupportiveMemory
 	case queryUsesExperienceContext(query, fact):
 		return MemoryBlockTypeExperienceContext
-	case query.MemoryAbility == MemoryAbilityProvenance || hasQuerySignal(query, QuerySignalProvenance):
-		return MemoryBlockTypeProvenanceContext
-	case query.MemoryAbility == MemoryAbilityCausalExplain || hasQuerySignal(query, QuerySignalCausal):
-		return MemoryBlockTypeCausalContext
-	case query.MemoryAbility == MemoryAbilityHistorical || query.TimeMode == QueryTimeModeHistorical || factLikelyHistorical(fact):
-		return MemoryBlockTypeHistoricalContext
-	case query.MemoryAbility == MemoryAbilitySupportive || query.MemoryAbility == MemoryAbilityBoundary:
-		return MemoryBlockTypeSupportiveContext
 	default:
 		return MemoryBlockTypeFacts
 	}
+}
+
+func hasContextBlockHint(query QueryAnalysis, want string) bool {
+	for _, hint := range query.ContextBlockHints {
+		if strings.TrimSpace(hint) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func queryUsesExperienceContext(query QueryAnalysis, fact core.Fact) bool {
@@ -339,14 +367,14 @@ ORDER BY ABS(weight) DESC, created_at ASC, id ASC`, fact.PersonaID, fact.ID, fac
 
 func relatedLinkTypesForBlock(blockType string) map[string]bool {
 	switch blockType {
-	case MemoryBlockTypeCausalContext:
+	case MemoryBlockTypeRelevantCausalMemory:
 		return map[string]bool{
 			"CAUSED_BY":      true,
 			"CONTRIBUTED_TO": true,
 			"EXPLAINS":       true,
 			"SUPPORTS":       true,
 		}
-	case MemoryBlockTypeHistoricalContext:
+	case MemoryBlockTypeHistoricalTransitionMemory:
 		return map[string]bool{
 			"SUPERSEDES": true,
 		}

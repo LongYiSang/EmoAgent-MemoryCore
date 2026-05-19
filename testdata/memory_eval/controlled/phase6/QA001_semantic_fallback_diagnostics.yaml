@@ -1,0 +1,23 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: QA001_semantic_fallback_diagnostics
+description: Controlled semantic analyzer failure falls back to rule analysis and reports bounded diagnostics.
+steps:
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: error
+      fallback_reason: semantic_unavailable
+      provider: eval_semantic_stub
+      model: stub-v1
+      prompt_version: phase6-eval
+    retrieve:
+      query_text: coffee preference
+assertions:
+  - type: query_analysis
+    name: semantic fallback source and reason are exposed
+    step: retrieve
+    source: semantic_failed_rule_fallback
+    status: failed
+    fallback_reason: semantic_unavailable

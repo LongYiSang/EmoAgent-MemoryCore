@@ -412,6 +412,7 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 	result, err := a.client.FindCandidates(ctx, internalmirror.CandidateRequest{
 		PersonaID: req.PersonaID,
 		QueryText: req.QueryText,
+		Query:     queryAnalysisPublicToMirror(req.Query),
 		Limit:     req.Limit,
 	})
 	if err != nil {
@@ -424,12 +425,16 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 		EmbeddingCacheHits:     result.EmbeddingCacheHits,
 		EmbeddingCacheMisses:   result.EmbeddingCacheMisses,
 		EmbeddingLiveCallCount: result.EmbeddingLiveCallCount,
+		Diagnostics:            mirrorCandidateDiagnosticsFromInternal(result.Diagnostics),
 	}
 	for _, candidate := range result.Candidates {
 		out.Candidates = append(out.Candidates, MirrorCandidate{
-			TriviumNodeID: candidate.TriviumNodeID,
-			Score:         candidate.Score,
-			Source:        candidate.Source,
+			TriviumNodeID:  candidate.TriviumNodeID,
+			Score:          candidate.Score,
+			Source:         candidate.Source,
+			PrimaryPurpose: candidate.PrimaryPurpose,
+			Rank:           candidate.Rank,
+			HitCount:       candidate.HitCount,
 		})
 	}
 	return out, nil
@@ -562,6 +567,93 @@ func activationPathsFromInternal(paths []internalmirror.ActivationPath) []Mirror
 		})
 	}
 	return result
+}
+
+func queryAnalysisPublicToMirror(value QueryAnalysis) internalmirror.QueryAnalysis {
+	out := internalmirror.QueryAnalysis{
+		Raw:               value.Raw,
+		Normalized:        value.Normalized,
+		Terms:             append([]string(nil), value.Terms...),
+		TimeMode:          string(value.TimeMode),
+		MemoryDomain:      string(value.MemoryDomain),
+		MemoryAbility:     string(value.MemoryAbility),
+		EvidenceNeed:      string(value.EvidenceNeed),
+		Source:            string(value.Source),
+		Confidence:        value.Confidence,
+		FieldConfidence:   queryAnalysisConfidencePublicToMirror(value.FieldConfidence),
+		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
+		PolicyHints:       queryPolicyHintsPublicToMirror(value.PolicyHints),
+	}
+	for _, signal := range value.Signals {
+		out.Signals = append(out.Signals, string(signal))
+	}
+	for _, mention := range value.EntityMentions {
+		out.EntityMentions = append(out.EntityMentions, internalmirror.QueryEntityMention{
+			EntityID:      mention.EntityID,
+			CanonicalName: mention.CanonicalName,
+			Alias:         mention.Alias,
+			MatchText:     mention.MatchText,
+			MatchKind:     string(mention.MatchKind),
+		})
+	}
+	for _, rewrite := range value.QueryRewrites {
+		out.QueryRewrites = append(out.QueryRewrites, internalmirror.QueryRewrite{
+			Text:    rewrite.Text,
+			Purpose: rewrite.Purpose,
+			Weight:  rewrite.Weight,
+		})
+	}
+	for _, anchor := range value.SemanticAnchors {
+		out.SemanticAnchors = append(out.SemanticAnchors, internalmirror.SemanticAnchor{
+			Text:       anchor.Text,
+			AnchorType: anchor.AnchorType,
+			EntityID:   anchor.EntityID,
+			Weight:     anchor.Weight,
+			Confidence: anchor.Confidence,
+		})
+	}
+	return out
+}
+
+func queryAnalysisConfidencePublicToMirror(value QueryAnalysisConfidence) internalmirror.QueryAnalysisConfidence {
+	return internalmirror.QueryAnalysisConfidence{
+		Overall:          value.Overall,
+		TimeMode:         value.TimeMode,
+		MemoryAbility:    value.MemoryAbility,
+		MemoryDomain:     value.MemoryDomain,
+		EvidenceNeed:     value.EvidenceNeed,
+		EntityResolution: value.EntityResolution,
+	}
+}
+
+func queryPolicyHintsPublicToMirror(value QueryPolicyHints) internalmirror.QueryPolicyHints {
+	return internalmirror.QueryPolicyHints{
+		PreferEvidencedByLinks: value.PreferEvidencedByLinks,
+		PreferSupersedesLinks:  value.PreferSupersedesLinks,
+		PreferCausalLinks:      value.PreferCausalLinks,
+		PreferCounterexamples:  value.PreferCounterexamples,
+		PreferNarratives:       value.PreferNarratives,
+		MaxHopsHint:            value.MaxHopsHint,
+	}
+}
+
+func mirrorCandidateDiagnosticsFromInternal(value internalmirror.CandidateDiagnostics) MirrorCandidateSidecarDiagnostics {
+	out := MirrorCandidateSidecarDiagnostics{
+		QueryCount:           value.QueryCount,
+		RawQueryCount:        value.RawQueryCount,
+		RewriteQueryCount:    value.RewriteQueryCount,
+		AnchorQueryCount:     value.AnchorQueryCount,
+		MergedCandidateCount: value.MergedCandidateCount,
+		PerQuery:             make([]MirrorCandidatePerQueryDiagnostic, 0, len(value.PerQuery)),
+	}
+	for _, item := range value.PerQuery {
+		out.PerQuery = append(out.PerQuery, MirrorCandidatePerQueryDiagnostic{
+			Source:  item.Source,
+			Purpose: item.Purpose,
+			Count:   item.Count,
+		})
+	}
+	return out
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

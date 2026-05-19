@@ -457,6 +457,42 @@ func TestRetrievalRepositoryQueryAnalysisUsesEntityMentionsForCandidates(t *test
 	}
 }
 
+func TestRetrievalRepositoryPrepareReusesPrecomputedQueryAnalysis(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	precomputed := memsqlite.QueryAnalysis{
+		Raw:           "semantic historical query",
+		Normalized:    "semantic historical query",
+		Terms:         []string{"semantic", "historical"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryDomain:  memsqlite.MemoryDomainWorkExperience,
+		MemoryAbility: memsqlite.MemoryAbilityHistorical,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Source:        memsqlite.QueryAnalysisSourceMerged,
+		Confidence:    0.88,
+	}
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                "current query text should not be reanalyzed",
+		PrecomputedQueryAnalysis: &precomputed,
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if prepared.Query.Raw != precomputed.Raw || prepared.Query.Source != memsqlite.QueryAnalysisSourceMerged || prepared.Query.Confidence != 0.88 {
+		t.Fatalf("query = %#v, want precomputed analysis", prepared.Query)
+	}
+	if !prepared.Policy.AllowHistorical {
+		t.Fatalf("effective policy did not honor precomputed historical analysis: %#v", prepared.Policy)
+	}
+	if prepared.Request.PrecomputedQueryAnalysis != nil {
+		t.Fatalf("prepared request retained caller-owned precomputed analysis pointer")
+	}
+}
+
 func TestRetrievalRepositoryAnchorFusionUsesMirrorRankBeforeRawScore(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1050,7 +1086,7 @@ func TestRetrievalRepositoryReconstructsCausalContextWithSafeRelatedFacts(t *tes
 		t.Fatalf("retrieve: %v", err)
 	}
 
-	block := requireBlock(t, result, memsqlite.MemoryBlockTypeCausalContext)
+	block := requireBlock(t, result, memsqlite.MemoryBlockTypeRelevantCausalMemory)
 	item := requireBlockItem(t, block, "fact_work_resistance")
 	if item.HistoricalStatus != memsqlite.MemoryHistoricalStatusCurrent {
 		t.Fatalf("historical_status = %q, want current", item.HistoricalStatus)
@@ -1061,7 +1097,7 @@ func TestRetrievalRepositoryReconstructsCausalContextWithSafeRelatedFacts(t *tes
 			t.Fatalf("hidden related fact leaked into causal context: %#v", item.RelatedFacts)
 		}
 	}
-	requireAccessEventBlockType(t, db.SQLDB(), "fact_work_resistance", "retrieved", memsqlite.MemoryBlockTypeCausalContext)
+	requireAccessEventBlockType(t, db.SQLDB(), "fact_work_resistance", "retrieved", memsqlite.MemoryBlockTypeRelevantCausalMemory)
 }
 
 func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *testing.T) {
@@ -1086,7 +1122,7 @@ func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *
 	if err != nil {
 		t.Fatalf("retrieve historical: %v", err)
 	}
-	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalContext)
+	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
 	historicalItem := requireBlockItem(t, historicalBlock, "fact_old_city")
 	if historicalItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
 		t.Fatalf("historical_status = %q, want superseded", historicalItem.HistoricalStatus)
@@ -1102,7 +1138,7 @@ func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *
 	if err != nil {
 		t.Fatalf("retrieve provenance: %v", err)
 	}
-	provenanceBlock := requireBlock(t, provenance, memsqlite.MemoryBlockTypeProvenanceContext)
+	provenanceBlock := requireBlock(t, provenance, memsqlite.MemoryBlockTypeProvenanceMemory)
 	provenanceItem := requireBlockItem(t, provenanceBlock, "fact_old_city")
 	if len(provenanceItem.SourceRefs) != 1 {
 		t.Fatalf("source_refs = %#v, want one source", provenanceItem.SourceRefs)
@@ -1152,7 +1188,7 @@ func TestRetrievalRepositoryIgnoresUnauthorizedSupersedingSources(t *testing.T) 
 	if err != nil {
 		t.Fatalf("retrieve historical: %v", err)
 	}
-	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalContext)
+	historicalBlock := requireBlock(t, historical, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
 	historicalItem := requireBlockItem(t, historicalBlock, "fact_old_phone")
 	if historicalItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusHistorical {
 		t.Fatalf("historical_status = %q, want historical when superseding sources are unauthorized", historicalItem.HistoricalStatus)

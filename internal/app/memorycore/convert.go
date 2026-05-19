@@ -205,15 +205,23 @@ func queryAnalysisFromStore(value *memsqlite.QueryAnalysis) *QueryAnalysis {
 		return nil
 	}
 	result := &QueryAnalysis{
-		Raw:            value.Raw,
-		Normalized:     value.Normalized,
-		Terms:          append([]string(nil), value.Terms...),
-		EntityMentions: make([]QueryEntityMention, 0, len(value.EntityMentions)),
-		TimeMode:       QueryTimeMode(value.TimeMode),
-		Signals:        make([]QuerySignal, 0, len(value.Signals)),
-		MemoryDomain:   MemoryDomain(value.MemoryDomain),
-		MemoryAbility:  MemoryAbility(value.MemoryAbility),
-		EvidenceNeed:   EvidenceNeed(value.EvidenceNeed),
+		Raw:               value.Raw,
+		Normalized:        value.Normalized,
+		Terms:             append([]string(nil), value.Terms...),
+		EntityMentions:    make([]QueryEntityMention, 0, len(value.EntityMentions)),
+		TimeMode:          QueryTimeMode(value.TimeMode),
+		Signals:           make([]QuerySignal, 0, len(value.Signals)),
+		MemoryDomain:      MemoryDomain(value.MemoryDomain),
+		MemoryAbility:     MemoryAbility(value.MemoryAbility),
+		EvidenceNeed:      EvidenceNeed(value.EvidenceNeed),
+		Source:            QueryAnalysisSource(value.Source),
+		Confidence:        value.Confidence,
+		FieldConfidence:   queryAnalysisConfidenceFromStore(value.FieldConfidence),
+		QueryRewrites:     queryRewritesFromStore(value.QueryRewrites),
+		SemanticAnchors:   semanticAnchorsFromStore(value.SemanticAnchors),
+		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
+		PolicyHints:       queryPolicyHintsFromStore(value.PolicyHints),
+		Diagnostics:       queryAnalysisDiagnosticsFromStore(value.Diagnostics),
 	}
 	for _, mention := range value.EntityMentions {
 		result.EntityMentions = append(result.EntityMentions, QueryEntityMention{
@@ -228,6 +236,76 @@ func queryAnalysisFromStore(value *memsqlite.QueryAnalysis) *QueryAnalysis {
 		result.Signals = append(result.Signals, QuerySignal(signal))
 	}
 	return result
+}
+
+func queryRewritesFromStore(values []memsqlite.QueryRewrite) []QueryRewrite {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]QueryRewrite, 0, len(values))
+	for _, rewrite := range values {
+		result = append(result, QueryRewrite{
+			Text:    rewrite.Text,
+			Purpose: rewrite.Purpose,
+			Weight:  rewrite.Weight,
+		})
+	}
+	return result
+}
+
+func semanticAnchorsFromStore(values []memsqlite.SemanticAnchor) []SemanticAnchor {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]SemanticAnchor, 0, len(values))
+	for _, anchor := range values {
+		result = append(result, SemanticAnchor{
+			Text:       anchor.Text,
+			AnchorType: anchor.AnchorType,
+			EntityID:   anchor.EntityID,
+			Weight:     anchor.Weight,
+			Confidence: anchor.Confidence,
+		})
+	}
+	return result
+}
+
+func queryAnalysisConfidenceFromStore(value memsqlite.QueryAnalysisConfidence) QueryAnalysisConfidence {
+	return QueryAnalysisConfidence{
+		Overall:          value.Overall,
+		TimeMode:         value.TimeMode,
+		MemoryAbility:    value.MemoryAbility,
+		MemoryDomain:     value.MemoryDomain,
+		EvidenceNeed:     value.EvidenceNeed,
+		EntityResolution: value.EntityResolution,
+	}
+}
+
+func queryPolicyHintsFromStore(value memsqlite.QueryPolicyHints) QueryPolicyHints {
+	return QueryPolicyHints{
+		PreferEvidencedByLinks: value.PreferEvidencedByLinks,
+		PreferSupersedesLinks:  value.PreferSupersedesLinks,
+		PreferCausalLinks:      value.PreferCausalLinks,
+		PreferCounterexamples:  value.PreferCounterexamples,
+		PreferNarratives:       value.PreferNarratives,
+		MaxHopsHint:            value.MaxHopsHint,
+	}
+}
+
+func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics) *QueryAnalysisDiagnostics {
+	if value == nil {
+		return nil
+	}
+	return &QueryAnalysisDiagnostics{
+		SemanticStatus:      value.SemanticStatus,
+		SemanticProvider:    value.SemanticProvider,
+		SemanticModel:       value.SemanticModel,
+		PromptVersion:       value.PromptVersion,
+		SemanticLatencyMs:   value.SemanticLatencyMs,
+		FallbackReason:      value.FallbackReason,
+		RewriteCount:        value.RewriteCount,
+		SemanticAnchorCount: value.SemanticAnchorCount,
+	}
 }
 
 func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetrievalDiagnostics {
@@ -245,6 +323,12 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 		EmbeddingCacheHits:     value.EmbeddingCacheHits,
 		EmbeddingCacheMisses:   value.EmbeddingCacheMisses,
 		EmbeddingLiveCallCount: value.EmbeddingLiveCallCount,
+		QueryCount:             value.QueryCount,
+		RawQueryCount:          value.RawQueryCount,
+		RewriteQueryCount:      value.RewriteQueryCount,
+		AnchorQueryCount:       value.AnchorQueryCount,
+		MergedCandidateCount:   value.MergedCandidateCount,
+		PerQuery:               mirrorCandidatePerQueryDiagnosticsFromStore(value.PerQuery),
 		Candidates:             make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
 	}
 	for _, item := range value.Candidates {
@@ -253,12 +337,26 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 			sqliteFactID = ""
 		}
 		result.Candidates = append(result.Candidates, MirrorCandidateDiagnostics{
-			TriviumNodeID: item.TriviumNodeID,
-			SQLiteFactID:  sqliteFactID,
-			Score:         item.Score,
-			Source:        item.Source,
-			Rank:          item.Rank,
-			DropReason:    item.DropReason,
+			TriviumNodeID:  item.TriviumNodeID,
+			SQLiteFactID:   sqliteFactID,
+			Score:          item.Score,
+			Source:         item.Source,
+			PrimaryPurpose: item.PrimaryPurpose,
+			Rank:           item.Rank,
+			HitCount:       item.HitCount,
+			DropReason:     item.DropReason,
+		})
+	}
+	return result
+}
+
+func mirrorCandidatePerQueryDiagnosticsFromStore(values []memsqlite.MirrorCandidatePerQueryDiagnostic) []MirrorCandidatePerQueryDiagnostics {
+	result := make([]MirrorCandidatePerQueryDiagnostics, 0, len(values))
+	for _, value := range values {
+		result = append(result, MirrorCandidatePerQueryDiagnostics{
+			Source:  value.Source,
+			Purpose: value.Purpose,
+			Count:   value.Count,
 		})
 	}
 	return result

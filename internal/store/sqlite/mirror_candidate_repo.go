@@ -15,18 +15,22 @@ type MirrorCandidateRepository struct {
 }
 
 type MirrorCandidate struct {
-	TriviumNodeID int64
-	Score         float64
-	Source        string
-	Rank          int
+	TriviumNodeID  int64
+	Score          float64
+	Source         string
+	PrimaryPurpose string
+	Rank           int
+	HitCount       int
 }
 
 type RetrievalMirrorCandidate struct {
-	FactID        string
-	TriviumNodeID int64
-	Score         float64
-	Source        string
-	Rank          int
+	FactID         string
+	TriviumNodeID  int64
+	Score          float64
+	Source         string
+	PrimaryPurpose string
+	Rank           int
+	HitCount       int
 }
 
 type ActivationSeed struct {
@@ -45,12 +49,14 @@ type ActivationCandidate struct {
 }
 
 type MirrorCandidateDiagnostic struct {
-	TriviumNodeID int64
-	SQLiteFactID  string
-	Score         float64
-	Source        string
-	Rank          int
-	DropReason    string
+	TriviumNodeID  int64
+	SQLiteFactID   string
+	Score          float64
+	Source         string
+	PrimaryPurpose string
+	Rank           int
+	HitCount       int
+	DropReason     string
 }
 
 type MirrorCandidateMappingReport struct {
@@ -93,11 +99,13 @@ func (r *MirrorCandidateRepository) MapFactCandidatesWithDiagnostics(ctx context
 		}
 		if candidate.TriviumNodeID <= 0 || !ok {
 			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
-				TriviumNodeID: candidate.TriviumNodeID,
-				Score:         candidate.Score,
-				Source:        candidate.Source,
-				Rank:          candidate.Rank,
-				DropReason:    "invalid_candidate",
+				TriviumNodeID:  candidate.TriviumNodeID,
+				Score:          candidate.Score,
+				Source:         candidate.Source,
+				PrimaryPurpose: candidate.PrimaryPurpose,
+				Rank:           candidate.Rank,
+				HitCount:       candidate.HitCount,
+				DropReason:     "invalid_candidate",
 			})
 			report.DroppedCandidateCount++
 			continue
@@ -150,42 +158,50 @@ WHERE persona_id = ?
 		row, ok := mappedIDs[candidate.TriviumNodeID]
 		if !ok {
 			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
-				TriviumNodeID: candidate.TriviumNodeID,
-				Score:         candidate.Score,
-				Source:        candidate.Source,
-				Rank:          candidate.Rank,
-				DropReason:    "unmapped_trivium_node",
+				TriviumNodeID:  candidate.TriviumNodeID,
+				Score:          candidate.Score,
+				Source:         candidate.Source,
+				PrimaryPurpose: candidate.PrimaryPurpose,
+				Rank:           candidate.Rank,
+				HitCount:       candidate.HitCount,
+				DropReason:     "unmapped_trivium_node",
 			})
 			report.DroppedCandidateCount++
 			continue
 		}
 		if row.status != "indexed" {
 			report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
-				TriviumNodeID: candidate.TriviumNodeID,
-				SQLiteFactID:  row.factID,
-				Score:         candidate.Score,
-				Source:        candidate.Source,
-				Rank:          candidate.Rank,
-				DropReason:    "stale_mapping_status_" + row.status,
+				TriviumNodeID:  candidate.TriviumNodeID,
+				SQLiteFactID:   row.factID,
+				Score:          candidate.Score,
+				Source:         candidate.Source,
+				PrimaryPurpose: candidate.PrimaryPurpose,
+				Rank:           candidate.Rank,
+				HitCount:       candidate.HitCount,
+				DropReason:     "stale_mapping_status_" + row.status,
 			})
 			report.DroppedCandidateCount++
 			continue
 		}
 		report.Diagnostics = append(report.Diagnostics, MirrorCandidateDiagnostic{
-			TriviumNodeID: candidate.TriviumNodeID,
-			SQLiteFactID:  row.factID,
-			Score:         candidate.Score,
-			Source:        candidate.Source,
-			Rank:          candidate.Rank,
+			TriviumNodeID:  candidate.TriviumNodeID,
+			SQLiteFactID:   row.factID,
+			Score:          candidate.Score,
+			Source:         candidate.Source,
+			PrimaryPurpose: candidate.PrimaryPurpose,
+			Rank:           candidate.Rank,
+			HitCount:       candidate.HitCount,
 		})
 		existing, ok := best[row.factID]
 		if !ok || candidate.Rank < existing.Rank || (candidate.Rank == existing.Rank && candidate.Score > existing.Score) {
 			best[row.factID] = RetrievalMirrorCandidate{
-				FactID:        row.factID,
-				TriviumNodeID: candidate.TriviumNodeID,
-				Score:         candidate.Score,
-				Source:        candidate.Source,
-				Rank:          candidate.Rank,
+				FactID:         row.factID,
+				TriviumNodeID:  candidate.TriviumNodeID,
+				Score:          candidate.Score,
+				Source:         candidate.Source,
+				PrimaryPurpose: candidate.PrimaryPurpose,
+				Rank:           candidate.Rank,
+				HitCount:       candidate.HitCount,
 			}
 		}
 	}

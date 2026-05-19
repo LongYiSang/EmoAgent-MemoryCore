@@ -285,6 +285,8 @@ func qualityExpectationDetails(assertion Assertion) string {
 	appendString("related_historical_status", assertion.RelatedHistoricalStatus)
 	appendInt("source_ref_count", assertion.SourceRefCount)
 	appendString("status", assertion.Status)
+	appendString("source", assertion.Source)
+	appendString("fallback_reason", assertion.FallbackReason)
 	appendString("action", assertion.Action)
 	appendString("equals", assertion.Equals)
 	appendInt("at", assertion.At)
@@ -293,6 +295,16 @@ func qualityExpectationDetails(assertion Assertion) string {
 	if len(assertion.ForbiddenContains) > 0 {
 		details = append(details, "forbidden_contains="+strings.Join(assertion.ForbiddenContains, ","))
 	}
+	if len(assertion.QueryRewrites) > 0 {
+		details = append(details, "query_rewrites="+strings.Join(assertion.QueryRewrites, ","))
+	}
+	if len(assertion.ContextBlockHints) > 0 {
+		details = append(details, "context_block_hints="+strings.Join(assertion.ContextBlockHints, ","))
+	}
+	appendInt("query_count", assertion.QueryCount)
+	appendInt("raw_query_count", assertion.RawQueryCount)
+	appendInt("rewrite_query_count", assertion.RewriteQueryCount)
+	appendInt("anchor_query_count", assertion.AnchorQueryCount)
 	return strings.Join(details, " ")
 }
 
@@ -362,8 +374,23 @@ func writeQualityRetrievalResult(b *strings.Builder, step StepReport) {
 		b.WriteString("  selected: (nil retrieval)\n")
 		return
 	}
+	if step.FusionMode != "" {
+		fmt.Fprintf(b, "  fusion_mode: %s\n", step.FusionMode)
+	}
 	if retrieval.QueryAnalysis != nil {
 		writeQualityAnalysis(b, retrieval.QueryAnalysis)
+	}
+	if retrieval.Mirror != nil {
+		fmt.Fprintf(
+			b,
+			"  mirror: status=%s query_count=%d raw_query_count=%d rewrite_query_count=%d anchor_query_count=%d candidates=%d\n",
+			retrieval.Mirror.Status,
+			retrieval.Mirror.QueryCount,
+			retrieval.Mirror.RawQueryCount,
+			retrieval.Mirror.RewriteQueryCount,
+			retrieval.Mirror.AnchorQueryCount,
+			len(retrieval.Mirror.Candidates),
+		)
 	}
 	selected := qualitySelectedItems(retrieval)
 	if len(selected) == 0 {
@@ -397,6 +424,21 @@ func writeQualityAnalysis(b *strings.Builder, analysis *memorycore.QueryAnalysis
 	}
 	if analysis.EvidenceNeed != "" {
 		parts = append(parts, "evidence="+string(analysis.EvidenceNeed))
+	}
+	if analysis.Source != "" {
+		parts = append(parts, "source="+string(analysis.Source))
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.SemanticStatus != "" {
+		parts = append(parts, "semantic_status="+analysis.Diagnostics.SemanticStatus)
+	}
+	if analysis.Diagnostics != nil && analysis.Diagnostics.FallbackReason != "" {
+		parts = append(parts, "fallback="+analysis.Diagnostics.FallbackReason)
+	}
+	if len(analysis.QueryRewrites) > 0 {
+		parts = append(parts, "rewrites="+strings.Join(queryRewritesToStrings(analysis.QueryRewrites), ","))
+	}
+	if len(analysis.ContextBlockHints) > 0 {
+		parts = append(parts, "hints="+strings.Join(analysis.ContextBlockHints, ","))
 	}
 	if len(parts) == 0 {
 		return

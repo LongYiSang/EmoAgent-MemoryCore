@@ -579,6 +579,46 @@ func TestAssertionFailureIncludesExpectedAndActual(t *testing.T) {
 	}
 }
 
+func TestAssertionsAcceptLegacySemanticBlockAliases(t *testing.T) {
+	state := &runState{
+		caseID: "BLOCK_ALIAS",
+		steps: map[string]stepResult{
+			"retrieve": {
+				Retrieval: &memorycore.MemoryContext{
+					Blocks: []memorycore.MemoryBlock{{
+						BlockType: memorycore.MemoryBlockTypeRelevantCausalMemory,
+						Items: []memorycore.MemoryContextItem{{
+							NodeType: "fact",
+							NodeID:   "fact_cause",
+							Summary:  "用户因为早会而焦虑。",
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	err := state.assertBlockContains(Assertion{
+		Type:      "block_contains",
+		Step:      "retrieve",
+		BlockType: "causal_context",
+		NodeID:    "fact_cause",
+	}, true)
+	if err != nil {
+		t.Fatalf("assertBlockContains with legacy block alias: %v", err)
+	}
+
+	err = state.assertSelectedChainCorrect(Assertion{
+		Type:      "selected_chain_correct",
+		Step:      "retrieve",
+		BlockType: "causal_context",
+		NodeID:    "fact_cause",
+	})
+	if err != nil {
+		t.Fatalf("assertSelectedChainCorrect with legacy block alias: %v", err)
+	}
+}
+
 func TestReportDebugStringIncludesRetrievalDetails(t *testing.T) {
 	occurredAt := time.Date(2026, 4, 28, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	report := Report{

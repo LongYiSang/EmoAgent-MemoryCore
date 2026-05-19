@@ -10,6 +10,8 @@ from memorycore_sidecar.protocol import (
     ACTIVATION_RESPONSE_SCHEMA_VERSION,
     CANDIDATE_REQUEST_SCHEMA_VERSION,
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
+    QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+    QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION,
     RERANK_REQUEST_SCHEMA_VERSION,
     RERANK_RESPONSE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
@@ -216,7 +218,7 @@ def test_server_retrieval_candidates_returns_safe_cache_miss_degraded():
                 "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
                 "request_id": "cache-miss-1",
                 "persona_id": "default",
-                "query_text": "private query",
+                "query": {"raw_text": "private query"},
                 "limit": 5,
             },
         )
@@ -227,6 +229,36 @@ def test_server_retrieval_candidates_returns_safe_cache_miss_degraded():
         assert body["degraded"] is True
         assert body["fallback_reason"] == "embedding_cache_miss"
         assert "secret-cache-key" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_query_analysis_provider_none_returns_degraded_fallback():
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        body = _post_json(
+            base_url,
+            "/retrieval/query-analysis",
+            {
+                "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+                "request_id": "qa-1",
+                "persona_id": "default",
+                "query_text": "delete coffee memories",
+            },
+        )
+
+        assert body["schema_version"] == QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "qa-1"
+        assert body["status"] == "degraded"
+        assert body["degraded"] is True
+        assert body["fallback_reason"] == "provider_none"
+        assert body["analysis"]["signals"] == ["forget_delete"]
+        assert "signals" not in body
     finally:
         server.shutdown()
         server.server_close()

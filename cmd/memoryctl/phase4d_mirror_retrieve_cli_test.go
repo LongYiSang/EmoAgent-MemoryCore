@@ -38,17 +38,42 @@ VALUES ('map_cli_mirror', 'default', 'fact', ?, 5001, 'indexed')`, factID); err 
 			http.NotFound(w, r)
 			return
 		}
-		var request struct {
-			RequestID string `json:"request_id"`
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode candidate request: %v", err)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&request)
+		if request["schema_version"] != "memory_mirror_candidate_request.v0.2" {
+			t.Fatalf("candidate request schema = %v", request["schema_version"])
+		}
+		if _, ok := request["query_text"]; ok {
+			t.Fatalf("candidate request used legacy top-level query_text: %#v", request)
+		}
+		query, ok := request["query"].(map[string]any)
+		if !ok {
+			t.Fatalf("candidate request query = %#v, want object", request["query"])
+		}
+		if query["raw_text"] != "espresso-only" || query["normalized_text"] != "espresso-only" {
+			t.Fatalf("candidate query = %#v", query)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"schema_version": "memory_mirror_candidates.v0.1",
-			"request_id":     request.RequestID,
+			"schema_version": "memory_mirror_candidates.v0.2",
+			"request_id":     request["request_id"],
 			"candidates": []map[string]any{
-				{"trivium_node_id": 5001, "score": 0.88, "source": "fake_sparse"},
+				{
+					"trivium_node_id": 5001,
+					"fused_score":     0.88,
+					"primary_source":  "raw_dense",
+					"primary_purpose": "raw_query",
+					"rank":            1,
+					"hit_count":       1,
+				},
 			},
 			"degraded": false,
+			"diagnostics": map[string]any{
+				"query_count":            1,
+				"raw_query_count":        1,
+				"merged_candidate_count": 1,
+			},
 		})
 	}))
 	defer server.Close()

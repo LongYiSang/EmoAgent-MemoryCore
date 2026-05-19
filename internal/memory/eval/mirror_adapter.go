@@ -22,6 +22,7 @@ type evalMirrorAdapter struct {
 	rerankCalls              int
 	lastRerankRequest        memorycore.MirrorRerankRequest
 	nextID                   int64
+	fusionMode               string
 }
 
 func (a *evalMirrorAdapter) resetForStep() {
@@ -78,9 +79,63 @@ func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.M
 	if a.unavailable {
 		return nil, errors.New("sidecar unavailable")
 	}
+	rewriteCount := len(req.Query.QueryRewrites)
+	anchorCount := len(req.Query.SemanticAnchors)
+	queryCount := 0
+	rawQueryCount := 0
+	if req.QueryText != "" || req.Query.Raw != "" {
+		queryCount++
+		rawQueryCount = 1
+	}
+	queryCount += rewriteCount + anchorCount
+	candidates := append([]memorycore.MirrorCandidate(nil), a.candidates...)
+	if a.fusionMode == "max_only" && (rewriteCount > 0 || anchorCount > 0) {
+		candidates = maxOnlyMirrorCandidates(candidates)
+	}
 	return &memorycore.MirrorCandidateResult{
-		Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...),
+		Candidates: candidates,
+		Diagnostics: memorycore.MirrorCandidateSidecarDiagnostics{
+			QueryCount:           queryCount,
+			RawQueryCount:        rawQueryCount,
+			RewriteQueryCount:    rewriteCount,
+			AnchorQueryCount:     anchorCount,
+			MergedCandidateCount: len(candidates),
+			PerQuery:             evalMirrorPerQueryDiagnostics(req),
+		},
 	}, nil
+}
+
+func maxOnlyMirrorCandidates(candidates []memorycore.MirrorCandidate) []memorycore.MirrorCandidate {
+	filtered := make([]memorycore.MirrorCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		switch candidate.Source {
+		case "raw", "eval_raw":
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func evalMirrorPerQueryDiagnostics(req memorycore.MirrorCandidateRequest) []memorycore.MirrorCandidatePerQueryDiagnostic {
+	var out []memorycore.MirrorCandidatePerQueryDiagnostic
+	if req.QueryText != "" || req.Query.Raw != "" {
+		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{Source: "raw", Count: 1})
+	}
+	for _, rewrite := range req.Query.QueryRewrites {
+		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{
+			Source:  "rewrite",
+			Purpose: rewrite.Purpose,
+			Count:   1,
+		})
+	}
+	for _, anchor := range req.Query.SemanticAnchors {
+		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{
+			Source:  "semantic_anchor",
+			Purpose: anchor.AnchorType,
+			Count:   1,
+		})
+	}
+	return out
 }
 
 func (a *evalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {

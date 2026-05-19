@@ -37,6 +37,99 @@ func TestQueryAnalysisSignalsAccumulateCurrentRules(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSupportsSemanticFields(t *testing.T) {
+	analysis := QueryAnalysis{
+		Source:     QueryAnalysisSourceMerged,
+		Confidence: 0.81,
+		FieldConfidence: QueryAnalysisConfidence{
+			Overall:         0.81,
+			TimeMode:        0.75,
+			MemoryAbility:   0.82,
+			MemoryDomain:    0.8,
+			EvidenceNeed:    0.83,
+			EntityResolution: 0.78,
+		},
+		QueryRewrites: []QueryRewrite{{
+			Text:    "用户喜欢 Laufey 的来源",
+			Purpose: "provenance_dense",
+			Weight:  0.8,
+		}},
+		SemanticAnchors: []SemanticAnchor{{
+			Text:       "Laufey",
+			AnchorType: "entity_semantic",
+			EntityID:   "ent_laufey",
+			Weight:     0.65,
+			Confidence: 0.78,
+		}},
+		ContextBlockHints: []string{MemoryBlockTypeProvenanceMemory},
+		PolicyHints: QueryPolicyHints{
+			PreferEvidencedByLinks: true,
+			MaxHopsHint:            2,
+		},
+		Diagnostics: &QueryAnalysisDiagnostics{
+			SemanticStatus:      "ok",
+			SemanticProvider:    "sidecar",
+			SemanticModel:       "configured-model",
+			PromptVersion:       "semantic_query_analyzer.v0.1",
+			SemanticLatencyMs:   17,
+			RewriteCount:        1,
+			SemanticAnchorCount: 1,
+		},
+	}
+	if analysis.Source != QueryAnalysisSourceMerged ||
+		analysis.QueryRewrites[0].Purpose != "provenance_dense" ||
+		analysis.SemanticAnchors[0].AnchorType != "entity_semantic" ||
+		analysis.ContextBlockHints[0] != MemoryBlockTypeProvenanceMemory ||
+		!analysis.PolicyHints.PreferEvidencedByLinks ||
+		analysis.Diagnostics.RewriteCount != 1 {
+		t.Fatalf("semantic fields not retained: %#v", analysis)
+	}
+}
+
+func TestQueryAnalysisRelationshipAndForgetRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		query        string
+		wantDomain   MemoryDomain
+		wantAbility  MemoryAbility
+		wantEvidence EvidenceNeed
+		wantSignal   QuerySignal
+	}{
+		{
+			name:         "relationship arc",
+			query:        "我和 May 的关系变化轨迹是什么",
+			wantDomain:   MemoryDomainRelationship,
+			wantAbility:  MemoryAbilityRelationshipArc,
+			wantEvidence: EvidenceNeedRelationshipTimeline,
+			wantSignal:   QuerySignalRelationshipArc,
+		},
+		{
+			name:         "forget delete",
+			query:        "忘掉团子这条记忆",
+			wantDomain:   MemoryDomainRelationship,
+			wantAbility:  MemoryAbilityBoundary,
+			wantEvidence: EvidenceNeedExactObservation,
+			wantSignal:   QuerySignalForgetDelete,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := queryMemoryDomain(tt.query); got != tt.wantDomain {
+				t.Fatalf("queryMemoryDomain(%q) = %q, want %q", tt.query, got, tt.wantDomain)
+			}
+			if got := queryMemoryAbility(tt.query); got != tt.wantAbility {
+				t.Fatalf("queryMemoryAbility(%q) = %q, want %q", tt.query, got, tt.wantAbility)
+			}
+			if got := queryEvidenceNeed(tt.query); got != tt.wantEvidence {
+				t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", tt.query, got, tt.wantEvidence)
+			}
+			if !hasQuerySignal(QueryAnalysis{Signals: querySignals(tt.query, queryTimeMode(tt.query))}, tt.wantSignal) {
+				t.Fatalf("querySignals(%q) missing %q", tt.query, tt.wantSignal)
+			}
+		})
+	}
+}
+
 func TestQueryAnalysisProvenanceQuestionVariantsCurrentRules(t *testing.T) {
 	tests := []string{
 		"你是从哪里知道我喜欢Laufey的",

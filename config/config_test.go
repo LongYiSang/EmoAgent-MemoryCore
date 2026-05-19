@@ -37,6 +37,19 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.Retrieval.SensitivityPermission != memorycore.SensitivityNormal {
 		t.Fatalf("sensitivity default = %q", cfg.Retrieval.SensitivityPermission)
 	}
+	if cfg.QueryAnalysis.Provider != "none" ||
+		cfg.QueryAnalysis.Mode != "rule_only" ||
+		cfg.QueryAnalysis.SidecarURL != "http://127.0.0.1:8765" ||
+		cfg.QueryAnalysis.TimeoutMS != 1500 ||
+		cfg.QueryAnalysis.MinConfidenceToOverride != 0.72 ||
+		cfg.QueryAnalysis.MinEntitySemanticConfidence != 0.70 ||
+		cfg.QueryAnalysis.MaxQueryRewrites != 5 ||
+		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
+		cfg.QueryAnalysis.SemanticTotalEnergyCap != 5.0 ||
+		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum != 3.0 ||
+		cfg.QueryAnalysis.IncludeRationaleSummary {
+		t.Fatalf("query_analysis defaults = %#v", cfg.QueryAnalysis)
+	}
 	if cfg.Sidecar.Enabled || cfg.Sidecar.URL != "" || cfg.Sidecar.Adapter != "trivium" {
 		t.Fatalf("sidecar defaults = %#v", cfg.Sidecar)
 	}
@@ -67,6 +80,12 @@ core:
 retrieval:
   use_fts: false
   final_memory_count: 3
+query_analysis:
+  provider: sidecar
+  mode: semantic_on_low_confidence
+  timeout_ms: 1600
+  max_query_rewrites: 4
+  max_generated_dense_weight_sum: 2.5
 `)
 
 	cfg, err := memconfig.LoadYAML(path)
@@ -87,6 +106,14 @@ retrieval:
 	}
 	if cfg.Retrieval.ContextBudgetTokens != 1200 {
 		t.Fatalf("context budget = %d, want default 1200", cfg.Retrieval.ContextBudgetTokens)
+	}
+	if cfg.QueryAnalysis.Provider != "sidecar" ||
+		cfg.QueryAnalysis.Mode != "semantic_on_low_confidence" ||
+		cfg.QueryAnalysis.TimeoutMS != 1600 ||
+		cfg.QueryAnalysis.MaxQueryRewrites != 4 ||
+		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
+		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum != 2.5 {
+		t.Fatalf("query_analysis values = %#v", cfg.QueryAnalysis)
 	}
 	if len(cfg.Retention.Jobs) != 1 || cfg.Retention.Jobs[0] != string(memorycore.RetentionJobDailyTTLExpiry) {
 		t.Fatalf("retention jobs = %#v", cfg.Retention.Jobs)
@@ -207,6 +234,31 @@ func TestValidateRules(t *testing.T) {
 		cfg := memconfig.Default()
 		cfg.Retrieval.SensitivityPermission = "private"
 		requireErrorContains(t, cfg.Validate(), "retrieval.sensitivity_permission")
+	})
+
+	t.Run("invalid query analysis mode fails", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.QueryAnalysis.Mode = "semantic_when_bored"
+		requireErrorContains(t, cfg.Validate(), "query_analysis.mode")
+	})
+
+	t.Run("provider none requires rule only mode", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.QueryAnalysis.Provider = "none"
+		cfg.QueryAnalysis.Mode = "semantic_always"
+		requireErrorContains(t, cfg.Validate(), "query_analysis.mode")
+	})
+
+	t.Run("query analysis numeric limits must be positive", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.QueryAnalysis.TimeoutMS = 0
+		requireErrorContains(t, cfg.Validate(), "query_analysis.timeout_ms")
+	})
+
+	t.Run("query analysis generated dense weight sum must be positive", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum = 0
+		requireErrorContains(t, cfg.Validate(), "query_analysis.max_generated_dense_weight_sum")
 	})
 
 	t.Run("mirror requires sidecar", func(t *testing.T) {
@@ -356,7 +408,7 @@ func TestDocsDescriptorIsStableAndJSONSerializable(t *testing.T) {
 		t.Fatal("FieldDescriptors returned no fields")
 	}
 	markdown := memconfig.MarkdownReference()
-	for _, want := range []string{"core.db_path", "retrieval.context_budget_tokens", "sidecar.url", "sidecar.activation_max_wall_ms"} {
+	for _, want := range []string{"core.db_path", "retrieval.context_budget_tokens", "query_analysis.max_generated_dense_weight_sum", "sidecar.url", "sidecar.activation_max_wall_ms"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("markdown reference missing %q:\n%s", want, markdown)
 		}

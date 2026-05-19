@@ -14,13 +14,14 @@ import (
 const SchemaVersion = "memorycore.config.v0.1"
 
 type Config struct {
-	SchemaVersion string          `yaml:"schema_version" json:"schema_version"`
-	Enabled       bool            `yaml:"enabled" json:"enabled"`
-	Core          CoreConfig      `yaml:"core" json:"core"`
-	Retrieval     RetrievalConfig `yaml:"retrieval" json:"retrieval"`
-	Sidecar       SidecarConfig   `yaml:"sidecar" json:"sidecar"`
-	Retention     RetentionConfig `yaml:"retention" json:"retention"`
-	Mirror        MirrorConfig    `yaml:"mirror" json:"mirror"`
+	SchemaVersion string              `yaml:"schema_version" json:"schema_version"`
+	Enabled       bool                `yaml:"enabled" json:"enabled"`
+	Core          CoreConfig          `yaml:"core" json:"core"`
+	Retrieval     RetrievalConfig     `yaml:"retrieval" json:"retrieval"`
+	QueryAnalysis QueryAnalysisConfig `yaml:"query_analysis" json:"query_analysis"`
+	Sidecar       SidecarConfig       `yaml:"sidecar" json:"sidecar"`
+	Retention     RetentionConfig     `yaml:"retention" json:"retention"`
+	Mirror        MirrorConfig        `yaml:"mirror" json:"mirror"`
 }
 
 type CoreConfig struct {
@@ -38,6 +39,20 @@ type RetrievalConfig struct {
 	AllowHistorical       bool   `yaml:"allow_historical" json:"allow_historical"`
 	AllowDeepArchive      bool   `yaml:"allow_deep_archive" json:"allow_deep_archive"`
 	SensitivityPermission string `yaml:"sensitivity_permission" json:"sensitivity_permission"`
+}
+
+type QueryAnalysisConfig struct {
+	Provider                    string  `yaml:"provider" json:"provider"`
+	Mode                        string  `yaml:"mode" json:"mode"`
+	SidecarURL                  string  `yaml:"sidecar_url" json:"sidecar_url"`
+	TimeoutMS                   int     `yaml:"timeout_ms" json:"timeout_ms"`
+	MinConfidenceToOverride     float64 `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
+	MinEntitySemanticConfidence float64 `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	MaxQueryRewrites            int     `yaml:"max_query_rewrites" json:"max_query_rewrites"`
+	MaxSemanticAnchors          int     `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
+	SemanticTotalEnergyCap      float64 `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
+	MaxGeneratedDenseWeightSum  float64 `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
+	IncludeRationaleSummary     bool    `yaml:"include_rationale_summary" json:"include_rationale_summary"`
 }
 
 type SidecarConfig struct {
@@ -90,6 +105,19 @@ func Default() Config {
 			AllowDeepArchive:      false,
 			SensitivityPermission: memorycore.SensitivityNormal,
 		},
+		QueryAnalysis: QueryAnalysisConfig{
+			Provider:                    "none",
+			Mode:                        "rule_only",
+			SidecarURL:                  "http://127.0.0.1:8765",
+			TimeoutMS:                   1500,
+			MinConfidenceToOverride:     0.72,
+			MinEntitySemanticConfidence: 0.70,
+			MaxQueryRewrites:            5,
+			MaxSemanticAnchors:          8,
+			SemanticTotalEnergyCap:      5.0,
+			MaxGeneratedDenseWeightSum:  3.0,
+			IncludeRationaleSummary:     false,
+		},
 		Sidecar: SidecarConfig{
 			Enabled:                             false,
 			URL:                                 "",
@@ -135,6 +163,36 @@ func (c *Config) ApplyDefaults() {
 	}
 	if strings.TrimSpace(c.Retrieval.SensitivityPermission) == "" {
 		c.Retrieval.SensitivityPermission = defaults.Retrieval.SensitivityPermission
+	}
+	if strings.TrimSpace(c.QueryAnalysis.Provider) == "" {
+		c.QueryAnalysis.Provider = defaults.QueryAnalysis.Provider
+	}
+	if strings.TrimSpace(c.QueryAnalysis.Mode) == "" {
+		c.QueryAnalysis.Mode = defaults.QueryAnalysis.Mode
+	}
+	if strings.TrimSpace(c.QueryAnalysis.SidecarURL) == "" {
+		c.QueryAnalysis.SidecarURL = defaults.QueryAnalysis.SidecarURL
+	}
+	if c.QueryAnalysis.TimeoutMS == 0 {
+		c.QueryAnalysis.TimeoutMS = defaults.QueryAnalysis.TimeoutMS
+	}
+	if c.QueryAnalysis.MinConfidenceToOverride == 0 {
+		c.QueryAnalysis.MinConfidenceToOverride = defaults.QueryAnalysis.MinConfidenceToOverride
+	}
+	if c.QueryAnalysis.MinEntitySemanticConfidence == 0 {
+		c.QueryAnalysis.MinEntitySemanticConfidence = defaults.QueryAnalysis.MinEntitySemanticConfidence
+	}
+	if c.QueryAnalysis.MaxQueryRewrites == 0 {
+		c.QueryAnalysis.MaxQueryRewrites = defaults.QueryAnalysis.MaxQueryRewrites
+	}
+	if c.QueryAnalysis.MaxSemanticAnchors == 0 {
+		c.QueryAnalysis.MaxSemanticAnchors = defaults.QueryAnalysis.MaxSemanticAnchors
+	}
+	if c.QueryAnalysis.SemanticTotalEnergyCap == 0 {
+		c.QueryAnalysis.SemanticTotalEnergyCap = defaults.QueryAnalysis.SemanticTotalEnergyCap
+	}
+	if c.QueryAnalysis.MaxGeneratedDenseWeightSum == 0 {
+		c.QueryAnalysis.MaxGeneratedDenseWeightSum = defaults.QueryAnalysis.MaxGeneratedDenseWeightSum
 	}
 	if strings.TrimSpace(c.Sidecar.Adapter) == "" {
 		c.Sidecar.Adapter = defaults.Sidecar.Adapter
@@ -194,6 +252,45 @@ func (c Config) Validate() error {
 	case memorycore.SensitivityNormal, memorycore.SensitivitySensitive, memorycore.SensitivityHighlySensitive:
 	default:
 		return fmt.Errorf("retrieval.sensitivity_permission must be one of normal|sensitive|highly_sensitive")
+	}
+	switch c.QueryAnalysis.Provider {
+	case "none", "sidecar":
+	default:
+		return fmt.Errorf("query_analysis.provider must be one of none|sidecar")
+	}
+	switch c.QueryAnalysis.Mode {
+	case "rule_only", "semantic_always", "semantic_on_low_confidence":
+	default:
+		return fmt.Errorf("query_analysis.mode must be one of rule_only|semantic_always|semantic_on_low_confidence")
+	}
+	if c.QueryAnalysis.Provider == "none" && c.QueryAnalysis.Mode != "rule_only" {
+		return fmt.Errorf("query_analysis.mode must be rule_only when query_analysis.provider=none")
+	}
+	if c.QueryAnalysis.TimeoutMS <= 0 {
+		return fmt.Errorf("query_analysis.timeout_ms must be > 0")
+	}
+	if c.QueryAnalysis.MinConfidenceToOverride <= 0 || c.QueryAnalysis.MinConfidenceToOverride > 1 {
+		return fmt.Errorf("query_analysis.min_confidence_to_override must be within (0, 1]")
+	}
+	if c.QueryAnalysis.MinEntitySemanticConfidence <= 0 || c.QueryAnalysis.MinEntitySemanticConfidence > 1 {
+		return fmt.Errorf("query_analysis.min_entity_semantic_confidence must be within (0, 1]")
+	}
+	if c.QueryAnalysis.MaxQueryRewrites <= 0 {
+		return fmt.Errorf("query_analysis.max_query_rewrites must be > 0")
+	}
+	if c.QueryAnalysis.MaxSemanticAnchors <= 0 {
+		return fmt.Errorf("query_analysis.max_semantic_anchors must be > 0")
+	}
+	if c.QueryAnalysis.SemanticTotalEnergyCap <= 0 {
+		return fmt.Errorf("query_analysis.semantic_total_energy_cap must be > 0")
+	}
+	if c.QueryAnalysis.MaxGeneratedDenseWeightSum <= 0 {
+		return fmt.Errorf("query_analysis.max_generated_dense_weight_sum must be > 0")
+	}
+	if c.QueryAnalysis.Provider == "sidecar" {
+		if err := memorycore.ValidateSidecarLoopbackURL(c.QueryAnalysis.SidecarURL); err != nil {
+			return fmt.Errorf("query_analysis.sidecar_url must be a loopback HTTP URL: %w", err)
+		}
 	}
 	if c.Retrieval.UseMirror {
 		if !c.Sidecar.Enabled {
@@ -292,6 +389,19 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		AutoMigrate:   c.Core.AutoMigrate,
 		EnableFTS:     c.Core.EnableFTS,
 		MirrorAdapter: adapter,
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:                    memorycore.QueryAnalysisProvider(c.QueryAnalysis.Provider),
+			Mode:                        memorycore.QueryAnalysisMode(c.QueryAnalysis.Mode),
+			SidecarURL:                  c.QueryAnalysis.SidecarURL,
+			Timeout:                     time.Duration(c.QueryAnalysis.TimeoutMS) * time.Millisecond,
+			MinConfidenceToOverride:     c.QueryAnalysis.MinConfidenceToOverride,
+			MinEntitySemanticConfidence: c.QueryAnalysis.MinEntitySemanticConfidence,
+			MaxQueryRewrites:            c.QueryAnalysis.MaxQueryRewrites,
+			MaxSemanticAnchors:          c.QueryAnalysis.MaxSemanticAnchors,
+			SemanticTotalEnergyCap:      c.QueryAnalysis.SemanticTotalEnergyCap,
+			MaxGeneratedDenseWeightSum:  c.QueryAnalysis.MaxGeneratedDenseWeightSum,
+			IncludeRationaleSummary:     c.QueryAnalysis.IncludeRationaleSummary,
+		},
 		SidecarResilience: memorycore.SidecarResilienceOptions{
 			Timeouts: memorycore.SidecarStageTimeouts{
 				Total:      time.Duration(c.Sidecar.TotalTimeoutMS) * time.Millisecond,
@@ -379,13 +489,14 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 }
 
 type configPatch struct {
-	SchemaVersion *string         `yaml:"schema_version" json:"schema_version"`
-	Enabled       *bool           `yaml:"enabled" json:"enabled"`
-	Core          *corePatch      `yaml:"core" json:"core"`
-	Retrieval     *retrievalPatch `yaml:"retrieval" json:"retrieval"`
-	Sidecar       *sidecarPatch   `yaml:"sidecar" json:"sidecar"`
-	Retention     *retentionPatch `yaml:"retention" json:"retention"`
-	Mirror        *mirrorPatch    `yaml:"mirror" json:"mirror"`
+	SchemaVersion *string             `yaml:"schema_version" json:"schema_version"`
+	Enabled       *bool               `yaml:"enabled" json:"enabled"`
+	Core          *corePatch          `yaml:"core" json:"core"`
+	Retrieval     *retrievalPatch     `yaml:"retrieval" json:"retrieval"`
+	QueryAnalysis *queryAnalysisPatch `yaml:"query_analysis" json:"query_analysis"`
+	Sidecar       *sidecarPatch       `yaml:"sidecar" json:"sidecar"`
+	Retention     *retentionPatch     `yaml:"retention" json:"retention"`
+	Mirror        *mirrorPatch        `yaml:"mirror" json:"mirror"`
 }
 
 type corePatch struct {
@@ -403,6 +514,20 @@ type retrievalPatch struct {
 	AllowHistorical       *bool   `yaml:"allow_historical" json:"allow_historical"`
 	AllowDeepArchive      *bool   `yaml:"allow_deep_archive" json:"allow_deep_archive"`
 	SensitivityPermission *string `yaml:"sensitivity_permission" json:"sensitivity_permission"`
+}
+
+type queryAnalysisPatch struct {
+	Provider                    *string  `yaml:"provider" json:"provider"`
+	Mode                        *string  `yaml:"mode" json:"mode"`
+	SidecarURL                  *string  `yaml:"sidecar_url" json:"sidecar_url"`
+	TimeoutMS                   *int     `yaml:"timeout_ms" json:"timeout_ms"`
+	MinConfidenceToOverride     *float64 `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
+	MinEntitySemanticConfidence *float64 `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	MaxQueryRewrites            *int     `yaml:"max_query_rewrites" json:"max_query_rewrites"`
+	MaxSemanticAnchors          *int     `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
+	SemanticTotalEnergyCap      *float64 `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
+	MaxGeneratedDenseWeightSum  *float64 `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
+	IncludeRationaleSummary     *bool    `yaml:"include_rationale_summary" json:"include_rationale_summary"`
 }
 
 type sidecarPatch struct {
@@ -444,6 +569,9 @@ func applyConfigPatch(cfg *Config, patch configPatch) {
 	if patch.Retrieval != nil {
 		applyRetrievalPatch(&cfg.Retrieval, *patch.Retrieval)
 	}
+	if patch.QueryAnalysis != nil {
+		applyQueryAnalysisPatch(&cfg.QueryAnalysis, *patch.QueryAnalysis)
+	}
 	if patch.Sidecar != nil {
 		applySidecarPatch(&cfg.Sidecar, *patch.Sidecar)
 	}
@@ -452,6 +580,42 @@ func applyConfigPatch(cfg *Config, patch configPatch) {
 	}
 	if patch.Mirror != nil {
 		applyMirrorPatch(&cfg.Mirror, *patch.Mirror)
+	}
+}
+
+func applyQueryAnalysisPatch(cfg *QueryAnalysisConfig, patch queryAnalysisPatch) {
+	if patch.Provider != nil {
+		cfg.Provider = *patch.Provider
+	}
+	if patch.Mode != nil {
+		cfg.Mode = *patch.Mode
+	}
+	if patch.SidecarURL != nil {
+		cfg.SidecarURL = *patch.SidecarURL
+	}
+	if patch.TimeoutMS != nil {
+		cfg.TimeoutMS = *patch.TimeoutMS
+	}
+	if patch.MinConfidenceToOverride != nil {
+		cfg.MinConfidenceToOverride = *patch.MinConfidenceToOverride
+	}
+	if patch.MinEntitySemanticConfidence != nil {
+		cfg.MinEntitySemanticConfidence = *patch.MinEntitySemanticConfidence
+	}
+	if patch.MaxQueryRewrites != nil {
+		cfg.MaxQueryRewrites = *patch.MaxQueryRewrites
+	}
+	if patch.MaxSemanticAnchors != nil {
+		cfg.MaxSemanticAnchors = *patch.MaxSemanticAnchors
+	}
+	if patch.SemanticTotalEnergyCap != nil {
+		cfg.SemanticTotalEnergyCap = *patch.SemanticTotalEnergyCap
+	}
+	if patch.MaxGeneratedDenseWeightSum != nil {
+		cfg.MaxGeneratedDenseWeightSum = *patch.MaxGeneratedDenseWeightSum
+	}
+	if patch.IncludeRationaleSummary != nil {
+		cfg.IncludeRationaleSummary = *patch.IncludeRationaleSummary
 	}
 }
 
@@ -573,6 +737,19 @@ var configYAMLFields = yamlFieldSet{
 		"allow_historical":       nil,
 		"allow_deep_archive":     nil,
 		"sensitivity_permission": nil,
+	},
+	"query_analysis": {
+		"provider":                       nil,
+		"mode":                           nil,
+		"sidecar_url":                    nil,
+		"timeout_ms":                     nil,
+		"min_confidence_to_override":     nil,
+		"min_entity_semantic_confidence": nil,
+		"max_query_rewrites":             nil,
+		"max_semantic_anchors":           nil,
+		"semantic_total_energy_cap":      nil,
+		"max_generated_dense_weight_sum": nil,
+		"include_rationale_summary":      nil,
 	},
 	"sidecar": {
 		"enabled":                   nil,

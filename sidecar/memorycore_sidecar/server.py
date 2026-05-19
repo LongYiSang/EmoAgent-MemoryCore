@@ -11,6 +11,7 @@ from .adapters.base import MirrorAdapter
 from .adapters.fake import FakeMirrorAdapter
 from .adapters.trivium import TriviumAdapter
 from .config import load_config
+from .config import QueryAnalysisConfig
 from .embedding import EmbeddingCacheMiss
 from .protocol import (
     build_activation_result,
@@ -18,6 +19,7 @@ from .protocol import (
     build_candidates_result,
     build_eval_config_result,
     build_error,
+    build_query_analysis_result,
     build_rerank_result,
     build_result,
     parse_activation_request,
@@ -25,9 +27,11 @@ from .protocol import (
     parse_clear_namespace_payload,
     parse_eval_config_request,
     parse_operation_request,
+    parse_query_analysis_request,
     parse_rerank_request,
     ProtocolError,
 )
+from .query_analysis import analyze_query
 
 
 class AdapterClosingHTTPServer(ThreadingHTTPServer):
@@ -49,7 +53,17 @@ class AdapterClosingHTTPServer(ThreadingHTTPServer):
             super().server_close()
 
 
-def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> ThreadingHTTPServer:
+def create_server(
+    address: tuple[str, int],
+    adapter: MirrorAdapter,
+    query_analysis_config: QueryAnalysisConfig | None = None,
+) -> ThreadingHTTPServer:
+    if query_analysis_config is None:
+        adapter_config = getattr(adapter, "config", None)
+        query_analysis_config = getattr(adapter_config, "query_analysis", None)
+    if query_analysis_config is None:
+        query_analysis_config = load_config(env={}).query_analysis
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path != "/health":
@@ -97,6 +111,16 @@ def create_server(address: tuple[str, int], adapter: MirrorAdapter) -> Threading
                         HTTPStatus.OK,
                         build_candidates_result(
                             candidate_request["request_id"], **result
+                        ),
+                    )
+                    return
+                if self.path == "/retrieval/query-analysis":
+                    analysis_request = parse_query_analysis_request(request)
+                    analysis = analyze_query(analysis_request, query_analysis_config)
+                    self._write_json(
+                        HTTPStatus.OK,
+                        build_query_analysis_result(
+                            analysis_request["request_id"], analysis
                         ),
                     )
                     return
@@ -166,8 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
 
+    config = load_config(args.config)
     adapter = create_adapter(args.adapter, args.config)
-    server = create_server((args.host, args.port), adapter)
+    server = create_server((args.host, args.port), adapter, config.query_analysis)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

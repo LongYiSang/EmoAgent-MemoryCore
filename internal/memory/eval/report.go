@@ -16,10 +16,11 @@ type Report struct {
 }
 
 type StepReport struct {
-	ID        string
-	Action    string
-	QueryText string
-	Retrieval *memorycore.MemoryContext
+	ID         string
+	Action     string
+	QueryText  string
+	FusionMode string
+	Retrieval  *memorycore.MemoryContext
 }
 
 type AssertionResult struct {
@@ -103,6 +104,9 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 	if step.QueryText != "" {
 		fmt.Fprintf(b, " query=%q", step.QueryText)
 	}
+	if step.FusionMode != "" {
+		fmt.Fprintf(b, " fusion_mode=%s", step.FusionMode)
+	}
 	b.WriteString("\n")
 	if step.Retrieval == nil {
 		return
@@ -118,11 +122,29 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 			analysis.MemoryAbility,
 			analysis.EvidenceNeed,
 		)
+		if analysis.Source != "" {
+			fmt.Fprintf(b, " source=%s", analysis.Source)
+		}
 		if len(analysis.Signals) > 0 {
 			fmt.Fprintf(b, " signals=%s", strings.Join(querySignalsToStrings(analysis.Signals), ","))
 		}
 		if len(analysis.EntityMentions) > 0 {
 			fmt.Fprintf(b, " entities=%s", strings.Join(queryEntitiesToStrings(analysis.EntityMentions), ","))
+		}
+		if len(analysis.QueryRewrites) > 0 {
+			fmt.Fprintf(b, " rewrites=%s", strings.Join(queryRewritesToStrings(analysis.QueryRewrites), ","))
+		}
+		if len(analysis.ContextBlockHints) > 0 {
+			fmt.Fprintf(b, " hints=%s", strings.Join(analysis.ContextBlockHints, ","))
+		}
+		if analysis.Diagnostics != nil {
+			fmt.Fprintf(b, " semantic_status=%s", analysis.Diagnostics.SemanticStatus)
+			if analysis.Diagnostics.FallbackReason != "" {
+				fmt.Fprintf(b, " fallback=%s", analysis.Diagnostics.FallbackReason)
+			}
+			if analysis.Diagnostics.RewriteCount > 0 {
+				fmt.Fprintf(b, " rewrite_count=%d", analysis.Diagnostics.RewriteCount)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -140,7 +162,16 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 		}
 	}
 	if retrieval.Mirror != nil {
-		fmt.Fprintf(b, "    mirror status=%s candidates=%d\n", retrieval.Mirror.Status, len(retrieval.Mirror.Candidates))
+		fmt.Fprintf(
+			b,
+			"    mirror status=%s candidates=%d query_count=%d raw=%d rewrites=%d anchors=%d\n",
+			retrieval.Mirror.Status,
+			len(retrieval.Mirror.Candidates),
+			retrieval.Mirror.QueryCount,
+			retrieval.Mirror.RawQueryCount,
+			retrieval.Mirror.RewriteQueryCount,
+			retrieval.Mirror.AnchorQueryCount,
+		)
 	}
 	if retrieval.GraphActivation != nil {
 		fmt.Fprintf(b, "    graph_activation status=%s candidates=%d\n", retrieval.GraphActivation.Status, len(retrieval.GraphActivation.Candidates))
@@ -151,6 +182,14 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 	if retrieval.AnchorFusion != nil {
 		fmt.Fprintf(b, "    anchor_fusion seeds=%d\n", len(retrieval.AnchorFusion.Seeds))
 	}
+}
+
+func queryRewritesToStrings(values []memorycore.QueryRewrite) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value.Text)
+	}
+	return out
 }
 
 func writeItemDebug(b *strings.Builder, item memorycore.MemoryContextItem) {

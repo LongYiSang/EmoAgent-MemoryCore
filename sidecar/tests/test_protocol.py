@@ -142,13 +142,65 @@ def test_parse_clear_namespace_request_requires_persona_id():
         )
 
 
-def test_parse_candidate_request_requires_query_text():
+def test_parse_candidate_request_requires_query_raw_text():
     with pytest.raises(ProtocolError, match="query_text"):
         parse_candidate_request(
             {
                 "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
                 "request_id": "req-1",
                 "persona_id": "default",
+                "query": {},
+            }
+        )
+
+
+def test_parse_candidate_request_accepts_v02_query_and_bounds_generated_texts():
+    request = parse_candidate_request(
+        {
+            "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
+            "request_id": "req-1",
+            "persona_id": "default",
+            "limit": 3,
+            "debug_scores": True,
+            "query": {
+                "raw_text": "咖啡 偏好",
+                "normalized_text": "咖啡 偏好",
+                "time_mode": "recent",
+                "memory_domain": "preference",
+                "memory_ability": "recall",
+                "evidence_need": "medium",
+                "signals": ["preference"],
+                "rewrites": [
+                    {"text": f"rewrite {idx}", "weight": 2.0, "purpose": "semantic_recall"}
+                    for idx in range(7)
+                ],
+                "semantic_anchors": [
+                    {"text": f"anchor {idx}", "weight": 0.95, "purpose": "semantic_anchor"}
+                    for idx in range(10)
+                ],
+            },
+        }
+    )
+
+    assert request["schema_version"] == CANDIDATE_REQUEST_SCHEMA_VERSION
+    assert request["query"]["raw_text"] == "咖啡 偏好"
+    assert len(request["query"]["rewrites"]) == 5
+    assert all(item["weight"] == 0.9 for item in request["query"]["rewrites"])
+    assert len(request["query"]["semantic_anchors"]) == 8
+    assert all(item["weight"] == 0.65 for item in request["query"]["semantic_anchors"])
+    assert request["debug_scores"] is True
+
+
+def test_parse_candidate_request_rejects_non_boolean_debug_scores():
+    with pytest.raises(ProtocolError, match="debug_scores"):
+        parse_candidate_request(
+            {
+                "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
+                "request_id": "req-1",
+                "persona_id": "default",
+                "limit": 3,
+                "debug_scores": "false",
+                "query": {"raw_text": "coffee"},
             }
         )
 
@@ -483,7 +535,7 @@ def test_server_health_and_mirror_operation_roundtrip():
                         "schema_version": CANDIDATE_REQUEST_SCHEMA_VERSION,
                         "request_id": "req-1",
                         "persona_id": "default",
-                        "query_text": "coffee",
+                        "query": {"raw_text": "coffee"},
                         "limit": 8,
                     }
                 ).encode("utf-8"),
@@ -497,7 +549,14 @@ def test_server_health_and_mirror_operation_roundtrip():
         assert candidate_body["schema_version"] == CANDIDATE_RESPONSE_SCHEMA_VERSION
         assert candidate_body["request_id"] == "req-1"
         assert candidate_body["candidates"] == [
-            {"trivium_node_id": body["trivium_node_id"], "score": 1.0, "source": "fake_sparse"}
+            {
+                "trivium_node_id": body["trivium_node_id"],
+                "fused_score": 1.0,
+                "primary_source": "raw_dense",
+                "primary_purpose": "raw_query",
+                "rank": 1,
+                "hit_count": 1,
+            }
         ]
 
         rerank_response = urllib.request.urlopen(

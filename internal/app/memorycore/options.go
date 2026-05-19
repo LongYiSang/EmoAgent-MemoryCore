@@ -9,7 +9,38 @@ type Options struct {
 	EnableFTS         bool
 	Now               func() time.Time
 	MirrorAdapter     MirrorAdapter
+	QueryAnalysis     QueryAnalysisOptions
 	SidecarResilience SidecarResilienceOptions
+}
+
+type QueryAnalysisProvider string
+
+const (
+	QueryAnalysisProviderNone    QueryAnalysisProvider = ""
+	QueryAnalysisProviderSidecar QueryAnalysisProvider = "sidecar"
+)
+
+type QueryAnalysisMode string
+
+const (
+	QueryAnalysisModeRuleOnly                QueryAnalysisMode = ""
+	QueryAnalysisModeRuleOnlyExplicit        QueryAnalysisMode = "rule_only"
+	QueryAnalysisModeSemanticAlways          QueryAnalysisMode = "semantic_always"
+	QueryAnalysisModeSemanticOnLowConfidence QueryAnalysisMode = "semantic_on_low_confidence"
+)
+
+type QueryAnalysisOptions struct {
+	Provider                    QueryAnalysisProvider
+	Mode                        QueryAnalysisMode
+	SidecarURL                  string
+	Timeout                     time.Duration
+	MinConfidenceToOverride     float64
+	MinEntitySemanticConfidence float64
+	MaxQueryRewrites            int
+	MaxSemanticAnchors          int
+	SemanticTotalEnergyCap      float64
+	MaxGeneratedDenseWeightSum  float64
+	IncludeRationaleSummary     bool
 }
 
 type SidecarBreakerMode string

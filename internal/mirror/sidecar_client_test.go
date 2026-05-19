@@ -194,23 +194,52 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if request["schema_version"] != "memory_mirror_candidate_request.v0.1" {
+		if request["schema_version"] != "memory_mirror_candidate_request.v0.2" {
 			t.Fatalf("schema_version = %v", request["schema_version"])
 		}
 		if request["request_id"] == "" {
 			t.Fatalf("request_id is empty in request %#v", request)
 		}
+		if _, ok := request["query_text"]; ok {
+			t.Fatalf("request used legacy top-level query_text: %#v", request)
+		}
+		query, ok := request["query"].(map[string]any)
+		if !ok {
+			t.Fatalf("query = %#v, want object", request["query"])
+		}
+		if query["raw_text"] != "咖啡" || query["normalized_text"] != "咖啡" {
+			t.Fatalf("query text = raw:%#v normalized:%#v", query["raw_text"], query["normalized_text"])
+		}
+		if query["time_mode"] != "current" || query["memory_ability"] != "direct_fact" {
+			t.Fatalf("query analysis = %#v", query)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"schema_version": "memory_mirror_candidates.v0.1",
+			"schema_version": "memory_mirror_candidates.v0.2",
 			"request_id":     request["request_id"],
 			"candidates": []map[string]any{
-				{"trivium_node_id": 42, "score": 0.88, "source": "fake_sparse"},
+				{
+					"trivium_node_id": 42,
+					"fused_score":     0.88,
+					"primary_source":  "raw_dense",
+					"primary_purpose": "raw_query",
+					"rank":            3,
+					"hit_count":       2,
+					"score_breakdown": map[string]any{"provider_score": 0.12},
+				},
 			},
 			"degraded": false,
 			"embedding_cache_stats": map[string]any{
 				"hits":            2,
 				"misses":          1,
 				"live_call_count": 1,
+			},
+			"diagnostics": map[string]any{
+				"query_count":            1,
+				"raw_query_count":        1,
+				"rewrite_query_count":    0,
+				"anchor_query_count":     0,
+				"merged_candidate_count": 1,
+				"per_query_counts":       []map[string]any{{"source": "raw_dense", "purpose": "raw_query", "count": 1}},
 			},
 		})
 	}))
@@ -220,13 +249,27 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 	result, err := client.FindCandidates(context.Background(), CandidateRequest{
 		PersonaID: "default",
 		QueryText: "咖啡",
-		Limit:     8,
+		Query: QueryAnalysis{
+			Raw:           "咖啡",
+			Normalized:    "咖啡",
+			TimeMode:      "current",
+			MemoryDomain:  "user_profile_memory",
+			MemoryAbility: "direct_fact",
+			EvidenceNeed:  "exact_observation",
+		},
+		Limit: 8,
 	})
 	if err != nil {
 		t.Fatalf("find candidates: %v", err)
 	}
-	if len(result.Candidates) != 1 || result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 0.88 {
+	if len(result.Candidates) != 1 || result.Candidates[0].TriviumNodeID != 42 || result.Candidates[0].Score != 0.88 || result.Candidates[0].Source != "raw_dense" || result.Candidates[0].Rank != 3 {
 		t.Fatalf("candidates = %#v", result.Candidates)
+	}
+	if result.Candidates[0].PrimaryPurpose != "raw_query" || result.Candidates[0].HitCount != 2 {
+		t.Fatalf("candidate diagnostics = %#v", result.Candidates[0])
+	}
+	if result.Diagnostics.QueryCount != 1 || result.Diagnostics.MergedCandidateCount != 1 || len(result.Diagnostics.PerQuery) != 1 {
+		t.Fatalf("diagnostics = %#v", result.Diagnostics)
 	}
 	if result.EmbeddingCacheHits != 2 || result.EmbeddingCacheMisses != 1 || result.EmbeddingLiveCallCount != 1 {
 		t.Fatalf("embedding stats = hits:%d misses:%d live:%d", result.EmbeddingCacheHits, result.EmbeddingCacheMisses, result.EmbeddingLiveCallCount)
@@ -296,13 +339,13 @@ func TestSidecarClientFindCandidatesCapsAndSanitizesResponse(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"schema_version": "memory_mirror_candidates.v0.1",
+			"schema_version": "memory_mirror_candidates.v0.2",
 			"request_id":     request["request_id"],
 			"candidates": []map[string]any{
-				{"trivium_node_id": -1, "score": 0.99, "source": "bad_id"},
-				{"trivium_node_id": 42, "score": 1.25, "source": "high_score"},
-				{"trivium_node_id": 43, "score": -0.1, "source": "negative_score"},
-				{"trivium_node_id": 44, "score": 0.5, "source": "over_limit"},
+				{"trivium_node_id": -1, "fused_score": 0.99, "primary_source": "bad_id"},
+				{"trivium_node_id": 42, "fused_score": 1.25, "primary_source": "high_score"},
+				{"trivium_node_id": 43, "fused_score": -0.1, "primary_source": "negative_score"},
+				{"trivium_node_id": 44, "fused_score": 0.5, "primary_source": "over_limit"},
 			},
 			"degraded": false,
 		})
@@ -313,6 +356,7 @@ func TestSidecarClientFindCandidatesCapsAndSanitizesResponse(t *testing.T) {
 	result, err := client.FindCandidates(context.Background(), CandidateRequest{
 		PersonaID: "default",
 		QueryText: "咖啡",
+		Query:     QueryAnalysis{Raw: "咖啡", Normalized: "咖啡"},
 		Limit:     1,
 	})
 	if err != nil {

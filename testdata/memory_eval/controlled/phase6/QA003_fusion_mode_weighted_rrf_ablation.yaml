@@ -1,0 +1,154 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: QA003_fusion_mode_weighted_rrf_ablation
+description: Controlled ablation labels max-only baseline and weighted RRF support path for semantic rewrite plus mirror fusion.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: User likes latte and separately keeps a latte calibration checklist.
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: target
+    action: fact
+    fact:
+      id: fact_latte_preference
+      subject_entity_id: user
+      predicate: likes
+      object_literal: latte
+      content_summary: User likes latte.
+      source_episode_ids: [ep1]
+      confidence: explicit
+      importance: 0.8
+  - id: distractor
+    action: fact
+    fact:
+      id: fact_latte_calibration_checklist
+      subject_entity_id: user
+      predicate: keeps
+      object_literal: latte calibration checklist
+      content_summary: User keeps a latte calibration checklist.
+      source_episode_ids: [ep1]
+      confidence: explicit
+      importance: 0.6
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search:
+      persona_id: default
+  - id: baseline_max_only
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      model: stub-v1
+      prompt_version: phase6-eval
+      analysis:
+        time_mode: current
+        memory_domain: relationship_memory
+        memory_ability: direct_fact
+        evidence_need: exact_observation
+        confidence: 0.9
+        query_rewrites:
+          - text: latte calibration checklist
+            purpose: dense_recall
+            weight: 0.8
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $distractor.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $distractor.fact_id
+          node_type: fact
+          score: 0.97
+          source: eval_dense
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: latte calibration
+      fusion_mode: max_only
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 1
+  - id: weighted_rrf_support
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      model: stub-v1
+      prompt_version: phase6-eval
+      analysis:
+        time_mode: current
+        memory_domain: relationship_memory
+        memory_ability: direct_fact
+        evidence_need: exact_observation
+        confidence: 0.9
+        query_rewrites:
+          - text: latte calibration checklist
+            purpose: dense_recall
+            weight: 0.8
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $distractor.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $distractor.fact_id
+          node_type: fact
+          score: 0.97
+          source: eval_dense
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: latte calibration
+      fusion_mode: weighted_rrf_support
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 1
+assertions:
+  - type: memory_contains
+    name: max-only baseline selects lexical preference
+    step: baseline_max_only
+    node_id: $target.fact_id
+  - type: memory_not_contains
+    name: max-only baseline misses semantic calibration target
+    step: baseline_max_only
+    node_id: $distractor.fact_id
+  - type: mirror_candidate
+    name: max-only does not admit rewrite-only dense candidate
+    step: baseline_max_only
+    status: no_candidates
+    query_count: 2
+    raw_query_count: 1
+    rewrite_query_count: 1
+  - type: memory_contains
+    name: weighted RRF path selects semantic target
+    step: weighted_rrf_support
+    node_id: $distractor.fact_id
+  - type: mirror_candidate
+    name: weighted RRF admits rewrite dense candidate
+    step: weighted_rrf_support
+    status: used
+    query_count: 2
+    raw_query_count: 1
+    rewrite_query_count: 1
+  - type: anchor_fusion
+    name: weighted RRF includes dense mirror source
+    step: weighted_rrf_support
+    node_id: $distractor.fact_id
+    source: eval_dense
+    rank: 1
+  - type: ablation_improves
+    name: weighted support improves target recall over max-only baseline
+    step: weighted_rrf_support
+    compare_step: baseline_max_only
+    relevant_node_ids: [$distractor.fact_id]
+    at: 1

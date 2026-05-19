@@ -14,35 +14,40 @@ type MemoryDomain string
 type MemoryAbility string
 type EvidenceNeed string
 type QueryEntityMentionKind string
+type QueryAnalysisSource string
 
 const (
 	QueryTimeModeCurrent         QueryTimeMode = "current"
 	QueryTimeModeHistorical      QueryTimeMode = "historical"
 	QueryTimeModeBitemporalCheck QueryTimeMode = "bitemporal_check"
 
-	QuerySignalCausal      QuerySignal = "causal"
-	QuerySignalHistorical  QuerySignal = "historical"
-	QuerySignalProvenance  QuerySignal = "provenance"
-	QuerySignalSensitivity QuerySignal = "sensitivity"
-	QuerySignalDebug       QuerySignal = "debug"
+	QuerySignalCausal          QuerySignal = "causal"
+	QuerySignalHistorical      QuerySignal = "historical"
+	QuerySignalProvenance      QuerySignal = "provenance"
+	QuerySignalSensitivity     QuerySignal = "sensitivity"
+	QuerySignalDebug           QuerySignal = "debug"
+	QuerySignalPremiseCheck    QuerySignal = "premise_check"
+	QuerySignalRelationshipArc QuerySignal = "relationship_arc"
+	QuerySignalForgetDelete    QuerySignal = "forget_delete"
 
 	MemoryDomainRelationship          MemoryDomain = "relationship_memory"
 	MemoryDomainUserProfile           MemoryDomain = "user_profile_memory"
 	MemoryDomainWorkExperience        MemoryDomain = "work_experience_memory"
 	MemoryDomainEnvironmentExperience MemoryDomain = "environment_experience_memory"
 
-	MemoryAbilityDirectFact    MemoryAbility = "direct_fact"
-	MemoryAbilityCausalExplain MemoryAbility = "causal_explain"
-	MemoryAbilityHistorical    MemoryAbility = "historical"
-	MemoryAbilityProvenance    MemoryAbility = "provenance"
-	MemoryAbilityBoundary      MemoryAbility = "boundary"
-	MemoryAbilitySupportive    MemoryAbility = "supportive"
-	MemoryAbilityPlanning      MemoryAbility = "planning"
-	MemoryAbilityStaticState   MemoryAbility = "static_state"
-	MemoryAbilityDynamicState  MemoryAbility = "dynamic_state"
-	MemoryAbilityWorkflow      MemoryAbility = "workflow"
-	MemoryAbilityGotcha        MemoryAbility = "gotcha"
-	MemoryAbilityPremiseCheck  MemoryAbility = "premise_check"
+	MemoryAbilityDirectFact      MemoryAbility = "direct_fact"
+	MemoryAbilityCausalExplain   MemoryAbility = "causal_explain"
+	MemoryAbilityHistorical      MemoryAbility = "historical"
+	MemoryAbilityProvenance      MemoryAbility = "provenance"
+	MemoryAbilityBoundary        MemoryAbility = "boundary"
+	MemoryAbilitySupportive      MemoryAbility = "supportive"
+	MemoryAbilityPlanning        MemoryAbility = "planning"
+	MemoryAbilityStaticState     MemoryAbility = "static_state"
+	MemoryAbilityDynamicState    MemoryAbility = "dynamic_state"
+	MemoryAbilityWorkflow        MemoryAbility = "workflow"
+	MemoryAbilityGotcha          MemoryAbility = "gotcha"
+	MemoryAbilityPremiseCheck    MemoryAbility = "premise_check"
+	MemoryAbilityRelationshipArc MemoryAbility = "relationship_arc"
 
 	EvidenceNeedExactObservation      EvidenceNeed = "exact_observation"
 	EvidenceNeedStateTransition       EvidenceNeed = "state_transition"
@@ -50,21 +55,35 @@ const (
 	EvidenceNeedGotchaNote            EvidenceNeed = "gotcha_note"
 	EvidenceNeedPremiseCounterexample EvidenceNeed = "premise_counterexample"
 	EvidenceNeedProvenanceSource      EvidenceNeed = "provenance_source"
+	EvidenceNeedRelationshipTimeline  EvidenceNeed = "relationship_timeline"
 
 	QueryEntityMentionKindCanonical QueryEntityMentionKind = "canonical_name"
 	QueryEntityMentionKindAlias     QueryEntityMentionKind = "entity_alias"
+
+	QueryAnalysisSourceRuleOnly         QueryAnalysisSource = "rule_only"
+	QueryAnalysisSourceSemantic         QueryAnalysisSource = "semantic"
+	QueryAnalysisSourceMerged           QueryAnalysisSource = "merged"
+	QueryAnalysisSourceSemanticFallback QueryAnalysisSource = "semantic_failed_rule_fallback"
 )
 
 type QueryAnalysis struct {
-	Raw            string
-	Normalized     string
-	Terms          []string
-	EntityMentions []QueryEntityMention
-	TimeMode       QueryTimeMode
-	Signals        []QuerySignal
-	MemoryDomain   MemoryDomain
-	MemoryAbility  MemoryAbility
-	EvidenceNeed   EvidenceNeed
+	Raw               string
+	Normalized        string
+	Terms             []string
+	EntityMentions    []QueryEntityMention
+	TimeMode          QueryTimeMode
+	Signals           []QuerySignal
+	MemoryDomain      MemoryDomain
+	MemoryAbility     MemoryAbility
+	EvidenceNeed      EvidenceNeed
+	Source            QueryAnalysisSource
+	Confidence        float64
+	FieldConfidence   QueryAnalysisConfidence
+	QueryRewrites     []QueryRewrite
+	SemanticAnchors   []SemanticAnchor
+	ContextBlockHints []string
+	PolicyHints       QueryPolicyHints
+	Diagnostics       *QueryAnalysisDiagnostics
 }
 
 type QueryEntityMention struct {
@@ -73,6 +92,53 @@ type QueryEntityMention struct {
 	Alias         string
 	MatchText     string
 	MatchKind     QueryEntityMentionKind
+}
+
+type QueryRewrite struct {
+	Text    string
+	Purpose string
+	Weight  float64
+}
+
+type SemanticAnchor struct {
+	Text       string
+	AnchorType string
+	EntityID   string
+	Weight     float64
+	Confidence float64
+}
+
+type QueryAnalysisConfidence struct {
+	Overall          float64
+	TimeMode         float64
+	MemoryAbility    float64
+	MemoryDomain     float64
+	EvidenceNeed     float64
+	EntityResolution float64
+}
+
+type QueryPolicyHints struct {
+	PreferEvidencedByLinks bool
+	PreferSupersedesLinks  bool
+	PreferCausalLinks      bool
+	PreferCounterexamples  bool
+	PreferNarratives       bool
+	MaxHopsHint            int
+}
+
+type QueryAnalysisDiagnostics struct {
+	SemanticStatus      string
+	SemanticProvider    string
+	SemanticModel       string
+	PromptVersion       string
+	SemanticLatencyMs   int64
+	FallbackReason      string
+	RewriteCount        int
+	SemanticAnchorCount int
+}
+
+func (r *RetrievalRepository) AnalyzeQuery(ctx context.Context, personaID string, query string, policy RetrievalPolicy) (QueryAnalysis, error) {
+	return r.analyzeQuery(ctx, personaID, query, normalizeRetrievalPolicy(policy))
 }
 
 func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string, query string, policy RetrievalPolicy) (QueryAnalysis, error) {
@@ -86,6 +152,7 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 		MemoryDomain:  queryMemoryDomain(normalized),
 		MemoryAbility: queryMemoryAbility(normalized),
 		EvidenceNeed:  queryEvidenceNeed(normalized),
+		Source:        QueryAnalysisSourceRuleOnly,
 	}
 	analysis.Signals = querySignals(normalized, analysis.TimeMode)
 	mentions, err := r.matchEntityMentions(ctx, personaID, normalized, policy)
@@ -93,7 +160,24 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 		return QueryAnalysis{}, err
 	}
 	analysis.EntityMentions = mentions
+	analysis.Confidence = ruleConfidence(normalized, analysis)
+	analysis.FieldConfidence = ruleFieldConfidence(normalized, analysis)
 	return analysis, nil
+}
+
+func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
+	out := value
+	out.Terms = append([]string(nil), value.Terms...)
+	out.EntityMentions = append([]QueryEntityMention(nil), value.EntityMentions...)
+	out.Signals = append([]QuerySignal(nil), value.Signals...)
+	out.QueryRewrites = append([]QueryRewrite(nil), value.QueryRewrites...)
+	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
+	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
+	if value.Diagnostics != nil {
+		diagnostics := *value.Diagnostics
+		out.Diagnostics = &diagnostics
+	}
+	return out
 }
 
 func queryTimeMode(normalized string) QueryTimeMode {
@@ -117,8 +201,17 @@ func querySignals(normalized string, timeMode QueryTimeMode) []QuerySignal {
 	if containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance") {
 		signals = append(signals, QuerySignalProvenance)
 	}
+	if containsAny(normalized, "是不是", "是否", "真的", "一直", "always") {
+		signals = append(signals, QuerySignalPremiseCheck)
+	}
+	if hasRelationshipArcIntent(normalized) {
+		signals = append(signals, QuerySignalRelationshipArc)
+	}
 	if containsAny(normalized, "隐私", "敏感", "不要提", "别提", "不要再提", "忘掉", "边界", "boundary", "private", "sensitive") {
 		signals = append(signals, QuerySignalSensitivity)
+	}
+	if containsAny(normalized, "忘掉", "删除", "删掉", "清除", "不要再提", "forget", "delete", "remove") {
+		signals = append(signals, QuerySignalForgetDelete)
 	}
 	if containsAny(normalized, "debug", "调试", "diagnostic", "diagnostics", "诊断") {
 		signals = append(signals, QuerySignalDebug)
@@ -143,9 +236,11 @@ func queryMemoryAbility(normalized string) MemoryAbility {
 	switch {
 	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
 		return MemoryAbilityProvenance
+	case hasRelationshipArcIntent(normalized):
+		return MemoryAbilityRelationshipArc
 	case containsAny(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause", "caused", "because"):
 		return MemoryAbilityCausalExplain
-	case containsAny(normalized, "不要提", "别提", "不要再提", "边界", "不要提醒", "boundary"):
+	case containsAny(normalized, "忘掉", "删除", "删掉", "清除", "不要提", "别提", "不要再提", "边界", "不要提醒", "forget", "delete", "remove", "boundary"):
 		return MemoryAbilityBoundary
 	case containsAny(normalized, "支持", "安慰", "鼓励", "陪伴", "support", "supportive"):
 		return MemoryAbilitySupportive
@@ -172,6 +267,8 @@ func queryEvidenceNeed(normalized string) EvidenceNeed {
 	switch {
 	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
 		return EvidenceNeedProvenanceSource
+	case hasRelationshipArcIntent(normalized):
+		return EvidenceNeedRelationshipTimeline
 	case containsAny(normalized, "是不是", "是否", "真的", "一直", "always"):
 		return EvidenceNeedPremiseCounterexample
 	case containsAny(normalized, "坑", "踩坑", "失败", "报错", "错误", "故障", "gotcha", "pitfall", "failed", "failure", "error"):
@@ -203,6 +300,49 @@ func hasDynamicStateIntent(normalized string) bool {
 		"update",
 		"changed",
 	)
+}
+
+func hasRelationshipArcIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"关系变化",
+		"关系轨迹",
+		"关系时间线",
+		"关系发展",
+		"relationship arc",
+		"relationship timeline",
+	)
+}
+
+func ruleConfidence(normalized string, analysis QueryAnalysis) float64 {
+	switch {
+	case normalized == "":
+		return 0
+	case analysis.MemoryAbility != MemoryAbilityDirectFact:
+		return 0.78
+	case len(analysis.EntityMentions) > 0:
+		return 0.74
+	case len(analysis.Signals) > 0:
+		return 0.68
+	default:
+		return 0.42
+	}
+}
+
+func ruleFieldConfidence(normalized string, analysis QueryAnalysis) QueryAnalysisConfidence {
+	confidence := ruleConfidence(normalized, analysis)
+	entityResolution := 0.0
+	if len(analysis.EntityMentions) > 0 {
+		entityResolution = 0.74
+	}
+	return QueryAnalysisConfidence{
+		Overall:          confidence,
+		TimeMode:         confidence,
+		MemoryAbility:    confidence,
+		MemoryDomain:     confidence,
+		EvidenceNeed:     confidence,
+		EntityResolution: entityResolution,
+	}
 }
 
 func hasStaticStateIntent(normalized string) bool {

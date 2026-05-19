@@ -13,17 +13,32 @@ const maxRerankQueryTextRune = 160
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	policy := req.Policy
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+	analysis, err := s.analyzeRetrievalQuery(ctx, QueryAnalysisRequest{
+		PersonaID: personaID,
+		SessionID: req.SessionID,
+		QueryText: req.QueryText,
+		Now:       now,
+		Policy:    policy,
+	})
+	if err != nil {
+		return nil, err
+	}
 	sidecarCtx, sidecarCancel := sidecarTotalContext(ctx, s.sidecarResilience.Timeouts.Total)
 	defer sidecarCancel()
-	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, policy)
+	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, analysis, policy)
 	if err != nil {
 		return nil, err
 	}
 	prepared, err := s.retrieve.Prepare(ctx, memsqlite.RetrievalRequest{
-		PersonaID: personaID,
-		SessionID: req.SessionID,
-		QueryText: req.QueryText,
-		Now:       req.Now,
+		PersonaID:                personaID,
+		SessionID:                req.SessionID,
+		QueryText:                req.QueryText,
+		Now:                      now,
+		PrecomputedQueryAnalysis: &analysis,
 		Policy: memsqlite.RetrievalPolicy{
 			SensitivityPermission: policy.SensitivityPermission,
 			AllowHistorical:       policy.AllowHistorical,
@@ -62,7 +77,14 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	return memoryContextFromStore(result), nil
 }
 
-func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, queryText string, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
+func (s *service) analyzeRetrievalQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error) {
+	if s.queryAnalyzer != nil {
+		return s.queryAnalyzer.AnalyzeQuery(ctx, req)
+	}
+	return s.retrieve.AnalyzeQuery(ctx, req.PersonaID, req.QueryText, retrievalPolicyToStore(req.Policy))
+}
+
+func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, queryText string, analysis memsqlite.QueryAnalysis, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
 	diagnostics := &memsqlite.MirrorDiagnostics{Status: "disabled_by_config"}
 	if !policy.UseMirror {
 		return nil, diagnostics, nil
@@ -102,6 +124,7 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	result, err := candidateAdapter.FindCandidates(stageCtx, MirrorCandidateRequest{
 		PersonaID: personaID,
 		QueryText: queryText,
+		Query:     *queryAnalysisFromStore(&analysis),
 		Limit:     limit * 4,
 	})
 	diagnostics.LatencyMs = time.Since(started).Milliseconds()
@@ -119,6 +142,12 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	diagnostics.EmbeddingCacheHits = result.EmbeddingCacheHits
 	diagnostics.EmbeddingCacheMisses = result.EmbeddingCacheMisses
 	diagnostics.EmbeddingLiveCallCount = result.EmbeddingLiveCallCount
+	diagnostics.QueryCount = result.Diagnostics.QueryCount
+	diagnostics.RawQueryCount = result.Diagnostics.RawQueryCount
+	diagnostics.RewriteQueryCount = result.Diagnostics.RewriteQueryCount
+	diagnostics.AnchorQueryCount = result.Diagnostics.AnchorQueryCount
+	diagnostics.MergedCandidateCount = result.Diagnostics.MergedCandidateCount
+	diagnostics.PerQuery = mirrorPerQueryDiagnosticsToStore(result.Diagnostics.PerQuery)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
 		diagnostics.Degraded = true
@@ -133,17 +162,44 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 		return nil, diagnostics, nil
 	}
 	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
+	var operationTargetDiagnostics []memsqlite.MirrorCandidateDiagnostic
 	for idx, candidate := range result.Candidates {
 		rank := candidate.Rank
 		if rank <= 0 {
 			rank = idx + 1
 		}
-		candidates = append(candidates, memsqlite.MirrorCandidate{
-			TriviumNodeID: candidate.TriviumNodeID,
-			Score:         candidate.Score,
-			Source:        candidate.Source,
-			Rank:          rank,
-		})
+		storeCandidate := memsqlite.MirrorCandidate{
+			TriviumNodeID:  candidate.TriviumNodeID,
+			Score:          candidate.Score,
+			Source:         candidate.Source,
+			PrimaryPurpose: candidate.PrimaryPurpose,
+			Rank:           rank,
+			HitCount:       candidate.HitCount,
+		}
+		if isForgetDeleteMirrorCandidate(analysis) {
+			operationTargetDiagnostics = append(operationTargetDiagnostics, memsqlite.MirrorCandidateDiagnostic{
+				TriviumNodeID:  storeCandidate.TriviumNodeID,
+				Score:          storeCandidate.Score,
+				Source:         storeCandidate.Source,
+				PrimaryPurpose: storeCandidate.PrimaryPurpose,
+				Rank:           storeCandidate.Rank,
+				HitCount:       storeCandidate.HitCount,
+				DropReason:     forgetDeleteMirrorDropReason(candidate),
+			})
+			continue
+		}
+		candidates = append(candidates, storeCandidate)
+	}
+	if len(candidates) == 0 {
+		diagnostics.Candidates = operationTargetDiagnostics
+		diagnostics.DroppedCandidateCount = len(operationTargetDiagnostics)
+		if len(operationTargetDiagnostics) > 0 {
+			diagnostics.Status = "forget_delete_not_context"
+		} else {
+			diagnostics.Status = "no_candidates"
+		}
+		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
+		return nil, diagnostics, nil
 	}
 	report, err := s.mirrorMap.MapFactCandidatesWithDiagnostics(ctx, personaID, candidates)
 	if err != nil {
@@ -151,16 +207,19 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	}
 	diagnostics.SidecarCandidateCount = report.SidecarCandidateCount
 	diagnostics.MappedCandidateCount = report.MappedCandidateCount
-	diagnostics.DroppedCandidateCount = report.DroppedCandidateCount
-	diagnostics.Candidates = make([]memsqlite.MirrorCandidateDiagnostic, 0, len(report.Diagnostics))
+	diagnostics.DroppedCandidateCount = report.DroppedCandidateCount + len(operationTargetDiagnostics)
+	diagnostics.Candidates = make([]memsqlite.MirrorCandidateDiagnostic, 0, len(operationTargetDiagnostics)+len(report.Diagnostics))
+	diagnostics.Candidates = append(diagnostics.Candidates, operationTargetDiagnostics...)
 	for _, item := range report.Diagnostics {
 		diagnostics.Candidates = append(diagnostics.Candidates, memsqlite.MirrorCandidateDiagnostic{
-			TriviumNodeID: item.TriviumNodeID,
-			SQLiteFactID:  item.SQLiteFactID,
-			Score:         item.Score,
-			Source:        item.Source,
-			Rank:          item.Rank,
-			DropReason:    item.DropReason,
+			TriviumNodeID:  item.TriviumNodeID,
+			SQLiteFactID:   item.SQLiteFactID,
+			Score:          item.Score,
+			Source:         item.Source,
+			PrimaryPurpose: item.PrimaryPurpose,
+			Rank:           item.Rank,
+			HitCount:       item.HitCount,
+			DropReason:     item.DropReason,
 		})
 	}
 	if diagnostics.MappedCandidateCount == 0 && diagnostics.SidecarCandidateCount > 0 {
@@ -175,6 +234,10 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 func (s *service) graphActivationCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval) ([]memsqlite.RetrievalActivationCandidate, *memsqlite.GraphActivationDiagnostics, error) {
 	diagnostics := &memsqlite.GraphActivationDiagnostics{Status: "disabled_by_config"}
 	if !prepared.Policy.UseMirror {
+		return nil, diagnostics, nil
+	}
+	if hasStoreQuerySignal(prepared.Query.Signals, memsqlite.QuerySignalForgetDelete) {
+		diagnostics.Status = "skipped_for_forget_delete"
 		return nil, diagnostics, nil
 	}
 	diagnostics.Status = "persona_not_ready"
@@ -357,6 +420,29 @@ func safeRerankQueryText(query memsqlite.QueryAnalysis) string {
 		parts = append(parts, "signals="+strings.Join(signals, ","))
 	}
 	return strings.Join(parts, " ")
+}
+
+func isForgetDeleteMirrorCandidate(analysis memsqlite.QueryAnalysis) bool {
+	return hasStoreQuerySignal(analysis.Signals, memsqlite.QuerySignalForgetDelete)
+}
+
+func forgetDeleteMirrorDropReason(candidate MirrorCandidate) string {
+	if strings.TrimSpace(candidate.PrimaryPurpose) == "operation_target" {
+		return "operation_target_not_context"
+	}
+	return "forget_delete_not_context"
+}
+
+func mirrorPerQueryDiagnosticsToStore(values []MirrorCandidatePerQueryDiagnostic) []memsqlite.MirrorCandidatePerQueryDiagnostic {
+	result := make([]memsqlite.MirrorCandidatePerQueryDiagnostic, 0, len(values))
+	for _, value := range values {
+		result = append(result, memsqlite.MirrorCandidatePerQueryDiagnostic{
+			Source:  value.Source,
+			Purpose: value.Purpose,
+			Count:   value.Count,
+		})
+	}
+	return result
 }
 
 func boundedRerankQueryText(value string) string {

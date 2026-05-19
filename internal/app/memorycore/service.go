@@ -40,6 +40,7 @@ type service struct {
 	facts             *memsqlite.ConsolidationRepository
 	search            *memsqlite.SearchRepository
 	retrieve          *memsqlite.RetrievalRepository
+	queryAnalyzer     QueryAnalyzer
 	retention         *memsqlite.RetentionRepository
 	compress          *memsqlite.CompressionRepository
 	forget            *memsqlite.ForgetRepository
@@ -77,6 +78,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	}
 	resilience := normalizeSidecarResilienceOptions(opts.SidecarResilience)
 	sqlDB := db.SQLDB()
+	retrieve := memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now)
 	return &service{
 		db:                db,
 		sqlDB:             sqlDB,
@@ -85,7 +87,8 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		entities:          memsqlite.NewEntityRepository(sqlDB),
 		facts:             memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
 		search:            memsqlite.NewSearchRepository(sqlDB),
-		retrieve:          memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now),
+		retrieve:          retrieve,
+		queryAnalyzer:     newQueryAnalysisPipeline(storeRuleQueryAnalyzer{repo: retrieve}, newSemanticQueryAnalyzerFromOptions(opts.QueryAnalysis), opts.QueryAnalysis),
 		retention:         memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
 		compress:          memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
 		forget:            memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),

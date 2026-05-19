@@ -19,8 +19,8 @@ const (
 	sidecarResponseSchemaVersion           = "memory_mirror_operation_result.v0.1"
 	sidecarClearRequestSchemaVersion       = "memory_mirror_clear_namespace.v0.1"
 	sidecarClearResponseSchemaVersion      = "memory_mirror_clear_namespace_result.v0.1"
-	sidecarCandidateRequestSchemaVersion   = "memory_mirror_candidate_request.v0.1"
-	sidecarCandidateResponseSchemaVersion  = "memory_mirror_candidates.v0.1"
+	sidecarCandidateRequestSchemaVersion   = "memory_mirror_candidate_request.v0.2"
+	sidecarCandidateResponseSchemaVersion  = "memory_mirror_candidates.v0.2"
 	sidecarActivationRequestSchemaVersion  = "memory_graph_activation_request.v0.1"
 	sidecarActivationResponseSchemaVersion = "memory_graph_activation_result.v0.1"
 	sidecarRerankRequestSchemaVersion      = "memory_rerank_request.v0.1"
@@ -45,13 +45,32 @@ type SidecarClient struct {
 type CandidateRequest struct {
 	PersonaID string
 	QueryText string
+	Query     QueryAnalysis
 	Limit     int
 }
 
 type Candidate struct {
-	TriviumNodeID int64
-	Score         float64
-	Source        string
+	TriviumNodeID  int64
+	Score          float64
+	Source         string
+	PrimaryPurpose string
+	Rank           int
+	HitCount       int
+}
+
+type CandidateDiagnostics struct {
+	QueryCount           int
+	RawQueryCount        int
+	RewriteQueryCount    int
+	AnchorQueryCount     int
+	MergedCandidateCount int
+	PerQuery             []CandidatePerQueryDiagnostics
+}
+
+type CandidatePerQueryDiagnostics struct {
+	Source  string
+	Purpose string
+	Count   int
 }
 
 type CandidateResult struct {
@@ -61,6 +80,7 @@ type CandidateResult struct {
 	EmbeddingCacheHits     int
 	EmbeddingCacheMisses   int
 	EmbeddingLiveCallCount int
+	Diagnostics            CandidateDiagnostics
 }
 
 type ActivationRequest struct {
@@ -380,8 +400,9 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 		"schema_version": sidecarCandidateRequestSchemaVersion,
 		"request_id":     requestID,
 		"persona_id":     strings.TrimSpace(request.PersonaID),
-		"query_text":     request.QueryText,
+		"query":          candidateQueryJSON(request.Query, request.QueryText),
 		"limit":          request.Limit,
+		"debug_scores":   true,
 	})
 	if err != nil {
 		return CandidateResult{}, err
@@ -421,6 +442,7 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 		EmbeddingCacheHits:     response.EmbeddingCacheStats.Hits,
 		EmbeddingCacheMisses:   response.EmbeddingCacheStats.Misses,
 		EmbeddingLiveCallCount: response.EmbeddingCacheStats.LiveCallCount,
+		Diagnostics:            candidateDiagnosticsFromResponse(response.Diagnostics),
 	}
 	limit := request.Limit
 	if limit <= 0 {
@@ -430,14 +452,17 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 		if len(result.Candidates) >= limit {
 			break
 		}
-		score, ok := normalizedCandidateScore(candidate.Score)
+		score, ok := normalizedCandidateScore(candidate.FusedScore)
 		if candidate.TriviumNodeID <= 0 || !ok {
 			continue
 		}
 		result.Candidates = append(result.Candidates, Candidate{
-			TriviumNodeID: candidate.TriviumNodeID,
-			Score:         score,
-			Source:        candidate.Source,
+			TriviumNodeID:  candidate.TriviumNodeID,
+			Score:          score,
+			Source:         strings.TrimSpace(candidate.PrimarySource),
+			PrimaryPurpose: strings.TrimSpace(candidate.PrimaryPurpose),
+			Rank:           candidate.Rank,
+			HitCount:       candidate.HitCount,
 		})
 	}
 	return result, nil
@@ -631,9 +656,12 @@ type sidecarCandidateResponse struct {
 	SchemaVersion string `json:"schema_version"`
 	RequestID     string `json:"request_id,omitempty"`
 	Candidates    []struct {
-		TriviumNodeID int64   `json:"trivium_node_id"`
-		Score         float64 `json:"score"`
-		Source        string  `json:"source"`
+		TriviumNodeID  int64   `json:"trivium_node_id"`
+		FusedScore     float64 `json:"fused_score"`
+		PrimarySource  string  `json:"primary_source"`
+		PrimaryPurpose string  `json:"primary_purpose"`
+		Rank           int     `json:"rank,omitempty"`
+		HitCount       int     `json:"hit_count,omitempty"`
 	} `json:"candidates"`
 	Degraded            bool   `json:"degraded"`
 	FallbackReason      string `json:"fallback_reason,omitempty"`
@@ -642,6 +670,20 @@ type sidecarCandidateResponse struct {
 		Misses        int `json:"misses"`
 		LiveCallCount int `json:"live_call_count"`
 	} `json:"embedding_cache_stats"`
+	Diagnostics sidecarCandidateDiagnostics `json:"diagnostics,omitempty"`
+}
+
+type sidecarCandidateDiagnostics struct {
+	QueryCount           int `json:"query_count,omitempty"`
+	RawQueryCount        int `json:"raw_query_count,omitempty"`
+	RewriteQueryCount    int `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount     int `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount int `json:"merged_candidate_count,omitempty"`
+	PerQuery             []struct {
+		Source  string `json:"source,omitempty"`
+		Purpose string `json:"purpose,omitempty"`
+		Count   int    `json:"count,omitempty"`
+	} `json:"per_query_counts,omitempty"`
 }
 
 type sidecarActivationResponse struct {
@@ -779,10 +821,14 @@ func operationRequestID(operation Operation, node any, edge any) string {
 }
 
 func candidateRequestID(request CandidateRequest) string {
+	queryText := request.Query.Raw
+	if strings.TrimSpace(queryText) == "" {
+		queryText = request.QueryText
+	}
 	return strings.Join([]string{
 		"candidates",
 		strings.TrimSpace(request.PersonaID),
-		strings.TrimSpace(request.QueryText),
+		strings.TrimSpace(queryText),
 		fmt.Sprintf("%d", request.Limit),
 	}, ":")
 }
@@ -836,6 +882,93 @@ func rerankCandidatesJSON(candidates []RerankCandidate) []map[string]any {
 		})
 	}
 	return result
+}
+
+func candidateQueryJSON(query QueryAnalysis, fallbackRaw string) map[string]any {
+	raw := strings.TrimSpace(query.Raw)
+	if raw == "" {
+		raw = strings.TrimSpace(fallbackRaw)
+	}
+	normalized := strings.TrimSpace(query.Normalized)
+	if normalized == "" {
+		normalized = strings.ToLower(raw)
+	}
+	item := map[string]any{
+		"raw_text":         raw,
+		"normalized_text":  normalized,
+		"time_mode":        strings.TrimSpace(query.TimeMode),
+		"memory_domain":    strings.TrimSpace(query.MemoryDomain),
+		"memory_ability":   strings.TrimSpace(query.MemoryAbility),
+		"evidence_need":    strings.TrimSpace(query.EvidenceNeed),
+		"signals":          stringListJSON(query.Signals),
+		"rewrites":         queryRewritesJSON(query.QueryRewrites),
+		"semantic_anchors": semanticAnchorsJSON(query.SemanticAnchors),
+	}
+	return item
+}
+
+func stringListJSON(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func queryRewritesJSON(values []QueryRewrite) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(value.Text)
+		if text == "" {
+			continue
+		}
+		result = append(result, map[string]any{
+			"text":    text,
+			"purpose": strings.TrimSpace(value.Purpose),
+			"weight":  value.Weight,
+		})
+	}
+	return result
+}
+
+func semanticAnchorsJSON(values []SemanticAnchor) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(value.Text)
+		if text == "" {
+			continue
+		}
+		result = append(result, map[string]any{
+			"text":        text,
+			"anchor_type": strings.TrimSpace(value.AnchorType),
+			"entity_id":   strings.TrimSpace(value.EntityID),
+			"weight":      value.Weight,
+			"confidence":  value.Confidence,
+		})
+	}
+	return result
+}
+
+func candidateDiagnosticsFromResponse(value sidecarCandidateDiagnostics) CandidateDiagnostics {
+	out := CandidateDiagnostics{
+		QueryCount:           value.QueryCount,
+		RawQueryCount:        value.RawQueryCount,
+		RewriteQueryCount:    value.RewriteQueryCount,
+		AnchorQueryCount:     value.AnchorQueryCount,
+		MergedCandidateCount: value.MergedCandidateCount,
+		PerQuery:             make([]CandidatePerQueryDiagnostics, 0, len(value.PerQuery)),
+	}
+	for _, item := range value.PerQuery {
+		out.PerQuery = append(out.PerQuery, CandidatePerQueryDiagnostics{
+			Source:  strings.TrimSpace(item.Source),
+			Purpose: strings.TrimSpace(item.Purpose),
+			Count:   item.Count,
+		})
+	}
+	return out
 }
 
 func sanitizeDebugReason(value string, limit int) string {

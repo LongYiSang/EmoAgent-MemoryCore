@@ -282,7 +282,7 @@ func TestRetrievalBatchPrefetchGoldenBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompleteFinal: %v", err)
 	}
-	if len(result.Blocks) != 1 || result.Blocks[0].BlockType != MemoryBlockTypeCausalContext {
+	if len(result.Blocks) != 1 || result.Blocks[0].BlockType != MemoryBlockTypeRelevantCausalMemory {
 		t.Fatalf("blocks = %#v, want one causal block", result.Blocks)
 	}
 	if got := prefetchContextItemIDs(result.Blocks[0].Items); !reflect.DeepEqual(got, []string{"fact_visible_batch", "fact_pinned_batch"}) {

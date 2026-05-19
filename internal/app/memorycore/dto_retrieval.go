@@ -7,12 +7,19 @@ import (
 )
 
 const (
-	MemoryBlockTypeFacts             = "facts"
-	MemoryBlockTypeCausalContext     = "causal_context"
-	MemoryBlockTypeHistoricalContext = "historical_context"
-	MemoryBlockTypeProvenanceContext = "provenance_context"
-	MemoryBlockTypeSupportiveContext = "supportive_context"
-	MemoryBlockTypeExperienceContext = "experience_context"
+	MemoryBlockTypeFacts                      = "facts"
+	MemoryBlockTypeRelevantCausalMemory       = "relevant_causal_memory"
+	MemoryBlockTypeHistoricalTransitionMemory = "historical_transition_memory"
+	MemoryBlockTypeProvenanceMemory           = "provenance_memory"
+	MemoryBlockTypePremiseCheckMemory         = "premise_check_memory"
+	MemoryBlockTypeRelationshipArcMemory      = "relationship_arc_memory"
+	MemoryBlockTypeSupportiveMemory           = "supportive_memory"
+	MemoryBlockTypeExperienceContext          = "experience_context"
+
+	MemoryBlockTypeCausalContext     = MemoryBlockTypeRelevantCausalMemory
+	MemoryBlockTypeHistoricalContext = MemoryBlockTypeHistoricalTransitionMemory
+	MemoryBlockTypeProvenanceContext = MemoryBlockTypeProvenanceMemory
+	MemoryBlockTypeSupportiveContext = MemoryBlockTypeSupportiveMemory
 
 	MemoryHistoricalStatusCurrent    = "current"
 	MemoryHistoricalStatusHistorical = "historical"
@@ -29,35 +36,40 @@ type MemoryDomain string
 type MemoryAbility string
 type EvidenceNeed string
 type QueryEntityMentionKind string
+type QueryAnalysisSource string
 
 const (
 	QueryTimeModeCurrent         QueryTimeMode = "current"
 	QueryTimeModeHistorical      QueryTimeMode = "historical"
 	QueryTimeModeBitemporalCheck QueryTimeMode = "bitemporal_check"
 
-	QuerySignalCausal      QuerySignal = "causal"
-	QuerySignalHistorical  QuerySignal = "historical"
-	QuerySignalProvenance  QuerySignal = "provenance"
-	QuerySignalSensitivity QuerySignal = "sensitivity"
-	QuerySignalDebug       QuerySignal = "debug"
+	QuerySignalCausal          QuerySignal = "causal"
+	QuerySignalHistorical      QuerySignal = "historical"
+	QuerySignalProvenance      QuerySignal = "provenance"
+	QuerySignalSensitivity     QuerySignal = "sensitivity"
+	QuerySignalDebug           QuerySignal = "debug"
+	QuerySignalPremiseCheck    QuerySignal = "premise_check"
+	QuerySignalRelationshipArc QuerySignal = "relationship_arc"
+	QuerySignalForgetDelete    QuerySignal = "forget_delete"
 
 	MemoryDomainRelationship          MemoryDomain = "relationship_memory"
 	MemoryDomainUserProfile           MemoryDomain = "user_profile_memory"
 	MemoryDomainWorkExperience        MemoryDomain = "work_experience_memory"
 	MemoryDomainEnvironmentExperience MemoryDomain = "environment_experience_memory"
 
-	MemoryAbilityDirectFact    MemoryAbility = "direct_fact"
-	MemoryAbilityCausalExplain MemoryAbility = "causal_explain"
-	MemoryAbilityHistorical    MemoryAbility = "historical"
-	MemoryAbilityProvenance    MemoryAbility = "provenance"
-	MemoryAbilityBoundary      MemoryAbility = "boundary"
-	MemoryAbilitySupportive    MemoryAbility = "supportive"
-	MemoryAbilityPlanning      MemoryAbility = "planning"
-	MemoryAbilityStaticState   MemoryAbility = "static_state"
-	MemoryAbilityDynamicState  MemoryAbility = "dynamic_state"
-	MemoryAbilityWorkflow      MemoryAbility = "workflow"
-	MemoryAbilityGotcha        MemoryAbility = "gotcha"
-	MemoryAbilityPremiseCheck  MemoryAbility = "premise_check"
+	MemoryAbilityDirectFact      MemoryAbility = "direct_fact"
+	MemoryAbilityCausalExplain   MemoryAbility = "causal_explain"
+	MemoryAbilityHistorical      MemoryAbility = "historical"
+	MemoryAbilityProvenance      MemoryAbility = "provenance"
+	MemoryAbilityBoundary        MemoryAbility = "boundary"
+	MemoryAbilitySupportive      MemoryAbility = "supportive"
+	MemoryAbilityPlanning        MemoryAbility = "planning"
+	MemoryAbilityStaticState     MemoryAbility = "static_state"
+	MemoryAbilityDynamicState    MemoryAbility = "dynamic_state"
+	MemoryAbilityWorkflow        MemoryAbility = "workflow"
+	MemoryAbilityGotcha          MemoryAbility = "gotcha"
+	MemoryAbilityPremiseCheck    MemoryAbility = "premise_check"
+	MemoryAbilityRelationshipArc MemoryAbility = "relationship_arc"
 
 	EvidenceNeedExactObservation      EvidenceNeed = "exact_observation"
 	EvidenceNeedStateTransition       EvidenceNeed = "state_transition"
@@ -65,9 +77,15 @@ const (
 	EvidenceNeedGotchaNote            EvidenceNeed = "gotcha_note"
 	EvidenceNeedPremiseCounterexample EvidenceNeed = "premise_counterexample"
 	EvidenceNeedProvenanceSource      EvidenceNeed = "provenance_source"
+	EvidenceNeedRelationshipTimeline  EvidenceNeed = "relationship_timeline"
 
 	QueryEntityMentionKindCanonical QueryEntityMentionKind = "canonical_name"
 	QueryEntityMentionKindAlias     QueryEntityMentionKind = "entity_alias"
+
+	QueryAnalysisSourceRuleOnly         QueryAnalysisSource = "rule_only"
+	QueryAnalysisSourceSemantic         QueryAnalysisSource = "semantic"
+	QueryAnalysisSourceMerged           QueryAnalysisSource = "merged"
+	QueryAnalysisSourceSemanticFallback QueryAnalysisSource = "semantic_failed_rule_fallback"
 )
 
 type RetrievalRequest struct {
@@ -106,15 +124,23 @@ type MemoryContext struct {
 }
 
 type QueryAnalysis struct {
-	Raw            string
-	Normalized     string
-	Terms          []string
-	EntityMentions []QueryEntityMention
-	TimeMode       QueryTimeMode
-	Signals        []QuerySignal
-	MemoryDomain   MemoryDomain
-	MemoryAbility  MemoryAbility
-	EvidenceNeed   EvidenceNeed
+	Raw               string
+	Normalized        string
+	Terms             []string
+	EntityMentions    []QueryEntityMention
+	TimeMode          QueryTimeMode
+	Signals           []QuerySignal
+	MemoryDomain      MemoryDomain
+	MemoryAbility     MemoryAbility
+	EvidenceNeed      EvidenceNeed
+	Source            QueryAnalysisSource
+	Confidence        float64
+	FieldConfidence   QueryAnalysisConfidence
+	QueryRewrites     []QueryRewrite   `json:",omitempty"`
+	SemanticAnchors   []SemanticAnchor `json:",omitempty"`
+	ContextBlockHints []string         `json:",omitempty"`
+	PolicyHints       QueryPolicyHints
+	Diagnostics       *QueryAnalysisDiagnostics `json:",omitempty"`
 }
 
 type QueryEntityMention struct {
@@ -123,6 +149,49 @@ type QueryEntityMention struct {
 	Alias         string
 	MatchText     string
 	MatchKind     QueryEntityMentionKind
+}
+
+type QueryRewrite struct {
+	Text    string
+	Purpose string
+	Weight  float64
+}
+
+type SemanticAnchor struct {
+	Text       string
+	AnchorType string
+	EntityID   string
+	Weight     float64
+	Confidence float64
+}
+
+type QueryAnalysisConfidence struct {
+	Overall          float64
+	TimeMode         float64
+	MemoryAbility    float64
+	MemoryDomain     float64
+	EvidenceNeed     float64
+	EntityResolution float64
+}
+
+type QueryPolicyHints struct {
+	PreferEvidencedByLinks bool
+	PreferSupersedesLinks  bool
+	PreferCausalLinks      bool
+	PreferCounterexamples  bool
+	PreferNarratives       bool
+	MaxHopsHint            int
+}
+
+type QueryAnalysisDiagnostics struct {
+	SemanticStatus      string
+	SemanticProvider    string
+	SemanticModel       string
+	PromptVersion       string
+	SemanticLatencyMs   int64
+	FallbackReason      string
+	RewriteCount        int
+	SemanticAnchorCount int
 }
 
 type MemoryBlock struct {
@@ -191,26 +260,40 @@ type AnchorSourceBreakdown struct {
 }
 
 type MirrorRetrievalDiagnostics struct {
-	Status                 string                       `json:"status"`
-	Degraded               bool                         `json:"degraded"`
-	FallbackReason         string                       `json:"fallback_reason,omitempty"`
-	LatencyMs              int64                        `json:"latency_ms,omitempty"`
-	SidecarCandidateCount  int                          `json:"sidecar_candidate_count"`
-	MappedCandidateCount   int                          `json:"mapped_candidate_count"`
-	DroppedCandidateCount  int                          `json:"dropped_candidate_count"`
-	EmbeddingCacheHits     int                          `json:"embedding_cache_hits,omitempty"`
-	EmbeddingCacheMisses   int                          `json:"embedding_cache_misses,omitempty"`
-	EmbeddingLiveCallCount int                          `json:"embedding_live_call_count,omitempty"`
-	Candidates             []MirrorCandidateDiagnostics `json:"candidates,omitempty"`
+	Status                 string                               `json:"status"`
+	Degraded               bool                                 `json:"degraded"`
+	FallbackReason         string                               `json:"fallback_reason,omitempty"`
+	LatencyMs              int64                                `json:"latency_ms,omitempty"`
+	SidecarCandidateCount  int                                  `json:"sidecar_candidate_count"`
+	MappedCandidateCount   int                                  `json:"mapped_candidate_count"`
+	DroppedCandidateCount  int                                  `json:"dropped_candidate_count"`
+	EmbeddingCacheHits     int                                  `json:"embedding_cache_hits,omitempty"`
+	EmbeddingCacheMisses   int                                  `json:"embedding_cache_misses,omitempty"`
+	EmbeddingLiveCallCount int                                  `json:"embedding_live_call_count,omitempty"`
+	QueryCount             int                                  `json:"query_count,omitempty"`
+	RawQueryCount          int                                  `json:"raw_query_count,omitempty"`
+	RewriteQueryCount      int                                  `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount       int                                  `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount   int                                  `json:"merged_candidate_count,omitempty"`
+	PerQuery               []MirrorCandidatePerQueryDiagnostics `json:"per_query,omitempty"`
+	Candidates             []MirrorCandidateDiagnostics         `json:"candidates,omitempty"`
 }
 
 type MirrorCandidateDiagnostics struct {
-	TriviumNodeID int64   `json:"trivium_node_id,omitempty"`
-	SQLiteFactID  string  `json:"sqlite_fact_id,omitempty"`
-	Score         float64 `json:"score,omitempty"`
-	Source        string  `json:"source,omitempty"`
-	Rank          int     `json:"rank,omitempty"`
-	DropReason    string  `json:"drop_reason,omitempty"`
+	TriviumNodeID  int64   `json:"trivium_node_id,omitempty"`
+	SQLiteFactID   string  `json:"sqlite_fact_id,omitempty"`
+	Score          float64 `json:"score,omitempty"`
+	Source         string  `json:"source,omitempty"`
+	PrimaryPurpose string  `json:"primary_purpose,omitempty"`
+	Rank           int     `json:"rank,omitempty"`
+	HitCount       int     `json:"hit_count,omitempty"`
+	DropReason     string  `json:"drop_reason,omitempty"`
+}
+
+type MirrorCandidatePerQueryDiagnostics struct {
+	Source  string `json:"source,omitempty"`
+	Purpose string `json:"purpose,omitempty"`
+	Count   int    `json:"count,omitempty"`
 }
 
 type GraphActivationDiagnostics struct {

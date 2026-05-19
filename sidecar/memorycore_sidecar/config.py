@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,12 +36,21 @@ DEFAULT_RERANK_TOP_N = 30
 DEFAULT_RERANK_INSTRUCT = (
     "Retrieve semantically relevant safe memory summaries for the user's query."
 )
+DEFAULT_QUERY_ANALYSIS_PROVIDER = "none"
+DEFAULT_QUERY_ANALYSIS_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_QUERY_ANALYSIS_API_KEY_ENV = "DASHSCOPE_API_KEY"
+DEFAULT_QUERY_ANALYSIS_MODEL = "qwen-plus"
+DEFAULT_QUERY_ANALYSIS_TIMEOUT_SECONDS = 30
+DEFAULT_QUERY_ANALYSIS_TEMPERATURE = 0.0
+DEFAULT_QUERY_ANALYSIS_RESPONSE_FORMAT = "json_object"
+DEFAULT_QUERY_ANALYSIS_PROMPT_VERSION = "query-analysis-v0.1"
 _SIDECAR_PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 _VALID_DTYPES = {"f32", "f16", "u64"}
 _VALID_SYNC_MODES = {"full", "normal", "off"}
 _VALID_EMBEDDING_CACHE_MODES = {"off", "read_write", "read_only", "refresh"}
 _VALID_RERANK_PROVIDERS = {"none", "dashscope-vl"}
+_VALID_QUERY_ANALYSIS_PROVIDERS = {"none", "openai-compatible"}
 _LOOPBACK_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -84,11 +94,24 @@ class RerankConfig:
 
 
 @dataclass(frozen=True)
+class QueryAnalysisConfig:
+    provider: str
+    base_url: str
+    api_key_env: str
+    model: str
+    timeout_seconds: int
+    temperature: float
+    response_format: str
+    prompt_version: str
+
+
+@dataclass(frozen=True)
 class SidecarConfig:
     trivium: TriviumConfig
     embedding: EmbeddingConfig
     embedding_cache: EmbeddingCacheConfig
     rerank: RerankConfig
+    query_analysis: QueryAnalysisConfig
 
 
 def load_config(
@@ -109,6 +132,7 @@ def load_config(
     embedding_data = _table(data, "embedding")
     embedding_cache_data = _table(data, "embedding_cache")
     rerank_data = _table(data, "rerank")
+    query_analysis_data = _table(data, "query_analysis")
 
     trivium_dir_value = _env_or_value(
         env_values, "MEMORYCORE_TRIVIUM_DIR", trivium_data, "dir", DEFAULT_TRIVIUM_DIR
@@ -348,6 +372,88 @@ def load_config(
                 ),
             ),
         ),
+        query_analysis=QueryAnalysisConfig(
+            provider=_string(
+                "query_analysis.provider",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_PROVIDER",
+                    query_analysis_data,
+                    "provider",
+                    DEFAULT_QUERY_ANALYSIS_PROVIDER,
+                ),
+            ),
+            base_url=_string(
+                "query_analysis.base_url",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_BASE_URL",
+                    query_analysis_data,
+                    "base_url",
+                    DEFAULT_QUERY_ANALYSIS_BASE_URL,
+                ),
+            ),
+            api_key_env=_string(
+                "query_analysis.api_key_env",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_API_KEY_ENV",
+                    query_analysis_data,
+                    "api_key_env",
+                    DEFAULT_QUERY_ANALYSIS_API_KEY_ENV,
+                ),
+            ),
+            model=_string(
+                "query_analysis.model",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_MODEL",
+                    query_analysis_data,
+                    "model",
+                    DEFAULT_QUERY_ANALYSIS_MODEL,
+                ),
+            ),
+            timeout_seconds=_positive_int(
+                "query_analysis.timeout_seconds",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS",
+                    query_analysis_data,
+                    "timeout_seconds",
+                    DEFAULT_QUERY_ANALYSIS_TIMEOUT_SECONDS,
+                ),
+            ),
+            temperature=_finite_float(
+                "query_analysis.temperature",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_TEMPERATURE",
+                    query_analysis_data,
+                    "temperature",
+                    DEFAULT_QUERY_ANALYSIS_TEMPERATURE,
+                ),
+            ),
+            response_format=_string(
+                "query_analysis.response_format",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_RESPONSE_FORMAT",
+                    query_analysis_data,
+                    "response_format",
+                    DEFAULT_QUERY_ANALYSIS_RESPONSE_FORMAT,
+                ),
+            ),
+            prompt_version=_string(
+                "query_analysis.prompt_version",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_PROMPT_VERSION",
+                    query_analysis_data,
+                    "prompt_version",
+                    DEFAULT_QUERY_ANALYSIS_PROMPT_VERSION,
+                ),
+            ),
+        ),
     )
     _validate(config)
     return config
@@ -390,6 +496,22 @@ def _positive_int(name: str, value: Any) -> int:
             raise ValueError(f"{name} must be a positive integer") from exc
     if not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _finite_float(name: str, value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite float")
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a finite float") from exc
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite float")
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite float")
     return value
 
 
@@ -440,6 +562,17 @@ def _validate(config: SidecarConfig) -> None:
     _validate_https_or_loopback_http_url(
         "rerank.endpoint_url", config.rerank.endpoint_url
     )
+    if config.query_analysis.provider not in _VALID_QUERY_ANALYSIS_PROVIDERS:
+        raise ValueError(
+            "query_analysis.provider must be one of none, openai-compatible"
+        )
+    _validate_https_or_loopback_http_url(
+        "query_analysis.base_url", config.query_analysis.base_url
+    )
+    if config.query_analysis.response_format != "json_object":
+        raise ValueError("query_analysis.response_format must be json_object")
+    if config.query_analysis.temperature != 0.0:
+        raise ValueError("query_analysis.temperature must be 0")
 
 
 def _validate_https_or_loopback_http_url(name: str, value: str) -> None:

@@ -1,0 +1,86 @@
+schema_version: memory_eval.v0.2
+suite: controlled_phase6
+allow_stub: true
+case_id: QA002_semantic_rewrite_mirror_diagnostics
+description: Controlled semantic rewrite is passed into mirror candidate diagnostics without exposing raw provider payloads.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: User said migration checks should stay sqlite first.
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: migration_fact
+    action: fact
+    fact:
+      id: fact_sqlite_first_migration
+      subject_entity_id: user
+      predicate: prefers
+      object_literal: sqlite first migration checks
+      content_summary: User prefers sqlite-first migration checks.
+      source_episode_ids: [ep1]
+      confidence: explicit
+      importance: 0.9
+  - id: retrieve
+    action: retrieve
+    semantic_query_analysis_stub:
+      status: ok
+      provider: eval_semantic_stub
+      model: stub-v1
+      prompt_version: phase6-eval
+      analysis:
+        time_mode: current
+        memory_domain: relationship_memory
+        memory_ability: provenance
+        evidence_need: provenance_source
+        confidence: 0.95
+        query_rewrites:
+          - text: sqlite first migration checks
+            purpose: provenance_dense
+            weight: 0.9
+        context_block_hints: [provenance_memory]
+    mirror_stub:
+      index_mapped_nodes:
+        - node_id: $migration_fact.fact_id
+          node_type: fact
+      candidates:
+        - node_id: $migration_fact.fact_id
+          node_type: fact
+          score: 0.98
+          source: eval_dense
+          rank: 1
+    retrieve:
+      session_id: s1
+      query_text: where did I mention the migration checks
+      policy:
+        use_mirror: true
+        use_fts: false
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    name: semantic rewrite and context hint are reported
+    step: retrieve
+    source: merged
+    status: ok
+    memory_ability: provenance
+    evidence_need: provenance_source
+    query_rewrites: [sqlite first migration checks]
+    context_block_hints: [provenance_memory]
+  - type: mirror_candidate
+    name: mirror counted raw and rewrite queries
+    step: retrieve
+    status: used
+    query_count: 2
+    raw_query_count: 1
+    rewrite_query_count: 1
+  - type: memory_contains
+    name: mirror candidate reaches selected context
+    step: retrieve
+    node_id: $migration_fact.fact_id

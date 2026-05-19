@@ -70,25 +70,44 @@ type MirrorNodeUpsertResult struct {
 }
 
 type MirrorCandidateRequest struct {
-	PersonaID string `json:"persona_id"`
-	QueryText string `json:"query_text"`
-	Limit     int    `json:"limit"`
+	PersonaID string        `json:"persona_id"`
+	QueryText string        `json:"query_text"`
+	Query     QueryAnalysis `json:"query"`
+	Limit     int           `json:"limit"`
 }
 
 type MirrorCandidate struct {
-	TriviumNodeID int64   `json:"trivium_node_id"`
-	Score         float64 `json:"score"`
-	Source        string  `json:"source"`
-	Rank          int     `json:"rank,omitempty"`
+	TriviumNodeID  int64   `json:"trivium_node_id"`
+	Score          float64 `json:"score"`
+	Source         string  `json:"source"`
+	PrimaryPurpose string  `json:"primary_purpose,omitempty"`
+	Rank           int     `json:"rank,omitempty"`
+	HitCount       int     `json:"hit_count,omitempty"`
+}
+
+type MirrorCandidateSidecarDiagnostics struct {
+	QueryCount           int                                 `json:"query_count,omitempty"`
+	RawQueryCount        int                                 `json:"raw_query_count,omitempty"`
+	RewriteQueryCount    int                                 `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount     int                                 `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount int                                 `json:"merged_candidate_count,omitempty"`
+	PerQuery             []MirrorCandidatePerQueryDiagnostic `json:"per_query,omitempty"`
+}
+
+type MirrorCandidatePerQueryDiagnostic struct {
+	Source  string `json:"source,omitempty"`
+	Purpose string `json:"purpose,omitempty"`
+	Count   int    `json:"count,omitempty"`
 }
 
 type MirrorCandidateResult struct {
-	Candidates             []MirrorCandidate `json:"candidates"`
-	Degraded               bool              `json:"degraded"`
-	FallbackReason         string            `json:"fallback_reason,omitempty"`
-	EmbeddingCacheHits     int               `json:"embedding_cache_hits,omitempty"`
-	EmbeddingCacheMisses   int               `json:"embedding_cache_misses,omitempty"`
-	EmbeddingLiveCallCount int               `json:"embedding_live_call_count,omitempty"`
+	Candidates             []MirrorCandidate                 `json:"candidates"`
+	Degraded               bool                              `json:"degraded"`
+	FallbackReason         string                            `json:"fallback_reason,omitempty"`
+	EmbeddingCacheHits     int                               `json:"embedding_cache_hits,omitempty"`
+	EmbeddingCacheMisses   int                               `json:"embedding_cache_misses,omitempty"`
+	EmbeddingLiveCallCount int                               `json:"embedding_live_call_count,omitempty"`
+	Diagnostics            MirrorCandidateSidecarDiagnostics `json:"diagnostics,omitempty"`
 }
 
 type MirrorActivationRequest struct {

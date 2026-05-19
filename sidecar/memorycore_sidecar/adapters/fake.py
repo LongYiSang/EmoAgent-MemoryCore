@@ -8,6 +8,7 @@ from memorycore_sidecar.activation import (
     ActivationEdge,
     activate_graph_with_diagnostics,
 )
+from memorycore_sidecar.candidates import DenseHit, fuse_dense_results, normalize_text
 
 from .base import MirrorAdapter
 
@@ -51,25 +52,31 @@ class FakeMirrorAdapter(MirrorAdapter):
 
     def find_candidates(self, request: dict[str, Any]) -> dict[str, Any]:
         persona_id = request["persona_id"]
-        query = request["query_text"].casefold()
-        limit = request["limit"]
-        candidates = []
-        for (node_persona_id, node_type, sqlite_node_id), node in sorted(self._nodes.items()):
-            if node_persona_id != persona_id:
-                continue
-            searchable_text = str(node.get("searchable_text", "")).casefold()
-            if query not in searchable_text:
-                continue
-            candidates.append(
-                {
-                    "trivium_node_id": _stable_fake_id(persona_id, node_type, sqlite_node_id),
-                    "score": 1.0,
-                    "source": "fake_sparse",
-                }
-            )
-            if len(candidates) >= limit:
-                break
-        return {"candidates": candidates, "degraded": False}
+
+        def search(query) -> list[DenseHit]:
+            hits = []
+            normalized_query = normalize_text(query.text)
+            for (node_persona_id, node_type, sqlite_node_id), node in sorted(
+                self._nodes.items()
+            ):
+                if node_persona_id != persona_id:
+                    continue
+                searchable_text = normalize_text(str(node.get("searchable_text", "")))
+                if normalized_query not in searchable_text:
+                    continue
+                hits.append(
+                    DenseHit(
+                        trivium_node_id=_stable_fake_id(
+                            persona_id, node_type, sqlite_node_id
+                        ),
+                        score=1.0,
+                    )
+                )
+                if len(hits) >= query.top_k:
+                    break
+            return hits
+
+        return fuse_dense_results(request, search)
 
     def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
         persona_id = str(request["persona_id"])

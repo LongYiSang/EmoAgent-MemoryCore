@@ -123,6 +123,26 @@ func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
 	}
 }
 
+func TestRunControlledFixtureAllowsSemanticStubByDefault(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "testdata", "memory_eval", "controlled", "phase6", "QA001_semantic_fallback_diagnostics.yaml")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--fixture", fixturePath,
+		"--mode", "brief",
+		"--temp-dir", t.TempDir(),
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if strings.Contains(stderr.String(), "semantic_query_analysis_stub") {
+		t.Fatalf("stderr = %q, want controlled semantic stub allowed", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "未发现失败结果") {
+		t.Fatalf("stdout =\n%s\nwant passing brief report", stdout.String())
+	}
+}
+
 func TestParseOptionsRejectsInvalidEmbeddingCacheMode(t *testing.T) {
 	var stderr bytes.Buffer
 	_, ok := parseOptions([]string{"--embedding-cache-mode", "typo"}, &stderr)

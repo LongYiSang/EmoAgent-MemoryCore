@@ -29,3 +29,13 @@ timeout_seconds = 30
 top_n = 30
 instruct = "Retrieve semantically relevant safe memory summaries for the user's query."
 # return_documents is fixed false by provider code for safety.
+
+[query_analysis]
+provider = "none"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen-plus"
+timeout_seconds = 30
+temperature = 0
+response_format = "json_object"
+prompt_version = "query-analysis-v0.1"

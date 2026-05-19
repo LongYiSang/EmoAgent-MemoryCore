@@ -41,6 +41,14 @@ def test_load_config_without_file_uses_defaults_relative_to_sidecar_project(monk
         config.rerank.instruct
         == "Retrieve semantically relevant safe memory summaries for the user's query."
     )
+    assert config.query_analysis.provider == "none"
+    assert config.query_analysis.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.query_analysis.api_key_env == "DASHSCOPE_API_KEY"
+    assert config.query_analysis.model == "qwen-plus"
+    assert config.query_analysis.timeout_seconds == 30
+    assert config.query_analysis.temperature == 0.0
+    assert config.query_analysis.response_format == "json_object"
+    assert config.query_analysis.prompt_version == "query-analysis-v0.1"
 
 
 def test_load_config_reads_example_defaults():
@@ -77,6 +85,14 @@ def test_load_config_reads_example_defaults():
         config.rerank.instruct
         == "Retrieve semantically relevant safe memory summaries for the user's query."
     )
+    assert config.query_analysis.provider == "none"
+    assert config.query_analysis.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.query_analysis.api_key_env == "DASHSCOPE_API_KEY"
+    assert config.query_analysis.model == "qwen-plus"
+    assert config.query_analysis.timeout_seconds == 30
+    assert config.query_analysis.temperature == 0.0
+    assert config.query_analysis.response_format == "json_object"
+    assert config.query_analysis.prompt_version == "query-analysis-v0.1"
 
 
 def test_load_config_resolves_relative_trivium_dir_from_config_file(tmp_path):
@@ -137,6 +153,14 @@ def test_load_config_applies_environment_overrides(tmp_path):
         "MEMORYCORE_RERANK_TIMEOUT_SECONDS": "12",
         "MEMORYCORE_RERANK_TOP_N": "7",
         "MEMORYCORE_RERANK_INSTRUCT": "Find safe memories.",
+        "MEMORYCORE_QUERY_ANALYSIS_PROVIDER": "openai-compatible",
+        "MEMORYCORE_QUERY_ANALYSIS_BASE_URL": "https://example.test/qa/v1",
+        "MEMORYCORE_QUERY_ANALYSIS_API_KEY_ENV": "QUERY_KEY",
+        "MEMORYCORE_QUERY_ANALYSIS_MODEL": "query-model",
+        "MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS": "13",
+        "MEMORYCORE_QUERY_ANALYSIS_TEMPERATURE": "0",
+        "MEMORYCORE_QUERY_ANALYSIS_RESPONSE_FORMAT": "json_object",
+        "MEMORYCORE_QUERY_ANALYSIS_PROMPT_VERSION": "qa-v-test",
     }
 
     config = load_config(config_path, env=env)
@@ -166,6 +190,14 @@ def test_load_config_applies_environment_overrides(tmp_path):
     assert config.rerank.timeout_seconds == 12
     assert config.rerank.top_n == 7
     assert config.rerank.instruct == "Find safe memories."
+    assert config.query_analysis.provider == "openai-compatible"
+    assert config.query_analysis.base_url == "https://example.test/qa/v1"
+    assert config.query_analysis.api_key_env == "QUERY_KEY"
+    assert config.query_analysis.model == "query-model"
+    assert config.query_analysis.timeout_seconds == 13
+    assert config.query_analysis.temperature == 0.0
+    assert config.query_analysis.response_format == "json_object"
+    assert config.query_analysis.prompt_version == "qa-v-test"
 
 
 def test_load_config_does_not_support_rerank_return_documents_override(tmp_path):
@@ -239,6 +271,18 @@ def test_load_config_rejects_non_loopback_http_embedding_base_url(tmp_path):
         load_config(config_path, env={})
 
 
+def test_load_config_allows_loopback_http_query_analysis_base_url(tmp_path):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(
+        "[query_analysis]\nprovider = 'openai-compatible'\nbase_url = 'http://localhost:8000/v1'\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env={})
+
+    assert config.query_analysis.base_url == "http://localhost:8000/v1"
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [
@@ -277,6 +321,15 @@ def test_load_config_rejects_non_loopback_http_embedding_base_url(tmp_path):
         ("[rerank]\ntimeout_seconds = 0\n", "rerank.timeout_seconds"),
         ("[rerank]\ntop_n = 0\n", "rerank.top_n"),
         ("[rerank]\ninstruct = ''\n", "rerank.instruct"),
+        ("[query_analysis]\nprovider = 'other'\n", "query_analysis.provider"),
+        ("[query_analysis]\nbase_url = ''\n", "query_analysis.base_url"),
+        ("[query_analysis]\napi_key_env = ''\n", "query_analysis.api_key_env"),
+        ("[query_analysis]\nmodel = ''\n", "query_analysis.model"),
+        ("[query_analysis]\ntimeout_seconds = 0\n", "query_analysis.timeout_seconds"),
+        ("[query_analysis]\ntemperature = 'hot'\n", "query_analysis.temperature"),
+        ("[query_analysis]\ntemperature = 0.1\n", "query_analysis.temperature"),
+        ("[query_analysis]\nresponse_format = 'text'\n", "query_analysis.response_format"),
+        ("[query_analysis]\nprompt_version = ''\n", "query_analysis.prompt_version"),
     ],
 )
 def test_load_config_rejects_invalid_values(tmp_path, body, message):

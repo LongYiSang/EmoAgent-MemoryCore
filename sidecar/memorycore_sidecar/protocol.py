@@ -8,14 +8,16 @@ REQUEST_SCHEMA_VERSION = "memory_mirror_operation.v0.1"
 RESPONSE_SCHEMA_VERSION = "memory_mirror_operation_result.v0.1"
 CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION = "memory_mirror_clear_namespace.v0.1"
 CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION = "memory_mirror_clear_namespace_result.v0.1"
-CANDIDATE_REQUEST_SCHEMA_VERSION = "memory_mirror_candidate_request.v0.1"
-CANDIDATE_RESPONSE_SCHEMA_VERSION = "memory_mirror_candidates.v0.1"
+CANDIDATE_REQUEST_SCHEMA_VERSION = "memory_mirror_candidate_request.v0.2"
+CANDIDATE_RESPONSE_SCHEMA_VERSION = "memory_mirror_candidates.v0.2"
 ACTIVATION_REQUEST_SCHEMA_VERSION = "memory_graph_activation_request.v0.1"
 ACTIVATION_RESPONSE_SCHEMA_VERSION = "memory_graph_activation_result.v0.1"
 RERANK_REQUEST_SCHEMA_VERSION = "memory_rerank_request.v0.1"
 RERANK_RESPONSE_SCHEMA_VERSION = "memory_rerank_result.v0.1"
 EVAL_CONFIG_REQUEST_SCHEMA_VERSION = "memory_eval_sidecar_config.v0.1"
 EVAL_CONFIG_RESPONSE_SCHEMA_VERSION = "memory_eval_sidecar_config_result.v0.1"
+QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION = "memory_query_analysis_request.v0.1"
+QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION = "memory_query_analysis_result.v0.1"
 VALID_EMBEDDING_CACHE_MODES = frozenset(
     {"off", "read_write", "read_only", "refresh"}
 )
@@ -177,17 +179,77 @@ def parse_candidate_request(data: Any) -> dict[str, Any]:
     persona_id = data.get("persona_id")
     if not isinstance(persona_id, str) or not persona_id.strip():
         raise ProtocolError("persona_id is required")
-    query_text = data.get("query_text")
-    if not isinstance(query_text, str) or not query_text.strip():
-        raise ProtocolError("query_text is required")
+    query = _parse_candidate_query(data.get("query"))
     limit = data.get("limit", 8)
     if not isinstance(limit, int) or limit <= 0:
         raise ProtocolError("limit must be a positive integer")
+    debug_scores = data.get("debug_scores", False)
+    if not isinstance(debug_scores, bool):
+        raise ProtocolError("debug_scores must be a boolean")
+    return {
+        "schema_version": schema_version,
+        "request_id": request_id.strip(),
+        "persona_id": persona_id.strip(),
+        "query": query,
+        "limit": limit,
+        "debug_scores": debug_scores,
+    }
+
+
+def _parse_candidate_query(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProtocolError("query must be a JSON object")
+    raw_text = value.get("raw_text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ProtocolError("query_text raw_text is required")
+    parsed = {
+        "raw_text": raw_text,
+        "normalized_text": _optional_string(value.get("normalized_text")),
+        "time_mode": _optional_string(value.get("time_mode")),
+        "memory_domain": _optional_string(value.get("memory_domain")),
+        "memory_ability": _optional_string(value.get("memory_ability")),
+        "evidence_need": _optional_string(value.get("evidence_need")),
+        "signals": _string_list(value.get("signals", []), "query.signals"),
+        "rewrites": _weighted_texts(
+            value.get("rewrites", []),
+            "query.rewrites",
+            max_items=5,
+            max_weight=0.9,
+            default_purpose="semantic_recall",
+        ),
+        "semantic_anchors": _weighted_texts(
+            value.get("semantic_anchors", []),
+            "query.semantic_anchors",
+            max_items=8,
+            max_weight=0.65,
+            default_purpose="semantic_anchor",
+        ),
+    }
+    return parsed
+
+
+def parse_query_analysis_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(
+            f"schema_version must be {QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION}"
+        )
+    request_id = data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ProtocolError("request_id is required")
+    persona_id = data.get("persona_id")
+    if not isinstance(persona_id, str) or not persona_id.strip():
+        raise ProtocolError("persona_id is required")
+    query_text = data.get("query_text")
+    if not isinstance(query_text, str) or not query_text.strip():
+        raise ProtocolError("query_text is required")
     return {
         "request_id": request_id.strip(),
         "persona_id": persona_id.strip(),
         "query_text": query_text,
-        "limit": limit,
+        "include_rationale": bool(data.get("include_rationale", False)),
     }
 
 
@@ -283,6 +345,86 @@ def _candidate_score(value: Any, field_name: str) -> float:
     if not math.isfinite(score) or score < 0:
         raise ProtocolError(f"{field_name} must be a finite nonnegative number")
     return score
+
+
+def _optional_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _string_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProtocolError(f"{field_name} must be a JSON array")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ProtocolError(f"{field_name}[{idx}] must be a string")
+        item = item.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def _weighted_texts(
+    value: Any,
+    field_name: str,
+    *,
+    max_items: int,
+    max_weight: float,
+    default_purpose: str,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProtocolError(f"{field_name} must be a JSON array")
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(value):
+        if len(out) >= max_items:
+            break
+        if isinstance(item, str):
+            text = item
+            weight = max_weight
+            purpose = default_purpose
+        elif isinstance(item, dict):
+            text = item.get("text")
+            weight = item.get("weight", max_weight)
+            purpose = item.get("purpose", default_purpose)
+        else:
+            raise ProtocolError(f"{field_name}[{idx}] must be a JSON object or string")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if not isinstance(purpose, str) or not purpose.strip():
+            purpose = default_purpose
+        out.append(
+            {
+                "text": text,
+                "weight": _bounded_float(
+                    weight,
+                    lower=0.1,
+                    upper=max_weight,
+                    default=max_weight,
+                ),
+                "purpose": purpose.strip(),
+            }
+        )
+    return out
+
+
+def _bounded_float(value: Any, *, lower: float, upper: float, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return min(max(number, lower), upper)
 
 
 def _parse_activation_seed(seed: Any) -> dict[str, Any]:
@@ -398,6 +540,7 @@ def build_candidates_result(
     degraded: bool = False,
     fallback_reason: str | None = None,
     embedding_cache_stats: dict[str, int] | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = {
         "schema_version": CANDIDATE_RESPONSE_SCHEMA_VERSION,
@@ -409,6 +552,45 @@ def build_candidates_result(
         result["fallback_reason"] = fallback_reason
     if embedding_cache_stats is not None:
         result["embedding_cache_stats"] = embedding_cache_stats
+    if diagnostics is not None:
+        result["diagnostics"] = diagnostics
+    return result
+
+
+def build_query_analysis_result(
+    request_id: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    result = {
+        "schema_version": QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION,
+        "request_id": request_id,
+    }
+    for field in (
+        "status",
+        "degraded",
+        "fallback_reason",
+        "provider",
+        "model",
+        "prompt_version",
+    ):
+        if field in analysis:
+            result[field] = analysis[field]
+    result["analysis"] = {
+        key: value
+        for key, value in analysis.items()
+        if key
+        not in {
+            "status",
+            "degraded",
+            "fallback_reason",
+            "provider",
+            "model",
+            "prompt_version",
+            "rationale_summary",
+        }
+    }
+    if "rationale_summary" in analysis:
+        result["rationale_summary"] = analysis["rationale_summary"]
     return result
 
 

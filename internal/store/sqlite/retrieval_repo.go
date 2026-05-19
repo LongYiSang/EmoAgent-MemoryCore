@@ -15,12 +15,19 @@ import (
 )
 
 const (
-	MemoryBlockTypeFacts             = "facts"
-	MemoryBlockTypeCausalContext     = "causal_context"
-	MemoryBlockTypeHistoricalContext = "historical_context"
-	MemoryBlockTypeProvenanceContext = "provenance_context"
-	MemoryBlockTypeSupportiveContext = "supportive_context"
-	MemoryBlockTypeExperienceContext = "experience_context"
+	MemoryBlockTypeFacts                      = "facts"
+	MemoryBlockTypeRelevantCausalMemory       = "relevant_causal_memory"
+	MemoryBlockTypeHistoricalTransitionMemory = "historical_transition_memory"
+	MemoryBlockTypeProvenanceMemory           = "provenance_memory"
+	MemoryBlockTypePremiseCheckMemory         = "premise_check_memory"
+	MemoryBlockTypeRelationshipArcMemory      = "relationship_arc_memory"
+	MemoryBlockTypeSupportiveMemory           = "supportive_memory"
+	MemoryBlockTypeExperienceContext          = "experience_context"
+
+	MemoryBlockTypeCausalContext     = MemoryBlockTypeRelevantCausalMemory
+	MemoryBlockTypeHistoricalContext = MemoryBlockTypeHistoricalTransitionMemory
+	MemoryBlockTypeProvenanceContext = MemoryBlockTypeProvenanceMemory
+	MemoryBlockTypeSupportiveContext = MemoryBlockTypeSupportiveMemory
 
 	MemoryHistoricalStatusCurrent    = "current"
 	MemoryHistoricalStatusHistorical = "historical"
@@ -52,6 +59,7 @@ type RetrievalRequest struct {
 	Now                        time.Time
 	Policy                     RetrievalPolicy
 	Context                    RetrievalAffectContext
+	PrecomputedQueryAnalysis   *QueryAnalysis
 	Mirror                     []RetrievalMirrorCandidate
 	MirrorDiagnostics          *MirrorDiagnostics
 	GraphActivation            []RetrievalActivationCandidate
@@ -95,7 +103,19 @@ type MirrorDiagnostics struct {
 	EmbeddingCacheHits     int
 	EmbeddingCacheMisses   int
 	EmbeddingLiveCallCount int
+	QueryCount             int
+	RawQueryCount          int
+	RewriteQueryCount      int
+	AnchorQueryCount       int
+	MergedCandidateCount   int
+	PerQuery               []MirrorCandidatePerQueryDiagnostic
 	Candidates             []MirrorCandidateDiagnostic
+}
+
+type MirrorCandidatePerQueryDiagnostic struct {
+	Source  string
+	Purpose string
+	Count   int
 }
 
 type GraphActivationDiagnostics struct {
@@ -302,9 +322,15 @@ func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest)
 	if now.IsZero() {
 		now = r.now()
 	}
-	query, err := r.analyzeQuery(ctx, req.PersonaID, req.QueryText, basePolicy)
-	if err != nil {
-		return PreparedRetrieval{}, err
+	var query QueryAnalysis
+	if req.PrecomputedQueryAnalysis != nil {
+		query = cloneQueryAnalysis(*req.PrecomputedQueryAnalysis)
+	} else {
+		var err error
+		query, err = r.analyzeQuery(ctx, req.PersonaID, req.QueryText, basePolicy)
+		if err != nil {
+			return PreparedRetrieval{}, err
+		}
 	}
 	policy := effectiveRetrievalPolicy(basePolicy, query)
 
@@ -314,6 +340,7 @@ func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest)
 	}
 	req.Policy = basePolicy
 	req.Now = now
+	req.PrecomputedQueryAnalysis = nil
 	return PreparedRetrieval{
 		Request:      req,
 		Query:        query,
@@ -523,12 +550,14 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 					}
 				} else if mirror, ok := mirrorByFact[fact.ID]; ok {
 					req.MirrorDiagnostics.Candidates = append(req.MirrorDiagnostics.Candidates, MirrorCandidateDiagnostic{
-						TriviumNodeID: mirror.TriviumNodeID,
-						SQLiteFactID:  fact.ID,
-						Score:         mirror.Score,
-						Source:        mirror.Source,
-						Rank:          mirror.Rank,
-						DropReason:    "dropped_by_authority_filter",
+						TriviumNodeID:  mirror.TriviumNodeID,
+						SQLiteFactID:   fact.ID,
+						Score:          mirror.Score,
+						Source:         mirror.Source,
+						PrimaryPurpose: mirror.PrimaryPurpose,
+						Rank:           mirror.Rank,
+						HitCount:       mirror.HitCount,
+						DropReason:     "dropped_by_authority_filter",
 					})
 					req.MirrorDiagnostics.DroppedCandidateCount++
 				}

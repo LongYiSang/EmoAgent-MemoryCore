@@ -40,6 +40,7 @@ type runState struct {
 	stepID         string
 	caseID         string
 	tempRoot       string
+	dbPath         string
 	nextTriviumID  int64
 	mirror         *evalMirrorAdapter
 	profile        Profile
@@ -47,6 +48,8 @@ type runState struct {
 	artifact       *MirrorArtifactManager
 	mirrorArtifact MirrorArtifactReport
 	mirrorAdapter  memorycore.MirrorAdapter
+	semantic       *evalSemanticSidecar
+	resilience     memorycore.SidecarResilienceOptions
 }
 
 type stepResult struct {
@@ -144,6 +147,11 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 	}
 
 	dbPath := filepath.Join(tempRoot, sanitizeFileName(fixture.CaseID)+".db")
+	var semanticSidecar *evalSemanticSidecar
+	if fixture.UsesSemanticEvalStub() {
+		semanticSidecar = newEvalSemanticSidecar()
+		defer semanticSidecar.Close()
+	}
 	var mirror *evalMirrorAdapter
 	adapter := r.opts.MirrorAdapter
 	if adapter == nil && strings.TrimSpace(string(r.opts.Profile)) == "" {
@@ -187,11 +195,14 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		persona:       defaultPersonaID,
 		caseID:        fixture.CaseID,
 		tempRoot:      tempRoot,
+		dbPath:        dbPath,
 		nextTriviumID: 1,
 		mirror:        mirror,
 		profile:       r.opts.Profile,
 		artifact:      r.opts.MirrorArtifact,
 		mirrorAdapter: adapter,
+		semantic:      semanticSidecar,
+		resilience:    r.opts.SidecarResilience,
 	}
 	if err := state.seed(ctx); err != nil {
 		report.Err = err
@@ -226,6 +237,7 @@ func (s *runState) stepReport(step Step) StepReport {
 	}
 	if step.Retrieve != nil {
 		out.QueryText = step.Retrieve.QueryText
+		out.FusionMode = step.Retrieve.FusionMode
 		out.Retrieval = result.Retrieval
 	}
 	return out
@@ -318,6 +330,9 @@ VALUES (?, ?)`, id, displayName); err != nil {
 func (s *runState) runStep(ctx context.Context, step Step) error {
 	if s.mirror != nil {
 		s.mirror.resetForStep()
+		if step.Retrieve != nil {
+			s.mirror.fusionMode = step.Retrieve.FusionMode
+		}
 	}
 	if err := s.applyMirrorStub(ctx, step); err != nil {
 		return err
@@ -680,7 +695,22 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	if strings.TrimSpace(string(s.profile)) != "" {
 		policy.UseMirror = s.profile.UsesMirror()
 	}
-	result, err := s.service.Retrieve(ctx, memorycore.RetrievalRequest{
+	service := s.service
+	var closeService func()
+	if step.SemanticStub != nil {
+		semanticService, err := s.openSemanticRetrieveService(ctx, step.SemanticStub)
+		if err != nil {
+			return nil, err
+		}
+		service = semanticService
+		closeService = func() {
+			_ = semanticService.Close()
+		}
+	}
+	if closeService != nil {
+		defer closeService()
+	}
+	result, err := service.Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
 		SessionID: sessionID,
 		QueryText: body.QueryText,
@@ -695,6 +725,33 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 		return nil, fmt.Errorf("case %s step %s retrieve: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
+}
+
+func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *SemanticStubSettings) (memorycore.Service, error) {
+	if s.semantic == nil {
+		return nil, fmt.Errorf("case %s step %s semantic_query_analysis_stub requires eval semantic sidecar", s.caseID, s.stepID)
+	}
+	s.semantic.setStub(stub)
+	svc, err := memorycore.Open(ctx, memorycore.Options{
+		DBPath:        s.dbPath,
+		PersonaID:     defaultPersonaID,
+		AutoMigrate:   true,
+		EnableFTS:     true,
+		MirrorAdapter: s.mirrorAdapter,
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:   memorycore.QueryAnalysisProviderSidecar,
+			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+			SidecarURL: s.semantic.URL(),
+		},
+		SidecarResilience: defaultEvalSidecarResilience(s.resilience),
+		Now: func() time.Time {
+			return fixedNow
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s open semantic retrieve service: %w", s.caseID, s.stepID, err)
+	}
+	return svc, nil
 }
 
 func (s *runState) prepareProfileMirror(ctx context.Context) error {

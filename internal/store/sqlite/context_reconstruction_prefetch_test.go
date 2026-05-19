@@ -57,10 +57,10 @@ func TestReconstructionPrefetchPreservesSourceRefsRelatedFactsAndHistory(t *test
 	if err != nil {
 		t.Fatalf("reconstructMemoryBlocks: %v", err)
 	}
-	if blockTypeByFactID["fact_effect"] != MemoryBlockTypeCausalContext {
+	if blockTypeByFactID["fact_effect"] != MemoryBlockTypeRelevantCausalMemory {
 		t.Fatalf("blockTypeByFactID = %#v, want causal context for fact_effect", blockTypeByFactID)
 	}
-	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeCausalContext || len(blocks[0].Items) != 1 {
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeRelevantCausalMemory || len(blocks[0].Items) != 1 {
 		t.Fatalf("blocks = %#v, want one causal block with one item", blocks)
 	}
 	item := blocks[0].Items[0]
@@ -94,6 +94,31 @@ func TestReconstructionPrefetchPreservesSourceRefsRelatedFactsAndHistory(t *test
 		if related.NodeID == "fact_hidden" {
 			t.Fatalf("hidden related fact leaked: %#v", item.RelatedFacts)
 		}
+	}
+}
+
+func TestContextBlockTypeUsesSemanticBlockNames(t *testing.T) {
+	fact := core.Fact{FactType: core.FactTypeStablePreference}
+	tests := []struct {
+		name  string
+		query QueryAnalysis
+		want  string
+	}{
+		{name: "provenance", query: QueryAnalysis{MemoryAbility: MemoryAbilityProvenance}, want: MemoryBlockTypeProvenanceMemory},
+		{name: "causal", query: QueryAnalysis{MemoryAbility: MemoryAbilityCausalExplain}, want: MemoryBlockTypeRelevantCausalMemory},
+		{name: "historical", query: QueryAnalysis{MemoryAbility: MemoryAbilityHistorical}, want: MemoryBlockTypeHistoricalTransitionMemory},
+		{name: "premise", query: QueryAnalysis{MemoryAbility: MemoryAbilityPremiseCheck}, want: MemoryBlockTypePremiseCheckMemory},
+		{name: "relationship arc", query: QueryAnalysis{MemoryAbility: MemoryAbilityRelationshipArc}, want: MemoryBlockTypeRelationshipArcMemory},
+		{name: "supportive", query: QueryAnalysis{MemoryAbility: MemoryAbilitySupportive}, want: MemoryBlockTypeSupportiveMemory},
+		{name: "forget delete signal", query: QueryAnalysis{Signals: []QuerySignal{QuerySignalForgetDelete}}, want: MemoryBlockTypeSupportiveMemory},
+		{name: "relationship arc hint", query: QueryAnalysis{ContextBlockHints: []string{MemoryBlockTypeRelationshipArcMemory}}, want: MemoryBlockTypeRelationshipArcMemory},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := contextBlockType(tt.query, fact); got != tt.want {
+				t.Fatalf("contextBlockType() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

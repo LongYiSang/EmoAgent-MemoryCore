@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,7 +121,7 @@ func TestServiceRetrievePreservesPhase5EContextFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
-	block := requirePublicBlock(t, contextResult, memorycore.MemoryBlockTypeCausalContext)
+	block := requirePublicBlock(t, contextResult, memorycore.MemoryBlockTypeRelevantCausalMemory)
 	item := requirePublicBlockItem(t, block, effect.ID)
 	if item.HistoricalStatus != memorycore.MemoryHistoricalStatusCurrent {
 		t.Fatalf("historical_status = %q, want current", item.HistoricalStatus)
@@ -563,6 +565,285 @@ func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 	}
 	if contextResult.Mirror.SidecarCandidateCount != 1 || contextResult.Mirror.MappedCandidateCount != 1 || contextResult.Mirror.DroppedCandidateCount != 0 {
 		t.Fatalf("mirror counts = %#v", contextResult.Mirror)
+	}
+}
+
+func TestServiceRetrieveRunsSemanticAnalysisBeforeMirrorAndPassesMergedAnalysis(t *testing.T) {
+	ctx := context.Background()
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/query-analysis" {
+			t.Fatalf("path = %s, want /retrieval/query-analysis", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode query analysis request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version":  "memory_query_analysis_result.v0.1",
+			"request_id":      request["request_id"],
+			"status":          "ok",
+			"provider":        "sidecar",
+			"model":           "semantic-test",
+			"prompt_version":  "qa-test",
+			"fallback_reason": "",
+			"analysis": map[string]any{
+				"time_mode":      "historical",
+				"memory_domain":  "work_experience_memory",
+				"memory_ability": "provenance",
+				"evidence_need":  "provenance_source",
+				"confidence":     0.93,
+				"field_confidence": map[string]any{
+					"overall":        0.93,
+					"time_mode":      0.93,
+					"memory_ability": 0.93,
+					"memory_domain":  0.93,
+					"evidence_need":  0.93,
+				},
+				"signals":          []string{"provenance"},
+				"query_rewrites":   []map[string]any{{"text": "semantic rewrite target", "purpose": "semantic_recall", "weight": 0.7}},
+				"semantic_anchors": []map[string]any{{"text": "semantic anchor target", "weight": 0.5}},
+			},
+		})
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我之前在 repo 里记录过来源。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "repo", "用户记录过 repo 来源。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7251, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7251, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "where did repo source come from",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户记录过 repo 来源。", "")
+	if adapter.calls != 1 {
+		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
+	}
+	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceMerged {
+		t.Fatalf("mirror query source = %q, want merged: %#v", adapter.lastCandidateRequest.Query.Source, adapter.lastCandidateRequest.Query)
+	}
+	if len(adapter.lastCandidateRequest.Query.QueryRewrites) != 1 || adapter.lastCandidateRequest.Query.QueryRewrites[0].Text != "semantic rewrite target" {
+		t.Fatalf("mirror query rewrites = %#v", adapter.lastCandidateRequest.Query.QueryRewrites)
+	}
+	if contextResult.QueryAnalysis == nil || contextResult.QueryAnalysis.Source != memorycore.QueryAnalysisSourceMerged {
+		t.Fatalf("result query analysis = %#v, want merged", contextResult.QueryAnalysis)
+	}
+}
+
+func TestServiceRetrieveSemanticFailureStillCallsMirrorWithRuleFallbackAnalysis(t *testing.T) {
+	ctx := context.Background()
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "semantic down with private body", http.StatusServiceUnavailable)
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7252, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7252, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	if adapter.calls != 1 {
+		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
+	}
+	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceSemanticFallback {
+		t.Fatalf("mirror query source = %q, want semantic fallback", adapter.lastCandidateRequest.Query.Source)
+	}
+	if adapter.lastCandidateRequest.Query.Raw != "咖啡" || len(adapter.lastCandidateRequest.Query.QueryRewrites) != 0 || len(adapter.lastCandidateRequest.Query.SemanticAnchors) != 0 {
+		t.Fatalf("mirror query = %#v, want raw rule fallback without generated semantic queries", adapter.lastCandidateRequest.Query)
+	}
+}
+
+func TestServiceRetrieveRerankInputExcludesSemanticRewritesAndAnchors(t *testing.T) {
+	ctx := context.Background()
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode query analysis request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "direct_fact",
+				"evidence_need":  "exact_observation",
+				"confidence":     0.95,
+				"field_confidence": map[string]any{
+					"overall":        0.95,
+					"time_mode":      0.95,
+					"memory_ability": 0.95,
+					"memory_domain":  0.95,
+					"evidence_need":  0.95,
+				},
+				"query_rewrites":   []map[string]any{{"text": "SECRET_REWRITE_SHOULD_NOT_RERANK", "purpose": "semantic_recall", "weight": 0.7}},
+				"semantic_anchors": []map[string]any{{"text": "SECRET_ANCHOR_SHOULD_NOT_RERANK", "weight": 0.5}},
+			},
+		})
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7253, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7253, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.8}}
+
+	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if adapter.rerankCalls != 1 {
+		t.Fatalf("rerank calls = %d, want 1", adapter.rerankCalls)
+	}
+	if strings.Contains(adapter.lastRerankRequest.QueryText, "SECRET_REWRITE_SHOULD_NOT_RERANK") || strings.Contains(adapter.lastRerankRequest.QueryText, "SECRET_ANCHOR_SHOULD_NOT_RERANK") {
+		t.Fatalf("rerank query leaked generated semantic text: %q", adapter.lastRerankRequest.QueryText)
+	}
+	if !strings.Contains(adapter.lastRerankRequest.QueryText, "query=咖啡") {
+		t.Fatalf("rerank query = %q, want bounded raw/normalized query", adapter.lastRerankRequest.QueryText)
+	}
+}
+
+func TestServiceRetrieveForgetDeleteDoesNotInjectOperationTargetCandidateAsContext(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢薄荷茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "薄荷茶", "用户喜欢薄荷茶。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7254, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{
+		TriviumNodeID:  7254,
+		Score:          0.96,
+		Source:         "semantic_rewrite_dense",
+		PrimaryPurpose: "operation_target",
+		Rank:           1,
+		HitCount:       1,
+	}}
+	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{{TriviumNodeID: 7254, Score: 0.9, Source: "graph_activation", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "删除薄荷茶这条记忆",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, fact.ID)
+	if adapter.activationCalls != 0 {
+		t.Fatalf("activation calls = %d, want no broad graph expansion for forget/delete operation target", adapter.activationCalls)
+	}
+	if contextResult.Mirror == nil || len(contextResult.Mirror.Candidates) != 1 {
+		t.Fatalf("mirror diagnostics = %#v, want operation target diagnostic", contextResult.Mirror)
+	}
+	candidate := contextResult.Mirror.Candidates[0]
+	if candidate.Source != "semantic_rewrite_dense" || candidate.PrimaryPurpose != "operation_target" || candidate.DropReason != "operation_target_not_context" {
+		t.Fatalf("operation target diagnostic = %#v", candidate)
+	}
+}
+
+func TestServiceRetrieveForgetDeleteDoesNotInjectRawDenseMirrorCandidateAsContext(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢茉莉花茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "茉莉花茶", "用户喜欢茉莉花茶。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7255, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{
+		TriviumNodeID:  7255,
+		Score:          0.97,
+		Source:         "raw_dense",
+		PrimaryPurpose: "raw_query",
+		Rank:           1,
+		HitCount:       1,
+	}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "删除茉莉花茶这条记忆",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireNoMemoryItem(t, contextResult, fact.ID)
+	if adapter.activationCalls != 0 {
+		t.Fatalf("activation calls = %d, want no graph expansion for forget/delete mirror candidates", adapter.activationCalls)
+	}
+	if contextResult.Mirror == nil || len(contextResult.Mirror.Candidates) != 1 {
+		t.Fatalf("mirror diagnostics = %#v, want raw dense diagnostic", contextResult.Mirror)
+	}
+	candidate := contextResult.Mirror.Candidates[0]
+	if candidate.Source != "raw_dense" || candidate.PrimaryPurpose != "raw_query" || candidate.DropReason != "forget_delete_not_context" {
+		t.Fatalf("raw dense forget/delete diagnostic = %#v", candidate)
+	}
+	if contextResult.Mirror.Status != "forget_delete_not_context" {
+		t.Fatalf("mirror status = %q, want forget_delete_not_context", contextResult.Mirror.Status)
 	}
 }
 
@@ -1260,12 +1541,14 @@ type retrievalMirrorAdapter struct {
 	calls                    int
 	activationCalls          int
 	rerankCalls              int
+	lastCandidateRequest     memorycore.MirrorCandidateRequest
 	lastActivationRequest    memorycore.MirrorActivationRequest
 	lastRerankRequest        memorycore.MirrorRerankRequest
 }
 
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
 	a.calls++
+	a.lastCandidateRequest = req
 	if a.err != nil {
 		return nil, a.err
 	}
@@ -1320,12 +1603,21 @@ func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter memor
 }
 
 func openRetrievalMirrorServiceWithOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions) (memorycore.Service, string) {
+	return openRetrievalMirrorServiceWithAllOptions(t, ctx, adapter, resilience, memorycore.QueryAnalysisOptions{})
+}
+
+func openRetrievalMirrorServiceWithQueryAnalysisOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, queryAnalysis memorycore.QueryAnalysisOptions) (memorycore.Service, string) {
+	return openRetrievalMirrorServiceWithAllOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{}, queryAnalysis)
+}
+
+func openRetrievalMirrorServiceWithAllOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions, queryAnalysis memorycore.QueryAnalysisOptions) (memorycore.Service, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:            dbPath,
 		AutoMigrate:       true,
 		MirrorAdapter:     adapter,
+		QueryAnalysis:     queryAnalysis,
 		SidecarResilience: resilience,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)

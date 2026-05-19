@@ -12,6 +12,7 @@ from memorycore_sidecar.adapters.trivium import TriviumAdapter
 from memorycore_sidecar.config import (
     EmbeddingCacheConfig,
     EmbeddingConfig,
+    QueryAnalysisConfig,
     RerankConfig,
     SidecarConfig,
     TriviumConfig,
@@ -44,18 +45,29 @@ def test_trivium_adapter_upserts_updates_and_searches_real_db(tmp_path: Path):
     assert first == second
     assert first["trivium_node_id"] > 0
     result = adapter.find_candidates(
-        {"persona_id": "alice", "query_text": "coffee query", "limit": 5}
+        {
+            "request_id": "query-1",
+            "persona_id": "alice",
+            "query": {"raw_text": "coffee query"},
+            "limit": 5,
+            "debug_scores": False,
+        }
     )
     assert result == {
         "candidates": [
             {
                 "trivium_node_id": first["trivium_node_id"],
-                "score": pytest.approx(1.0),
-                "source": "trivium_vector",
+                "fused_score": pytest.approx(1.0),
+                "primary_source": "raw_dense",
+                "primary_purpose": "raw_query",
+                "rank": 1,
+                "hit_count": 1,
             }
         ],
         "degraded": False,
     }
+    assert "diagnostics" not in result
+    assert "score_breakdown" not in result["candidates"][0]
 
     stored = _stored_node(adapter, "alice", first["trivium_node_id"])
     assert stored.payload["persona_id"] == "alice"
@@ -86,8 +98,11 @@ def test_trivium_adapter_delete_node_is_idempotent(tmp_path: Path):
         {"persona_id": "alice", "node_type": "fact", "sqlite_node_id": "fact-1"}
     ) == {}
     assert adapter.find_candidates(
-        {"persona_id": "alice", "query_text": "query", "limit": 5}
-    ) == {"candidates": [], "degraded": False}
+        {"persona_id": "alice", "query": {"raw_text": "query"}, "limit": 5}
+    ) == {
+        "candidates": [],
+        "degraded": False,
+    }
     assert _stored_node(adapter, "alice", upserted["trivium_node_id"]) is None
 
 
@@ -115,14 +130,92 @@ def test_trivium_adapter_find_candidates_clamps_and_filters_scores():
     adapter._dbs = {"alice": SearchDB()}
 
     assert adapter.find_candidates(
-        {"persona_id": "alice", "query_text": "query", "limit": 10}
+        {"persona_id": "alice", "query": {"raw_text": "query"}, "limit": 10}
     ) == {
         "candidates": [
-            {"trivium_node_id": 1, "score": 1.0, "source": "trivium_vector"},
-            {"trivium_node_id": 2, "score": 0.42, "source": "trivium_vector"},
+            {
+                "trivium_node_id": 1,
+                "fused_score": 1.0,
+                "primary_source": "raw_dense",
+                "primary_purpose": "raw_query",
+                "rank": 1,
+                "hit_count": 1,
+            },
+            {
+                "trivium_node_id": 2,
+                "fused_score": pytest.approx(0.42),
+                "primary_source": "raw_dense",
+                "primary_purpose": "raw_query",
+                "rank": 2,
+                "hit_count": 1,
+            },
         ],
         "degraded": False,
     }
+
+
+def test_trivium_adapter_candidate_v02_overfetches_merges_and_exposes_debug_breakdown():
+    class Hit:
+        def __init__(self, node_id: int, score: Any) -> None:
+            self.id = node_id
+            self.score = score
+
+    class SearchDB:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def search(self, query_vector, *, top_k, expand_depth, min_score, payload_filter):
+            self.calls.append({"vector": query_vector, "top_k": top_k})
+            key = tuple(query_vector)
+            if key == (1.0, 0.0, 0.0):
+                return [Hit(1, 0.5)]
+            if key == (0.0, 1.0, 0.0):
+                return [Hit(1, 0.9), Hit(2, 0.8)]
+            if key == (0.0, 0.0, 1.0):
+                return [Hit(2, 0.7)]
+            return []
+
+    db = SearchDB()
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter.embedding_provider = FakeEmbeddingProvider(
+        {
+            "raw": [1.0, 0.0, 0.0],
+            "rewrite": [0.0, 1.0, 0.0],
+            "anchor": [0.0, 0.0, 1.0],
+        }
+    )
+    adapter._lock = threading.RLock()
+    adapter._dbs = {"alice": db}
+
+    result = adapter.find_candidates(
+        {
+            "request_id": "candidate-1",
+            "persona_id": "alice",
+            "limit": 2,
+            "debug_scores": True,
+            "query": {
+                "raw_text": "raw",
+                "rewrites": [
+                    {"text": "rewrite", "weight": 0.5, "purpose": "semantic_recall"}
+                ],
+                "semantic_anchors": [
+                    {"text": "anchor", "weight": 0.4, "purpose": "semantic_anchor"}
+                ],
+            },
+        }
+    )
+
+    assert [call["top_k"] for call in db.calls] == [32, 32, 16]
+    assert [candidate["trivium_node_id"] for candidate in result["candidates"]] == [1, 2]
+    assert result["candidates"][0]["primary_source"] == "raw_dense"
+    assert result["candidates"][0]["hit_count"] == 2
+    assert result["candidates"][0]["score_breakdown"]["score_norm_method"] == "weighted_max_rrf"
+    assert result["diagnostics"]["query_count"] == 3
+    assert result["diagnostics"]["per_query_counts"] == [
+        {"source": "raw_dense", "purpose": "raw_query", "count": 1},
+        {"source": "semantic_rewrite_dense", "purpose": "semantic_recall", "count": 2},
+        {"source": "semantic_anchor_dense", "purpose": "semantic_anchor", "count": 1},
+    ]
 
 
 def test_trivium_adapter_close_clears_registry_before_closing_handles():
@@ -239,8 +332,11 @@ def test_trivium_adapter_clear_namespace_removes_only_persona_files(tmp_path: Pa
     assert after < before
     assert len(list(tmp_path.glob("*.tdb"))) == 1
     assert adapter.find_candidates(
-        {"persona_id": "alice", "query_text": "alice text", "limit": 5}
-    ) == {"candidates": [], "degraded": False}
+        {"persona_id": "alice", "query": {"raw_text": "alice text"}, "limit": 5}
+    ) == {
+        "candidates": [],
+        "degraded": False,
+    }
 
 
 def test_trivium_adapter_sanitizes_persona_id_to_prevent_path_traversal(
@@ -391,7 +487,7 @@ def test_trivium_adapter_wraps_embedding_provider_and_records_node_and_query_ref
         {
             "request_id": "query-1",
             "persona_id": "alice",
-            "query_text": "query text",
+            "query": {"raw_text": "query text"},
             "limit": 5,
         }
     )
@@ -399,7 +495,7 @@ def test_trivium_adapter_wraps_embedding_provider_and_records_node_and_query_ref
         {
             "request_id": "query-1",
             "persona_id": "alice",
-            "query_text": "query text",
+            "query": {"raw_text": "query text"},
             "limit": 5,
         }
     )
@@ -660,6 +756,16 @@ def _config(
             timeout_seconds=30,
             top_n=30,
             instruct="Retrieve semantically relevant safe memory summaries for the user's query.",
+        ),
+        query_analysis=QueryAnalysisConfig(
+            provider="none",
+            base_url="https://example.test/v1",
+            api_key_env="TEST_QUERY_KEY",
+            model="test-query",
+            timeout_seconds=2,
+            temperature=0.0,
+            response_format="json_object",
+            prompt_version="query-analysis-v0.1",
         ),
     )
 

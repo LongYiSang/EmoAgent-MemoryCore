@@ -397,12 +397,14 @@ func markMirrorCandidateAuthorityDrop(diagnostics *MirrorDiagnostics, mirror Ret
 		}
 	}
 	diagnostics.Candidates = append(diagnostics.Candidates, MirrorCandidateDiagnostic{
-		TriviumNodeID: mirror.TriviumNodeID,
-		SQLiteFactID:  mirror.FactID,
-		Score:         mirror.Score,
-		Source:        mirror.Source,
-		Rank:          mirror.Rank,
-		DropReason:    "dropped_by_authority_filter",
+		TriviumNodeID:  mirror.TriviumNodeID,
+		SQLiteFactID:   mirror.FactID,
+		Score:          mirror.Score,
+		Source:         mirror.Source,
+		PrimaryPurpose: mirror.PrimaryPurpose,
+		Rank:           mirror.Rank,
+		HitCount:       mirror.HitCount,
+		DropReason:     "dropped_by_authority_filter",
 	})
 	diagnostics.DroppedCandidateCount++
 }

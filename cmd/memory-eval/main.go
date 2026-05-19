@@ -68,7 +68,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			})
 			continue
 		}
-		if opts.qualityNoStub {
+		if shouldForbidEvalStubs(opts, fixture) {
 			if err := fixture.ValidateStubPolicy(memoryeval.FixtureStubPolicyForbid); err != nil {
 				cases = append(cases, memoryeval.QualityBenchmarkCase{
 					Path:    path,
@@ -112,7 +112,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			failed = true
 			continue
 		}
-		if opts.qualityNoStub {
+		if shouldForbidEvalStubs(opts, fixture) {
 			if err := fixture.ValidateStubPolicy(memoryeval.FixtureStubPolicyForbid); err != nil {
 				fmt.Fprintf(stderr, "%s: %v\n", path, err)
 				failed = true
@@ -153,6 +153,13 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 		return 1
 	}
 	return 0
+}
+
+func shouldForbidEvalStubs(opts options, fixture *memoryeval.Fixture) bool {
+	if !opts.qualityNoStub || fixture == nil {
+		return false
+	}
+	return fixture.QualityMode || !fixture.AllowStub
 }
 
 func writeCombinedMatrixReports(reportDir string, outputs []matrixRunOutput) error {

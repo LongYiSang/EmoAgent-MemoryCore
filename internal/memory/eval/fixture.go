@@ -85,22 +85,23 @@ type EpisodeSeed struct {
 }
 
 type Step struct {
-	ID            string              `yaml:"id"`
-	Action        string              `yaml:"action"`
-	Consolidate   *ConsolidateStep    `yaml:"consolidate"`
-	Retrieve      *RetrieveStep       `yaml:"retrieve"`
-	Forget        *ForgetStep         `yaml:"forget"`
-	RetentionRun  *RetentionRunStep   `yaml:"retention_run"`
-	Compression   *CompressionStep    `yaml:"compression_apply"`
-	RebuildSearch *RebuildSearchStep  `yaml:"rebuild_search"`
-	MirrorRebuild *MirrorRebuildStep  `yaml:"mirror_rebuild"`
-	MirrorSync    *MirrorSyncStep     `yaml:"mirror_sync"`
-	Link          *LinkStep           `yaml:"link"`
-	Fact          *FactStep           `yaml:"fact"`
-	FactOverride  *FactOverride       `yaml:"fact_override"`
-	MirrorStub    *MirrorStubSettings `yaml:"mirror_stub"`
-	GraphStub     *GraphStubSettings  `yaml:"graph_activation_stub"`
-	RerankStub    *RerankStubSettings `yaml:"rerank_stub"`
+	ID            string                `yaml:"id"`
+	Action        string                `yaml:"action"`
+	Consolidate   *ConsolidateStep      `yaml:"consolidate"`
+	Retrieve      *RetrieveStep         `yaml:"retrieve"`
+	Forget        *ForgetStep           `yaml:"forget"`
+	RetentionRun  *RetentionRunStep     `yaml:"retention_run"`
+	Compression   *CompressionStep      `yaml:"compression_apply"`
+	RebuildSearch *RebuildSearchStep    `yaml:"rebuild_search"`
+	MirrorRebuild *MirrorRebuildStep    `yaml:"mirror_rebuild"`
+	MirrorSync    *MirrorSyncStep       `yaml:"mirror_sync"`
+	Link          *LinkStep             `yaml:"link"`
+	Fact          *FactStep             `yaml:"fact"`
+	FactOverride  *FactOverride         `yaml:"fact_override"`
+	MirrorStub    *MirrorStubSettings   `yaml:"mirror_stub"`
+	GraphStub     *GraphStubSettings    `yaml:"graph_activation_stub"`
+	RerankStub    *RerankStubSettings   `yaml:"rerank_stub"`
+	SemanticStub  *SemanticStubSettings `yaml:"semantic_query_analysis_stub"`
 }
 
 type ConsolidateStep struct {
@@ -138,12 +139,13 @@ type ConsolidationPolicy struct {
 }
 
 type RetrieveStep struct {
-	PersonaID string                 `yaml:"persona_id"`
-	SessionID string                 `yaml:"session_id"`
-	QueryText string                 `yaml:"query_text"`
-	Now       string                 `yaml:"now"`
-	Policy    RetrievalPolicy        `yaml:"policy"`
-	Context   RetrievalAffectContext `yaml:"context"`
+	PersonaID  string                 `yaml:"persona_id"`
+	SessionID  string                 `yaml:"session_id"`
+	QueryText  string                 `yaml:"query_text"`
+	Now        string                 `yaml:"now"`
+	FusionMode string                 `yaml:"fusion_mode"`
+	Policy     RetrievalPolicy        `yaml:"policy"`
+	Context    RetrievalAffectContext `yaml:"context"`
 }
 
 type RetrievalPolicy struct {
@@ -340,6 +342,62 @@ type RerankItemStub struct {
 	DebugReason string  `yaml:"debug_reason"`
 }
 
+type SemanticStubSettings struct {
+	Status         string               `yaml:"status"`
+	Degraded       bool                 `yaml:"degraded"`
+	FallbackReason string               `yaml:"fallback_reason"`
+	Provider       string               `yaml:"provider"`
+	Model          string               `yaml:"model"`
+	PromptVersion  string               `yaml:"prompt_version"`
+	Analysis       SemanticStubAnalysis `yaml:"analysis"`
+}
+
+type SemanticStubAnalysis struct {
+	TimeMode          string                 `yaml:"time_mode"`
+	Signals           []string               `yaml:"signals"`
+	MemoryDomain      string                 `yaml:"memory_domain"`
+	MemoryAbility     string                 `yaml:"memory_ability"`
+	EvidenceNeed      string                 `yaml:"evidence_need"`
+	Confidence        float64                `yaml:"confidence"`
+	FieldConfidence   SemanticStubConfidence `yaml:"field_confidence"`
+	EntityMentions    []SemanticStubEntity   `yaml:"entity_mentions"`
+	QueryRewrites     []SemanticStubRewrite  `yaml:"query_rewrites"`
+	SemanticAnchors   []SemanticStubAnchor   `yaml:"semantic_anchors"`
+	ContextBlockHints []string               `yaml:"context_block_hints"`
+}
+
+type SemanticStubConfidence struct {
+	Overall          float64 `yaml:"overall"`
+	TimeMode         float64 `yaml:"time_mode"`
+	MemoryAbility    float64 `yaml:"memory_ability"`
+	MemoryDomain     float64 `yaml:"memory_domain"`
+	EvidenceNeed     float64 `yaml:"evidence_need"`
+	EntityResolution float64 `yaml:"entity_resolution"`
+}
+
+type SemanticStubEntity struct {
+	EntityID      string  `yaml:"entity_id"`
+	CanonicalName string  `yaml:"canonical_name"`
+	Alias         string  `yaml:"alias"`
+	MatchText     string  `yaml:"match_text"`
+	MatchKind     string  `yaml:"match_kind"`
+	Confidence    float64 `yaml:"confidence"`
+}
+
+type SemanticStubRewrite struct {
+	Text    string  `yaml:"text"`
+	Purpose string  `yaml:"purpose"`
+	Weight  float64 `yaml:"weight"`
+}
+
+type SemanticStubAnchor struct {
+	Text       string  `yaml:"text"`
+	AnchorType string  `yaml:"anchor_type"`
+	EntityID   string  `yaml:"entity_id"`
+	Weight     float64 `yaml:"weight"`
+	Confidence float64 `yaml:"confidence"`
+}
+
 type Assertion struct {
 	Type                    string   `yaml:"type"`
 	Name                    string   `yaml:"name"`
@@ -385,6 +443,13 @@ type Assertion struct {
 	RelatedHistoricalStatus string   `yaml:"related_historical_status"`
 	SourceRefCount          int      `yaml:"source_ref_count"`
 	SuppressionReason       string   `yaml:"suppression_reason"`
+	FallbackReason          string   `yaml:"fallback_reason"`
+	QueryRewrites           []string `yaml:"query_rewrites"`
+	ContextBlockHints       []string `yaml:"context_block_hints"`
+	QueryCount              int      `yaml:"query_count"`
+	RawQueryCount           int      `yaml:"raw_query_count"`
+	RewriteQueryCount       int      `yaml:"rewrite_query_count"`
+	AnchorQueryCount        int      `yaml:"anchor_query_count"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -456,6 +521,9 @@ func (f *Fixture) Validate() error {
 			if step.Retrieve == nil {
 				return fmt.Errorf("case %s step %s missing retrieve body", caseID, step.ID)
 			}
+			if !validFusionMode(step.Retrieve.FusionMode) {
+				return fmt.Errorf("case %s step %s unknown fusion_mode %q", caseID, step.ID, step.Retrieve.FusionMode)
+			}
 		case "forget":
 			if step.Forget == nil {
 				return fmt.Errorf("case %s step %s missing forget body", caseID, step.ID)
@@ -522,12 +590,12 @@ func (f *Fixture) ValidateStubPolicy(policy FixtureStubPolicy) error {
 	}
 	usesStub := f.UsesEvalStub()
 	if f != nil && f.AllowStub && policy == FixtureStubPolicyForbid {
-		return fmt.Errorf("case %s allow_stub=true but suite forbids mirror_stub, graph_activation_stub, and rerank_stub", caseID)
+		return fmt.Errorf("case %s allow_stub=true but suite forbids mirror_stub, graph_activation_stub, rerank_stub, and semantic_query_analysis_stub", caseID)
 	}
 	switch policy {
 	case FixtureStubPolicyForbid:
 		if usesStub {
-			return fmt.Errorf("case %s uses eval stubs but suite forbids mirror_stub, graph_activation_stub, and rerank_stub", caseID)
+			return fmt.Errorf("case %s uses eval stubs but suite forbids mirror_stub, graph_activation_stub, rerank_stub, and semantic_query_analysis_stub", caseID)
 		}
 	case FixtureStubPolicyRequire:
 		if !usesStub {
@@ -540,7 +608,19 @@ func (f *Fixture) ValidateStubPolicy(policy FixtureStubPolicy) error {
 }
 
 func (s Step) UsesEvalStub() bool {
-	return s.MirrorStub != nil || s.GraphStub != nil || s.RerankStub != nil
+	return s.MirrorStub != nil || s.GraphStub != nil || s.RerankStub != nil || s.SemanticStub != nil
+}
+
+func (f *Fixture) UsesSemanticEvalStub() bool {
+	if f == nil {
+		return false
+	}
+	for _, step := range f.Steps {
+		if step.SemanticStub != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Fixture) StableHash() string {
@@ -553,6 +633,15 @@ func (f *Fixture) StableHash() string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func validFusionMode(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "", "max_only", "weighted_rrf_support":
+		return true
+	default:
+		return false
+	}
 }
 
 func knownAssertionType(value string) bool {

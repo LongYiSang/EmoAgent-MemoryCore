@@ -9,7 +9,7 @@
 - `suite: quality_retrieval`
 - `quality_mode: true`
 - `allow_stub: false`
-- 不得使用 `mirror_stub`、`graph_activation_stub`、`rerank_stub`
+- 不得使用 `mirror_stub`、`graph_activation_stub`、`rerank_stub`、`semantic_stub`
 - 不得使用真实用户聊天记录，即使脱敏也不要放进公开 fixture
 - 预期结果只能通过 assertions 描述，不能把答案伪造成 sidecar 返回值
 
@@ -315,8 +315,13 @@ W003_relationship_building_no_stub.yaml
 
 - `time_mode`: `current` / `historical`
 - `memory_domain`: 例如 `work_experience_memory`
-- `memory_ability`: 例如 `historical`、`provenance`、`causal_explain`、`workflow`、`gotcha`、`premise_check`
-- `evidence_need`: 例如 `state_transition`、`provenance_source`、`procedure_note`、`gotcha_note`、`premise_counterexample`
+- `memory_ability`: 例如 `historical`、`provenance`、`causal_explain`、`workflow`、`gotcha`、`premise_check`、`relationship_arc`
+- `evidence_need`: 例如 `state_transition`、`provenance_source`、`procedure_note`、`gotcha_note`、`premise_counterexample`、`relationship_timeline`
+- `source`: `rule_only` / `merged` / `semantic_failed_rule_fallback`
+- `semantic_status`: `ok` / `degraded`
+- `fallback_reason`: semantic fallback 原因，期望为空时可断言 `""`
+- `query_rewrite_contains`: 检查 merged analysis 是否包含指定语义 rewrite 片段
+- `context_block_hints`: 检查 semantic block hint，例如 `relationship_arc_memory`
 
 ### `selected_chain_correct`
 
@@ -326,7 +331,7 @@ W003_relationship_building_no_stub.yaml
 - type: selected_chain_correct
   name: q007 causal context includes cause link
   step: q007_causal_morning_avoidance
-  block_type: causal_context
+  block_type: relevant_causal_memory
   node_id: $f_morning_task_avoidance.fact_id
   node_ids: [$f_dislikes_8am_meeting.fact_id]
   link_type: CAUSED_BY
@@ -348,6 +353,27 @@ W003_relationship_building_no_stub.yaml
   block_type: experience_context
   node_id: $f_synthetic_worlds_before_questions.fact_id
 ```
+
+当前有效 block type：
+
+```text
+facts
+relevant_causal_memory
+historical_transition_memory
+provenance_memory
+premise_check_memory
+relationship_arc_memory
+supportive_memory
+experience_context
+```
+
+历史/迁移说明：新 fixture 应使用上面的当前 block type。现有 legacy W fixtures 可能仍包含旧 block alias `causal_context`、`historical_context`、`provenance_context`、`supportive_context`；迁移期间 eval 会 canonicalize 这些旧 alias。`W003_relationship_building_no_stub.yaml` 是受保护的用户 WIP，不要为了迁移 block 名称编辑它。新文档和新 fixture 不应继续新增旧 alias。
+
+## Controlled Semantic Stubs
+
+`semantic_stub` 只允许用于 `testdata/memory_eval/controlled/` 下的受控回归 fixture，用来隔离 query-analysis fallback、semantic rewrite dense diagnostics、fusion ablation 等下游行为。
+
+quality/no-stub W fixtures，包括本目录的 `W001_*_no_stub.yaml`、`W002_*_no_stub.yaml`、`W003_relationship_building_no_stub.yaml`，必须保持 `allow_stub: false`，不得使用 `semantic_stub`、`mirror_stub`、`graph_activation_stub` 或 `rerank_stub`。这些 world 用于观察真实检索质量，不应伪造 sidecar 或 query-analysis 结果。
 
 ### `unsupported_premise_not_asserted`
 

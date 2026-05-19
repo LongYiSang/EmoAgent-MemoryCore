@@ -84,19 +84,120 @@ def test_fake_adapter_returns_upserted_nodes_as_candidates():
     )
 
     result = adapter.find_candidates(
-        {"persona_id": "default", "query_text": "咖啡", "limit": 8}
+        {
+            "persona_id": "default",
+            "query": {"raw_text": "咖啡"},
+            "limit": 8,
+            "debug_scores": False,
+        }
     )
 
     assert result == {
         "candidates": [
             {
                 "trivium_node_id": upserted["trivium_node_id"],
-                "score": 1.0,
-                "source": "fake_sparse",
+                "fused_score": 1.0,
+                "primary_source": "raw_dense",
+                "primary_purpose": "raw_query",
+                "rank": 1,
+                "hit_count": 1,
             }
         ],
         "degraded": False,
     }
+    assert "diagnostics" not in result
+    assert "score_breakdown" not in result["candidates"][0]
+
+
+def test_fake_adapter_candidate_v02_dedupes_generated_queries_and_applies_support_bonus():
+    adapter = FakeMirrorAdapter()
+    first = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-coffee",
+            "searchable_text": "coffee espresso latte",
+            "payload": {},
+        }
+    )
+    second = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-tea",
+            "searchable_text": "espresso tea",
+            "payload": {},
+        }
+    )
+
+    result = adapter.find_candidates(
+        {
+            "persona_id": "default",
+            "limit": 2,
+            "debug_scores": True,
+            "query": {
+                "raw_text": "coffee",
+                "signals": ["preference"],
+                "rewrites": [
+                    {"text": "espresso", "weight": 0.5, "purpose": "semantic_recall"},
+                    {"text": " espresso ", "weight": 0.5, "purpose": "duplicate"},
+                ],
+                "semantic_anchors": [
+                    {"text": "latte", "weight": 0.4, "purpose": "semantic_anchor"}
+                ],
+            },
+        }
+    )
+
+    assert result["degraded"] is False
+    assert [candidate["trivium_node_id"] for candidate in result["candidates"]] == [
+        first["trivium_node_id"],
+        second["trivium_node_id"],
+    ]
+    assert result["candidates"][0]["primary_source"] == "raw_dense"
+    assert result["candidates"][0]["hit_count"] == 3
+    assert result["candidates"][0]["score_breakdown"]["support_bonus"] > 0
+    assert result["diagnostics"]["query_count"] == 3
+    assert result["diagnostics"]["rewrite_query_count"] == 1
+    assert result["diagnostics"]["anchor_query_count"] == 1
+
+
+def test_fake_adapter_forget_delete_queries_label_operation_target_candidates():
+    adapter = FakeMirrorAdapter()
+    upserted = adapter.upsert_node(
+        {
+            "persona_id": "default",
+            "node_type": "fact",
+            "sqlite_node_id": "fact-delete",
+            "searchable_text": "delete coffee",
+            "payload": {},
+        }
+    )
+
+    result = adapter.find_candidates(
+        {
+            "persona_id": "default",
+            "limit": 5,
+            "debug_scores": True,
+            "query": {
+                "raw_text": "delete coffee",
+                "signals": ["forget_delete"],
+                "rewrites": [
+                    {"text": "delete coffee", "weight": 0.8, "purpose": "semantic_recall"},
+                    {"text": "coffee", "weight": 0.8, "purpose": "operation_target"},
+                ],
+                "semantic_anchors": [
+                    {"text": "relationship expansion", "weight": 0.65, "purpose": "relationship"}
+                ],
+            },
+        }
+    )
+
+    assert result["candidates"][0]["trivium_node_id"] == upserted["trivium_node_id"]
+    assert result["candidates"][0]["primary_purpose"] == "raw_query"
+    assert result["diagnostics"]["dense_results_label"] == "operation_target_candidates"
+    assert result["diagnostics"]["rewrite_query_count"] == 1
+    assert result["diagnostics"]["anchor_query_count"] == 0
 
 
 def test_fake_adapter_rerank_uses_overlap_and_configured_score_deterministically():

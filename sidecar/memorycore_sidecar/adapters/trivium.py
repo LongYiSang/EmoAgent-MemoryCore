@@ -13,6 +13,7 @@ from typing import Any
 
 from memorycore_sidecar.activation import ActivationEdge, activate_graph_with_diagnostics
 from memorycore_sidecar.config import SidecarConfig, load_config
+from memorycore_sidecar.candidates import DenseHit, fuse_dense_results
 from memorycore_sidecar.embedding import (
     CachedEmbeddingProvider,
     EmbeddingProvider,
@@ -232,55 +233,36 @@ class TriviumAdapter(MirrorAdapter):
 
     def find_candidates(self, request: dict[str, Any]) -> dict[str, Any]:
         _cleanup_expired_embedding_query_refs(self.embedding_provider)
-        query_ref = None
-        request_id = request.get("request_id")
-        if isinstance(request_id, str) and request_id.strip():
-            query_ref = {
-                "kind": "query",
-                "id": request_id.strip(),
-                "persona_id": str(request["persona_id"]),
-            }
-        query_vector = _embed_with_optional_ref(
-            self.embedding_provider,
-            str(request["query_text"]),
-            query_ref,
-        )
-        with self._lock:
-            db = self._db_for_persona(str(request["persona_id"]))
-            hits = list(
-                db.search(
-                    query_vector,
-                    top_k=int(request["limit"]),
-                    expand_depth=0,
-                    min_score=0.0,
-                    payload_filter=None,
-                )
-            )
-        candidates = []
-        for hit in hits:
-            trivium_node_id = getattr(hit, "id", None)
-            score = getattr(hit, "score", None)
-            if not isinstance(trivium_node_id, int) or trivium_node_id <= 0:
-                continue
-            try:
-                score_float = float(score)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(score_float) or score_float <= 0:
-                continue
-            if score_float > 1.0:
-                score_float = 1.0
-            candidates.append(
-                {
-                    "trivium_node_id": trivium_node_id,
-                    "score": score_float,
-                    "source": "trivium_vector",
+        request_id = str(request.get("request_id", "")).strip()
+        persona_id = str(request["persona_id"])
+
+        def search(query) -> list[DenseHit]:
+            query_ref = None
+            if request_id and query.source == "raw_dense":
+                query_ref = {
+                    "kind": "query",
+                    "id": request_id,
+                    "persona_id": persona_id,
                 }
+            query_vector = _embed_with_optional_ref(
+                self.embedding_provider,
+                query.text,
+                query_ref,
             )
-        result = {
-            "candidates": candidates,
-            "degraded": False,
-        }
+            with self._lock:
+                db = self._db_for_persona(persona_id)
+                hits = list(
+                    db.search(
+                        query_vector,
+                        top_k=query.top_k,
+                        expand_depth=0,
+                        min_score=0.0,
+                        payload_filter=None,
+                    )
+                )
+            return _dense_hits(hits)
+
+        result = fuse_dense_results(request, search)
         stats = self._embedding_cache_stats()
         if stats is not None:
             result["embedding_cache_stats"] = stats
@@ -543,6 +525,23 @@ def _triviumdb_version(module: Any) -> str:
     if isinstance(version, str) and version.strip():
         return version.strip()
     return "unknown"
+
+
+def _dense_hits(hits: list[Any]) -> list[DenseHit]:
+    out: list[DenseHit] = []
+    for hit in hits:
+        trivium_node_id = getattr(hit, "id", None)
+        score = getattr(hit, "score", None)
+        if not isinstance(trivium_node_id, int) or trivium_node_id <= 0:
+            continue
+        try:
+            score_float = float(score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score_float) or score_float <= 0:
+            continue
+        out.append(DenseHit(trivium_node_id=trivium_node_id, score=min(score_float, 1.0)))
+    return out
 
 
 def _sha256_hex(value: str) -> str:

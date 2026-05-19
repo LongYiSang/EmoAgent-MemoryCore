@@ -143,6 +143,27 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 	if assertion.EvidenceNeed != "" && string(analysis.EvidenceNeed) != assertion.EvidenceNeed {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "evidence_need=" + assertion.EvidenceNeed, Actual: "evidence_need=" + string(analysis.EvidenceNeed)}
 	}
+	if assertion.Source != "" && string(analysis.Source) != assertion.Source {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "source=" + assertion.Source, Actual: "source=" + string(analysis.Source)}
+	}
+	if assertion.Status != "" {
+		actual := ""
+		if analysis.Diagnostics != nil {
+			actual = analysis.Diagnostics.SemanticStatus
+		}
+		if actual != assertion.Status {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "semantic_status=" + assertion.Status, Actual: "semantic_status=" + actual}
+		}
+	}
+	if assertion.FallbackReason != "" {
+		actual := ""
+		if analysis.Diagnostics != nil {
+			actual = analysis.Diagnostics.FallbackReason
+		}
+		if actual != assertion.FallbackReason {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "fallback_reason=" + assertion.FallbackReason, Actual: "fallback_reason=" + actual}
+		}
+	}
 	if len(assertion.Signals) > 0 {
 		actual := make([]string, 0, len(analysis.Signals))
 		for _, signal := range analysis.Signals {
@@ -159,6 +180,20 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 		}
 		if !sameStringSet(actual, assertion.EntityMentions) {
 			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "entity_mentions=" + strings.Join(assertion.EntityMentions, ","), Actual: "entity_mentions=" + strings.Join(actual, ",")}
+		}
+	}
+	if len(assertion.QueryRewrites) > 0 {
+		actual := make([]string, 0, len(analysis.QueryRewrites))
+		for _, rewrite := range analysis.QueryRewrites {
+			actual = append(actual, rewrite.Text)
+		}
+		if !sameStringSet(actual, assertion.QueryRewrites) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "query_rewrites=" + strings.Join(assertion.QueryRewrites, ","), Actual: "query_rewrites=" + strings.Join(actual, ",")}
+		}
+	}
+	if len(assertion.ContextBlockHints) > 0 {
+		if !sameStringSet(analysis.ContextBlockHints, assertion.ContextBlockHints) {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "context_block_hints=" + strings.Join(assertion.ContextBlockHints, ","), Actual: "context_block_hints=" + strings.Join(analysis.ContextBlockHints, ",")}
 		}
 	}
 	return nil
@@ -280,7 +315,7 @@ func (s *runState) assertBlockContains(assertion Assertion, wantPresent bool) er
 		return err
 	}
 	for _, block := range result.Blocks {
-		if assertion.BlockType != "" && block.BlockType != assertion.BlockType {
+		if assertion.BlockType != "" && !blockTypeMatches(block.BlockType, assertion.BlockType) {
 			continue
 		}
 		for _, item := range block.Items {
@@ -356,7 +391,7 @@ WHERE persona_id = ?
 		if err := rows.Scan(&blockType, &breakdown); err != nil {
 			return fmt.Errorf("case %s assertion %s access event scan: %w", s.caseID, assertion.Type, err)
 		}
-		if assertion.BlockType != "" && blockType != assertion.BlockType {
+		if assertion.BlockType != "" && !blockTypeMatches(blockType, assertion.BlockType) {
 			continue
 		}
 		if wantReason == "" || strings.Contains(breakdown, `"suppression_reason":"`+wantReason+`"`) {
@@ -380,6 +415,21 @@ func (s *runState) assertMirrorCandidate(assertion Assertion) error {
 	}
 	if assertion.Status != "" && diagnostics.Status != assertion.Status {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "status=" + assertion.Status, Actual: "status=" + diagnostics.Status}
+	}
+	if assertion.FallbackReason != "" && diagnostics.FallbackReason != assertion.FallbackReason {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "fallback_reason=" + assertion.FallbackReason, Actual: "fallback_reason=" + diagnostics.FallbackReason}
+	}
+	if assertion.QueryCount > 0 && diagnostics.QueryCount != assertion.QueryCount {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("query_count=%d", assertion.QueryCount), Actual: fmt.Sprintf("query_count=%d", diagnostics.QueryCount)}
+	}
+	if assertion.RawQueryCount > 0 && diagnostics.RawQueryCount != assertion.RawQueryCount {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("raw_query_count=%d", assertion.RawQueryCount), Actual: fmt.Sprintf("raw_query_count=%d", diagnostics.RawQueryCount)}
+	}
+	if assertion.RewriteQueryCount > 0 && diagnostics.RewriteQueryCount != assertion.RewriteQueryCount {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("rewrite_query_count=%d", assertion.RewriteQueryCount), Actual: fmt.Sprintf("rewrite_query_count=%d", diagnostics.RewriteQueryCount)}
+	}
+	if assertion.AnchorQueryCount > 0 && diagnostics.AnchorQueryCount != assertion.AnchorQueryCount {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("anchor_query_count=%d", assertion.AnchorQueryCount), Actual: fmt.Sprintf("anchor_query_count=%d", diagnostics.AnchorQueryCount)}
 	}
 	statusOnly := assertion.NodeID == "" &&
 		assertion.Source == "" &&
@@ -698,7 +748,7 @@ func findMemoryItem(context *memorycore.MemoryContext, blockType string, nodeID 
 		return memorycore.MemoryContextItem{}, false
 	}
 	for _, block := range context.Blocks {
-		if blockType != "" && block.BlockType != blockType {
+		if blockType != "" && !blockTypeMatches(block.BlockType, blockType) {
 			continue
 		}
 		for _, item := range block.Items {
@@ -708,6 +758,25 @@ func findMemoryItem(context *memorycore.MemoryContext, blockType string, nodeID 
 		}
 	}
 	return memorycore.MemoryContextItem{}, false
+}
+
+func blockTypeMatches(actual string, expected string) bool {
+	return canonicalEvalBlockType(actual) == canonicalEvalBlockType(expected)
+}
+
+func canonicalEvalBlockType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "causal_context":
+		return memorycore.MemoryBlockTypeRelevantCausalMemory
+	case "historical_context":
+		return memorycore.MemoryBlockTypeHistoricalTransitionMemory
+	case "provenance_context":
+		return memorycore.MemoryBlockTypeProvenanceMemory
+	case "supportive_context":
+		return memorycore.MemoryBlockTypeSupportiveMemory
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func hasRelatedFact(item memorycore.MemoryContextItem, nodeID string, linkType string, direction string, historicalStatus string) bool {
