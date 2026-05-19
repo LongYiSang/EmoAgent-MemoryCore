@@ -34,6 +34,7 @@ type QueryAnalysisOptions struct {
 	Mode                        QueryAnalysisMode
 	SidecarURL                  string
 	Timeout                     time.Duration
+	Cache                       *QueryAnalysisCache
 	MinConfidenceToOverride     float64
 	MinEntitySemanticConfidence float64
 	MaxQueryRewrites            int

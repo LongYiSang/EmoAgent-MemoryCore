@@ -73,6 +73,7 @@ base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
 model = "qwen-plus"
 timeout_seconds = 30
+max_tokens = 768
 temperature = 0
 response_format = "json_object"
 prompt_version = "query-analysis-v0.1"
@@ -86,7 +87,7 @@ keeps the rule analysis, and still calls `/retrieval/candidates` with raw dense
 query input.
 
 The OpenAI-compatible provider is expected to support
-`response_format={"type":"json_object"}`. The sidecar validates the returned
+`response_format={"type":"json_object"}` and `max_tokens`. The sidecar validates the returned
 analysis object, retries once after validation failure, and then returns a
 degraded fallback. It does not repair malformed JSON and does not log API keys,
 full prompts, full provider responses, chain-of-thought, provider payloads, or

@@ -46,6 +46,7 @@ def test_load_config_without_file_uses_defaults_relative_to_sidecar_project(monk
     assert config.query_analysis.api_key_env == "DASHSCOPE_API_KEY"
     assert config.query_analysis.model == "qwen-plus"
     assert config.query_analysis.timeout_seconds == 30
+    assert config.query_analysis.max_tokens == 768
     assert config.query_analysis.temperature == 0.0
     assert config.query_analysis.response_format == "json_object"
     assert config.query_analysis.prompt_version == "query-analysis-v0.1"
@@ -90,6 +91,7 @@ def test_load_config_reads_example_defaults():
     assert config.query_analysis.api_key_env == "DASHSCOPE_API_KEY"
     assert config.query_analysis.model == "qwen-plus"
     assert config.query_analysis.timeout_seconds == 30
+    assert config.query_analysis.max_tokens == 768
     assert config.query_analysis.temperature == 0.0
     assert config.query_analysis.response_format == "json_object"
     assert config.query_analysis.prompt_version == "query-analysis-v0.1"
@@ -158,6 +160,7 @@ def test_load_config_applies_environment_overrides(tmp_path):
         "MEMORYCORE_QUERY_ANALYSIS_API_KEY_ENV": "QUERY_KEY",
         "MEMORYCORE_QUERY_ANALYSIS_MODEL": "query-model",
         "MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS": "13",
+        "MEMORYCORE_QUERY_ANALYSIS_MAX_TOKENS": "321",
         "MEMORYCORE_QUERY_ANALYSIS_TEMPERATURE": "0",
         "MEMORYCORE_QUERY_ANALYSIS_RESPONSE_FORMAT": "json_object",
         "MEMORYCORE_QUERY_ANALYSIS_PROMPT_VERSION": "qa-v-test",
@@ -195,6 +198,7 @@ def test_load_config_applies_environment_overrides(tmp_path):
     assert config.query_analysis.api_key_env == "QUERY_KEY"
     assert config.query_analysis.model == "query-model"
     assert config.query_analysis.timeout_seconds == 13
+    assert config.query_analysis.max_tokens == 321
     assert config.query_analysis.temperature == 0.0
     assert config.query_analysis.response_format == "json_object"
     assert config.query_analysis.prompt_version == "qa-v-test"
@@ -326,6 +330,7 @@ def test_load_config_allows_loopback_http_query_analysis_base_url(tmp_path):
         ("[query_analysis]\napi_key_env = ''\n", "query_analysis.api_key_env"),
         ("[query_analysis]\nmodel = ''\n", "query_analysis.model"),
         ("[query_analysis]\ntimeout_seconds = 0\n", "query_analysis.timeout_seconds"),
+        ("[query_analysis]\nmax_tokens = 0\n", "query_analysis.max_tokens"),
         ("[query_analysis]\ntemperature = 'hot'\n", "query_analysis.temperature"),
         ("[query_analysis]\ntemperature = 0.1\n", "query_analysis.temperature"),
         ("[query_analysis]\nresponse_format = 'text'\n", "query_analysis.response_format"),

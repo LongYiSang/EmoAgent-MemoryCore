@@ -298,6 +298,7 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
             api_key_env="QUERY_KEY",
             model="test-model",
             timeout_seconds=2,
+            max_tokens=384,
             temperature=0.7,
             response_format="json_object",
             prompt_version="query-analysis-v0.1",
@@ -307,6 +308,7 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
 
     assert result["degraded"] is False
     assert calls[0]["temperature"] == 0
+    assert calls[0]["max_tokens"] == 384
 
 
 def test_analyze_query_invalid_json_returns_fallback_without_retry(monkeypatch):
@@ -459,3 +461,40 @@ def test_analyze_query_provider_error_returns_bounded_fallback_without_retry(
     assert result["degraded"] is True
     assert result["fallback_reason"] == "provider_error"
     assert len(result["fallback_reason"]) <= 64
+
+
+def test_analyze_query_provider_timeout_returns_distinct_fallback_without_retry(
+    monkeypatch,
+):
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("provider timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-provider-timeout",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "include_rationale": False,
+        },
+        QueryAnalysisConfig(
+            provider="openai-compatible",
+            base_url="https://example.test/v1",
+            api_key_env="QUERY_KEY",
+            model="test-model",
+            timeout_seconds=2,
+            temperature=0.0,
+            response_format="json_object",
+            prompt_version="query-analysis-v0.1",
+        ),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert calls == 1
+    assert result["degraded"] is True
+    assert result["fallback_reason"] == "provider_timeout"

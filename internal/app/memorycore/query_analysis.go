@@ -2,11 +2,15 @@ package memorycore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	internalmirror "github.com/longyisang/emoagent-memorycore/internal/mirror"
@@ -33,6 +37,75 @@ type RuleQueryAnalyzer interface {
 
 type SemanticQueryAnalyzer interface {
 	AnalyzeSemanticQuery(ctx context.Context, req SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error)
+}
+
+type QueryAnalysisCache struct {
+	mu      sync.Mutex
+	entries map[string]queryAnalysisCacheEntry
+}
+
+type queryAnalysisCacheEntry struct {
+	result *SemanticQueryAnalysisResult
+	err    error
+}
+
+func NewQueryAnalysisCache() *QueryAnalysisCache {
+	return &QueryAnalysisCache{entries: map[string]queryAnalysisCacheEntry{}}
+}
+
+func (c *QueryAnalysisCache) Analyze(ctx context.Context, req SemanticQueryAnalysisRequest, analyzer SemanticQueryAnalyzer) (*SemanticQueryAnalysisResult, error) {
+	if c == nil || analyzer == nil {
+		if analyzer == nil {
+			return nil, fmt.Errorf("semantic query analyzer is required")
+		}
+		return analyzer.AnalyzeSemanticQuery(ctx, req)
+	}
+	key := semanticQueryAnalysisCacheKey(req)
+	if key == "" {
+		return analyzer.AnalyzeSemanticQuery(ctx, req)
+	}
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]queryAnalysisCacheEntry{}
+	}
+	if entry, ok := c.entries[key]; ok {
+		c.mu.Unlock()
+		return cloneSemanticQueryAnalysisResult(entry.result), entry.err
+	}
+	c.mu.Unlock()
+
+	result, err := analyzer.AnalyzeSemanticQuery(ctx, req)
+	c.mu.Lock()
+	c.entries[key] = queryAnalysisCacheEntry{result: cloneSemanticQueryAnalysisResult(result), err: err}
+	c.mu.Unlock()
+	return result, err
+}
+
+func semanticQueryAnalysisCacheKey(req SemanticQueryAnalysisRequest) string {
+	req.RequestID = ""
+	data, err := json.Marshal(req)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneSemanticQueryAnalysisResult(value *SemanticQueryAnalysisResult) *SemanticQueryAnalysisResult {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		copy := *value
+		return &copy
+	}
+	var out SemanticQueryAnalysisResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		copy := *value
+		return &copy
+	}
+	return &out
 }
 
 type QueryAnalysisRequest struct {
@@ -182,7 +255,7 @@ func (p queryAnalysisPipeline) AnalyzeQuery(ctx context.Context, req QueryAnalys
 		started = time.Now
 	}
 	begin := started()
-	semantic, err := p.semantic.AnalyzeSemanticQuery(stageCtx, semanticReq)
+	semantic, err := p.analyzeSemantic(stageCtx, semanticReq)
 	latencyMs := time.Since(begin).Milliseconds()
 	if err != nil || semantic == nil {
 		return semanticRuleFallback(rule, semanticFallbackReasonFromError(err), SemanticQueryAnalysisResult{LatencyMs: latencyMs}), nil
@@ -198,6 +271,13 @@ func (p queryAnalysisPipeline) AnalyzeQuery(ctx context.Context, req QueryAnalys
 		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_unavailable"), *semantic), nil
 	}
 	return mergeSemanticQueryAnalysis(rule, *semantic, p.options, semanticReq.VisibleEntityHints), nil
+}
+
+func (p queryAnalysisPipeline) analyzeSemantic(ctx context.Context, req SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
+	if p.options.Cache == nil {
+		return p.semantic.AnalyzeSemanticQuery(ctx, req)
+	}
+	return p.options.Cache.Analyze(ctx, req, p.semantic)
 }
 
 func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) bool {
@@ -335,7 +415,8 @@ func semanticFallbackReasonFromError(err error) string {
 
 func sanitizeSemanticFallbackReason(reason string, fallback string) string {
 	switch strings.TrimSpace(reason) {
-	case "semantic_sidecar_error", "semantic_timeout", "semantic_protocol_error", "semantic_invalid_response", "semantic_unavailable":
+	case "semantic_sidecar_error", "semantic_timeout", "semantic_protocol_error", "semantic_invalid_response", "semantic_unavailable",
+		"provider_none", "missing_api_key", "invalid_json", "invalid_response", "validation_failed", "provider_error", "provider_timeout":
 		return strings.TrimSpace(reason)
 	default:
 		if strings.TrimSpace(fallback) != "" {

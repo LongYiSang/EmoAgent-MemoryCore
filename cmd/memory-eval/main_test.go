@@ -29,6 +29,7 @@ func TestRunMatrixSQLiteProfile(t *testing.T) {
 	}
 	for _, want := range []string{
 		"matrix_report",
+		"test_plan_version: memory_eval_matrix.v0.2",
 		"profile: sqlite_go",
 		"status: pass",
 		"selected_recall_at_8: 1.000",
@@ -66,6 +67,7 @@ func TestRunMatrixWritesDetailReport(t *testing.T) {
 	}
 	for _, want := range []string{
 		"matrix_detail_report",
+		"test_plan_version: memory_eval_matrix.v0.2",
 		"question_id: q1",
 		"问题: 咖啡",
 		"期望:",
@@ -75,6 +77,13 @@ func TestRunMatrixWritesDetailReport(t *testing.T) {
 		if !strings.Contains(string(detail), want) {
 			t.Fatalf("detail report =\n%s\nwant %q", string(detail), want)
 		}
+	}
+	jsonReport, err := os.ReadFile(filepath.Join(reportDir, "report.json"))
+	if err != nil {
+		t.Fatalf("read json report: %v", err)
+	}
+	if !strings.Contains(string(jsonReport), `"test_plan_version": "memory_eval_matrix.v0.2"`) {
+		t.Fatalf("json report =\n%s\nwant test_plan_version", string(jsonReport))
 	}
 }
 
@@ -151,6 +160,57 @@ func TestParseOptionsRejectsInvalidEmbeddingCacheMode(t *testing.T) {
 		t.Fatal("parseOptions accepted invalid embedding cache mode")
 	}
 	if !strings.Contains(stderr.String(), "embedding-cache-mode must be one of off, read_write, read_only, refresh") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--profiles", "sqlite_go,mirror_real_dense",
+		"--sidecar-url", "http://127.0.0.1:8765",
+		"--query-analysis-mode", "semantic_always",
+		"--query-analysis-timeout-ms", "2500",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.queryAnalysis.Mode != "semantic_always" || opts.queryAnalysis.SidecarURL != "http://127.0.0.1:8765" {
+		t.Fatalf("query analysis options = %#v", opts.queryAnalysis)
+	}
+}
+
+func TestParseOptionsRejectsSemanticQueryAnalysisWithoutSidecarURL(t *testing.T) {
+	var stderr bytes.Buffer
+	_, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--profiles", "mirror_real_dense",
+		"--query-analysis-mode", "semantic_always",
+	}, &stderr)
+
+	if ok {
+		t.Fatal("parseOptions accepted semantic query analysis without sidecar URL")
+	}
+	if !strings.Contains(stderr.String(), "--sidecar-url is required when --query-analysis-mode is not rule_only") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestParseOptionsRejectsSemanticQueryAnalysisWithoutMirrorProfile(t *testing.T) {
+	var stderr bytes.Buffer
+	_, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+		"--sidecar-url", "http://127.0.0.1:8765",
+		"--query-analysis-mode", "semantic_always",
+	}, &stderr)
+
+	if ok {
+		t.Fatal("parseOptions accepted semantic query analysis without a mirror profile")
+	}
+	if !strings.Contains(stderr.String(), "query-analysis-mode requires at least one mirror_real_* profile") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

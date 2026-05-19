@@ -12,6 +12,8 @@ import (
 	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
+const matrixTestPlanVersion = "memory_eval_matrix.v0.2"
+
 type MatrixRunnerOptions struct {
 	TempDir                  string
 	Profiles                 []Profile
@@ -23,6 +25,7 @@ type MatrixRunnerOptions struct {
 	ReuseMirror              string
 	EmbeddingCacheMode       string
 	ReportDir                string
+	QueryAnalysis            memorycore.QueryAnalysisOptions
 	SidecarResilience        memorycore.SidecarResilienceOptions
 }
 
@@ -31,9 +34,10 @@ type MatrixRunner struct {
 }
 
 type MatrixReport struct {
-	CaseID   string                `json:"case_id"`
-	Profiles []ProfileMatrixReport `json:"profiles"`
-	Deltas   map[string]float64    `json:"deltas,omitempty"`
+	TestPlanVersion string                `json:"test_plan_version"`
+	CaseID          string                `json:"case_id"`
+	Profiles        []ProfileMatrixReport `json:"profiles"`
+	Deltas          map[string]float64    `json:"deltas,omitempty"`
 }
 
 type ProfileMatrixReport struct {
@@ -79,10 +83,11 @@ func NewMatrixRunner(opts MatrixRunnerOptions) *MatrixRunner {
 }
 
 func (r *MatrixRunner) Run(ctx context.Context, fixture *Fixture) MatrixReport {
-	report := MatrixReport{}
+	report := MatrixReport{TestPlanVersion: matrixTestPlanVersion}
 	if fixture != nil {
 		report.CaseID = fixture.CaseID
 	}
+	r.ensureQueryAnalysisCache()
 	profiles := r.opts.Profiles
 	if len(profiles) == 0 {
 		profiles = []Profile{ProfileSQLiteGo}
@@ -98,6 +103,16 @@ func (r *MatrixRunner) Run(ctx context.Context, fixture *Fixture) MatrixReport {
 		_ = os.WriteFile(filepath.Join(r.opts.ReportDir, "detail.md"), []byte(FormatMatrixDetailReport(fixture, report)+"\n"), 0o644)
 	}
 	return report
+}
+
+func (r *MatrixRunner) ensureQueryAnalysisCache() {
+	if r.opts.QueryAnalysis.Cache != nil {
+		return
+	}
+	switch r.opts.QueryAnalysis.Mode {
+	case memorycore.QueryAnalysisModeSemanticAlways, memorycore.QueryAnalysisModeSemanticOnLowConfidence:
+		r.opts.QueryAnalysis.Cache = memorycore.NewQueryAnalysisCache()
+	}
 }
 
 func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile Profile) ProfileMatrixReport {
@@ -138,6 +153,7 @@ func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile
 		MirrorArtifact:     artifact,
 		Strict:             r.opts.Strict,
 		EmbeddingCacheMode: r.opts.EmbeddingCacheMode,
+		QueryAnalysis:      r.queryAnalysisForProfile(profile),
 		SidecarResilience:  r.opts.SidecarResilience,
 	}).Run(ctx, fixture)
 	out.Report = runReport
@@ -161,6 +177,13 @@ func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile
 		out.Error = appendProfileError(out.Error, runReport.Error())
 	}
 	return out
+}
+
+func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.QueryAnalysisOptions {
+	if !profile.UsesMirror() {
+		return memorycore.QueryAnalysisOptions{}
+	}
+	return r.opts.QueryAnalysis
 }
 
 func shouldUseMirrorArtifact(root string, adapter memorycore.MirrorAdapter) bool {
@@ -701,6 +724,7 @@ func profileDeltas(profiles []ProfileMatrixReport) map[string]float64 {
 func FormatMatrixReport(report MatrixReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "matrix_report\n")
+	fmt.Fprintf(&b, "test_plan_version: %s\n", matrixReportTestPlanVersion(report))
 	fmt.Fprintf(&b, "case_id: %s\n", report.CaseID)
 	for _, profile := range report.Profiles {
 		fmt.Fprintf(&b, "\nprofile: %s\n", profile.Profile)
@@ -733,6 +757,13 @@ func FormatMatrixReport(report MatrixReport) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func matrixReportTestPlanVersion(report MatrixReport) string {
+	if strings.TrimSpace(report.TestPlanVersion) != "" {
+		return strings.TrimSpace(report.TestPlanVersion)
+	}
+	return matrixTestPlanVersion
 }
 
 func (r MatrixReport) JSONString() string {

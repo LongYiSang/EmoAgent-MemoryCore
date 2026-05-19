@@ -23,6 +23,7 @@ type RunnerOptions struct {
 	MirrorArtifact     *MirrorArtifactManager
 	Strict             bool
 	EmbeddingCacheMode string
+	QueryAnalysis      memorycore.QueryAnalysisOptions
 	SidecarResilience  memorycore.SidecarResilienceOptions
 }
 
@@ -168,6 +169,7 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		AutoMigrate:       true,
 		EnableFTS:         true,
 		MirrorAdapter:     adapter,
+		QueryAnalysis:     r.opts.QueryAnalysis,
 		SidecarResilience: defaultEvalSidecarResilience(r.opts.SidecarResilience),
 		Now: func() time.Time {
 			return fixedNow

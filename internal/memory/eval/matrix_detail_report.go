@@ -12,6 +12,7 @@ func FormatMatrixDetailReport(fixture *Fixture, report MatrixReport) string {
 		caseID = fixture.CaseID
 	}
 	fmt.Fprintf(&b, "matrix_detail_report\n")
+	fmt.Fprintf(&b, "test_plan_version: %s\n", matrixReportTestPlanVersion(report))
 	fmt.Fprintf(&b, "case_id: %s\n", caseID)
 	if len(report.Profiles) > 0 {
 		writeMatrixProfileSummary(&b, report.Profiles)

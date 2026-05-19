@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	memoryeval "github.com/longyisang/emoagent-memorycore/internal/memory/eval"
 )
 
@@ -29,6 +31,7 @@ type options struct {
 	embeddingCacheMode       string
 	reuseMirror              string
 	reportDir                string
+	queryAnalysis            memorycore.QueryAnalysisOptions
 }
 
 func main() {
@@ -133,6 +136,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			EmbeddingCacheMode:       opts.embeddingCacheMode,
 			ReuseMirror:              opts.reuseMirror,
 			ReportDir:                reportDir,
+			QueryAnalysis:            opts.queryAnalysis,
 		}).Run(ctx, fixture)
 		outputs = append(outputs, matrixRunOutput{Fixture: fixture, Report: report})
 		if index > 0 {
@@ -198,6 +202,8 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	}
 	var rawMode string
 	var rawProfiles string
+	var queryAnalysisMode string
+	var queryAnalysisTimeoutMS int
 	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -215,6 +221,8 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.StringVar(&opts.embeddingCacheMode, "embedding-cache-mode", opts.embeddingCacheMode, "embedding cache mode: off, read_write, read_only, or refresh")
 	fs.StringVar(&opts.reuseMirror, "reuse-mirror", opts.reuseMirror, "mirror reuse mode: auto or never")
 	fs.StringVar(&opts.reportDir, "report-dir", "", "optional directory for matrix report.json and report.md")
+	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, or semantic_on_low_confidence")
+	fs.IntVar(&queryAnalysisTimeoutMS, "query-analysis-timeout-ms", 1500, "query analysis sidecar timeout in milliseconds")
 	if err := fs.Parse(args); err != nil {
 		return options{}, false
 	}
@@ -232,14 +240,64 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		fmt.Fprintln(stderr, err)
 		return options{}, false
 	}
+	if queryAnalysisRequested(queryAnalysisMode) && !hasMirrorProfile(profiles) {
+		fmt.Fprintln(stderr, "query-analysis-mode requires at least one mirror_real_* profile")
+		return options{}, false
+	}
+	queryAnalysis, err := parseQueryAnalysisOptions(queryAnalysisMode, opts.sidecarURL, queryAnalysisTimeoutMS)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return options{}, false
+	}
 	opts.mode = mode
 	opts.reportMode = reportMode
 	opts.profiles = profiles
 	opts.embeddingCacheMode = memoryeval.NormalizeEmbeddingCacheMode(opts.embeddingCacheMode)
+	opts.queryAnalysis = queryAnalysis
 	if strings.TrimSpace(opts.root) == "" {
 		opts.root = filepath.Join(repoRoot, "testdata", "memory_eval", "quality", opts.suite)
 	}
 	return opts, true
+}
+
+func queryAnalysisRequested(mode string) bool {
+	mode = strings.TrimSpace(mode)
+	return mode != "" && mode != "rule_only"
+}
+
+func hasMirrorProfile(profiles []memoryeval.Profile) bool {
+	for _, profile := range profiles {
+		if profile.UsesMirror() {
+			return true
+		}
+	}
+	return false
+}
+
+func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int) (memorycore.QueryAnalysisOptions, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "rule_only"
+	}
+	switch mode {
+	case "rule_only":
+		return memorycore.QueryAnalysisOptions{}, nil
+	case "semantic_always", "semantic_on_low_confidence":
+	default:
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-mode must be one of rule_only, semantic_always, semantic_on_low_confidence")
+	}
+	if strings.TrimSpace(sidecarURL) == "" {
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("--sidecar-url is required when --query-analysis-mode is not rule_only")
+	}
+	if timeoutMS <= 0 {
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-timeout-ms must be > 0")
+	}
+	return memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisMode(mode),
+		SidecarURL: strings.TrimSpace(sidecarURL),
+		Timeout:    time.Duration(timeoutMS) * time.Millisecond,
+	}, nil
 }
 
 func parseMode(value string) (string, memoryeval.QualityBenchmarkMode, bool) {

@@ -2,7 +2,10 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +53,9 @@ func TestMatrixRunnerSQLiteProfileDoesNotRequireSidecar(t *testing.T) {
 	if report.Failed() {
 		t.Fatalf("matrix report failed: %s", report.Error())
 	}
+	if report.TestPlanVersion != matrixTestPlanVersion {
+		t.Fatalf("test plan version = %q, want %q", report.TestPlanVersion, matrixTestPlanVersion)
+	}
 	if len(report.Profiles) != 1 {
 		t.Fatalf("profiles len = %d", len(report.Profiles))
 	}
@@ -87,6 +93,175 @@ func TestMatrixRunnerMirrorDenseRequiresUsedMirror(t *testing.T) {
 	}
 	if adapter.findCalls == 0 {
 		t.Fatalf("FindCandidates was not called")
+	}
+}
+
+func TestMatrixRunnerQueryAnalysisOnlyAppliesToMirrorProfiles(t *testing.T) {
+	fixture := minimalRetrievalFixture()
+	semanticCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/query-analysis" {
+			t.Fatalf("unexpected semantic path %s", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode semantic request: %v", err)
+		}
+		semanticCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"provider":       "eval_real_semantic",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "direct_fact",
+				"evidence_need":  "exact_observation",
+				"confidence":     0.9,
+				"query_rewrites": []map[string]any{{
+					"text":    "semantic coffee",
+					"purpose": "semantic_recall",
+					"weight":  0.8,
+				}},
+				"policy_hints": map[string]any{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	adapter := newQualityMirrorAdapter()
+	report := NewMatrixRunner(MatrixRunnerOptions{
+		TempDir:       t.TempDir(),
+		Profiles:      []Profile{ProfileSQLiteGo, ProfileMirrorRealDense},
+		MirrorAdapter: adapter,
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:   memorycore.QueryAnalysisProviderSidecar,
+			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+			SidecarURL: server.URL,
+		},
+		Strict: true,
+	}).Run(context.Background(), fixture)
+
+	if report.Failed() {
+		t.Fatalf("matrix report failed: %s", report.Error())
+	}
+	if semanticCalls != 1 {
+		t.Fatalf("semantic calls = %d, want only mirror profile to call once", semanticCalls)
+	}
+	sqliteAnalysis := firstRetrievalAnalysis(t, report.Profiles[0].Report)
+	if sqliteAnalysis.Source != memorycore.QueryAnalysisSourceRuleOnly {
+		t.Fatalf("sqlite_go query source = %q, want rule_only", sqliteAnalysis.Source)
+	}
+	mirrorAnalysis := firstRetrievalAnalysis(t, report.Profiles[1].Report)
+	if mirrorAnalysis.Source != memorycore.QueryAnalysisSourceMerged || len(mirrorAnalysis.QueryRewrites) != 1 {
+		t.Fatalf("mirror query analysis = %#v, want merged semantic rewrite", mirrorAnalysis)
+	}
+	if report.Profiles[1].Metrics.MirrorUsedCount == 0 {
+		t.Fatalf("mirror profile did not use mirror")
+	}
+}
+
+func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
+	fixture := minimalRetrievalFixture()
+	semanticCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/query-analysis" {
+			t.Fatalf("unexpected semantic path %s", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode semantic request: %v", err)
+		}
+		semanticCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"provider":       "eval_real_semantic",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "direct_fact",
+				"evidence_need":  "exact_observation",
+				"confidence":     0.9,
+				"query_rewrites": []map[string]any{{
+					"text":    "semantic coffee",
+					"purpose": "semantic_recall",
+					"weight":  0.8,
+				}},
+				"policy_hints": map[string]any{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	adapter := newAdvancedMirrorAdapter()
+	report := NewMatrixRunner(MatrixRunnerOptions{
+		TempDir:       t.TempDir(),
+		Profiles:      []Profile{ProfileMirrorRealDense, ProfileMirrorRealGraph},
+		MirrorAdapter: adapter,
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:   memorycore.QueryAnalysisProviderSidecar,
+			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+			SidecarURL: server.URL,
+		},
+		Strict: true,
+	}).Run(context.Background(), fixture)
+
+	if report.Failed() {
+		t.Fatalf("matrix report failed: %s", report.Error())
+	}
+	if semanticCalls != 1 {
+		t.Fatalf("semantic calls = %d, want one cached call shared by mirror profiles", semanticCalls)
+	}
+	for _, profile := range report.Profiles {
+		analysis := firstRetrievalAnalysis(t, profile.Report)
+		if analysis.Source != memorycore.QueryAnalysisSourceMerged || len(analysis.QueryRewrites) != 1 {
+			t.Fatalf("%s query analysis = %#v, want cached merged semantic rewrite", profile.Profile, analysis)
+		}
+	}
+}
+
+func TestMatrixRunnerReusesQueryAnalysisTimeoutAcrossMirrorProfiles(t *testing.T) {
+	fixture := minimalRetrievalFixture()
+	semanticCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/query-analysis" {
+			t.Fatalf("unexpected semantic path %s", r.URL.Path)
+		}
+		semanticCalls++
+		time.Sleep(50 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	adapter := newAdvancedMirrorAdapter()
+	report := NewMatrixRunner(MatrixRunnerOptions{
+		TempDir:       t.TempDir(),
+		Profiles:      []Profile{ProfileMirrorRealDense, ProfileMirrorRealGraph},
+		MirrorAdapter: adapter,
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:   memorycore.QueryAnalysisProviderSidecar,
+			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+			SidecarURL: server.URL,
+			Timeout:    5 * time.Millisecond,
+		},
+		Strict: true,
+	}).Run(context.Background(), fixture)
+
+	if report.Failed() {
+		t.Fatalf("matrix report failed: %s", report.Error())
+	}
+	if semanticCalls != 1 {
+		t.Fatalf("semantic calls = %d, want one cached timeout shared by mirror profiles", semanticCalls)
+	}
+	for _, profile := range report.Profiles {
+		analysis := firstRetrievalAnalysis(t, profile.Report)
+		if analysis.Source != memorycore.QueryAnalysisSourceSemanticFallback ||
+			analysis.Diagnostics == nil ||
+			analysis.Diagnostics.FallbackReason != "semantic_timeout" {
+			t.Fatalf("%s query analysis = %#v, want cached semantic timeout fallback", profile.Profile, analysis)
+		}
 	}
 }
 
@@ -561,6 +736,7 @@ func TestFormatMatrixReportIncludesCacheStats(t *testing.T) {
 	})
 
 	for _, want := range []string{
+		"test_plan_version: memory_eval_matrix.v0.2",
 		"embedding_cache_hits: 3",
 		"embedding_cache_misses: 2",
 		"embedding_live_call_count: 2",
@@ -722,6 +898,7 @@ func TestFormatMatrixDetailReportComparesProfilesByQuestion(t *testing.T) {
 	out := FormatMatrixDetailReport(fixture, report)
 	for _, want := range []string{
 		"matrix_detail_report",
+		"test_plan_version: memory_eval_matrix.v0.2",
 		"case_id: quality_case",
 		"profile_summary:",
 		"| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | graph_activation_used_count | rerank_live_call_count |",
@@ -938,6 +1115,17 @@ func minimalRetrievalFixture() *Fixture {
 			},
 		},
 	}
+}
+
+func firstRetrievalAnalysis(t *testing.T, report Report) *memorycore.QueryAnalysis {
+	t.Helper()
+	for _, step := range report.Steps {
+		if step.Retrieval != nil && step.Retrieval.QueryAnalysis != nil {
+			return step.Retrieval.QueryAnalysis
+		}
+	}
+	t.Fatalf("no retrieval query analysis in report: %s", report.DebugString())
+	return nil
 }
 
 func stringPtr(value string) *string {

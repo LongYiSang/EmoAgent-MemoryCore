@@ -110,6 +110,7 @@ type (
 	Options                             = appcore.Options
 	PinIntentRoute                      = appcore.PinIntentRoute
 	QueryAnalysis                       = appcore.QueryAnalysis
+	QueryAnalysisCache                  = appcore.QueryAnalysisCache
 	QueryAnalysisConfidence             = appcore.QueryAnalysisConfidence
 	QueryAnalysisDiagnostics            = appcore.QueryAnalysisDiagnostics
 	QueryAnalysisMode                   = appcore.QueryAnalysisMode
@@ -335,7 +336,8 @@ const (
 )
 
 var (
-	ErrInvalidOptions = appcore.ErrInvalidOptions
-	ErrInvalidRequest = appcore.ErrInvalidRequest
-	ErrNotFound       = appcore.ErrNotFound
+	ErrInvalidOptions     = appcore.ErrInvalidOptions
+	ErrInvalidRequest     = appcore.ErrInvalidRequest
+	ErrNotFound           = appcore.ErrNotFound
+	NewQueryAnalysisCache = appcore.NewQueryAnalysisCache
 )

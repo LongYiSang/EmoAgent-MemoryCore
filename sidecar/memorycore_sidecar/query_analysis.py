@@ -50,7 +50,9 @@ def analyze_query(
             return _fallback(request, config, "invalid_json")
         except (UnicodeDecodeError, ValueError):
             return _fallback(request, config, "invalid_response")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            if _is_provider_timeout_error(exc):
+                return _fallback(request, config, "provider_timeout")
             return _fallback(request, config, "provider_error")
 
         try:
@@ -76,6 +78,7 @@ def _call_openai_compatible(
     body = {
         "model": config.model,
         "temperature": 0,
+        "max_tokens": config.max_tokens,
         "response_format": {"type": config.response_format},
         "messages": [
             {"role": "system", "content": _system_prompt(config.prompt_version)},
@@ -138,6 +141,16 @@ def _extract_content(payload: Any) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("provider message content must be a JSON string")
     return content
+
+
+def _is_provider_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    text = str(reason if reason is not None else exc).lower()
+    return "timed out" in text or "timeout" in text
 
 
 def _validate_provider_analysis(

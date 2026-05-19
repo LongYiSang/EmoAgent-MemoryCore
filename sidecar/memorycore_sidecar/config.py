@@ -41,6 +41,7 @@ DEFAULT_QUERY_ANALYSIS_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mod
 DEFAULT_QUERY_ANALYSIS_API_KEY_ENV = "DASHSCOPE_API_KEY"
 DEFAULT_QUERY_ANALYSIS_MODEL = "qwen-plus"
 DEFAULT_QUERY_ANALYSIS_TIMEOUT_SECONDS = 30
+DEFAULT_QUERY_ANALYSIS_MAX_TOKENS = 768
 DEFAULT_QUERY_ANALYSIS_TEMPERATURE = 0.0
 DEFAULT_QUERY_ANALYSIS_RESPONSE_FORMAT = "json_object"
 DEFAULT_QUERY_ANALYSIS_PROMPT_VERSION = "query-analysis-v0.1"
@@ -103,6 +104,7 @@ class QueryAnalysisConfig:
     temperature: float
     response_format: str
     prompt_version: str
+    max_tokens: int = DEFAULT_QUERY_ANALYSIS_MAX_TOKENS
 
 
 @dataclass(frozen=True)
@@ -423,6 +425,16 @@ def load_config(
                     DEFAULT_QUERY_ANALYSIS_TIMEOUT_SECONDS,
                 ),
             ),
+            max_tokens=_positive_int(
+                "query_analysis.max_tokens",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_QUERY_ANALYSIS_MAX_TOKENS",
+                    query_analysis_data,
+                    "max_tokens",
+                    DEFAULT_QUERY_ANALYSIS_MAX_TOKENS,
+                ),
+            ),
             temperature=_finite_float(
                 "query_analysis.temperature",
                 _env_or_value(
@@ -569,6 +581,8 @@ def _validate(config: SidecarConfig) -> None:
     _validate_https_or_loopback_http_url(
         "query_analysis.base_url", config.query_analysis.base_url
     )
+    if config.query_analysis.max_tokens <= 0:
+        raise ValueError("query_analysis.max_tokens must be > 0")
     if config.query_analysis.response_format != "json_object":
         raise ValueError("query_analysis.response_format must be json_object")
     if config.query_analysis.temperature != 0.0:

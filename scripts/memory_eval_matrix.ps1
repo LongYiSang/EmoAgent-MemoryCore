@@ -18,7 +18,18 @@ param(
 
     [switch]$AllowSkipMissingProvider,
 
-    [switch]$NoRerank
+    [switch]$NoRerank,
+
+    [ValidateSet("rule_only", "semantic_always", "semantic_on_low_confidence")]
+    [string]$QueryAnalysisMode = "rule_only",
+
+    [string]$QueryAnalysisKeyFile = "",
+
+    [string]$QueryAnalysisModel = "qwen-plus",
+
+    [int]$QueryAnalysisTimeoutMS = 15000,
+
+    [int]$QueryAnalysisMaxTokens = 768
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,10 +78,35 @@ if (-not $env:UV_CACHE_DIR) {
 }
 
 $profileList = $Profiles.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$needsSidecar = ($profileList | Where-Object { $_ -like "mirror_real_*" }).Count -gt 0
+$usesMirrorProfile = ($profileList | Where-Object { $_ -like "mirror_real_*" }).Count -gt 0
+$needsSidecar = $usesMirrorProfile
+$queryAnalysisEnabled = $QueryAnalysisMode -ne "rule_only"
 $needsRerank = ($profileList | Where-Object { $_ -like "*rerank*" }).Count -gt 0
 if ($NoRerank -and $needsRerank) {
     throw "Profiles include rerank but -NoRerank was supplied. Remove rerank profiles or omit -NoRerank."
+}
+if ($queryAnalysisEnabled) {
+    if (-not $usesMirrorProfile) {
+        throw "Query analysis is enabled but no mirror_real_* profile was requested. sqlite_go remains a pure fallback profile."
+    }
+    if ($QueryAnalysisTimeoutMS -le 0) {
+        throw "QueryAnalysisTimeoutMS must be > 0."
+    }
+    if ($QueryAnalysisMaxTokens -le 0) {
+        throw "QueryAnalysisMaxTokens must be > 0."
+    }
+    if (-not $QueryAnalysisKeyFile) {
+        $QueryAnalysisKeyFile = Join-Path $repoRoot "tmp\TMP_KEY_LLM"
+    }
+    if (-not (Test-Path -LiteralPath $QueryAnalysisKeyFile)) {
+        throw "Query analysis is enabled but key file was not found: $QueryAnalysisKeyFile"
+    }
+    $env:MEMORYCORE_QUERY_ANALYSIS_API_KEY = (Get-Content -LiteralPath $QueryAnalysisKeyFile -Raw).Trim()
+    $env:MEMORYCORE_QUERY_ANALYSIS_PROVIDER = "openai-compatible"
+    $env:MEMORYCORE_QUERY_ANALYSIS_API_KEY_ENV = "MEMORYCORE_QUERY_ANALYSIS_API_KEY"
+    $env:MEMORYCORE_QUERY_ANALYSIS_MODEL = $QueryAnalysisModel
+    $env:MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS = [string][Math]::Max(1, [Math]::Ceiling($QueryAnalysisTimeoutMS / 1000.0))
+    $env:MEMORYCORE_QUERY_ANALYSIS_MAX_TOKENS = [string]$QueryAnalysisMaxTokens
 }
 
 $sidecarProcess = $null
@@ -149,6 +185,9 @@ try {
     }
     if ($needsSidecar) {
         $args += @("--sidecar-url", "http://127.0.0.1:$Port")
+    }
+    if ($queryAnalysisEnabled) {
+        $args += @("--query-analysis-mode", $QueryAnalysisMode, "--query-analysis-timeout-ms", $QueryAnalysisTimeoutMS)
     }
     if ($AllowSkipMissingProvider) {
         $args += "--allow-skip-missing-provider"

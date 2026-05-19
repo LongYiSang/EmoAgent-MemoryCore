@@ -291,6 +291,49 @@ func TestQueryAnalysisSidecarFailureFallbackReasonDoesNotLeakBodyText(t *testing
 	}
 }
 
+func TestQueryAnalysisSemanticFallbackPreservesSafeSidecarReason(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.42,
+	}
+	for _, reason := range []string{"invalid_json", "validation_failed", "provider_error", "provider_timeout"} {
+		t.Run(reason, func(t *testing.T) {
+			pipeline := newQueryAnalysisPipeline(
+				staticRuleQueryAnalyzer{analysis: rule},
+				staticSemanticQueryAnalyzer{result: &SemanticQueryAnalysisResult{
+					Status:         "degraded",
+					Degraded:       true,
+					FallbackReason: reason,
+					Provider:       "openai-compatible",
+					Model:          "test-model",
+				}},
+				QueryAnalysisOptions{Provider: QueryAnalysisProviderSidecar, Mode: QueryAnalysisModeSemanticAlways},
+			)
+
+			got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{
+				PersonaID: "default",
+				QueryText: "咖啡",
+				Now:       fixedQueryAnalysisNow(),
+			})
+			if err != nil {
+				t.Fatalf("analyze query: %v", err)
+			}
+			if got.Source != memsqlite.QueryAnalysisSourceSemanticFallback || got.Diagnostics == nil {
+				t.Fatalf("analysis = %#v, want semantic fallback diagnostics", got)
+			}
+			if got.Diagnostics.FallbackReason != reason {
+				t.Fatalf("fallback reason = %q, want %q", got.Diagnostics.FallbackReason, reason)
+			}
+		})
+	}
+}
+
 func TestQueryAnalysisGeneratedWeightsRespectCumulativeCaps(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "咖啡",
