@@ -244,6 +244,36 @@ def test_parse_query_analysis_request_preserves_go_context_fields():
     }
 
 
+def test_parse_query_analysis_request_accepts_budget_fields():
+    request = parse_query_analysis_request(
+        {
+            "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "deadline_ms": 1200,
+            "provider_timeout_ms": 900,
+        }
+    )
+
+    assert request["deadline_ms"] == 1200
+    assert request["provider_timeout_ms"] == 900
+
+
+@pytest.mark.parametrize("field", ["deadline_ms", "provider_timeout_ms"])
+def test_parse_query_analysis_request_rejects_invalid_budget_fields(field):
+    payload = {
+        "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+        "request_id": "qa-1",
+        "persona_id": "default",
+        "query_text": "coffee preference",
+        field: 0,
+    }
+
+    with pytest.raises(ProtocolError, match=field):
+        parse_query_analysis_request(payload)
+
+
 def test_parse_query_analysis_request_defaults_absent_conversation_window_to_empty():
     request = parse_query_analysis_request(
         {

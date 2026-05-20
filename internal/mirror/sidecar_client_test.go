@@ -218,13 +218,14 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 			"request_id":     request["request_id"],
 			"candidates": []map[string]any{
 				{
-					"trivium_node_id": 42,
-					"fused_score":     0.88,
-					"primary_source":  "raw_dense",
-					"primary_purpose": "raw_query",
-					"rank":            3,
-					"hit_count":       2,
-					"score_breakdown": map[string]any{"provider_score": 0.12},
+					"trivium_node_id":  42,
+					"fused_score":      0.88,
+					"primary_source":   "raw_dense",
+					"primary_purpose":  "raw_query",
+					"rank":             3,
+					"hit_count":        2,
+					"source_breakdown": []map[string]any{{"source": "raw_dense", "purpose": "raw_query", "rank": 3, "score": 0.88, "weight": 1.0}},
+					"score_breakdown":  map[string]any{"provider_score": 0.12},
 				},
 			},
 			"degraded": false,
@@ -234,12 +235,16 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 				"live_call_count": 1,
 			},
 			"diagnostics": map[string]any{
-				"query_count":            1,
-				"raw_query_count":        1,
-				"rewrite_query_count":    0,
-				"anchor_query_count":     0,
-				"merged_candidate_count": 1,
-				"per_query_counts":       []map[string]any{{"source": "raw_dense", "purpose": "raw_query", "count": 1}},
+				"query_count":                     1,
+				"raw_query_count":                 1,
+				"rewrite_query_count":             0,
+				"anchor_query_count":              0,
+				"merged_candidate_count":          1,
+				"query_trims":                     map[string]any{"dropped_similar_count": 2},
+				"dense_embedding_wall_latency_ms": 11,
+				"dense_search_total_latency_ms":   13,
+				"query_count_trimmed_by_budget":   2,
+				"per_query_counts":                []map[string]any{{"source": "raw_dense", "purpose": "raw_query", "count": 1, "latency_ms": 7}},
 			},
 		})
 	}))
@@ -268,8 +273,14 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 	if result.Candidates[0].PrimaryPurpose != "raw_query" || result.Candidates[0].HitCount != 2 {
 		t.Fatalf("candidate diagnostics = %#v", result.Candidates[0])
 	}
-	if result.Diagnostics.QueryCount != 1 || result.Diagnostics.MergedCandidateCount != 1 || len(result.Diagnostics.PerQuery) != 1 {
+	if len(result.Candidates[0].SourceBreakdown) != 1 || result.Candidates[0].SourceBreakdown[0].Source != "raw_dense" {
+		t.Fatalf("source breakdown = %#v", result.Candidates[0].SourceBreakdown)
+	}
+	if result.Diagnostics.QueryCount != 1 || result.Diagnostics.MergedCandidateCount != 1 || result.Diagnostics.QueryTrimCount != 2 || len(result.Diagnostics.PerQuery) != 1 || result.Diagnostics.PerQuery[0].LatencyMs != 7 {
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
+	}
+	if result.Diagnostics.DenseEmbeddingWallLatencyMs != 11 || result.Diagnostics.DenseEmbeddingBatchLatencyMs != 11 || result.Diagnostics.DenseSearchTotalLatencyMs != 13 || result.Diagnostics.QueryCountTrimmedByBudget != 2 {
+		t.Fatalf("dense diagnostics = %#v", result.Diagnostics)
 	}
 	if result.EmbeddingCacheHits != 2 || result.EmbeddingCacheMisses != 1 || result.EmbeddingLiveCallCount != 1 {
 		t.Fatalf("embedding stats = hits:%d misses:%d live:%d", result.EmbeddingCacheHits, result.EmbeddingCacheMisses, result.EmbeddingLiveCallCount)

@@ -7,13 +7,18 @@ import math
 import os
 import re
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from memorycore_sidecar.activation import ActivationEdge, activate_graph_with_diagnostics
 from memorycore_sidecar.config import SidecarConfig, load_config
-from memorycore_sidecar.candidates import DenseHit, fuse_dense_results
+from memorycore_sidecar.candidates import (
+    DenseHit,
+    DenseSearchResult,
+    fuse_dense_results,
+)
 from memorycore_sidecar.embedding import (
     CachedEmbeddingProvider,
     EmbeddingProvider,
@@ -236,7 +241,7 @@ class TriviumAdapter(MirrorAdapter):
         request_id = str(request.get("request_id", "")).strip()
         persona_id = str(request["persona_id"])
 
-        def search(query) -> list[DenseHit]:
+        def search(query) -> DenseSearchResult:
             query_ref = None
             if request_id and query.source == "raw_dense":
                 query_ref = {
@@ -244,11 +249,14 @@ class TriviumAdapter(MirrorAdapter):
                     "id": request_id,
                     "persona_id": persona_id,
                 }
+            embedding_started = time.perf_counter()
             query_vector = _embed_with_optional_ref(
                 self.embedding_provider,
                 query.text,
                 query_ref,
             )
+            embedding_latency_ms = _elapsed_ms(embedding_started)
+            search_started = time.perf_counter()
             with self._lock:
                 db = self._db_for_persona(persona_id)
                 hits = list(
@@ -260,7 +268,12 @@ class TriviumAdapter(MirrorAdapter):
                         payload_filter=None,
                     )
                 )
-            return _dense_hits(hits)
+            search_latency_ms = _elapsed_ms(search_started)
+            return DenseSearchResult(
+                hits=_dense_hits(hits),
+                embedding_latency_ms=embedding_latency_ms,
+                search_latency_ms=search_latency_ms,
+            )
 
         result = fuse_dense_results(request, search)
         stats = self._embedding_cache_stats()
@@ -614,6 +627,10 @@ def _call_unlink(unlink: Any, source_id: int, target_id: int, label: str) -> Non
             last_error = exc
     if last_error is not None:
         raise last_error
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(max(0.0, time.perf_counter() - started) * 1000)
 
 
 def _embed_with_optional_ref(

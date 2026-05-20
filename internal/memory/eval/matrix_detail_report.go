@@ -49,14 +49,14 @@ func FormatMatrixDetailReport(fixture *Fixture, report MatrixReport) string {
 
 func writeMatrixProfileSummary(b *strings.Builder, profiles []ProfileMatrixReport) {
 	b.WriteString("profile_summary:\n")
-	b.WriteString("| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | query_analysis_used_count | query_analysis_fallback_count | query_analysis_invalid_json_count | query_analysis_validation_failed_count | query_analysis_latency_p50 | query_analysis_latency_p95 | english_rewrite_count | dropped_rewrite_count | semantic_rewrite_dense_count | candidate_query_count | graph_activation_used_count | rerank_live_call_count |\n")
-	b.WriteString("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	b.WriteString("| profile | status | capability | assertion_failures | selected_recall_at_8 | precision_at_8 | fallback_count | query_analysis_used_count | query_analysis_fallback_count | query_analysis_invalid_json_count | query_analysis_validation_failed_count | query_analysis_latency_p50 | query_analysis_latency_p95 | english_rewrite_count | dropped_rewrite_count | semantic_rewrite_dense_count | candidate_query_count | graph_activation_used_count | rerank_live_call_count | provider_timeout_count | query_trim_count | raw_exact_survival_count |\n")
+	b.WriteString("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	var profileErrors []profileErrorSummary
 	for _, profile := range profiles {
 		assertionFailures := countAssertionFailures(profile.Report)
 		fmt.Fprintf(
 			b,
-			"| %s | %s | %s | %d | %.3f | %.3f | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d |\n",
+			"| %s | %s | %s | %d | %.3f | %.3f | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d |\n",
 			profile.Profile,
 			profile.Status,
 			profile.Capability.Status,
@@ -76,6 +76,9 @@ func writeMatrixProfileSummary(b *strings.Builder, profiles []ProfileMatrixRepor
 			profile.Metrics.CandidateQueryCount,
 			profile.Metrics.GraphActivationUsedCount,
 			profile.Metrics.RerankLiveCallCount,
+			profile.Metrics.ProviderTimeoutCount,
+			profile.Metrics.QueryTrimCount,
+			profile.Metrics.RawExactSurvivalCount,
 		)
 		if errSummary := nonAssertionProfileError(profile, assertionFailures); errSummary != "" {
 			profileErrors = append(profileErrors, profileErrorSummary{profile: profile.Profile, err: errSummary})

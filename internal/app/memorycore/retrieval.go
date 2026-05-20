@@ -2,13 +2,17 @@ package memorycore
 
 import (
 	"context"
-	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
+
+	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
 )
 
-const maxRerankQueryTextRune = 160
+const (
+	maxRerankQueryTextRune = 160
+)
 
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
@@ -17,21 +21,35 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if now.IsZero() {
 		now = s.now()
 	}
-	analysis, err := s.analyzeRetrievalQuery(ctx, QueryAnalysisRequest{
+	queryReq := QueryAnalysisRequest{
 		PersonaID: personaID,
 		SessionID: req.SessionID,
 		QueryText: req.QueryText,
 		Now:       now,
 		Policy:    policy,
-	})
+	}
+	ruleAnalysis, err := s.analyzeRetrievalRuleQuery(ctx, queryReq)
 	if err != nil {
 		return nil, err
 	}
+	analysis := ruleAnalysis
+	semanticLane := s.startSemanticQueryAnalysisLane(ctx, queryReq, ruleAnalysis)
 	sidecarCtx, sidecarCancel := sidecarTotalContext(ctx, s.sidecarResilience.Timeouts.Total)
 	defer sidecarCancel()
-	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, analysis, policy)
+	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, ruleAnalysis, policy, false)
 	if err != nil {
 		return nil, err
+	}
+	if semantic, ok := s.softJoinSemanticQueryAnalysisLane(ctx, semanticLane, ruleAnalysis); ok {
+		analysis = semantic
+		if semantic.Source == memsqlite.QueryAnalysisSourceMerged {
+			semanticCandidates, semanticDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, semantic, policy, true)
+			if err != nil {
+				return nil, err
+			}
+			mirrorCandidates = mergeRetrievalMirrorCandidates(mirrorCandidates, semanticCandidates)
+			mirrorDiagnostics = mergeMirrorDiagnostics(mirrorDiagnostics, semanticDiagnostics)
+		}
 	}
 	prepared, err := s.retrieve.Prepare(ctx, memsqlite.RetrievalRequest{
 		PersonaID:                personaID,
@@ -39,6 +57,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 		QueryText:                req.QueryText,
 		Now:                      now,
 		PrecomputedQueryAnalysis: &analysis,
+		RawRuleQueryAnalysis:     &ruleAnalysis,
 		Policy: memsqlite.RetrievalPolicy{
 			SensitivityPermission: policy.SensitivityPermission,
 			AllowHistorical:       policy.AllowHistorical,
@@ -84,7 +103,66 @@ func (s *service) analyzeRetrievalQuery(ctx context.Context, req QueryAnalysisRe
 	return s.retrieve.AnalyzeQuery(ctx, req.PersonaID, req.QueryText, retrievalPolicyToStore(req.Policy))
 }
 
-func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, queryText string, analysis memsqlite.QueryAnalysis, policy RetrievalPolicy) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
+func (s *service) analyzeRetrievalRuleQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error) {
+	if s.queryPipeline.rule != nil {
+		return s.queryPipeline.AnalyzeRuleQuery(ctx, req)
+	}
+	return s.analyzeRetrievalQuery(ctx, req)
+}
+
+type semanticQueryAnalysisLane struct {
+	ch     <-chan memsqlite.QueryAnalysis
+	cancel context.CancelFunc
+}
+
+func (s *service) startSemanticQueryAnalysisLane(ctx context.Context, req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) *semanticQueryAnalysisLane {
+	if s.queryPipeline.rule == nil || !s.queryPipeline.shouldUseSemantic(rule) {
+		return nil
+	}
+	laneCtx, cancel := context.WithCancel(ctx)
+	ch := make(chan memsqlite.QueryAnalysis, 1)
+	go func() {
+		ch <- s.queryPipeline.AnalyzeSemanticForRule(laneCtx, req, rule)
+	}()
+	return &semanticQueryAnalysisLane{ch: ch, cancel: cancel}
+}
+
+func (s *service) softJoinSemanticQueryAnalysisLane(ctx context.Context, lane *semanticQueryAnalysisLane, rule memsqlite.QueryAnalysis) (memsqlite.QueryAnalysis, bool) {
+	if lane == nil {
+		return memsqlite.QueryAnalysis{}, false
+	}
+	select {
+	case analysis := <-lane.ch:
+		lane.cancel()
+		return analysis, true
+	default:
+	}
+	timeout := queryAnalysisSoftJoinTimeout(s.queryPipeline.options)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case analysis := <-lane.ch:
+		lane.cancel()
+		return analysis, true
+	case <-timer.C:
+		latencyMs := int64(timeout / time.Millisecond)
+		lane.cancel()
+		return semanticRuleFallback(rule, "semantic_soft_timeout", SemanticQueryAnalysisResult{LatencyMs: latencyMs}), true
+	case <-ctx.Done():
+		lane.cancel()
+		return semanticRuleFallback(rule, "go_context_timeout", SemanticQueryAnalysisResult{}), true
+	}
+}
+
+func queryAnalysisSoftJoinTimeout(options QueryAnalysisOptions) time.Duration {
+	options = normalizeQueryAnalysisOptions(options)
+	if options.SoftJoinTimeout > 0 {
+		return options.SoftJoinTimeout
+	}
+	return options.Timeout
+}
+
+func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, queryText string, analysis memsqlite.QueryAnalysis, policy RetrievalPolicy, semanticOnly bool) ([]memsqlite.RetrievalMirrorCandidate, *memsqlite.MirrorDiagnostics, error) {
 	diagnostics := &memsqlite.MirrorDiagnostics{Status: "disabled_by_config"}
 	if !policy.UseMirror {
 		return nil, diagnostics, nil
@@ -147,11 +225,16 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	diagnostics.RewriteQueryCount = result.Diagnostics.RewriteQueryCount
 	diagnostics.AnchorQueryCount = result.Diagnostics.AnchorQueryCount
 	diagnostics.MergedCandidateCount = result.Diagnostics.MergedCandidateCount
+	diagnostics.QueryTrimCount = result.Diagnostics.QueryTrimCount
+	diagnostics.DenseEmbeddingWallLatencyMs = result.Diagnostics.DenseEmbeddingWallLatencyMs
+	diagnostics.DenseEmbeddingBatchLatencyMs = result.Diagnostics.DenseEmbeddingBatchLatencyMs
+	diagnostics.DenseSearchTotalLatencyMs = result.Diagnostics.DenseSearchTotalLatencyMs
+	diagnostics.QueryCountTrimmedByBudget = result.Diagnostics.QueryCountTrimmedByBudget
 	diagnostics.PerQuery = mirrorPerQueryDiagnosticsToStore(result.Diagnostics.PerQuery)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
 		diagnostics.Degraded = true
-		diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
+		diagnostics.FallbackReason = sanitizeRetrievalSidecarFallbackReason(result.FallbackReason)
 		s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 		return nil, diagnostics, nil
 	}
@@ -164,17 +247,21 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	candidates := make([]memsqlite.MirrorCandidate, 0, len(result.Candidates))
 	var operationTargetDiagnostics []memsqlite.MirrorCandidateDiagnostic
 	for idx, candidate := range result.Candidates {
+		if semanticOnly && isRawMirrorCandidateSource(candidate.Source) {
+			continue
+		}
 		rank := candidate.Rank
 		if rank <= 0 {
 			rank = idx + 1
 		}
 		storeCandidate := memsqlite.MirrorCandidate{
-			TriviumNodeID:  candidate.TriviumNodeID,
-			Score:          candidate.Score,
-			Source:         candidate.Source,
-			PrimaryPurpose: candidate.PrimaryPurpose,
-			Rank:           rank,
-			HitCount:       candidate.HitCount,
+			TriviumNodeID:   candidate.TriviumNodeID,
+			Score:           candidate.Score,
+			Source:          candidate.Source,
+			PrimaryPurpose:  candidate.PrimaryPurpose,
+			Rank:            rank,
+			HitCount:        candidate.HitCount,
+			SourceBreakdown: mirrorCandidateSourceBreakdownToStore(candidate.SourceBreakdown),
 		}
 		if isForgetDeleteMirrorCandidate(analysis) {
 			operationTargetDiagnostics = append(operationTargetDiagnostics, memsqlite.MirrorCandidateDiagnostic{
@@ -229,6 +316,20 @@ func (s *service) mirrorFactCandidates(ctx context.Context, sidecarCtx context.C
 	}
 	s.recordSidecarStage(personaID, sidecarStageMirror, diagnostics.Status, diagnostics.FallbackReason)
 	return report.Mapped, diagnostics, nil
+}
+
+func mirrorCandidateSourceBreakdownToStore(values []MirrorCandidateSourceBreakdown) []memsqlite.MirrorCandidateSourceBreakdown {
+	result := make([]memsqlite.MirrorCandidateSourceBreakdown, 0, len(values))
+	for _, value := range values {
+		result = append(result, memsqlite.MirrorCandidateSourceBreakdown{
+			Source:  value.Source,
+			Purpose: value.Purpose,
+			Rank:    value.Rank,
+			Score:   value.Score,
+			Weight:  value.Weight,
+		})
+	}
+	return result
 }
 
 func (s *service) graphActivationCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval) ([]memsqlite.RetrievalActivationCandidate, *memsqlite.GraphActivationDiagnostics, error) {
@@ -295,7 +396,7 @@ func (s *service) graphActivationCandidates(ctx context.Context, sidecarCtx cont
 	}
 	diagnostics.SidecarCandidateCount = len(result.Candidates)
 	diagnostics.Degraded = result.Degraded
-	diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
+	diagnostics.FallbackReason = sanitizeRetrievalSidecarFallbackReason(result.FallbackReason)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
 		if diagnostics.FallbackReason != "activation_budget_exceeded" || len(result.Candidates) == 0 {
@@ -389,7 +490,7 @@ func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Conte
 		return nil, diagnostics, nil
 	}
 	diagnostics.Degraded = result.Degraded
-	diagnostics.FallbackReason = sanitizeSidecarFallbackReason(result.FallbackReason)
+	diagnostics.FallbackReason = sanitizeRetrievalSidecarFallbackReason(result.FallbackReason)
 	if result.Degraded {
 		diagnostics.Status = "sidecar_degraded"
 		s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
@@ -433,13 +534,186 @@ func forgetDeleteMirrorDropReason(candidate MirrorCandidate) string {
 	return "forget_delete_not_context"
 }
 
+func isRawMirrorCandidateSource(source string) bool {
+	switch strings.TrimSpace(source) {
+	case "", "raw_dense", "raw_query":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeRetrievalMirrorCandidates(raw []memsqlite.RetrievalMirrorCandidate, semantic []memsqlite.RetrievalMirrorCandidate) []memsqlite.RetrievalMirrorCandidate {
+	if len(raw) == 0 {
+		return append([]memsqlite.RetrievalMirrorCandidate(nil), semantic...)
+	}
+	if len(semantic) == 0 {
+		return append([]memsqlite.RetrievalMirrorCandidate(nil), raw...)
+	}
+	result := make([]memsqlite.RetrievalMirrorCandidate, 0, len(raw)+len(semantic))
+	byFact := map[string]int{}
+	add := func(candidate memsqlite.RetrievalMirrorCandidate) {
+		if strings.TrimSpace(candidate.FactID) == "" {
+			return
+		}
+		if idx, ok := byFact[candidate.FactID]; ok {
+			existing := result[idx]
+			result[idx] = mergeRetrievalMirrorCandidate(existing, candidate)
+			return
+		}
+		byFact[candidate.FactID] = len(result)
+		result = append(result, candidate)
+	}
+	for _, candidate := range raw {
+		add(candidate)
+	}
+	for _, candidate := range semantic {
+		add(candidate)
+	}
+	return result
+}
+
+func mergeRetrievalMirrorCandidate(existing memsqlite.RetrievalMirrorCandidate, candidate memsqlite.RetrievalMirrorCandidate) memsqlite.RetrievalMirrorCandidate {
+	mergedBreakdown := mergeMirrorSourceBreakdown(existing.SourceBreakdown, candidate.SourceBreakdown)
+	if len(mergedBreakdown) == 0 {
+		mergedBreakdown = mergeMirrorSourceBreakdown(
+			mirrorCandidatePrimarySourceBreakdown(existing),
+			mirrorCandidatePrimarySourceBreakdown(candidate),
+		)
+	}
+	keep := existing
+	if isRawMirrorCandidateSource(existing.Source) && !isRawMirrorCandidateSource(candidate.Source) {
+		keep = existing
+	} else if !isRawMirrorCandidateSource(existing.Source) && isRawMirrorCandidateSource(candidate.Source) {
+		keep = candidate
+	} else if candidate.Rank > 0 && (existing.Rank <= 0 || candidate.Rank < existing.Rank || (candidate.Rank == existing.Rank && candidate.Score > existing.Score)) {
+		keep = candidate
+	}
+	keep.SourceBreakdown = mergedBreakdown
+	keep.HitCount = existing.HitCount + candidate.HitCount
+	return keep
+}
+
+func mirrorCandidatePrimarySourceBreakdown(candidate memsqlite.RetrievalMirrorCandidate) []memsqlite.MirrorCandidateSourceBreakdown {
+	source := strings.TrimSpace(candidate.Source)
+	if source == "" {
+		return nil
+	}
+	return []memsqlite.MirrorCandidateSourceBreakdown{{
+		Source:  source,
+		Purpose: candidate.PrimaryPurpose,
+		Rank:    candidate.Rank,
+		Score:   candidate.Score,
+		Weight:  1,
+	}}
+}
+
+func mergeMirrorSourceBreakdown(left []memsqlite.MirrorCandidateSourceBreakdown, right []memsqlite.MirrorCandidateSourceBreakdown) []memsqlite.MirrorCandidateSourceBreakdown {
+	bySource := map[string]memsqlite.MirrorCandidateSourceBreakdown{}
+	add := func(item memsqlite.MirrorCandidateSourceBreakdown) {
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			return
+		}
+		item.Source = source
+		existing, ok := bySource[source]
+		if !ok || item.Rank > 0 && (existing.Rank <= 0 || item.Rank < existing.Rank || (item.Rank == existing.Rank && item.Score > existing.Score)) || item.Score > existing.Score {
+			bySource[source] = item
+		}
+	}
+	for _, item := range left {
+		add(item)
+	}
+	for _, item := range right {
+		add(item)
+	}
+	result := make([]memsqlite.MirrorCandidateSourceBreakdown, 0, len(bySource))
+	for _, item := range bySource {
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftRaw := isRawMirrorCandidateSource(result[i].Source)
+		rightRaw := isRawMirrorCandidateSource(result[j].Source)
+		if leftRaw != rightRaw {
+			return leftRaw
+		}
+		if result[i].Rank == result[j].Rank {
+			return result[i].Source < result[j].Source
+		}
+		return result[i].Rank < result[j].Rank
+	})
+	return result
+}
+
+func mergeMirrorDiagnostics(raw *memsqlite.MirrorDiagnostics, semantic *memsqlite.MirrorDiagnostics) *memsqlite.MirrorDiagnostics {
+	if raw == nil {
+		return semantic
+	}
+	if semantic == nil {
+		return raw
+	}
+	out := *raw
+	out.LatencyMs += semantic.LatencyMs
+	out.SidecarCandidateCount += semantic.SidecarCandidateCount
+	out.MappedCandidateCount += semantic.MappedCandidateCount
+	out.DroppedCandidateCount += semantic.DroppedCandidateCount
+	out.EmbeddingCacheHits += semantic.EmbeddingCacheHits
+	out.EmbeddingCacheMisses += semantic.EmbeddingCacheMisses
+	out.EmbeddingLiveCallCount += semantic.EmbeddingLiveCallCount
+	semanticQueryCount := semantic.QueryCount - semantic.RawQueryCount
+	if semanticQueryCount < 0 {
+		semanticQueryCount = 0
+	}
+	out.QueryCount += semanticQueryCount
+	out.RewriteQueryCount += semantic.RewriteQueryCount
+	out.AnchorQueryCount += semantic.AnchorQueryCount
+	out.MergedCandidateCount += semantic.MergedCandidateCount
+	out.QueryTrimCount += semantic.QueryTrimCount
+	if semantic.DenseEmbeddingWallLatencyMs > out.DenseEmbeddingWallLatencyMs {
+		out.DenseEmbeddingWallLatencyMs = semantic.DenseEmbeddingWallLatencyMs
+	}
+	if semantic.DenseEmbeddingBatchLatencyMs > out.DenseEmbeddingBatchLatencyMs {
+		out.DenseEmbeddingBatchLatencyMs = semantic.DenseEmbeddingBatchLatencyMs
+	}
+	out.DenseSearchTotalLatencyMs += semantic.DenseSearchTotalLatencyMs
+	out.QueryCountTrimmedByBudget += semantic.QueryCountTrimmedByBudget
+	out.PerQuery = append([]memsqlite.MirrorCandidatePerQueryDiagnostic(nil), raw.PerQuery...)
+	for _, item := range semantic.PerQuery {
+		if isRawMirrorCandidateSource(item.Source) {
+			continue
+		}
+		out.PerQuery = append(out.PerQuery, item)
+	}
+	out.Candidates = append(append([]memsqlite.MirrorCandidateDiagnostic(nil), raw.Candidates...), semantic.Candidates...)
+	if raw.Status != "used" && semantic.Status != "" {
+		out.Status = semantic.Status
+	}
+	if semantic.Degraded {
+		out.Degraded = true
+		if out.FallbackReason == "" {
+			out.FallbackReason = semantic.FallbackReason
+		}
+	}
+	return &out
+}
+
+func sanitizeRetrievalSidecarFallbackReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "provider_budget_exhausted", "sidecar_provider_timeout":
+		return strings.TrimSpace(reason)
+	default:
+		return sanitizeSidecarFallbackReason(reason)
+	}
+}
+
 func mirrorPerQueryDiagnosticsToStore(values []MirrorCandidatePerQueryDiagnostic) []memsqlite.MirrorCandidatePerQueryDiagnostic {
 	result := make([]memsqlite.MirrorCandidatePerQueryDiagnostic, 0, len(values))
 	for _, value := range values {
 		result = append(result, memsqlite.MirrorCandidatePerQueryDiagnostic{
-			Source:  value.Source,
-			Purpose: value.Purpose,
-			Count:   value.Count,
+			Source:    value.Source,
+			Purpose:   value.Purpose,
+			Count:     value.Count,
+			LatencyMs: value.LatencyMs,
 		})
 	}
 	return result
@@ -526,9 +800,21 @@ func rerankCandidatesFromStore(candidates []memsqlite.RerankCandidate) []MirrorR
 			CurrentScore: candidate.CurrentScore,
 			AnchorEnergy: candidate.AnchorEnergy,
 			GraphEnergy:  candidate.GraphEnergy,
+			SourceScores: cloneFloatMap(candidate.SourceScores),
 		})
 	}
 	return result
+}
+
+func cloneFloatMap(values map[string]float64) map[string]float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func rerankItemsToStore(items []MirrorRerankItem) []memsqlite.RerankResultItem {

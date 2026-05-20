@@ -784,7 +784,12 @@ func (s *runState) validateProfileRetrieval(result *memorycore.MemoryContext) er
 	switch s.profile {
 	case "", ProfileSQLiteGo:
 		return nil
-	case ProfileMirrorRealDense:
+	case ProfileMirrorRealDense,
+		ProfileRuleOnlyRaw,
+		ProfileSemanticParseOnly,
+		ProfileSemanticRewriteOnly,
+		ProfileSemanticFullCurrent,
+		ProfileSemanticFullSoftGated:
 		return requireMirrorUsed(s.caseID, s.profile, result)
 	case ProfileMirrorRealGraph:
 		if err := requireMirrorUsed(s.caseID, s.profile, result); err != nil {

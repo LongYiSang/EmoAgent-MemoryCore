@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
@@ -52,41 +53,52 @@ type ProfileMatrixReport struct {
 }
 
 type MatrixMetrics struct {
-	RequiredHitRate                    float64 `json:"required_hit_rate"`
-	CandidateRecallAt80                float64 `json:"candidate_recall_at_80"`
-	SelectedRecallAt8                  float64 `json:"selected_recall_at_8"`
-	PrecisionAt8                       float64 `json:"precision_at_8"`
-	MRR                                float64 `json:"mrr"`
-	NDCGAt8                            float64 `json:"ndcg_at_8"`
-	CausalChainCoverage                float64 `json:"causal_chain_coverage"`
-	ContextPrecision                   float64 `json:"context_precision"`
-	ForbiddenRecallRate                float64 `json:"forbidden_recall_rate"`
-	AuthorityFilterViolationCount      int     `json:"authority_filter_violation_count"`
-	SidecarDegradedCount               int     `json:"sidecar_degraded_count"`
-	FallbackCount                      int     `json:"fallback_count"`
-	GraphActivationUsedCount           int     `json:"graph_activation_used_count"`
-	GraphRequiredButNotUsedCount       int     `json:"graph_required_but_not_used_count"`
-	MirrorUsedCount                    int     `json:"mirror_used_count"`
-	RerankLiveCallCount                int     `json:"rerank_live_call_count"`
-	RerankRequiredButNotUsedCount      int     `json:"rerank_required_but_not_used_count"`
-	EmbeddingCacheHits                 int     `json:"embedding_cache_hits"`
-	EmbeddingCacheMisses               int     `json:"embedding_cache_misses"`
-	EmbeddingLiveCallCount             int     `json:"embedding_live_call_count"`
-	QueryAnalysisUsedCount             int     `json:"query_analysis_used_count"`
-	QueryAnalysisFallbackCount         int     `json:"query_analysis_fallback_count"`
-	QueryAnalysisInvalidJSONCount      int     `json:"query_analysis_invalid_json_count"`
-	QueryAnalysisValidationFailedCount int     `json:"query_analysis_validation_failed_count"`
-	QueryAnalysisLatencyP50            int64   `json:"query_analysis_latency_p50"`
-	QueryAnalysisLatencyP95            int64   `json:"query_analysis_latency_p95"`
-	EnglishRewriteCount                int     `json:"english_rewrite_count"`
-	DroppedRewriteCount                int     `json:"dropped_rewrite_count"`
-	SemanticRewriteDenseCount          int     `json:"semantic_rewrite_dense_count"`
-	CandidateQueryCount                int     `json:"candidate_query_count"`
-	StubUsedCount                      int     `json:"stub_used_count"`
-	ForbiddenSelectedCount             int     `json:"forbidden_selected_count"`
-	P50LatencyMs                       int64   `json:"p50_latency_ms"`
-	P95LatencyMs                       int64   `json:"p95_latency_ms"`
-	MirrorManifestHash                 string  `json:"mirror_manifest_hash,omitempty"`
+	RequiredHitRate                     float64            `json:"required_hit_rate"`
+	CandidateRecallAt80                 float64            `json:"candidate_recall_at_80"`
+	SelectedRecallAt8                   float64            `json:"selected_recall_at_8"`
+	PrecisionAt8                        float64            `json:"precision_at_8"`
+	MRR                                 float64            `json:"mrr"`
+	NDCGAt8                             float64            `json:"ndcg_at_8"`
+	CausalChainCoverage                 float64            `json:"causal_chain_coverage"`
+	ContextPrecision                    float64            `json:"context_precision"`
+	ForbiddenRecallRate                 float64            `json:"forbidden_recall_rate"`
+	AuthorityFilterViolationCount       int                `json:"authority_filter_violation_count"`
+	SidecarDegradedCount                int                `json:"sidecar_degraded_count"`
+	FallbackCount                       int                `json:"fallback_count"`
+	GraphActivationUsedCount            int                `json:"graph_activation_used_count"`
+	GraphRequiredButNotUsedCount        int                `json:"graph_required_but_not_used_count"`
+	MirrorUsedCount                     int                `json:"mirror_used_count"`
+	RerankLiveCallCount                 int                `json:"rerank_live_call_count"`
+	RerankRequiredButNotUsedCount       int                `json:"rerank_required_but_not_used_count"`
+	EmbeddingCacheHits                  int                `json:"embedding_cache_hits"`
+	EmbeddingCacheMisses                int                `json:"embedding_cache_misses"`
+	EmbeddingLiveCallCount              int                `json:"embedding_live_call_count"`
+	QueryAnalysisUsedCount              int                `json:"query_analysis_used_count"`
+	QueryAnalysisFallbackCount          int                `json:"query_analysis_fallback_count"`
+	QueryAnalysisInvalidJSONCount       int                `json:"query_analysis_invalid_json_count"`
+	QueryAnalysisValidationFailedCount  int                `json:"query_analysis_validation_failed_count"`
+	RuleOnlyNoSemanticCallCount         int                `json:"rule_only_no_semantic_call_count"`
+	SemanticTimeoutRuleFallbackCount    int                `json:"semantic_timeout_rule_fallback_count"`
+	SemanticValidationRuleFallbackCount int                `json:"semantic_validation_failed_rule_fallback_count"`
+	SemanticDriftCount                  int                `json:"semantic_drift_count"`
+	ProviderTimeoutCount                int                `json:"provider_timeout_count"`
+	SidecarProviderTimeoutCount         int                `json:"sidecar_provider_timeout_count"`
+	ProviderBudgetExhaustedCount        int                `json:"provider_budget_exhausted_count"`
+	QueryAnalysisLatencyP50             int64              `json:"query_analysis_latency_p50"`
+	QueryAnalysisLatencyP95             int64              `json:"query_analysis_latency_p95"`
+	EnglishRewriteCount                 int                `json:"english_rewrite_count"`
+	DroppedRewriteCount                 int                `json:"dropped_rewrite_count"`
+	SemanticRewriteDenseCount           int                `json:"semantic_rewrite_dense_count"`
+	CandidateQueryCount                 int                `json:"candidate_query_count"`
+	QueryTrimCount                      int                `json:"query_trim_count"`
+	RawExactSurvivalCount               int                `json:"raw_exact_survival_count"`
+	StubUsedCount                       int                `json:"stub_used_count"`
+	ForbiddenSelectedCount              int                `json:"forbidden_selected_count"`
+	P50LatencyMs                        int64              `json:"p50_latency_ms"`
+	P95LatencyMs                        int64              `json:"p95_latency_ms"`
+	MirrorManifestHash                  string             `json:"mirror_manifest_hash,omitempty"`
+	CandidateRecallBySource             map[string]float64 `json:"candidate_recall_by_source,omitempty"`
+	SelectedRecallBySource              map[string]float64 `json:"selected_recall_by_source,omitempty"`
 }
 
 func NewMatrixRunner(opts MatrixRunnerOptions) *MatrixRunner {
@@ -110,6 +122,7 @@ func (r *MatrixRunner) Run(ctx context.Context, fixture *Fixture) MatrixReport {
 	if strings.TrimSpace(r.opts.ReportDir) != "" {
 		_ = os.MkdirAll(r.opts.ReportDir, 0o755)
 		_ = writeJSONFile(filepath.Join(r.opts.ReportDir, "report.json"), report)
+		_ = writeJSONFile(filepath.Join(r.opts.ReportDir, "query_analysis.json"), BuildQueryAnalysisReport(fixture, report))
 		_ = os.WriteFile(filepath.Join(r.opts.ReportDir, "report.md"), []byte(FormatMatrixReport(report)+"\n"), 0o644)
 		_ = os.WriteFile(filepath.Join(r.opts.ReportDir, "detail.md"), []byte(FormatMatrixDetailReport(fixture, report)+"\n"), 0o644)
 	}
@@ -121,7 +134,7 @@ func (r *MatrixRunner) ensureQueryAnalysisCache() {
 		return
 	}
 	switch r.opts.QueryAnalysis.Mode {
-	case memorycore.QueryAnalysisModeSemanticAlways, memorycore.QueryAnalysisModeSemanticOnLowConfidence:
+	case memorycore.QueryAnalysisModeSemanticAlways, memorycore.QueryAnalysisModeSemanticOnLowConfidence, memorycore.QueryAnalysisModeSemanticRewriteOnly:
 		r.opts.QueryAnalysis.Cache = memorycore.NewQueryAnalysisCache()
 	}
 }
@@ -194,7 +207,39 @@ func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.Query
 	if !profile.UsesMirror() {
 		return memorycore.QueryAnalysisOptions{}
 	}
+	switch profile {
+	case ProfileRuleOnlyRaw:
+		return memorycore.QueryAnalysisOptions{}
+	case ProfileSemanticParseOnly:
+		options := r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticAlways)
+		options.DisableGeneratedDense = true
+		return options
+	case ProfileSemanticRewriteOnly:
+		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticRewriteOnly)
+	case ProfileSemanticFullCurrent:
+		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticAlways)
+	case ProfileSemanticFullSoftGated:
+		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticOnLowConfidence)
+	}
 	return r.opts.QueryAnalysis
+}
+
+func (r *MatrixRunner) semanticProfileQueryAnalysisOptions(mode memorycore.QueryAnalysisMode) memorycore.QueryAnalysisOptions {
+	options := r.opts.QueryAnalysis
+	if options.Provider == "" {
+		options.Provider = memorycore.QueryAnalysisProviderSidecar
+	}
+	if strings.TrimSpace(options.SidecarURL) == "" {
+		options.SidecarURL = strings.TrimSpace(r.opts.SidecarURL)
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = 1500 * time.Millisecond
+	}
+	options.Mode = mode
+	if options.Provider != memorycore.QueryAnalysisProviderSidecar || strings.TrimSpace(options.SidecarURL) == "" {
+		return memorycore.QueryAnalysisOptions{}
+	}
+	return options
 }
 
 func shouldUseMirrorArtifact(root string, adapter memorycore.MirrorAdapter) bool {
@@ -473,6 +518,8 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			metrics.EmbeddingCacheMisses += retrieval.Mirror.EmbeddingCacheMisses
 			metrics.EmbeddingLiveCallCount += retrieval.Mirror.EmbeddingLiveCallCount
 			metrics.CandidateQueryCount += retrieval.Mirror.QueryCount
+			metrics.QueryTrimCount += retrieval.Mirror.QueryTrimCount
+			metrics.RawExactSurvivalCount += countRawExactSurvival(retrieval.Mirror.Candidates)
 			if retrieval.Mirror.RewriteQueryCount > 0 {
 				metrics.SemanticRewriteDenseCount += retrieval.Mirror.RewriteQueryCount
 			} else {
@@ -488,6 +535,7 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			if requirements.RequiresMirror && isFallbackStatus(retrieval.Mirror.Status) {
 				metrics.FallbackCount++
 			}
+			collectProviderFallbackMetrics(retrieval.Mirror.FallbackReason, &metrics)
 			if retrieval.Mirror.LatencyMs > metrics.P95LatencyMs {
 				metrics.P95LatencyMs = retrieval.Mirror.LatencyMs
 			}
@@ -505,6 +553,7 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			if requirements.RequiresGraphActivation && retrieval.GraphActivation.Degraded {
 				metrics.SidecarDegradedCount++
 			}
+			collectProviderFallbackMetrics(retrieval.GraphActivation.FallbackReason, &metrics)
 		}
 		if retrieval.Rerank != nil {
 			if retrieval.Rerank.Status == "used" {
@@ -516,6 +565,7 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			if requirements.RequiresRerankProvider && retrieval.Rerank.Degraded {
 				metrics.SidecarDegradedCount++
 			}
+			collectProviderFallbackMetrics(retrieval.Rerank.FallbackReason, &metrics)
 		}
 	}
 	metrics.QueryAnalysisLatencyP50 = percentileInt64(queryAnalysisLatencies, 50)
@@ -532,6 +582,8 @@ func collectQueryAnalysisMetrics(analysis *memorycore.QueryAnalysis, metrics *Ma
 		metrics.QueryAnalysisUsedCount++
 	case memorycore.QueryAnalysisSourceSemanticFallback:
 		metrics.QueryAnalysisFallbackCount++
+	case memorycore.QueryAnalysisSourceRuleOnly:
+		metrics.RuleOnlyNoSemanticCallCount++
 	}
 	if analysis.Diagnostics == nil {
 		return
@@ -542,12 +594,50 @@ func collectQueryAnalysisMetrics(analysis *memorycore.QueryAnalysis, metrics *Ma
 		metrics.QueryAnalysisInvalidJSONCount++
 	case "validation_failed":
 		metrics.QueryAnalysisValidationFailedCount++
+		metrics.SemanticValidationRuleFallbackCount++
+	case "semantic_timeout", "semantic_soft_timeout":
+		metrics.SemanticTimeoutRuleFallbackCount++
+	case "provider_timeout":
+		metrics.ProviderTimeoutCount++
+		metrics.SemanticTimeoutRuleFallbackCount++
+	case "sidecar_provider_timeout":
+		metrics.SidecarProviderTimeoutCount++
+		metrics.SemanticTimeoutRuleFallbackCount++
+	case "provider_budget_exhausted":
+		metrics.ProviderBudgetExhaustedCount++
 	}
 	if diagnostics.SemanticLatencyMs > 0 && latencies != nil {
 		*latencies = append(*latencies, diagnostics.SemanticLatencyMs)
 	}
 	metrics.EnglishRewriteCount += diagnostics.EnglishRewriteCount
 	metrics.DroppedRewriteCount += diagnostics.DroppedRewriteCount
+	metrics.SemanticDriftCount += diagnostics.SemanticDriftCount
+}
+
+func collectProviderFallbackMetrics(reason string, metrics *MatrixMetrics) {
+	if metrics == nil {
+		return
+	}
+	switch strings.TrimSpace(reason) {
+	case "sidecar_provider_timeout":
+		metrics.SidecarProviderTimeoutCount++
+	case "provider_budget_exhausted":
+		metrics.ProviderBudgetExhaustedCount++
+	}
+}
+
+func countRawExactSurvival(candidates []memorycore.MirrorCandidateDiagnostics) int {
+	count := 0
+	for _, candidate := range candidates {
+		if candidate.DropReason != "" {
+			continue
+		}
+		switch candidate.Source {
+		case "raw_exact", "sqlite_fts", "sqlite_sparse", "raw_dense":
+			count++
+		}
+	}
+	return count
 }
 
 func countSemanticRewriteDenseCandidates(candidates []memorycore.MirrorCandidateDiagnostics) int {
@@ -592,6 +682,9 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 	}
 	var recallSum, candidateRecallSum, precisionSum, selectedPrecisionSum, mrrSum, ndcgSum, contextPrecisionSum float64
 	var recallCount, candidateRecallCount, precisionCount, selectedPrecisionCount, chainCount, chainPass, forbiddenAssertions int
+	candidateRecallBySource := map[string]float64{}
+	selectedRecallBySource := map[string]float64{}
+	recallCountBySource := map[string]int{}
 	for _, assertion := range fixture.Assertions {
 		retrieval := resultByStep[assertion.Step]
 		switch assertion.Type {
@@ -608,6 +701,7 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 			selectedPrecisionCount++
 			mrrSum += meanReciprocalRank(selected, relevant, assertion.At)
 			ndcgSum += ndcgAtK(selected, relevant, assertion.At)
+			addSourceLevelRecall(candidateRecallBySource, selectedRecallBySource, recallCountBySource, retrieval, selected, relevant, assertion.At)
 		case "context_precision_at_k":
 			selected := flattenSelectedNodeIDs(retrieval)
 			relevant := cleanAssertionRefs(assertion.RelevantNodeIDs)
@@ -648,6 +742,36 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 		metrics.ForbiddenRecallRate = 1
 		metrics.AuthorityFilterViolationCount = metrics.ForbiddenSelectedCount
 	}
+	metrics.CandidateRecallBySource = averageRecallMap(candidateRecallBySource, recallCountBySource)
+	metrics.SelectedRecallBySource = averageRecallMap(selectedRecallBySource, recallCountBySource)
+}
+
+func addSourceLevelRecall(candidateSums map[string]float64, selectedSums map[string]float64, counts map[string]int, retrieval *memorycore.MemoryContext, selected []string, relevant []string, at int) {
+	candidatesBySource := candidateNodeIDsBySource(retrieval)
+	selectedBySource := selectedNodeIDsBySource(selected, candidatesBySource)
+	for source, candidateIDs := range candidatesBySource {
+		candidateSums[source] += recallAtK(candidateIDs, relevant, 80)
+		selectedSums[source] += recallAtK(selectedBySource[source], relevant, at)
+		counts[source]++
+	}
+}
+
+func averageRecallMap(sums map[string]float64, counts map[string]int) map[string]float64 {
+	if len(sums) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(sums))
+	for source, sum := range sums {
+		count := counts[source]
+		if count <= 0 {
+			continue
+		}
+		out[source] = sum / float64(count)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func reportAssertionPassed(report Report, assertion Assertion) bool {
@@ -726,6 +850,55 @@ func flattenCandidateNodeIDs(retrieval *memorycore.MemoryContext) []string {
 		}
 	}
 	return ids
+}
+
+func candidateNodeIDsBySource(retrieval *memorycore.MemoryContext) map[string][]string {
+	if retrieval == nil || retrieval.Mirror == nil {
+		return nil
+	}
+	bySource := map[string][]string{}
+	seen := map[string]map[string]struct{}{}
+	add := func(source string, nodeID string) {
+		source = strings.TrimSpace(source)
+		nodeID = strings.TrimSpace(nodeID)
+		if source == "" || nodeID == "" {
+			return
+		}
+		if seen[source] == nil {
+			seen[source] = map[string]struct{}{}
+		}
+		if _, ok := seen[source][nodeID]; ok {
+			return
+		}
+		seen[source][nodeID] = struct{}{}
+		bySource[source] = append(bySource[source], nodeID)
+	}
+	for _, candidate := range retrieval.Mirror.Candidates {
+		if candidate.DropReason != "" {
+			continue
+		}
+		add(candidate.Source, candidate.SQLiteFactID)
+	}
+	if len(bySource) == 0 {
+		return nil
+	}
+	return bySource
+}
+
+func selectedNodeIDsBySource(selected []string, candidatesBySource map[string][]string) map[string][]string {
+	if len(selected) == 0 || len(candidatesBySource) == 0 {
+		return nil
+	}
+	selectedSet := stringSet(selected)
+	out := map[string][]string{}
+	for source, candidates := range candidatesBySource {
+		for _, nodeID := range candidates {
+			if _, ok := selectedSet[nodeID]; ok {
+				out[source] = append(out[source], nodeID)
+			}
+		}
+	}
+	return out
 }
 
 func meanReciprocalRank(selected []string, relevant []string, at int) float64 {
@@ -823,12 +996,27 @@ func FormatMatrixReport(report MatrixReport) string {
 		fmt.Fprintf(&b, "query_analysis_fallback_count: %d\n", profile.Metrics.QueryAnalysisFallbackCount)
 		fmt.Fprintf(&b, "query_analysis_invalid_json_count: %d\n", profile.Metrics.QueryAnalysisInvalidJSONCount)
 		fmt.Fprintf(&b, "query_analysis_validation_failed_count: %d\n", profile.Metrics.QueryAnalysisValidationFailedCount)
+		fmt.Fprintf(&b, "rule_only_no_semantic_call_count: %d\n", profile.Metrics.RuleOnlyNoSemanticCallCount)
+		fmt.Fprintf(&b, "semantic_timeout_rule_fallback_count: %d\n", profile.Metrics.SemanticTimeoutRuleFallbackCount)
+		fmt.Fprintf(&b, "semantic_validation_failed_rule_fallback_count: %d\n", profile.Metrics.SemanticValidationRuleFallbackCount)
+		fmt.Fprintf(&b, "semantic_drift_count: %d\n", profile.Metrics.SemanticDriftCount)
+		fmt.Fprintf(&b, "provider_timeout_count: %d\n", profile.Metrics.ProviderTimeoutCount)
+		fmt.Fprintf(&b, "sidecar_provider_timeout_count: %d\n", profile.Metrics.SidecarProviderTimeoutCount)
+		fmt.Fprintf(&b, "provider_budget_exhausted_count: %d\n", profile.Metrics.ProviderBudgetExhaustedCount)
 		fmt.Fprintf(&b, "query_analysis_latency_p50: %d\n", profile.Metrics.QueryAnalysisLatencyP50)
 		fmt.Fprintf(&b, "query_analysis_latency_p95: %d\n", profile.Metrics.QueryAnalysisLatencyP95)
 		fmt.Fprintf(&b, "english_rewrite_count: %d\n", profile.Metrics.EnglishRewriteCount)
 		fmt.Fprintf(&b, "dropped_rewrite_count: %d\n", profile.Metrics.DroppedRewriteCount)
 		fmt.Fprintf(&b, "semantic_rewrite_dense_count: %d\n", profile.Metrics.SemanticRewriteDenseCount)
 		fmt.Fprintf(&b, "candidate_query_count: %d\n", profile.Metrics.CandidateQueryCount)
+		fmt.Fprintf(&b, "query_trim_count: %d\n", profile.Metrics.QueryTrimCount)
+		fmt.Fprintf(&b, "raw_exact_survival_count: %d\n", profile.Metrics.RawExactSurvivalCount)
+		if len(profile.Metrics.CandidateRecallBySource) > 0 {
+			fmt.Fprintf(&b, "candidate_recall_by_source: %s\n", formatMetricFloatMap(profile.Metrics.CandidateRecallBySource))
+		}
+		if len(profile.Metrics.SelectedRecallBySource) > 0 {
+			fmt.Fprintf(&b, "selected_recall_by_source: %s\n", formatMetricFloatMap(profile.Metrics.SelectedRecallBySource))
+		}
 		fmt.Fprintf(&b, "graph_activation_used_count: %d\n", profile.Metrics.GraphActivationUsedCount)
 		fmt.Fprintf(&b, "rerank_live_call_count: %d\n", profile.Metrics.RerankLiveCallCount)
 		fmt.Fprintf(&b, "embedding_cache_hits: %d\n", profile.Metrics.EmbeddingCacheHits)
@@ -849,6 +1037,22 @@ func FormatMatrixReport(report MatrixReport) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatMetricFloatMap(values map[string]float64) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%.3f", key, values[key]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func matrixReportTestPlanVersion(report MatrixReport) string {
@@ -884,7 +1088,12 @@ func profileAdapter(profile Profile, adapter memorycore.MirrorAdapter) memorycor
 	rerank, _ := adapter.(memorycore.MirrorRerankAdapter)
 	configurator, _ := adapter.(memorycore.MirrorEvalConfigurator)
 	switch profile {
-	case ProfileMirrorRealDense:
+	case ProfileMirrorRealDense,
+		ProfileRuleOnlyRaw,
+		ProfileSemanticParseOnly,
+		ProfileSemanticRewriteOnly,
+		ProfileSemanticFullCurrent,
+		ProfileSemanticFullSoftGated:
 		return denseOnlyAdapter{base: adapter, namespace: namespace, candidates: candidates, configurator: configurator}
 	case ProfileMirrorRealGraph:
 		return graphOnlyAdapter{denseOnlyAdapter: denseOnlyAdapter{base: adapter, namespace: namespace, candidates: candidates, configurator: configurator}, activation: activation}

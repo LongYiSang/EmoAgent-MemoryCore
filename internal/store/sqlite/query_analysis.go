@@ -138,6 +138,32 @@ type QueryAnalysisDiagnostics struct {
 	DroppedRewriteCount   int
 	DroppedRewriteReasons []string
 	EnglishRewriteCount   int
+	SemanticDriftCount    int
+	SemanticAnalysis      *SemanticQueryAnalysisDiagnostics
+}
+
+type SemanticQueryAnalysisDiagnostics struct {
+	TimeMode          string
+	Signals           []string
+	MemoryDomain      string
+	MemoryAbility     string
+	EvidenceNeed      string
+	Confidence        float64
+	FieldConfidence   QueryAnalysisConfidence
+	EntityMentions    []SemanticQueryEntityMentionDiagnostics
+	QueryRewrites     []QueryRewrite
+	SemanticAnchors   []SemanticAnchor
+	ContextBlockHints []string
+	PolicyHints       QueryPolicyHints
+}
+
+type SemanticQueryEntityMentionDiagnostics struct {
+	EntityID      string
+	CanonicalName string
+	Alias         string
+	MatchText     string
+	MatchKind     string
+	Confidence    float64
 }
 
 func (r *RetrievalRepository) AnalyzeQuery(ctx context.Context, personaID string, query string, policy RetrievalPolicy) (QueryAnalysis, error) {
@@ -179,9 +205,23 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
+		diagnostics.SemanticAnalysis = cloneSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
 	}
 	return out
+}
+
+func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnostics) *SemanticQueryAnalysisDiagnostics {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.Signals = append([]string(nil), value.Signals...)
+	out.EntityMentions = append([]SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
+	out.QueryRewrites = append([]QueryRewrite(nil), value.QueryRewrites...)
+	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
+	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
+	return &out
 }
 
 func queryTimeMode(normalized string) QueryTimeMode {

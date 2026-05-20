@@ -429,15 +429,30 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 	}
 	for _, candidate := range result.Candidates {
 		out.Candidates = append(out.Candidates, MirrorCandidate{
-			TriviumNodeID:  candidate.TriviumNodeID,
-			Score:          candidate.Score,
-			Source:         candidate.Source,
-			PrimaryPurpose: candidate.PrimaryPurpose,
-			Rank:           candidate.Rank,
-			HitCount:       candidate.HitCount,
+			TriviumNodeID:   candidate.TriviumNodeID,
+			Score:           candidate.Score,
+			Source:          candidate.Source,
+			PrimaryPurpose:  candidate.PrimaryPurpose,
+			Rank:            candidate.Rank,
+			HitCount:        candidate.HitCount,
+			SourceBreakdown: mirrorCandidateSourceBreakdownFromInternal(candidate.SourceBreakdown),
 		})
 	}
 	return out, nil
+}
+
+func mirrorCandidateSourceBreakdownFromInternal(values []internalmirror.CandidateSourceBreakdown) []MirrorCandidateSourceBreakdown {
+	result := make([]MirrorCandidateSourceBreakdown, 0, len(values))
+	for _, value := range values {
+		result = append(result, MirrorCandidateSourceBreakdown{
+			Source:  value.Source,
+			Purpose: value.Purpose,
+			Rank:    value.Rank,
+			Score:   value.Score,
+			Weight:  value.Weight,
+		})
+	}
+	return result
 }
 
 func (a sidecarMirrorAdapter) ActivateGraph(ctx context.Context, req MirrorActivationRequest) (*MirrorActivationResult, error) {
@@ -553,6 +568,7 @@ func rerankCandidatesToInternal(candidates []MirrorRerankCandidate) []internalmi
 			CurrentScore: candidate.CurrentScore,
 			AnchorEnergy: candidate.AnchorEnergy,
 			GraphEnergy:  candidate.GraphEnergy,
+			SourceScores: cloneFloatMap(candidate.SourceScores),
 		})
 	}
 	return result
@@ -639,18 +655,24 @@ func queryPolicyHintsPublicToMirror(value QueryPolicyHints) internalmirror.Query
 
 func mirrorCandidateDiagnosticsFromInternal(value internalmirror.CandidateDiagnostics) MirrorCandidateSidecarDiagnostics {
 	out := MirrorCandidateSidecarDiagnostics{
-		QueryCount:           value.QueryCount,
-		RawQueryCount:        value.RawQueryCount,
-		RewriteQueryCount:    value.RewriteQueryCount,
-		AnchorQueryCount:     value.AnchorQueryCount,
-		MergedCandidateCount: value.MergedCandidateCount,
-		PerQuery:             make([]MirrorCandidatePerQueryDiagnostic, 0, len(value.PerQuery)),
+		QueryCount:                   value.QueryCount,
+		RawQueryCount:                value.RawQueryCount,
+		RewriteQueryCount:            value.RewriteQueryCount,
+		AnchorQueryCount:             value.AnchorQueryCount,
+		MergedCandidateCount:         value.MergedCandidateCount,
+		QueryTrimCount:               value.QueryTrimCount,
+		DenseEmbeddingWallLatencyMs:  value.DenseEmbeddingWallLatencyMs,
+		DenseEmbeddingBatchLatencyMs: value.DenseEmbeddingBatchLatencyMs,
+		DenseSearchTotalLatencyMs:    value.DenseSearchTotalLatencyMs,
+		QueryCountTrimmedByBudget:    value.QueryCountTrimmedByBudget,
+		PerQuery:                     make([]MirrorCandidatePerQueryDiagnostic, 0, len(value.PerQuery)),
 	}
 	for _, item := range value.PerQuery {
 		out.PerQuery = append(out.PerQuery, MirrorCandidatePerQueryDiagnostic{
-			Source:  item.Source,
-			Purpose: item.Purpose,
-			Count:   item.Count,
+			Source:    item.Source,
+			Purpose:   item.Purpose,
+			Count:     item.Count,
+			LatencyMs: item.LatencyMs,
 		})
 	}
 	return out

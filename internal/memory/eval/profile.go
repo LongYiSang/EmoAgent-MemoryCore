@@ -13,6 +13,11 @@ const (
 	ProfileMirrorRealGraph         Profile = "mirror_real_graph"
 	ProfileMirrorRealGraphRerank   Profile = "mirror_real_graph_rerank"
 	ProfileMirrorRealRerankNoGraph Profile = "mirror_real_rerank_no_graph"
+	ProfileRuleOnlyRaw             Profile = "rule_only_raw"
+	ProfileSemanticParseOnly       Profile = "semantic_parse_only"
+	ProfileSemanticRewriteOnly     Profile = "semantic_rewrite_only"
+	ProfileSemanticFullCurrent     Profile = "semantic_full_current"
+	ProfileSemanticFullSoftGated   Profile = "semantic_full_soft_gated"
 )
 
 type ProfileStatus string
@@ -85,7 +90,12 @@ func ParseProfile(value string) (Profile, error) {
 		ProfileMirrorRealDense,
 		ProfileMirrorRealGraph,
 		ProfileMirrorRealGraphRerank,
-		ProfileMirrorRealRerankNoGraph:
+		ProfileMirrorRealRerankNoGraph,
+		ProfileRuleOnlyRaw,
+		ProfileSemanticParseOnly,
+		ProfileSemanticRewriteOnly,
+		ProfileSemanticFullCurrent,
+		ProfileSemanticFullSoftGated:
 		return profile, nil
 	default:
 		return "", fmt.Errorf("unknown profile %q", value)
@@ -111,7 +121,12 @@ func ValidateEmbeddingCacheMode(value string) error {
 
 func (p Profile) Requirements() profileRequirements {
 	switch p {
-	case ProfileMirrorRealDense:
+	case ProfileMirrorRealDense,
+		ProfileRuleOnlyRaw,
+		ProfileSemanticParseOnly,
+		ProfileSemanticRewriteOnly,
+		ProfileSemanticFullCurrent,
+		ProfileSemanticFullSoftGated:
 		return profileRequirements{
 			RequiresSidecar:   true,
 			RequiresEmbedding: true,

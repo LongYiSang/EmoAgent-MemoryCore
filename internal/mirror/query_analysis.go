@@ -29,6 +29,8 @@ type QueryAnalysisRequest struct {
 	VisibleEntityHints []VisibleEntityHint       `json:"visible_entity_hints"`
 	AllowedEnums       QueryAnalysisAllowedEnums `json:"allowed_enums"`
 	RetrievalPolicy    RetrievalPolicy           `json:"retrieval_policy"`
+	DeadlineMS         int                       `json:"deadline_ms,omitempty"`
+	ProviderTimeoutMS  int                       `json:"provider_timeout_ms,omitempty"`
 	Debug              QueryAnalysisDebug        `json:"debug"`
 }
 

@@ -15,22 +15,32 @@ type MirrorCandidateRepository struct {
 }
 
 type MirrorCandidate struct {
-	TriviumNodeID  int64
-	Score          float64
-	Source         string
-	PrimaryPurpose string
-	Rank           int
-	HitCount       int
+	TriviumNodeID   int64
+	Score           float64
+	Source          string
+	PrimaryPurpose  string
+	Rank            int
+	HitCount        int
+	SourceBreakdown []MirrorCandidateSourceBreakdown
 }
 
 type RetrievalMirrorCandidate struct {
-	FactID         string
-	TriviumNodeID  int64
-	Score          float64
-	Source         string
-	PrimaryPurpose string
-	Rank           int
-	HitCount       int
+	FactID          string
+	TriviumNodeID   int64
+	Score           float64
+	Source          string
+	PrimaryPurpose  string
+	Rank            int
+	HitCount        int
+	SourceBreakdown []MirrorCandidateSourceBreakdown
+}
+
+type MirrorCandidateSourceBreakdown struct {
+	Source  string
+	Purpose string
+	Rank    int
+	Score   float64
+	Weight  float64
 }
 
 type ActivationSeed struct {
@@ -192,17 +202,21 @@ WHERE persona_id = ?
 			Rank:           candidate.Rank,
 			HitCount:       candidate.HitCount,
 		})
+		mapped := RetrievalMirrorCandidate{
+			FactID:          row.factID,
+			TriviumNodeID:   candidate.TriviumNodeID,
+			Score:           candidate.Score,
+			Source:          candidate.Source,
+			PrimaryPurpose:  candidate.PrimaryPurpose,
+			Rank:            candidate.Rank,
+			HitCount:        candidate.HitCount,
+			SourceBreakdown: cloneMirrorCandidateSourceBreakdown(candidate.SourceBreakdown),
+		}
 		existing, ok := best[row.factID]
-		if !ok || candidate.Rank < existing.Rank || (candidate.Rank == existing.Rank && candidate.Score > existing.Score) {
-			best[row.factID] = RetrievalMirrorCandidate{
-				FactID:         row.factID,
-				TriviumNodeID:  candidate.TriviumNodeID,
-				Score:          candidate.Score,
-				Source:         candidate.Source,
-				PrimaryPurpose: candidate.PrimaryPurpose,
-				Rank:           candidate.Rank,
-				HitCount:       candidate.HitCount,
-			}
+		if !ok {
+			best[row.factID] = mapped
+		} else {
+			best[row.factID] = mergeMappedMirrorCandidate(existing, mapped)
 		}
 	}
 	report.MappedCandidateCount = len(best)
@@ -218,6 +232,93 @@ WHERE persona_id = ?
 	})
 	report.Mapped = result
 	return report, nil
+}
+
+func cloneMirrorCandidateSourceBreakdown(values []MirrorCandidateSourceBreakdown) []MirrorCandidateSourceBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]MirrorCandidateSourceBreakdown(nil), values...)
+}
+
+func mergeMappedMirrorCandidate(existing RetrievalMirrorCandidate, next RetrievalMirrorCandidate) RetrievalMirrorCandidate {
+	keep := existing
+	if isRawMirrorCandidateSource(existing.Source) && !isRawMirrorCandidateSource(next.Source) {
+		keep = existing
+	} else if !isRawMirrorCandidateSource(existing.Source) && isRawMirrorCandidateSource(next.Source) {
+		keep = next
+	} else if next.Rank > 0 && (existing.Rank <= 0 || next.Rank < existing.Rank || (next.Rank == existing.Rank && next.Score > existing.Score)) {
+		keep = next
+	}
+	keep.SourceBreakdown = mergeMappedMirrorCandidateBreakdown(
+		mirrorCandidateBreakdownOrPrimary(existing),
+		mirrorCandidateBreakdownOrPrimary(next),
+	)
+	keep.HitCount = existing.HitCount + next.HitCount
+	return keep
+}
+
+func isRawMirrorCandidateSource(source string) bool {
+	switch strings.TrimSpace(source) {
+	case "", "raw_dense", "raw_query":
+		return true
+	default:
+		return false
+	}
+}
+
+func mirrorCandidateBreakdownOrPrimary(candidate RetrievalMirrorCandidate) []MirrorCandidateSourceBreakdown {
+	if len(candidate.SourceBreakdown) > 0 {
+		return candidate.SourceBreakdown
+	}
+	source := strings.TrimSpace(candidate.Source)
+	if source == "" {
+		return nil
+	}
+	return []MirrorCandidateSourceBreakdown{{
+		Source:  source,
+		Purpose: candidate.PrimaryPurpose,
+		Rank:    candidate.Rank,
+		Score:   candidate.Score,
+		Weight:  1,
+	}}
+}
+
+func mergeMappedMirrorCandidateBreakdown(left []MirrorCandidateSourceBreakdown, right []MirrorCandidateSourceBreakdown) []MirrorCandidateSourceBreakdown {
+	bySource := map[string]MirrorCandidateSourceBreakdown{}
+	add := func(item MirrorCandidateSourceBreakdown) {
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			return
+		}
+		item.Source = source
+		existing, ok := bySource[source]
+		if !ok || item.Rank > 0 && (existing.Rank <= 0 || item.Rank < existing.Rank || (item.Rank == existing.Rank && item.Score > existing.Score)) || item.Score > existing.Score {
+			bySource[source] = item
+		}
+	}
+	for _, item := range left {
+		add(item)
+	}
+	for _, item := range right {
+		add(item)
+	}
+	result := make([]MirrorCandidateSourceBreakdown, 0, len(bySource))
+	for _, item := range bySource {
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftRaw := isRawMirrorCandidateSource(result[i].Source)
+		rightRaw := isRawMirrorCandidateSource(result[j].Source)
+		if leftRaw != rightRaw {
+			return leftRaw
+		}
+		if result[i].Rank == result[j].Rank {
+			return result[i].Source < result[j].Source
+		}
+		return result[i].Rank < result[j].Rank
+	})
+	return result
 }
 
 func (r *MirrorCandidateRepository) MapActivationSeeds(ctx context.Context, personaID string, anchors []FusedAnchor) ([]ActivationSeed, error) {

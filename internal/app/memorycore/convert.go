@@ -308,7 +308,39 @@ func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics
 		DroppedRewriteCount:   value.DroppedRewriteCount,
 		DroppedRewriteReasons: append([]string(nil), value.DroppedRewriteReasons...),
 		EnglishRewriteCount:   value.EnglishRewriteCount,
+		SemanticDriftCount:    value.SemanticDriftCount,
+		SemanticAnalysis:      semanticQueryAnalysisDiagnosticsFromStore(value.SemanticAnalysis),
 	}
+}
+
+func semanticQueryAnalysisDiagnosticsFromStore(value *memsqlite.SemanticQueryAnalysisDiagnostics) *SemanticQueryAnalysisDiagnostics {
+	if value == nil {
+		return nil
+	}
+	out := &SemanticQueryAnalysisDiagnostics{
+		TimeMode:          value.TimeMode,
+		Signals:           append([]string(nil), value.Signals...),
+		MemoryDomain:      value.MemoryDomain,
+		MemoryAbility:     value.MemoryAbility,
+		EvidenceNeed:      value.EvidenceNeed,
+		Confidence:        value.Confidence,
+		FieldConfidence:   queryAnalysisConfidenceFromStore(value.FieldConfidence),
+		QueryRewrites:     queryRewritesFromStore(value.QueryRewrites),
+		SemanticAnchors:   semanticAnchorsFromStore(value.SemanticAnchors),
+		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
+		PolicyHints:       queryPolicyHintsFromStore(value.PolicyHints),
+	}
+	for _, mention := range value.EntityMentions {
+		out.EntityMentions = append(out.EntityMentions, SemanticQueryEntityMentionDiagnostics{
+			EntityID:      mention.EntityID,
+			CanonicalName: mention.CanonicalName,
+			Alias:         mention.Alias,
+			MatchText:     mention.MatchText,
+			MatchKind:     mention.MatchKind,
+			Confidence:    mention.Confidence,
+		})
+	}
+	return out
 }
 
 func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetrievalDiagnostics {
@@ -316,23 +348,28 @@ func mirrorDiagnosticsFromStore(value *memsqlite.MirrorDiagnostics) *MirrorRetri
 		return nil
 	}
 	result := &MirrorRetrievalDiagnostics{
-		Status:                 value.Status,
-		Degraded:               value.Degraded,
-		FallbackReason:         value.FallbackReason,
-		LatencyMs:              value.LatencyMs,
-		SidecarCandidateCount:  value.SidecarCandidateCount,
-		MappedCandidateCount:   value.MappedCandidateCount,
-		DroppedCandidateCount:  value.DroppedCandidateCount,
-		EmbeddingCacheHits:     value.EmbeddingCacheHits,
-		EmbeddingCacheMisses:   value.EmbeddingCacheMisses,
-		EmbeddingLiveCallCount: value.EmbeddingLiveCallCount,
-		QueryCount:             value.QueryCount,
-		RawQueryCount:          value.RawQueryCount,
-		RewriteQueryCount:      value.RewriteQueryCount,
-		AnchorQueryCount:       value.AnchorQueryCount,
-		MergedCandidateCount:   value.MergedCandidateCount,
-		PerQuery:               mirrorCandidatePerQueryDiagnosticsFromStore(value.PerQuery),
-		Candidates:             make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
+		Status:                       value.Status,
+		Degraded:                     value.Degraded,
+		FallbackReason:               value.FallbackReason,
+		LatencyMs:                    value.LatencyMs,
+		SidecarCandidateCount:        value.SidecarCandidateCount,
+		MappedCandidateCount:         value.MappedCandidateCount,
+		DroppedCandidateCount:        value.DroppedCandidateCount,
+		EmbeddingCacheHits:           value.EmbeddingCacheHits,
+		EmbeddingCacheMisses:         value.EmbeddingCacheMisses,
+		EmbeddingLiveCallCount:       value.EmbeddingLiveCallCount,
+		QueryCount:                   value.QueryCount,
+		RawQueryCount:                value.RawQueryCount,
+		RewriteQueryCount:            value.RewriteQueryCount,
+		AnchorQueryCount:             value.AnchorQueryCount,
+		MergedCandidateCount:         value.MergedCandidateCount,
+		QueryTrimCount:               value.QueryTrimCount,
+		DenseEmbeddingWallLatencyMs:  value.DenseEmbeddingWallLatencyMs,
+		DenseEmbeddingBatchLatencyMs: value.DenseEmbeddingBatchLatencyMs,
+		DenseSearchTotalLatencyMs:    value.DenseSearchTotalLatencyMs,
+		QueryCountTrimmedByBudget:    value.QueryCountTrimmedByBudget,
+		PerQuery:                     mirrorCandidatePerQueryDiagnosticsFromStore(value.PerQuery),
+		Candidates:                   make([]MirrorCandidateDiagnostics, 0, len(value.Candidates)),
 	}
 	for _, item := range value.Candidates {
 		sqliteFactID := item.SQLiteFactID
@@ -357,9 +394,10 @@ func mirrorCandidatePerQueryDiagnosticsFromStore(values []memsqlite.MirrorCandid
 	result := make([]MirrorCandidatePerQueryDiagnostics, 0, len(values))
 	for _, value := range values {
 		result = append(result, MirrorCandidatePerQueryDiagnostics{
-			Source:  value.Source,
-			Purpose: value.Purpose,
-			Count:   value.Count,
+			Source:    value.Source,
+			Purpose:   value.Purpose,
+			Count:     value.Count,
+			LatencyMs: value.LatencyMs,
 		})
 	}
 	return result

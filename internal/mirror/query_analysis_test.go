@@ -40,6 +40,9 @@ func TestSidecarClientQueryAnalysisPostsRequestAndReadsWrappedResult(t *testing.
 		if captured["rule_analysis"] == nil || captured["visible_entity_hints"] == nil || captured["allowed_enums"] == nil || captured["retrieval_policy"] == nil {
 			t.Fatalf("request missing analysis context: %#v", captured)
 		}
+		if captured["deadline_ms"] != float64(900) || captured["provider_timeout_ms"] != float64(800) {
+			t.Fatalf("budget fields = deadline:%#v provider:%#v", captured["deadline_ms"], captured["provider_timeout_ms"])
+		}
 		debug := captured["debug"].(map[string]any)
 		if debug["include_rationale_summary"] != true {
 			t.Fatalf("debug = %#v, want include_rationale_summary true", debug)
@@ -102,7 +105,9 @@ func TestSidecarClientQueryAnalysisPostsRequestAndReadsWrappedResult(t *testing.
 			ContextBudgetTokens:   1200,
 			UseFTS:                true,
 		},
-		Debug: QueryAnalysisDebug{IncludeRationaleSummary: true},
+		DeadlineMS:        900,
+		ProviderTimeoutMS: 800,
+		Debug:             QueryAnalysisDebug{IncludeRationaleSummary: true},
 	})
 	if err != nil {
 		t.Fatalf("query analysis: %v", err)

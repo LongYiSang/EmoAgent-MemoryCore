@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -806,6 +807,74 @@ WHERE id LIKE 'fact_rerank_cap_%'`, fixedRetrievalNow().Format(time.RFC3339Nano)
 		switch candidate.NodeID {
 		case "fact_rerank_cap_tie_b", "fact_rerank_cap_low_a", "fact_rerank_cap_low_b", "fact_rerank_cap_hidden", "fact_rerank_cap_sensitive":
 			t.Fatalf("safe candidates included ineligible or overflow fact %s: %#v", candidate.NodeID, safeCandidates)
+		}
+	}
+}
+
+func TestRetrievalRepositoryRerankCandidatesPreserveDirectFactRawFloor(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	var graphCandidates []memsqlite.RetrievalActivationCandidate
+	for i := 0; i < 30; i++ {
+		factID := fmt.Sprintf("fact_graph_high_%02d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "高分图候选 "+factID, core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(9200 + i),
+			Score:         0.95,
+			Source:        "graph_activation",
+			Rank:          i + 1,
+		})
+	}
+	for i := 0; i < 4; i++ {
+		factID := fmt.Sprintf("fact_raw_floor_%02d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "raw floor "+factID, core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	query := memsqlite.QueryAnalysis{
+		Raw:           "raw floor",
+		Normalized:    "raw floor",
+		Terms:         []string{"raw", "floor"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                "raw floor",
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 8,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_raw_floor_00", TriviumNodeID: 9300, Score: 0.10, Source: "raw_dense", Rank: 1},
+			{FactID: "fact_raw_floor_01", TriviumNodeID: 9301, Score: 0.10, Source: "raw_dense", Rank: 2},
+			{FactID: "fact_raw_floor_02", TriviumNodeID: 9302, Score: 0.10, Source: "raw_dense", Rank: 3},
+			{FactID: "fact_raw_floor_03", TriviumNodeID: 9303, Score: 0.10, Source: "raw_dense", Rank: 4},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, graphCandidates, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		wantID := fmt.Sprintf("fact_raw_floor_%02d", i)
+		if safeCandidates[i].NodeID != wantID {
+			t.Fatalf("safe candidate[%d] = %s, want raw floor %s", i, safeCandidates[i].NodeID, wantID)
+		}
+		if safeCandidates[i].SourceScores["raw_dense"] == 0 {
+			t.Fatalf("raw floor source_scores missing raw_dense: %#v", safeCandidates[i].SourceScores)
 		}
 	}
 }

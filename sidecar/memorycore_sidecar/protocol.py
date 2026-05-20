@@ -251,7 +251,7 @@ def parse_query_analysis_request(data: Any) -> dict[str, Any]:
     include_rationale = bool(data.get("include_rationale", False)) or bool(
         debug.get("include_rationale_summary", False)
     )
-    return {
+    parsed = {
         "request_id": request_id.strip(),
         "persona_id": persona_id.strip(),
         "query_text": query_text,
@@ -266,6 +266,10 @@ def parse_query_analysis_request(data: Any) -> dict[str, Any]:
         "conversation_window": _optional_array(data.get("conversation_window")),
         "include_rationale": include_rationale,
     }
+    for field in ("deadline_ms", "provider_timeout_ms"):
+        if field in data:
+            parsed[field] = _positive_budget_ms(data[field], field)
+    return parsed
 
 
 def parse_activation_request(data: Any) -> dict[str, Any]:
@@ -401,6 +405,12 @@ def _string_list(value: Any, field_name: str) -> list[str]:
         if item:
             out.append(item)
     return out
+
+
+def _positive_budget_ms(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ProtocolError(f"{field_name} must be a positive integer")
+    return value
 
 
 def _weighted_texts(

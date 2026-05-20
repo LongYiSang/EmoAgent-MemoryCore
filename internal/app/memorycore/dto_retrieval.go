@@ -195,6 +195,32 @@ type QueryAnalysisDiagnostics struct {
 	DroppedRewriteCount   int
 	DroppedRewriteReasons []string
 	EnglishRewriteCount   int
+	SemanticDriftCount    int
+	SemanticAnalysis      *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
+}
+
+type SemanticQueryAnalysisDiagnostics struct {
+	TimeMode          string                                  `json:"time_mode,omitempty"`
+	Signals           []string                                `json:"signals,omitempty"`
+	MemoryDomain      string                                  `json:"memory_domain,omitempty"`
+	MemoryAbility     string                                  `json:"memory_ability,omitempty"`
+	EvidenceNeed      string                                  `json:"evidence_need,omitempty"`
+	Confidence        float64                                 `json:"confidence,omitempty"`
+	FieldConfidence   QueryAnalysisConfidence                 `json:"field_confidence,omitempty"`
+	EntityMentions    []SemanticQueryEntityMentionDiagnostics `json:"entity_mentions,omitempty"`
+	QueryRewrites     []QueryRewrite                          `json:"query_rewrites,omitempty"`
+	SemanticAnchors   []SemanticAnchor                        `json:"semantic_anchors,omitempty"`
+	ContextBlockHints []string                                `json:"context_block_hints,omitempty"`
+	PolicyHints       QueryPolicyHints                        `json:"policy_hints,omitempty"`
+}
+
+type SemanticQueryEntityMentionDiagnostics struct {
+	EntityID      string  `json:"entity_id,omitempty"`
+	CanonicalName string  `json:"canonical_name,omitempty"`
+	Alias         string  `json:"alias,omitempty"`
+	MatchText     string  `json:"match_text,omitempty"`
+	MatchKind     string  `json:"match_kind,omitempty"`
+	Confidence    float64 `json:"confidence,omitempty"`
 }
 
 type MemoryBlock struct {
@@ -263,23 +289,28 @@ type AnchorSourceBreakdown struct {
 }
 
 type MirrorRetrievalDiagnostics struct {
-	Status                 string                               `json:"status"`
-	Degraded               bool                                 `json:"degraded"`
-	FallbackReason         string                               `json:"fallback_reason,omitempty"`
-	LatencyMs              int64                                `json:"latency_ms,omitempty"`
-	SidecarCandidateCount  int                                  `json:"sidecar_candidate_count"`
-	MappedCandidateCount   int                                  `json:"mapped_candidate_count"`
-	DroppedCandidateCount  int                                  `json:"dropped_candidate_count"`
-	EmbeddingCacheHits     int                                  `json:"embedding_cache_hits,omitempty"`
-	EmbeddingCacheMisses   int                                  `json:"embedding_cache_misses,omitempty"`
-	EmbeddingLiveCallCount int                                  `json:"embedding_live_call_count,omitempty"`
-	QueryCount             int                                  `json:"query_count,omitempty"`
-	RawQueryCount          int                                  `json:"raw_query_count,omitempty"`
-	RewriteQueryCount      int                                  `json:"rewrite_query_count,omitempty"`
-	AnchorQueryCount       int                                  `json:"anchor_query_count,omitempty"`
-	MergedCandidateCount   int                                  `json:"merged_candidate_count,omitempty"`
-	PerQuery               []MirrorCandidatePerQueryDiagnostics `json:"per_query,omitempty"`
-	Candidates             []MirrorCandidateDiagnostics         `json:"candidates,omitempty"`
+	Status                       string                               `json:"status"`
+	Degraded                     bool                                 `json:"degraded"`
+	FallbackReason               string                               `json:"fallback_reason,omitempty"`
+	LatencyMs                    int64                                `json:"latency_ms,omitempty"`
+	SidecarCandidateCount        int                                  `json:"sidecar_candidate_count"`
+	MappedCandidateCount         int                                  `json:"mapped_candidate_count"`
+	DroppedCandidateCount        int                                  `json:"dropped_candidate_count"`
+	EmbeddingCacheHits           int                                  `json:"embedding_cache_hits,omitempty"`
+	EmbeddingCacheMisses         int                                  `json:"embedding_cache_misses,omitempty"`
+	EmbeddingLiveCallCount       int                                  `json:"embedding_live_call_count,omitempty"`
+	QueryCount                   int                                  `json:"query_count,omitempty"`
+	RawQueryCount                int                                  `json:"raw_query_count,omitempty"`
+	RewriteQueryCount            int                                  `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount             int                                  `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount         int                                  `json:"merged_candidate_count,omitempty"`
+	QueryTrimCount               int                                  `json:"query_trim_count,omitempty"`
+	DenseEmbeddingWallLatencyMs  int64                                `json:"dense_embedding_wall_latency_ms,omitempty"`
+	DenseEmbeddingBatchLatencyMs int64                                `json:"dense_embedding_batch_latency_ms,omitempty"`
+	DenseSearchTotalLatencyMs    int64                                `json:"dense_search_total_latency_ms,omitempty"`
+	QueryCountTrimmedByBudget    int                                  `json:"query_count_trimmed_by_budget,omitempty"`
+	PerQuery                     []MirrorCandidatePerQueryDiagnostics `json:"per_query,omitempty"`
+	Candidates                   []MirrorCandidateDiagnostics         `json:"candidates,omitempty"`
 }
 
 type MirrorCandidateDiagnostics struct {
@@ -294,9 +325,10 @@ type MirrorCandidateDiagnostics struct {
 }
 
 type MirrorCandidatePerQueryDiagnostics struct {
-	Source  string `json:"source,omitempty"`
-	Purpose string `json:"purpose,omitempty"`
-	Count   int    `json:"count,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Purpose   string `json:"purpose,omitempty"`
+	Count     int    `json:"count,omitempty"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
 }
 
 type GraphActivationDiagnostics struct {

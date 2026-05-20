@@ -60,6 +60,7 @@ type RetrievalRequest struct {
 	Policy                     RetrievalPolicy
 	Context                    RetrievalAffectContext
 	PrecomputedQueryAnalysis   *QueryAnalysis
+	RawRuleQueryAnalysis       *QueryAnalysis
 	Mirror                     []RetrievalMirrorCandidate
 	MirrorDiagnostics          *MirrorDiagnostics
 	GraphActivation            []RetrievalActivationCandidate
@@ -93,29 +94,35 @@ type MemoryContext struct {
 }
 
 type MirrorDiagnostics struct {
-	Status                 string
-	Degraded               bool
-	FallbackReason         string
-	LatencyMs              int64
-	SidecarCandidateCount  int
-	MappedCandidateCount   int
-	DroppedCandidateCount  int
-	EmbeddingCacheHits     int
-	EmbeddingCacheMisses   int
-	EmbeddingLiveCallCount int
-	QueryCount             int
-	RawQueryCount          int
-	RewriteQueryCount      int
-	AnchorQueryCount       int
-	MergedCandidateCount   int
-	PerQuery               []MirrorCandidatePerQueryDiagnostic
-	Candidates             []MirrorCandidateDiagnostic
+	Status                       string
+	Degraded                     bool
+	FallbackReason               string
+	LatencyMs                    int64
+	SidecarCandidateCount        int
+	MappedCandidateCount         int
+	DroppedCandidateCount        int
+	EmbeddingCacheHits           int
+	EmbeddingCacheMisses         int
+	EmbeddingLiveCallCount       int
+	QueryCount                   int
+	RawQueryCount                int
+	RewriteQueryCount            int
+	AnchorQueryCount             int
+	MergedCandidateCount         int
+	QueryTrimCount               int
+	DenseEmbeddingWallLatencyMs  int64
+	DenseEmbeddingBatchLatencyMs int64
+	DenseSearchTotalLatencyMs    int64
+	QueryCountTrimmedByBudget    int
+	PerQuery                     []MirrorCandidatePerQueryDiagnostic
+	Candidates                   []MirrorCandidateDiagnostic
 }
 
 type MirrorCandidatePerQueryDiagnostic struct {
-	Source  string
-	Purpose string
-	Count   int
+	Source    string
+	Purpose   string
+	Count     int
+	LatencyMs int64
 }
 
 type GraphActivationDiagnostics struct {
@@ -161,6 +168,7 @@ type RerankCandidate struct {
 	CurrentScore float64
 	AnchorEnergy float64
 	GraphEnergy  float64
+	SourceScores map[string]float64
 }
 
 type RerankResultItem struct {
@@ -228,6 +236,7 @@ type retrievalCandidate struct {
 	FusedAnchorScore   float64
 	AnchorEnergy       float64
 	GraphEnergy        float64
+	SourceBreakdown    []AnchorSourceBreakdown
 	CompletionSource   string
 	CompletionLinkType string
 	CompletionBonus    float64
@@ -245,6 +254,7 @@ type RetrievalActivationCandidate struct {
 type PreparedRetrieval struct {
 	Request      RetrievalRequest
 	Query        QueryAnalysis
+	RawRuleQuery QueryAnalysis
 	Policy       RetrievalPolicy
 	Now          time.Time
 	FusedAnchors []FusedAnchor
@@ -253,6 +263,7 @@ type PreparedRetrieval struct {
 type PreparedFinalCandidates struct {
 	Request      RetrievalRequest
 	Query        QueryAnalysis
+	RawRuleQuery QueryAnalysis
 	Policy       RetrievalPolicy
 	Now          time.Time
 	FusedAnchors []FusedAnchor
@@ -267,6 +278,7 @@ type scoredFact struct {
 	Suppressed       bool
 	Suppression      string
 	Breakdown        retrievalScoreBreakdown
+	SourceBreakdown  []AnchorSourceBreakdown
 	SourceEpisodeIDs []string
 }
 
@@ -288,6 +300,7 @@ type retrievalScoreBreakdown struct {
 	CompletionBonus     float64 `json:"completion_bonus,omitempty"`
 	CompletionSource    string  `json:"completion_source,omitempty"`
 	CompletionLinkType  string  `json:"completion_link_type,omitempty"`
+	LexicalCoverage     float64 `json:"lexical_coverage,omitempty"`
 	FinalScore          float64 `json:"final_score"`
 	SuppressionReason   string  `json:"suppression_reason,omitempty"`
 }
@@ -338,6 +351,10 @@ func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest)
 			return PreparedRetrieval{}, err
 		}
 	}
+	rawRuleQuery := query
+	if req.RawRuleQueryAnalysis != nil {
+		rawRuleQuery = cloneQueryAnalysis(*req.RawRuleQueryAnalysis)
+	}
 	policy := effectiveRetrievalPolicy(basePolicy, query)
 
 	fusedAnchors, err := r.collectFusedAnchors(ctx, req.PersonaID, query, policy, req.Mirror, req.MirrorDiagnostics)
@@ -347,9 +364,11 @@ func (r *RetrievalRepository) Prepare(ctx context.Context, req RetrievalRequest)
 	req.Policy = basePolicy
 	req.Now = now
 	req.PrecomputedQueryAnalysis = nil
+	req.RawRuleQueryAnalysis = nil
 	return PreparedRetrieval{
 		Request:      req,
 		Query:        query,
+		RawRuleQuery: rawRuleQuery,
 		Policy:       policy,
 		Now:          now,
 		FusedAnchors: fusedAnchors,
@@ -369,6 +388,7 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 	req.GraphActivation = graphCandidates
 	req.GraphActivationDiagnostics = graphDiagnostics
 	query := prepared.Query
+	rawRuleQuery := prepared.RawRuleQuery
 	policy := prepared.Policy
 	now := prepared.Now
 	fusedAnchors := prepared.FusedAnchors
@@ -392,13 +412,18 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 	finalCandidates := PreparedFinalCandidates{
 		Request:      req,
 		Query:        query,
+		RawRuleQuery: rawRuleQuery,
 		Policy:       policy,
 		Now:          now,
 		FusedAnchors: fusedAnchors,
 		Scored:       scored,
 		Suppressions: suppressions,
 	}
-	return finalCandidates, safeRerankCandidates(scored), nil
+	rawFloorQuery := prepared.RawRuleQuery
+	if rawFloorQuery.Raw == "" {
+		rawFloorQuery = query
+	}
+	return finalCandidates, safeRerankCandidates(scored, rawFloorQuery), nil
 }
 
 func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
@@ -439,8 +464,40 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 		}
 		selectable = append(selectable, candidate)
 	}
-	remaining := append([]scoredFact(nil), selectable...)
+	rawFloorQuery := finalCandidates.RawRuleQuery
+	if rawFloorQuery.Raw == "" {
+		rawFloorQuery = query
+	}
+	protected := rawFloorCandidates(selectable, rawFloorQuery)
+	selectedByFact := map[string]struct{}{}
 	var selected []scoredFact
+	for _, candidate := range protected {
+		if len(selected) >= policy.FinalMemoryCount {
+			break
+		}
+		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
+			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonContextBudget
+			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   candidate.Fact.ID,
+				Reason:   MemorySuppressionReasonContextBudget,
+			})
+			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
+				return MemoryContext{}, err
+			}
+			continue
+		}
+		selected = append(selected, candidate)
+		selectedByFact[candidate.Fact.ID] = struct{}{}
+		contextResult.TokenEstimate += candidate.TokenCost
+	}
+	remaining := make([]scoredFact, 0, len(selectable))
+	for _, candidate := range selectable {
+		if _, ok := selectedByFact[candidate.Fact.ID]; ok {
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
 	for len(selected) < policy.FinalMemoryCount && len(remaining) > 0 {
 		bestIndex := bestMMRCandidateIndex(remaining, selected)
 		if bestIndex < 0 {
@@ -613,7 +670,9 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		fatiguePenalty := fatiguePenalty(fatigue)
 		sensitivityPenalty := sensitivityPenalty(fact.SensitivityLevel)
 		lifecycleMultiplier := lifecycleScoreMultiplier(fact.LifecycleStatus)
-		completionBonus, completionSource, completionLinkType := retrievalCandidateCompletionBonus(query, fact, searchTextByFact[fact.ID], candidate, mirrorByFact[fact.ID])
+		searchText := searchTextByFact[fact.ID]
+		completionBonus, completionSource, completionLinkType := retrievalCandidateCompletionBonus(query, fact, searchText, candidate, mirrorByFact[fact.ID])
+		lexicalCoverage := textMatchScore(query, searchText)
 		baseScore := 0.55*candidate.AnchorEnergy +
 			0.25*candidate.GraphEnergy +
 			0.20*fact.Importance +
@@ -621,6 +680,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			0.10*typePrior +
 			0.10*evidenceStrength +
 			0.05*pinned +
+			0.12*lexicalCoverage +
 			completionBonus -
 			fatiguePenalty -
 			sensitivityPenalty
@@ -640,6 +700,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			CompletionBonus:     completionBonus,
 			CompletionSource:    completionSource,
 			CompletionLinkType:  completionLinkType,
+			LexicalCoverage:     lexicalCoverage,
 			FinalScore:          score,
 		}
 		item := scoredFact{
@@ -647,6 +708,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			Score:            score,
 			TokenCost:        estimateTokens(fact.ContentSummary),
 			Breakdown:        breakdown,
+			SourceBreakdown:  cloneAnchorSourceBreakdown(candidate.SourceBreakdown),
 			SourceEpisodeIDs: sourceEpisodeIDs,
 		}
 		if fatigue > 0 {
@@ -666,7 +728,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 	return scored, suppressions, nil
 }
 
-func safeRerankCandidates(scored []scoredFact) []RerankCandidate {
+func safeRerankCandidates(scored []scoredFact, query QueryAnalysis) []RerankCandidate {
 	safe := make([]scoredFact, 0, len(scored))
 	for _, candidate := range scored {
 		if candidate.Suppressed {
@@ -681,7 +743,8 @@ func safeRerankCandidates(scored []scoredFact) []RerankCandidate {
 		return safe[i].Score > safe[j].Score
 	})
 	if len(safe) > defaultRerankTopN {
-		safe = safe[:defaultRerankTopN]
+		protected := rawFloorCandidates(safe, query)
+		safe = mergeRawFloorIntoTopN(safe[:defaultRerankTopN], protected, defaultRerankTopN)
 	}
 
 	result := make([]RerankCandidate, 0, len(safe))
@@ -693,9 +756,169 @@ func safeRerankCandidates(scored []scoredFact) []RerankCandidate {
 			CurrentScore: candidate.Score,
 			AnchorEnergy: candidate.Breakdown.AnchorEnergy,
 			GraphEnergy:  candidate.Breakdown.GraphEnergy,
+			SourceScores: sourceScoresFromBreakdown(candidate.SourceBreakdown, candidate.Breakdown.LexicalCoverage),
 		})
 	}
 	return result
+}
+
+func rawFloorCandidates(scored []scoredFact, query QueryAnalysis) []scoredFact {
+	if query.MemoryAbility != MemoryAbilityDirectFact {
+		return nil
+	}
+	var protected []scoredFact
+	protected = append(protected, topRawSourceCandidates(scored, "raw_dense", 4)...)
+	protected = append(protected, topRawSourceCandidates(scored, "raw_query", 4-len(protected))...)
+	if query.EvidenceNeed == EvidenceNeedExactObservation {
+		protected = append(protected, topRawExactCandidates(scored, 2)...)
+	}
+	return uniqueScoredFactsByID(protected)
+}
+
+func topRawSourceCandidates(scored []scoredFact, source string, limit int) []scoredFact {
+	if limit <= 0 {
+		return nil
+	}
+	var candidates []scoredFact
+	for _, candidate := range scored {
+		if hasAnchorSource(candidate.SourceBreakdown, source) {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		leftRank := bestAnchorSourceRank(candidates[i].SourceBreakdown, source)
+		rightRank := bestAnchorSourceRank(candidates[j].SourceBreakdown, source)
+		if leftRank == rightRank {
+			if candidates[i].Score == candidates[j].Score {
+				return candidates[i].Fact.ID < candidates[j].Fact.ID
+			}
+			return candidates[i].Score > candidates[j].Score
+		}
+		return leftRank < rightRank
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func topRawExactCandidates(scored []scoredFact, limit int) []scoredFact {
+	if limit <= 0 {
+		return nil
+	}
+	var candidates []scoredFact
+	for _, candidate := range scored {
+		if candidate.Breakdown.LexicalCoverage >= 0.999 ||
+			hasAnchorSource(candidate.SourceBreakdown, "raw_exact") ||
+			hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteFTS) ||
+			hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteSparse) {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Breakdown.LexicalCoverage == candidates[j].Breakdown.LexicalCoverage {
+			if candidates[i].Score == candidates[j].Score {
+				return candidates[i].Fact.ID < candidates[j].Fact.ID
+			}
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].Breakdown.LexicalCoverage > candidates[j].Breakdown.LexicalCoverage
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func mergeRawFloorIntoTopN(top []scoredFact, protected []scoredFact, limit int) []scoredFact {
+	if limit <= 0 || len(protected) == 0 {
+		return top
+	}
+	result := make([]scoredFact, 0, limit)
+	seen := map[string]struct{}{}
+	for _, candidate := range protected {
+		if _, ok := seen[candidate.Fact.ID]; ok {
+			continue
+		}
+		seen[candidate.Fact.ID] = struct{}{}
+		result = append(result, candidate)
+		if len(result) >= limit {
+			return result
+		}
+	}
+	for _, candidate := range top {
+		if _, ok := seen[candidate.Fact.ID]; ok {
+			continue
+		}
+		seen[candidate.Fact.ID] = struct{}{}
+		result = append(result, candidate)
+		if len(result) >= limit {
+			return result
+		}
+	}
+	return result
+}
+
+func uniqueScoredFactsByID(scored []scoredFact) []scoredFact {
+	result := make([]scoredFact, 0, len(scored))
+	seen := map[string]struct{}{}
+	for _, candidate := range scored {
+		if candidate.Fact.ID == "" {
+			continue
+		}
+		if _, ok := seen[candidate.Fact.ID]; ok {
+			continue
+		}
+		seen[candidate.Fact.ID] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func hasAnchorSource(breakdown []AnchorSourceBreakdown, source string) bool {
+	for _, item := range breakdown {
+		if item.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
+func bestAnchorSourceRank(breakdown []AnchorSourceBreakdown, source string) int {
+	best := int(^uint(0) >> 1)
+	for _, item := range breakdown {
+		if item.Source != source {
+			continue
+		}
+		rank := item.Rank
+		if rank <= 0 {
+			rank = best
+		}
+		if rank < best {
+			best = rank
+		}
+	}
+	return best
+}
+
+func sourceScoresFromBreakdown(breakdown []AnchorSourceBreakdown, lexicalCoverage float64) map[string]float64 {
+	scores := map[string]float64{}
+	for _, item := range breakdown {
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			continue
+		}
+		if item.RawScore > scores[source] {
+			scores[source] = item.RawScore
+		}
+	}
+	if lexicalCoverage > 0 {
+		scores["lexical_coverage"] = lexicalCoverage
+	}
+	if len(scores) == 0 {
+		return nil
+	}
+	return scores
 }
 
 func applyRerankResults(scored []scoredFact, results []RerankResultItem, diagnostics *RerankDiagnostics) {
@@ -1041,7 +1264,8 @@ func textMatchScore(query QueryAnalysis, searchText string) float64 {
 		return 0
 	}
 	normalizedText := strings.ToLower(searchText)
-	if strings.Contains(normalizedText, query.Normalized) {
+	normalizedQuery := strings.TrimSpace(strings.ToLower(query.Normalized))
+	if normalizedQuery != "" && strings.Contains(normalizedText, normalizedQuery) {
 		return 1
 	}
 	terms := textMatchTerms(query)

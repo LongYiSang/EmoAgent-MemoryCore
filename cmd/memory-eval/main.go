@@ -171,6 +171,7 @@ func writeCombinedMatrixReports(reportDir string, outputs []matrixRunOutput) err
 		return err
 	}
 	reports := make([]memoryeval.MatrixReport, 0, len(outputs))
+	queryAnalysisReports := make([]memoryeval.QueryAnalysisReport, 0, len(outputs))
 	var summary strings.Builder
 	var detail strings.Builder
 	for index, output := range outputs {
@@ -181,6 +182,7 @@ func writeCombinedMatrixReports(reportDir string, outputs []matrixRunOutput) err
 		summary.WriteString(memoryeval.FormatMatrixReport(output.Report))
 		detail.WriteString(memoryeval.FormatMatrixDetailReport(output.Fixture, output.Report))
 		reports = append(reports, output.Report)
+		queryAnalysisReports = append(queryAnalysisReports, memoryeval.BuildQueryAnalysisReport(output.Fixture, output.Report))
 	}
 	if err := os.WriteFile(filepath.Join(reportDir, "report.md"), []byte(summary.String()+"\n"), 0o644); err != nil {
 		return err
@@ -192,7 +194,14 @@ func writeCombinedMatrixReports(reportDir string, outputs []matrixRunOutput) err
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(reportDir, "report.json"), append(data, '\n'), 0o644)
+	if err := os.WriteFile(filepath.Join(reportDir, "report.json"), append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	queryAnalysisData, err := json.MarshalIndent(queryAnalysisReports, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(reportDir, "query_analysis.json"), append(queryAnalysisData, '\n'), 0o644)
 }
 
 func parseOptions(args []string, stderr io.Writer) (options, bool) {
@@ -204,6 +213,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	var rawProfiles string
 	var queryAnalysisMode string
 	var queryAnalysisTimeoutMS int
+	var queryAnalysisSoftJoinTimeoutMS int
 	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -223,6 +233,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.StringVar(&opts.reportDir, "report-dir", "", "optional directory for matrix report.json and report.md")
 	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, or semantic_on_low_confidence")
 	fs.IntVar(&queryAnalysisTimeoutMS, "query-analysis-timeout-ms", 1500, "query analysis sidecar timeout in milliseconds")
+	fs.IntVar(&queryAnalysisSoftJoinTimeoutMS, "query-analysis-soft-join-timeout-ms", 0, "semantic query-analysis wait budget before raw-only completion in milliseconds; 0 uses query-analysis-timeout-ms")
 	if err := fs.Parse(args); err != nil {
 		return options{}, false
 	}
@@ -241,10 +252,10 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		return options{}, false
 	}
 	if queryAnalysisRequested(queryAnalysisMode) && !hasMirrorProfile(profiles) {
-		fmt.Fprintln(stderr, "query-analysis-mode requires at least one mirror_real_* profile")
+		fmt.Fprintln(stderr, "query-analysis-mode requires at least one mirror/semantic profile")
 		return options{}, false
 	}
-	queryAnalysis, err := parseQueryAnalysisOptions(queryAnalysisMode, opts.sidecarURL, queryAnalysisTimeoutMS)
+	queryAnalysis, err := parseQueryAnalysisOptions(queryAnalysisMode, opts.sidecarURL, queryAnalysisTimeoutMS, queryAnalysisSoftJoinTimeoutMS)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return options{}, false
@@ -274,7 +285,7 @@ func hasMirrorProfile(profiles []memoryeval.Profile) bool {
 	return false
 }
 
-func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int) (memorycore.QueryAnalysisOptions, error) {
+func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, softJoinTimeoutMS int) (memorycore.QueryAnalysisOptions, error) {
 	mode = strings.TrimSpace(mode)
 	if mode == "" {
 		mode = "rule_only"
@@ -282,9 +293,9 @@ func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int) (m
 	switch mode {
 	case "rule_only":
 		return memorycore.QueryAnalysisOptions{}, nil
-	case "semantic_always", "semantic_on_low_confidence":
+	case "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only":
 	default:
-		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-mode must be one of rule_only, semantic_always, semantic_on_low_confidence")
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-mode must be one of rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only")
 	}
 	if strings.TrimSpace(sidecarURL) == "" {
 		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("--sidecar-url is required when --query-analysis-mode is not rule_only")
@@ -292,12 +303,19 @@ func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int) (m
 	if timeoutMS <= 0 {
 		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-timeout-ms must be > 0")
 	}
-	return memorycore.QueryAnalysisOptions{
+	if softJoinTimeoutMS < 0 {
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-soft-join-timeout-ms must be >= 0")
+	}
+	options := memorycore.QueryAnalysisOptions{
 		Provider:   memorycore.QueryAnalysisProviderSidecar,
 		Mode:       memorycore.QueryAnalysisMode(mode),
 		SidecarURL: strings.TrimSpace(sidecarURL),
 		Timeout:    time.Duration(timeoutMS) * time.Millisecond,
-	}, nil
+	}
+	if softJoinTimeoutMS > 0 {
+		options.SoftJoinTimeout = time.Duration(softJoinTimeoutMS) * time.Millisecond
+	}
+	return options, nil
 }
 
 func parseMode(value string) (string, memoryeval.QualityBenchmarkMode, bool) {

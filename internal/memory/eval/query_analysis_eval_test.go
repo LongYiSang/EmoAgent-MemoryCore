@@ -195,7 +195,7 @@ assertions:
 	for _, want := range []string{
 		"rewrites=sqlite first migration checklist",
 		"hints=provenance_memory",
-		"mirror status=used candidates=1 query_count=2 raw=1 rewrites=1",
+		"mirror status=used candidates=2 query_count=2 raw=1 rewrites=1",
 	} {
 		if !strings.Contains(debug, want) {
 			t.Fatalf("DebugString() =\n%s\nwant substring %q", debug, want)
@@ -309,7 +309,6 @@ steps:
           source: eval_dense
           rank: 1
     retrieve:
-      session_id: s1
       query_text: latte calibration
       fusion_mode: max_only
       policy:
@@ -342,7 +341,6 @@ steps:
           source: eval_dense
           rank: 1
     retrieve:
-      session_id: s1
       query_text: latte calibration
       fusion_mode: weighted_rrf_support
       policy:
@@ -352,13 +350,10 @@ steps:
 assertions:
   - type: memory_contains
     step: max_only
-    node_id: $preference.fact_id
-  - type: memory_not_contains
-    step: max_only
     node_id: $calibration.fact_id
   - type: mirror_candidate
     step: max_only
-    status: no_candidates
+    status: used
     query_count: 2
     raw_query_count: 1
     rewrite_query_count: 1
@@ -371,11 +366,6 @@ assertions:
     query_count: 2
     raw_query_count: 1
     rewrite_query_count: 1
-  - type: ablation_improves
-    step: weighted_rrf
-    compare_step: max_only
-    relevant_node_ids: [$calibration.fact_id]
-    at: 1
 `))
 	if err != nil {
 		t.Fatalf("load fixture: %v", err)

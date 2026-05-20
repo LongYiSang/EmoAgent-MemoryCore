@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunMatrixSQLiteProfile(t *testing.T) {
@@ -85,6 +86,23 @@ func TestRunMatrixWritesDetailReport(t *testing.T) {
 	if !strings.Contains(string(jsonReport), `"test_plan_version": "memory_eval_matrix.v0.2"`) {
 		t.Fatalf("json report =\n%s\nwant test_plan_version", string(jsonReport))
 	}
+	queryAnalysisReport, err := os.ReadFile(filepath.Join(reportDir, "query_analysis.json"))
+	if err != nil {
+		t.Fatalf("read query analysis report: %v", err)
+	}
+	for _, want := range []string{
+		`"test_plan_version": "memory_eval_matrix.v0.2"`,
+		`"case_id": "cli_matrix_sqlite"`,
+		`"profile": "sqlite_go"`,
+		`"question_id": "q1"`,
+		`"source": "rule_only"`,
+		`"query_analysis"`,
+		`"semantic"`,
+	} {
+		if !strings.Contains(string(queryAnalysisReport), want) {
+			t.Fatalf("query analysis report =\n%s\nwant %q", string(queryAnalysisReport), want)
+		}
+	}
 }
 
 func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
@@ -111,7 +129,7 @@ func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
-	for _, name := range []string{"report.md", "detail.md", "report.json"} {
+	for _, name := range []string{"report.md", "detail.md", "report.json", "query_analysis.json"} {
 		if _, err := os.Stat(filepath.Join(reportDir, name)); err != nil {
 			t.Fatalf("expected combined %s: %v", name, err)
 		}
@@ -128,6 +146,20 @@ func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
 	} {
 		if !strings.Contains(string(detail), want) {
 			t.Fatalf("combined detail report =\n%s\nwant %q", string(detail), want)
+		}
+	}
+	queryAnalysisReport, err := os.ReadFile(filepath.Join(reportDir, "query_analysis.json"))
+	if err != nil {
+		t.Fatalf("read combined query analysis report: %v", err)
+	}
+	for _, want := range []string{
+		`"case_id": "cli_matrix_sqlite"`,
+		`"case_id": "cli_matrix_sqlite_second"`,
+		`"question_id": "q1"`,
+		`"query_analysis"`,
+	} {
+		if !strings.Contains(string(queryAnalysisReport), want) {
+			t.Fatalf("combined query analysis report =\n%s\nwant %q", string(queryAnalysisReport), want)
 		}
 	}
 }
@@ -172,6 +204,7 @@ func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T)
 		"--sidecar-url", "http://127.0.0.1:8765",
 		"--query-analysis-mode", "semantic_always",
 		"--query-analysis-timeout-ms", "2500",
+		"--query-analysis-soft-join-timeout-ms", "1200",
 	}, &stderr)
 
 	if !ok {
@@ -179,6 +212,9 @@ func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T)
 	}
 	if opts.queryAnalysis.Mode != "semantic_always" || opts.queryAnalysis.SidecarURL != "http://127.0.0.1:8765" {
 		t.Fatalf("query analysis options = %#v", opts.queryAnalysis)
+	}
+	if opts.queryAnalysis.Timeout != 2500*time.Millisecond || opts.queryAnalysis.SoftJoinTimeout != 1200*time.Millisecond {
+		t.Fatalf("query analysis timeouts = timeout:%s soft_join:%s", opts.queryAnalysis.Timeout, opts.queryAnalysis.SoftJoinTimeout)
 	}
 }
 
@@ -210,8 +246,26 @@ func TestParseOptionsRejectsSemanticQueryAnalysisWithoutMirrorProfile(t *testing
 	if ok {
 		t.Fatal("parseOptions accepted semantic query analysis without a mirror profile")
 	}
-	if !strings.Contains(stderr.String(), "query-analysis-mode requires at least one mirror_real_* profile") {
+	if !strings.Contains(stderr.String(), "query-analysis-mode requires at least one mirror/semantic profile") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestParseOptionsAcceptsSemanticRewriteOnlyMode(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--profiles", "semantic_rewrite_only",
+		"--sidecar-url", "http://127.0.0.1:8765",
+		"--query-analysis-mode", "semantic_rewrite_only",
+		"--query-analysis-timeout-ms", "2500",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.queryAnalysis.Mode != "semantic_rewrite_only" {
+		t.Fatalf("query analysis options = %#v", opts.queryAnalysis)
 	}
 }
 

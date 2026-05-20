@@ -131,6 +131,161 @@ func TestQueryAnalysisSemanticMergeClampsUntrustedFields(t *testing.T) {
 	if got.Diagnostics == nil || got.Diagnostics.SemanticStatus != "ok" || got.Diagnostics.RewriteCount != 2 || got.Diagnostics.SemanticAnchorCount != 1 {
 		t.Fatalf("diagnostics = %#v, want semantic merge diagnostics", got.Diagnostics)
 	}
+	if got.Diagnostics.SemanticAnalysis == nil {
+		t.Fatalf("semantic analysis diagnostics = nil, want LLM returned struct snapshot")
+	}
+	if got.Diagnostics.SemanticAnalysis.MemoryAbility != string(memsqlite.MemoryAbilityProvenance) ||
+		len(got.Diagnostics.SemanticAnalysis.QueryRewrites) != 3 ||
+		len(got.Diagnostics.SemanticAnalysis.EntityMentions) != 3 ||
+		len(got.Diagnostics.SemanticAnalysis.SemanticAnchors) != 2 {
+		t.Fatalf("semantic analysis diagnostics = %#v, want unclamped provider struct snapshot", got.Diagnostics.SemanticAnalysis)
+	}
+}
+
+func TestQueryAnalysisSemanticFallbackKeepsReturnedStructSnapshot(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+	}
+	got := semanticRuleFallback(rule, "provider_error", SemanticQueryAnalysisResult{
+		Status:        "error",
+		Provider:      "deepseek",
+		Model:         "deepseek-v4-flash",
+		PromptVersion: "semantic_query_analyzer.v0.1",
+		LatencyMs:     8123,
+		Analysis: SemanticQueryAnalysis{
+			MemoryAbility: string(memsqlite.MemoryAbilityDirectFact),
+			QueryRewrites: []QueryRewrite{{Text: "咖啡偏好", Purpose: "semantic_recall", Weight: 0.5}},
+		},
+	})
+
+	if got.Source != memsqlite.QueryAnalysisSourceSemanticFallback || got.Diagnostics == nil {
+		t.Fatalf("fallback analysis = %#v, want semantic fallback diagnostics", got)
+	}
+	if got.Diagnostics.FallbackReason != "provider_error" || got.Diagnostics.SemanticProvider != "deepseek" || got.Diagnostics.SemanticLatencyMs != 8123 {
+		t.Fatalf("diagnostics = %#v, want provider error metadata retained", got.Diagnostics)
+	}
+	if got.Diagnostics.SemanticAnalysis == nil ||
+		got.Diagnostics.SemanticAnalysis.MemoryAbility != string(memsqlite.MemoryAbilityDirectFact) ||
+		len(got.Diagnostics.SemanticAnalysis.QueryRewrites) != 1 {
+		t.Fatalf("semantic analysis diagnostics = %#v, want returned struct retained on error", got.Diagnostics.SemanticAnalysis)
+	}
+}
+
+func TestQueryAnalysisSemanticRewriteOnlyKeepsRuleControlFields(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		Terms:         []string{"咖啡"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.6,
+	}
+	semantic := SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			TimeMode:      string(memsqlite.QueryTimeModeHistorical),
+			MemoryDomain:  string(memsqlite.MemoryDomainRelationship),
+			MemoryAbility: string(memsqlite.MemoryAbilityCausalExplain),
+			EvidenceNeed:  string(memsqlite.EvidenceNeedStateTransition),
+			Confidence:    0.99,
+			FieldConfidence: QueryAnalysisConfidence{
+				Overall:       0.99,
+				TimeMode:      0.99,
+				MemoryAbility: 0.99,
+				MemoryDomain:  0.99,
+				EvidenceNeed:  0.99,
+			},
+			QueryRewrites: []QueryRewrite{{Text: "用户关于咖啡的偏好", Purpose: "semantic_recall", Weight: 0.5}},
+		},
+	}
+
+	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{
+		Mode:                    QueryAnalysisModeSemanticRewriteOnly,
+		MinConfidenceToOverride: 0.72,
+		MaxQueryRewrites:        2,
+	}, nil)
+
+	if got.TimeMode != rule.TimeMode || got.MemoryAbility != rule.MemoryAbility || got.EvidenceNeed != rule.EvidenceNeed || got.MemoryDomain != rule.MemoryDomain {
+		t.Fatalf("control fields changed in rewrite-only mode: %#v", got)
+	}
+	if len(got.QueryRewrites) != 1 {
+		t.Fatalf("query rewrites = %#v, want semantic dense hints kept", got.QueryRewrites)
+	}
+	if len(got.ContextBlockHints) != 0 {
+		t.Fatalf("context block hints = %#v, want rule-derived none for direct fact", got.ContextBlockHints)
+	}
+}
+
+func TestQueryAnalysisSemanticRequestCarriesBudgetFields(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Confidence:    0.1,
+	}
+	semantic := &capturingSemanticQueryAnalyzer{
+		result: &SemanticQueryAnalysisResult{
+			Status: "ok",
+			Analysis: SemanticQueryAnalysis{
+				QueryRewrites: []QueryRewrite{{Text: "咖啡偏好", Weight: 0.5}},
+			},
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider: QueryAnalysisProviderSidecar,
+		Mode:     QueryAnalysisModeSemanticAlways,
+		Timeout:  1200 * time.Millisecond,
+	})
+	if _, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: "咖啡", Now: fixedQueryAnalysisNow()}); err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if semantic.request.DeadlineMS != 1200 || semantic.request.ProviderTimeoutMS != 1200 {
+		t.Fatalf("budget fields = deadline:%d provider:%d, want 1200/1200", semantic.request.DeadlineMS, semantic.request.ProviderTimeoutMS)
+	}
+}
+
+func TestQueryAnalysisSemanticRequestCapsBudgetToSoftJoinTimeout(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Confidence:    0.1,
+	}
+	semantic := &capturingSemanticQueryAnalyzer{
+		result: &SemanticQueryAnalysisResult{
+			Status: "ok",
+			Analysis: SemanticQueryAnalysis{
+				QueryRewrites: []QueryRewrite{{Text: "咖啡偏好", Weight: 0.5}},
+			},
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider:        QueryAnalysisProviderSidecar,
+		Mode:            QueryAnalysisModeSemanticAlways,
+		Timeout:         5 * time.Second,
+		SoftJoinTimeout: 800 * time.Millisecond,
+	})
+	if _, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: "咖啡", Now: fixedQueryAnalysisNow()}); err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if semantic.request.DeadlineMS != 800 || semantic.request.ProviderTimeoutMS != 800 {
+		t.Fatalf("budget fields = deadline:%d provider:%d, want 800/800", semantic.request.DeadlineMS, semantic.request.ProviderTimeoutMS)
+	}
 }
 
 func TestQueryAnalysisInvalidSemanticDoesNotDowngradeRuleForgetDelete(t *testing.T) {
@@ -294,6 +449,38 @@ func TestQueryAnalysisSemanticFailurePreservesStateTransitionRuleFallback(t *tes
 	}
 }
 
+func TestQueryAnalysisParentCancellationUsesGoContextTimeoutReason(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.42,
+	}
+	pipeline := newQueryAnalysisPipeline(
+		staticRuleQueryAnalyzer{analysis: rule},
+		errorSemanticQueryAnalyzer{err: context.Canceled},
+		QueryAnalysisOptions{Provider: QueryAnalysisProviderSidecar, Mode: QueryAnalysisModeSemanticAlways},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := pipeline.AnalyzeQuery(ctx, QueryAnalysisRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+		Now:       fixedQueryAnalysisNow(),
+	})
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if got.Diagnostics == nil || got.Diagnostics.FallbackReason != "go_context_timeout" {
+		t.Fatalf("diagnostics = %#v, want go_context_timeout", got.Diagnostics)
+	}
+}
+
 func TestQueryAnalysisSidecarFailureFallbackReasonDoesNotLeakBodyText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "SECRET user private note: do not leak", http.StatusInternalServerError)
@@ -346,7 +533,7 @@ func TestQueryAnalysisSemanticFallbackPreservesSafeSidecarReason(t *testing.T) {
 		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
 		Confidence:    0.42,
 	}
-	for _, reason := range []string{"invalid_json", "validation_failed", "provider_error", "provider_timeout"} {
+	for _, reason := range []string{"invalid_json", "validation_failed", "provider_error", "provider_timeout", "provider_budget_exhausted", "sidecar_provider_timeout"} {
 		t.Run(reason, func(t *testing.T) {
 			pipeline := newQueryAnalysisPipeline(
 				staticRuleQueryAnalyzer{analysis: rule},
@@ -574,6 +761,22 @@ type staticSemanticQueryAnalyzer struct {
 }
 
 func (a staticSemanticQueryAnalyzer) AnalyzeSemanticQuery(context.Context, SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
+	if a.result == nil {
+		return nil, nil
+	}
+	cloned := *a.result
+	raw, _ := json.Marshal(a.result.Analysis)
+	_ = json.Unmarshal(raw, &cloned.Analysis)
+	return &cloned, nil
+}
+
+type capturingSemanticQueryAnalyzer struct {
+	request SemanticQueryAnalysisRequest
+	result  *SemanticQueryAnalysisResult
+}
+
+func (a *capturingSemanticQueryAnalyzer) AnalyzeSemanticQuery(_ context.Context, req SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
+	a.request = req
 	if a.result == nil {
 		return nil, nil
 	}

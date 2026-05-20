@@ -50,27 +50,42 @@ type CandidateRequest struct {
 }
 
 type Candidate struct {
-	TriviumNodeID  int64
-	Score          float64
-	Source         string
-	PrimaryPurpose string
-	Rank           int
-	HitCount       int
+	TriviumNodeID   int64
+	Score           float64
+	Source          string
+	PrimaryPurpose  string
+	Rank            int
+	HitCount        int
+	SourceBreakdown []CandidateSourceBreakdown
+}
+
+type CandidateSourceBreakdown struct {
+	Source  string
+	Purpose string
+	Rank    int
+	Score   float64
+	Weight  float64
 }
 
 type CandidateDiagnostics struct {
-	QueryCount           int
-	RawQueryCount        int
-	RewriteQueryCount    int
-	AnchorQueryCount     int
-	MergedCandidateCount int
-	PerQuery             []CandidatePerQueryDiagnostics
+	QueryCount                   int
+	RawQueryCount                int
+	RewriteQueryCount            int
+	AnchorQueryCount             int
+	MergedCandidateCount         int
+	QueryTrimCount               int
+	DenseEmbeddingWallLatencyMs  int64
+	DenseEmbeddingBatchLatencyMs int64
+	DenseSearchTotalLatencyMs    int64
+	QueryCountTrimmedByBudget    int
+	PerQuery                     []CandidatePerQueryDiagnostics
 }
 
 type CandidatePerQueryDiagnostics struct {
-	Source  string
-	Purpose string
-	Count   int
+	Source    string
+	Purpose   string
+	Count     int
+	LatencyMs int64
 }
 
 type CandidateResult struct {
@@ -140,6 +155,7 @@ type RerankCandidate struct {
 	CurrentScore float64
 	AnchorEnergy float64
 	GraphEnergy  float64
+	SourceScores map[string]float64
 }
 
 type RerankResult struct {
@@ -457,12 +473,13 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 			continue
 		}
 		result.Candidates = append(result.Candidates, Candidate{
-			TriviumNodeID:  candidate.TriviumNodeID,
-			Score:          score,
-			Source:         strings.TrimSpace(candidate.PrimarySource),
-			PrimaryPurpose: strings.TrimSpace(candidate.PrimaryPurpose),
-			Rank:           candidate.Rank,
-			HitCount:       candidate.HitCount,
+			TriviumNodeID:   candidate.TriviumNodeID,
+			Score:           score,
+			Source:          strings.TrimSpace(candidate.PrimarySource),
+			PrimaryPurpose:  strings.TrimSpace(candidate.PrimaryPurpose),
+			Rank:            candidate.Rank,
+			HitCount:        candidate.HitCount,
+			SourceBreakdown: candidateSourceBreakdownFromResponse(candidate.SourceBreakdown),
 		})
 	}
 	return result, nil
@@ -656,12 +673,19 @@ type sidecarCandidateResponse struct {
 	SchemaVersion string `json:"schema_version"`
 	RequestID     string `json:"request_id,omitempty"`
 	Candidates    []struct {
-		TriviumNodeID  int64   `json:"trivium_node_id"`
-		FusedScore     float64 `json:"fused_score"`
-		PrimarySource  string  `json:"primary_source"`
-		PrimaryPurpose string  `json:"primary_purpose"`
-		Rank           int     `json:"rank,omitempty"`
-		HitCount       int     `json:"hit_count,omitempty"`
+		TriviumNodeID   int64   `json:"trivium_node_id"`
+		FusedScore      float64 `json:"fused_score"`
+		PrimarySource   string  `json:"primary_source"`
+		PrimaryPurpose  string  `json:"primary_purpose"`
+		Rank            int     `json:"rank,omitempty"`
+		HitCount        int     `json:"hit_count,omitempty"`
+		SourceBreakdown []struct {
+			Source  string  `json:"source,omitempty"`
+			Purpose string  `json:"purpose,omitempty"`
+			Rank    int     `json:"rank,omitempty"`
+			Score   float64 `json:"score,omitempty"`
+			Weight  float64 `json:"weight,omitempty"`
+		} `json:"source_breakdown,omitempty"`
 	} `json:"candidates"`
 	Degraded            bool   `json:"degraded"`
 	FallbackReason      string `json:"fallback_reason,omitempty"`
@@ -674,15 +698,21 @@ type sidecarCandidateResponse struct {
 }
 
 type sidecarCandidateDiagnostics struct {
-	QueryCount           int `json:"query_count,omitempty"`
-	RawQueryCount        int `json:"raw_query_count,omitempty"`
-	RewriteQueryCount    int `json:"rewrite_query_count,omitempty"`
-	AnchorQueryCount     int `json:"anchor_query_count,omitempty"`
-	MergedCandidateCount int `json:"merged_candidate_count,omitempty"`
-	PerQuery             []struct {
-		Source  string `json:"source,omitempty"`
-		Purpose string `json:"purpose,omitempty"`
-		Count   int    `json:"count,omitempty"`
+	QueryCount                   int            `json:"query_count,omitempty"`
+	RawQueryCount                int            `json:"raw_query_count,omitempty"`
+	RewriteQueryCount            int            `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount             int            `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount         int            `json:"merged_candidate_count,omitempty"`
+	QueryTrims                   map[string]int `json:"query_trims,omitempty"`
+	DenseEmbeddingWallLatencyMs  int64          `json:"dense_embedding_wall_latency_ms,omitempty"`
+	DenseEmbeddingBatchLatencyMs int64          `json:"dense_embedding_batch_latency_ms,omitempty"`
+	DenseSearchTotalLatencyMs    int64          `json:"dense_search_total_latency_ms,omitempty"`
+	QueryCountTrimmedByBudget    int            `json:"query_count_trimmed_by_budget,omitempty"`
+	PerQuery                     []struct {
+		Source    string `json:"source,omitempty"`
+		Purpose   string `json:"purpose,omitempty"`
+		Count     int    `json:"count,omitempty"`
+		LatencyMs int64  `json:"latency_ms,omitempty"`
 	} `json:"per_query_counts,omitempty"`
 }
 
@@ -872,14 +902,18 @@ func normalizedCandidateScore(score float64) (float64, bool) {
 func rerankCandidatesJSON(candidates []RerankCandidate) []map[string]any {
 	result := make([]map[string]any, 0, len(candidates))
 	for _, candidate := range candidates {
-		result = append(result, map[string]any{
+		item := map[string]any{
 			"node_id":       candidate.NodeID,
 			"node_type":     candidate.NodeType,
 			"safe_summary":  candidate.SafeSummary,
 			"current_score": candidate.CurrentScore,
 			"anchor_energy": candidate.AnchorEnergy,
 			"graph_energy":  candidate.GraphEnergy,
-		})
+		}
+		if len(candidate.SourceScores) > 0 {
+			item["source_scores"] = candidate.SourceScores
+		}
+		result = append(result, item)
 	}
 	return result
 }
@@ -954,21 +988,75 @@ func semanticAnchorsJSON(values []SemanticAnchor) []map[string]any {
 
 func candidateDiagnosticsFromResponse(value sidecarCandidateDiagnostics) CandidateDiagnostics {
 	out := CandidateDiagnostics{
-		QueryCount:           value.QueryCount,
-		RawQueryCount:        value.RawQueryCount,
-		RewriteQueryCount:    value.RewriteQueryCount,
-		AnchorQueryCount:     value.AnchorQueryCount,
-		MergedCandidateCount: value.MergedCandidateCount,
-		PerQuery:             make([]CandidatePerQueryDiagnostics, 0, len(value.PerQuery)),
+		QueryCount:                   value.QueryCount,
+		RawQueryCount:                value.RawQueryCount,
+		RewriteQueryCount:            value.RewriteQueryCount,
+		AnchorQueryCount:             value.AnchorQueryCount,
+		MergedCandidateCount:         value.MergedCandidateCount,
+		QueryTrimCount:               candidateQueryTrimCount(value.QueryTrims),
+		DenseEmbeddingWallLatencyMs:  value.DenseEmbeddingWallLatencyMs,
+		DenseEmbeddingBatchLatencyMs: value.DenseEmbeddingBatchLatencyMs,
+		DenseSearchTotalLatencyMs:    value.DenseSearchTotalLatencyMs,
+		QueryCountTrimmedByBudget:    value.QueryCountTrimmedByBudget,
+		PerQuery:                     make([]CandidatePerQueryDiagnostics, 0, len(value.PerQuery)),
+	}
+	if out.DenseEmbeddingWallLatencyMs == 0 {
+		out.DenseEmbeddingWallLatencyMs = value.DenseEmbeddingBatchLatencyMs
+	}
+	if out.DenseEmbeddingBatchLatencyMs == 0 {
+		out.DenseEmbeddingBatchLatencyMs = out.DenseEmbeddingWallLatencyMs
 	}
 	for _, item := range value.PerQuery {
 		out.PerQuery = append(out.PerQuery, CandidatePerQueryDiagnostics{
-			Source:  strings.TrimSpace(item.Source),
-			Purpose: strings.TrimSpace(item.Purpose),
-			Count:   item.Count,
+			Source:    strings.TrimSpace(item.Source),
+			Purpose:   strings.TrimSpace(item.Purpose),
+			Count:     item.Count,
+			LatencyMs: item.LatencyMs,
 		})
 	}
 	return out
+}
+
+func candidateQueryTrimCount(values map[string]int) int {
+	total := 0
+	for _, value := range values {
+		if value > 0 {
+			total += value
+		}
+	}
+	return total
+}
+
+func candidateSourceBreakdownFromResponse(values []struct {
+	Source  string  `json:"source,omitempty"`
+	Purpose string  `json:"purpose,omitempty"`
+	Rank    int     `json:"rank,omitempty"`
+	Score   float64 `json:"score,omitempty"`
+	Weight  float64 `json:"weight,omitempty"`
+}) []CandidateSourceBreakdown {
+	result := make([]CandidateSourceBreakdown, 0, len(values))
+	for _, value := range values {
+		source := strings.TrimSpace(value.Source)
+		if source == "" {
+			continue
+		}
+		score, ok := normalizedCandidateScore(value.Score)
+		if !ok {
+			score = 0
+		}
+		weight := value.Weight
+		if math.IsNaN(weight) || math.IsInf(weight, 0) || weight < 0 {
+			weight = 0
+		}
+		result = append(result, CandidateSourceBreakdown{
+			Source:  source,
+			Purpose: strings.TrimSpace(value.Purpose),
+			Rank:    value.Rank,
+			Score:   score,
+			Weight:  weight,
+		})
+	}
+	return result
 }
 
 func sanitizeDebugReason(value string, limit int) string {

@@ -20,7 +20,7 @@ param(
 
     [switch]$NoRerank,
 
-    [ValidateSet("rule_only", "semantic_always", "semantic_on_low_confidence")]
+    [ValidateSet("rule_only", "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only")]
     [string]$QueryAnalysisMode = "rule_only",
 
     [string]$QueryAnalysisKeyFile = "",
@@ -29,7 +29,9 @@ param(
 
     [int]$QueryAnalysisTimeoutMS = 15000,
 
-    [int]$QueryAnalysisMaxTokens = 768
+    [int]$QueryAnalysisSoftJoinTimeoutMS = 0,
+
+    [int]$QueryAnalysisMaxTokens = 512
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,22 +80,29 @@ if (-not $env:UV_CACHE_DIR) {
 }
 
 $profileList = $Profiles.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$usesMirrorProfile = ($profileList | Where-Object { $_ -like "mirror_real_*" }).Count -gt 0
+$semanticProfileCount = ($profileList | Where-Object { $_ -like "semantic_*" }).Count
+$usesMirrorProfile = ($profileList | Where-Object { $_ -like "mirror_real_*" -or $_ -eq "rule_only_raw" -or $_ -like "semantic_*" }).Count -gt 0
 $needsSidecar = $usesMirrorProfile
-$queryAnalysisEnabled = $QueryAnalysisMode -ne "rule_only"
+if ($semanticProfileCount -gt 0 -and $QueryAnalysisMode -eq "rule_only") {
+    $QueryAnalysisMode = "semantic_always"
+}
+$queryAnalysisEnabled = $QueryAnalysisMode -ne "rule_only" -or $semanticProfileCount -gt 0
 $needsRerank = ($profileList | Where-Object { $_ -like "*rerank*" }).Count -gt 0
 if ($NoRerank -and $needsRerank) {
     throw "Profiles include rerank but -NoRerank was supplied. Remove rerank profiles or omit -NoRerank."
 }
 if ($queryAnalysisEnabled) {
     if (-not $usesMirrorProfile) {
-        throw "Query analysis is enabled but no mirror_real_* profile was requested. sqlite_go remains a pure fallback profile."
+        throw "Query analysis is enabled but no mirror/semantic profile was requested. sqlite_go remains a pure fallback profile."
     }
     if ($QueryAnalysisTimeoutMS -le 0) {
         throw "QueryAnalysisTimeoutMS must be > 0."
     }
     if ($QueryAnalysisMaxTokens -le 0) {
         throw "QueryAnalysisMaxTokens must be > 0."
+    }
+    if ($QueryAnalysisSoftJoinTimeoutMS -lt 0) {
+        throw "QueryAnalysisSoftJoinTimeoutMS must be >= 0."
     }
     if (-not $QueryAnalysisKeyFile) {
         $QueryAnalysisKeyFile = Join-Path $repoRoot "tmp\TMP_KEY_LLM"
@@ -188,6 +197,9 @@ try {
     }
     if ($queryAnalysisEnabled) {
         $args += @("--query-analysis-mode", $QueryAnalysisMode, "--query-analysis-timeout-ms", $QueryAnalysisTimeoutMS)
+        if ($QueryAnalysisSoftJoinTimeoutMS -gt 0) {
+            $args += @("--query-analysis-soft-join-timeout-ms", $QueryAnalysisSoftJoinTimeoutMS)
+        }
     }
     if ($AllowSkipMissingProvider) {
         $args += "--allow-skip-missing-provider"

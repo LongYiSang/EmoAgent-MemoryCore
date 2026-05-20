@@ -78,10 +78,19 @@ func (c *QueryAnalysisCache) Analyze(ctx context.Context, req SemanticQueryAnaly
 	c.mu.Unlock()
 
 	result, err := analyzer.AnalyzeSemanticQuery(ctx, req)
+	if !shouldCacheSemanticQueryAnalysis(err) {
+		return result, err
+	}
 	c.mu.Lock()
-	c.entries[key] = queryAnalysisCacheEntry{result: cloneSemanticQueryAnalysisResult(result), err: err}
+	if _, ok := c.entries[key]; !ok {
+		c.entries[key] = queryAnalysisCacheEntry{result: cloneSemanticQueryAnalysisResult(result), err: err}
+	}
 	c.mu.Unlock()
 	return result, err
+}
+
+func shouldCacheSemanticQueryAnalysis(err error) bool {
+	return err == nil
 }
 
 func semanticQueryAnalysisCacheKey(req SemanticQueryAnalysisRequest) string {
@@ -151,6 +160,8 @@ type SemanticQueryAnalysisRequest struct {
 	VisibleEntityHints         []VisibleEntityHint
 	AllowedEnums               QueryAnalysisAllowedEnums
 	RetrievalPolicy            RetrievalPolicy
+	DeadlineMS                 int
+	ProviderTimeoutMS          int
 	IncludeRationaleSummary    bool
 	MaxGeneratedDenseWeightSum float64
 }
@@ -208,7 +219,7 @@ func (a storeRuleQueryAnalyzer) AnalyzeRuleQuery(ctx context.Context, req QueryA
 	return a.repo.AnalyzeQuery(ctx, req.PersonaID, req.QueryText, retrievalPolicyToStore(req.Policy))
 }
 
-func newQueryAnalysisPipeline(rule RuleQueryAnalyzer, semantic SemanticQueryAnalyzer, options QueryAnalysisOptions) QueryAnalyzer {
+func newQueryAnalysisPipeline(rule RuleQueryAnalyzer, semantic SemanticQueryAnalyzer, options QueryAnalysisOptions) queryAnalysisPipeline {
 	return queryAnalysisPipeline{
 		rule:     rule,
 		semantic: semantic,
@@ -218,6 +229,14 @@ func newQueryAnalysisPipeline(rule RuleQueryAnalyzer, semantic SemanticQueryAnal
 }
 
 func (p queryAnalysisPipeline) AnalyzeQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error) {
+	rule, err := p.AnalyzeRuleQuery(ctx, req)
+	if err != nil {
+		return memsqlite.QueryAnalysis{}, err
+	}
+	return p.AnalyzeSemanticForRule(ctx, req, rule), nil
+}
+
+func (p queryAnalysisPipeline) AnalyzeRuleQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error) {
 	if p.rule == nil {
 		return memsqlite.QueryAnalysis{}, fmt.Errorf("query analysis rule analyzer is required")
 	}
@@ -226,27 +245,17 @@ func (p queryAnalysisPipeline) AnalyzeQuery(ctx context.Context, req QueryAnalys
 		return memsqlite.QueryAnalysis{}, err
 	}
 	rule.Source = memsqlite.QueryAnalysisSourceRuleOnly
+	return rule, nil
+}
+
+func (p queryAnalysisPipeline) AnalyzeSemanticForRule(ctx context.Context, req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) memsqlite.QueryAnalysis {
 	if !p.shouldUseSemantic(rule) {
-		return rule, nil
+		return rule
 	}
 	if p.semantic == nil {
-		return semanticRuleFallback(rule, "semantic_analyzer_missing", SemanticQueryAnalysisResult{}), nil
+		return semanticRuleFallback(rule, "semantic_analyzer_missing", SemanticQueryAnalysisResult{})
 	}
-	semanticReq := SemanticQueryAnalysisRequest{
-		RequestID:                  req.RequestID,
-		PersonaID:                  req.PersonaID,
-		SessionID:                  req.SessionID,
-		MessageID:                  req.MessageID,
-		QueryText:                  req.QueryText,
-		Now:                        req.Now,
-		Timezone:                   req.Timezone,
-		RuleAnalysis:               cloneStoreQueryAnalysis(rule),
-		VisibleEntityHints:         visibleEntityHintsFromRule(rule),
-		AllowedEnums:               defaultQueryAnalysisAllowedEnums(),
-		RetrievalPolicy:            req.Policy,
-		IncludeRationaleSummary:    p.options.IncludeRationaleSummary,
-		MaxGeneratedDenseWeightSum: p.options.MaxGeneratedDenseWeightSum,
-	}
+	semanticReq := p.semanticRequestForRule(req, rule)
 	stageCtx := ctx
 	cancel := func() {}
 	if p.options.Timeout > 0 {
@@ -261,19 +270,55 @@ func (p queryAnalysisPipeline) AnalyzeQuery(ctx context.Context, req QueryAnalys
 	semantic, err := p.analyzeSemantic(stageCtx, semanticReq)
 	latencyMs := time.Since(begin).Milliseconds()
 	if err != nil || semantic == nil {
-		return semanticRuleFallback(rule, semanticFallbackReasonFromError(err), SemanticQueryAnalysisResult{LatencyMs: latencyMs}), nil
+		semanticResult := SemanticQueryAnalysisResult{LatencyMs: latencyMs}
+		if semantic != nil {
+			semanticResult = *semantic
+			if semanticResult.LatencyMs <= 0 {
+				semanticResult.LatencyMs = latencyMs
+			}
+		}
+		return semanticRuleFallback(rule, semanticFallbackReasonFromError(ctx, err), semanticResult)
 	}
 	semantic.LatencyMs = latencyMs
 	if !isValidSemanticQueryAnalysisStatus(semantic.Status) {
-		return semanticRuleFallback(rule, "semantic_protocol_error", *semantic), nil
+		return semanticRuleFallback(rule, "semantic_protocol_error", *semantic)
 	}
 	if semantic.Status != "ok" {
-		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_sidecar_error"), *semantic), nil
+		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_sidecar_error"), *semantic)
 	}
 	if semantic.Degraded {
-		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_unavailable"), *semantic), nil
+		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_unavailable"), *semantic)
 	}
-	return mergeSemanticQueryAnalysis(rule, *semantic, p.options, semanticReq.VisibleEntityHints), nil
+	return mergeSemanticQueryAnalysis(rule, *semantic, p.options, semanticReq.VisibleEntityHints)
+}
+
+func (p queryAnalysisPipeline) semanticRequestForRule(req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) SemanticQueryAnalysisRequest {
+	providerBudget := queryAnalysisProviderBudget(p.options)
+	return SemanticQueryAnalysisRequest{
+		RequestID:                  req.RequestID,
+		PersonaID:                  req.PersonaID,
+		SessionID:                  req.SessionID,
+		MessageID:                  req.MessageID,
+		QueryText:                  req.QueryText,
+		Now:                        req.Now,
+		Timezone:                   req.Timezone,
+		RuleAnalysis:               cloneStoreQueryAnalysis(rule),
+		VisibleEntityHints:         visibleEntityHintsFromRule(rule),
+		AllowedEnums:               defaultQueryAnalysisAllowedEnums(),
+		RetrievalPolicy:            req.Policy,
+		DeadlineMS:                 durationMillis(providerBudget),
+		ProviderTimeoutMS:          durationMillis(providerBudget),
+		IncludeRationaleSummary:    p.options.IncludeRationaleSummary,
+		MaxGeneratedDenseWeightSum: p.options.MaxGeneratedDenseWeightSum,
+	}
+}
+
+func queryAnalysisProviderBudget(options QueryAnalysisOptions) time.Duration {
+	options = normalizeQueryAnalysisOptions(options)
+	if options.SoftJoinTimeout > 0 {
+		return options.SoftJoinTimeout
+	}
+	return options.Timeout
 }
 
 func (p queryAnalysisPipeline) analyzeSemantic(ctx context.Context, req SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
@@ -290,6 +335,8 @@ func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) b
 	}
 	switch options.Mode {
 	case QueryAnalysisModeSemanticAlways:
+		return true
+	case QueryAnalysisModeSemanticRewriteOnly:
 		return true
 	case QueryAnalysisModeSemanticOnLowConfidence:
 		return rule.Confidence < options.MinConfidenceToOverride
@@ -308,6 +355,7 @@ func semanticRuleFallback(rule memsqlite.QueryAnalysis, fallbackReason string, s
 		PromptVersion:     semantic.PromptVersion,
 		SemanticLatencyMs: semantic.LatencyMs,
 		FallbackReason:    sanitizeSemanticFallbackReason(fallbackReason, "semantic_sidecar_error"),
+		SemanticAnalysis:  semanticAnalysisDiagnosticsFromSemantic(semantic.Analysis),
 	}
 	return out
 }
@@ -316,34 +364,41 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 	options = normalizeQueryAnalysisOptions(options)
 	out := cloneStoreQueryAnalysis(rule)
 	analysis := semantic.Analysis
-	if isValidQueryTimeMode(analysis.TimeMode) && confidenceForField(analysis.FieldConfidence.TimeMode, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-		out.TimeMode = memsqlite.QueryTimeMode(analysis.TimeMode)
+	controlLocked := options.Mode == QueryAnalysisModeSemanticRewriteOnly
+	if !controlLocked {
+		if isValidQueryTimeMode(analysis.TimeMode) && confidenceForField(analysis.FieldConfidence.TimeMode, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
+			out.TimeMode = memsqlite.QueryTimeMode(analysis.TimeMode)
+		}
+		if isValidMemoryDomain(analysis.MemoryDomain) && confidenceForField(analysis.FieldConfidence.MemoryDomain, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
+			out.MemoryDomain = memsqlite.MemoryDomain(analysis.MemoryDomain)
+		}
+		if isValidMemoryAbility(analysis.MemoryAbility) && confidenceForField(analysis.FieldConfidence.MemoryAbility, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
+			out.MemoryAbility = memsqlite.MemoryAbility(analysis.MemoryAbility)
+		}
+		if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) {
+			out.MemoryAbility = rule.MemoryAbility
+		}
+		if isValidEvidenceNeed(analysis.EvidenceNeed) && confidenceForField(analysis.FieldConfidence.EvidenceNeed, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
+			out.EvidenceNeed = memsqlite.EvidenceNeed(analysis.EvidenceNeed)
+		}
+		if validUnitConfidence(analysis.Confidence) && analysis.Confidence >= options.MinConfidenceToOverride {
+			out.Confidence = analysis.Confidence
+			out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
+		}
+		out.Signals = mergeQuerySignals(rule.Signals, analysis.Signals)
+		applyHistoricalTransitionClamp(&out, rule)
+		out.EntityMentions = mergeSemanticEntityMentions(rule.EntityMentions, analysis.EntityMentions, hints, options.MinEntitySemanticConfidence)
 	}
-	if isValidMemoryDomain(analysis.MemoryDomain) && confidenceForField(analysis.FieldConfidence.MemoryDomain, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-		out.MemoryDomain = memsqlite.MemoryDomain(analysis.MemoryDomain)
-	}
-	if isValidMemoryAbility(analysis.MemoryAbility) && confidenceForField(analysis.FieldConfidence.MemoryAbility, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-		out.MemoryAbility = memsqlite.MemoryAbility(analysis.MemoryAbility)
-	}
-	if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) {
-		out.MemoryAbility = rule.MemoryAbility
-	}
-	if isValidEvidenceNeed(analysis.EvidenceNeed) && confidenceForField(analysis.FieldConfidence.EvidenceNeed, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-		out.EvidenceNeed = memsqlite.EvidenceNeed(analysis.EvidenceNeed)
-	}
-	if validUnitConfidence(analysis.Confidence) && analysis.Confidence >= options.MinConfidenceToOverride {
-		out.Confidence = analysis.Confidence
-		out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
-	}
-	out.Signals = mergeQuerySignals(rule.Signals, analysis.Signals)
-	applyHistoricalTransitionClamp(&out, rule)
-	out.EntityMentions = mergeSemanticEntityMentions(rule.EntityMentions, analysis.EntityMentions, hints, options.MinEntitySemanticConfidence)
 	budget := generatedWeightBudget(options)
 	var rewriteDiagnostics rewriteSanitizationDiagnostics
-	out.QueryRewrites, rewriteDiagnostics = sanitizedQueryRewrites(out.Raw, analysis.QueryRewrites, options.MaxQueryRewrites, &budget)
-	out.SemanticAnchors = sanitizedSemanticAnchors(analysis.SemanticAnchors, hints, options, &budget)
-	out.ContextBlockHints = sanitizedContextBlockHints(analysis.ContextBlockHints)
-	out.PolicyHints = queryPolicyHintsToStore(analysis.PolicyHints)
+	if !options.DisableGeneratedDense {
+		out.QueryRewrites, rewriteDiagnostics = sanitizedQueryRewrites(out.Raw, analysis.QueryRewrites, options.MaxQueryRewrites, &budget)
+		out.SemanticAnchors = sanitizedSemanticAnchors(analysis.SemanticAnchors, hints, options, &budget)
+	}
+	out.ContextBlockHints = primaryContextBlockHint(out)
+	if !controlLocked {
+		out.PolicyHints = queryPolicyHintsToStore(analysis.PolicyHints)
+	}
 	out.Source = memsqlite.QueryAnalysisSourceMerged
 	out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{
 		SemanticStatus:        defaultString(semantic.Status, "ok"),
@@ -357,8 +412,125 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 		DroppedRewriteCount:   rewriteDiagnostics.DroppedCount,
 		DroppedRewriteReasons: rewriteDiagnostics.DroppedReasons,
 		EnglishRewriteCount:   rewriteDiagnostics.EnglishCount,
+		SemanticDriftCount:    semanticControlDriftCount(rule, out),
+		SemanticAnalysis:      semanticAnalysisDiagnosticsFromSemantic(analysis),
 	}
 	return out
+}
+
+func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsqlite.SemanticQueryAnalysisDiagnostics {
+	if isEmptySemanticQueryAnalysis(value) {
+		return nil
+	}
+	out := &memsqlite.SemanticQueryAnalysisDiagnostics{
+		TimeMode:          strings.TrimSpace(value.TimeMode),
+		Signals:           append([]string(nil), value.Signals...),
+		MemoryDomain:      strings.TrimSpace(value.MemoryDomain),
+		MemoryAbility:     strings.TrimSpace(value.MemoryAbility),
+		EvidenceNeed:      strings.TrimSpace(value.EvidenceNeed),
+		Confidence:        value.Confidence,
+		FieldConfidence:   queryAnalysisConfidenceToStore(value.FieldConfidence),
+		QueryRewrites:     queryRewritesToStoreDiagnostics(value.QueryRewrites),
+		SemanticAnchors:   semanticAnchorsToStoreDiagnostics(value.SemanticAnchors),
+		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
+		PolicyHints:       queryPolicyHintsToStore(value.PolicyHints),
+	}
+	for _, mention := range value.EntityMentions {
+		out.EntityMentions = append(out.EntityMentions, memsqlite.SemanticQueryEntityMentionDiagnostics{
+			EntityID:      mention.EntityID,
+			CanonicalName: mention.CanonicalName,
+			Alias:         mention.Alias,
+			MatchText:     mention.MatchText,
+			MatchKind:     mention.MatchKind,
+			Confidence:    mention.Confidence,
+		})
+	}
+	return out
+}
+
+func isEmptySemanticQueryAnalysis(value SemanticQueryAnalysis) bool {
+	if strings.TrimSpace(value.TimeMode) != "" ||
+		strings.TrimSpace(value.MemoryDomain) != "" ||
+		strings.TrimSpace(value.MemoryAbility) != "" ||
+		strings.TrimSpace(value.EvidenceNeed) != "" ||
+		value.Confidence != 0 ||
+		!isZeroQueryAnalysisConfidence(value.FieldConfidence) ||
+		len(value.Signals) > 0 ||
+		len(value.EntityMentions) > 0 ||
+		len(value.QueryRewrites) > 0 ||
+		len(value.SemanticAnchors) > 0 ||
+		len(value.ContextBlockHints) > 0 ||
+		!isZeroQueryPolicyHints(value.PolicyHints) {
+		return false
+	}
+	return true
+}
+
+func isZeroQueryAnalysisConfidence(value QueryAnalysisConfidence) bool {
+	return value.Overall == 0 &&
+		value.TimeMode == 0 &&
+		value.MemoryAbility == 0 &&
+		value.MemoryDomain == 0 &&
+		value.EvidenceNeed == 0 &&
+		value.EntityResolution == 0
+}
+
+func isZeroQueryPolicyHints(value QueryPolicyHints) bool {
+	return !value.PreferEvidencedByLinks &&
+		!value.PreferSupersedesLinks &&
+		!value.PreferCausalLinks &&
+		!value.PreferCounterexamples &&
+		!value.PreferNarratives &&
+		value.MaxHopsHint == 0
+}
+
+func queryRewritesToStoreDiagnostics(values []QueryRewrite) []memsqlite.QueryRewrite {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QueryRewrite, 0, len(values))
+	for _, value := range values {
+		out = append(out, memsqlite.QueryRewrite{
+			Text:    value.Text,
+			Purpose: value.Purpose,
+			Weight:  value.Weight,
+		})
+	}
+	return out
+}
+
+func semanticAnchorsToStoreDiagnostics(values []SemanticAnchor) []memsqlite.SemanticAnchor {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.SemanticAnchor, 0, len(values))
+	for _, value := range values {
+		out = append(out, memsqlite.SemanticAnchor{
+			Text:       value.Text,
+			AnchorType: value.AnchorType,
+			EntityID:   value.EntityID,
+			Weight:     value.Weight,
+			Confidence: value.Confidence,
+		})
+	}
+	return out
+}
+
+func semanticControlDriftCount(rule memsqlite.QueryAnalysis, merged memsqlite.QueryAnalysis) int {
+	count := 0
+	if rule.TimeMode != merged.TimeMode {
+		count++
+	}
+	if rule.MemoryDomain != merged.MemoryDomain {
+		count++
+	}
+	if rule.MemoryAbility != merged.MemoryAbility {
+		count++
+	}
+	if rule.EvidenceNeed != merged.EvidenceNeed {
+		count++
+	}
+	return count
 }
 
 func normalizeQueryAnalysisOptions(options QueryAnalysisOptions) QueryAnalysisOptions {
@@ -373,6 +545,9 @@ func normalizeQueryAnalysisOptions(options QueryAnalysisOptions) QueryAnalysisOp
 	}
 	if options.Timeout <= 0 {
 		options.Timeout = defaultQueryAnalysisTimeout
+	}
+	if options.SoftJoinTimeout > 0 && options.SoftJoinTimeout > options.Timeout {
+		options.SoftJoinTimeout = options.Timeout
 	}
 	if options.MinConfidenceToOverride <= 0 || options.MinConfidenceToOverride > 1 {
 		options.MinConfidenceToOverride = defaultQueryAnalysisMinConfidenceToOverride
@@ -404,9 +579,15 @@ func isValidSemanticQueryAnalysisStatus(status string) bool {
 	}
 }
 
-func semanticFallbackReasonFromError(err error) string {
+func semanticFallbackReasonFromError(parent context.Context, err error) string {
+	if parent != nil && parent.Err() != nil {
+		return "go_context_timeout"
+	}
 	if err == nil {
 		return "semantic_protocol_error"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "go_context_timeout"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "semantic_timeout"
@@ -424,7 +605,8 @@ func semanticFallbackReasonFromError(err error) string {
 func sanitizeSemanticFallbackReason(reason string, fallback string) string {
 	switch strings.TrimSpace(reason) {
 	case "semantic_sidecar_error", "semantic_timeout", "semantic_protocol_error", "semantic_invalid_response", "semantic_unavailable",
-		"provider_none", "missing_api_key", "invalid_json", "invalid_response", "validation_failed", "provider_error", "provider_timeout":
+		"semantic_soft_timeout", "go_context_timeout", "semantic_budget_exhausted", "provider_budget_exhausted",
+		"sidecar_provider_timeout", "provider_none", "missing_api_key", "invalid_json", "invalid_response", "validation_failed", "provider_error", "provider_timeout":
 		return strings.TrimSpace(reason)
 	default:
 		if strings.TrimSpace(fallback) != "" {
@@ -475,7 +657,9 @@ func (a sidecarSemanticQueryAnalyzer) AnalyzeSemanticQuery(ctx context.Context, 
 			UseFTS:                req.RetrievalPolicy.UseFTS,
 			UseMirror:             req.RetrievalPolicy.UseMirror,
 		},
-		Debug: internalmirror.QueryAnalysisDebug{IncludeRationaleSummary: req.IncludeRationaleSummary},
+		DeadlineMS:        req.DeadlineMS,
+		ProviderTimeoutMS: req.ProviderTimeoutMS,
+		Debug:             internalmirror.QueryAnalysisDebug{IncludeRationaleSummary: req.IncludeRationaleSummary},
 	})
 	if err != nil {
 		return nil, err
@@ -806,6 +990,25 @@ func sanitizedContextBlockHints(values []string) []string {
 	return out
 }
 
+func primaryContextBlockHint(query memsqlite.QueryAnalysis) []string {
+	switch {
+	case query.MemoryAbility == memsqlite.MemoryAbilityProvenance || query.EvidenceNeed == memsqlite.EvidenceNeedProvenanceSource:
+		return []string{MemoryBlockTypeProvenanceMemory}
+	case query.MemoryAbility == memsqlite.MemoryAbilityCausalExplain:
+		return []string{MemoryBlockTypeRelevantCausalMemory}
+	case query.MemoryAbility == memsqlite.MemoryAbilityPremiseCheck || query.EvidenceNeed == memsqlite.EvidenceNeedPremiseCounterexample:
+		return []string{MemoryBlockTypePremiseCheckMemory}
+	case query.MemoryAbility == memsqlite.MemoryAbilityRelationshipArc || query.EvidenceNeed == memsqlite.EvidenceNeedRelationshipTimeline:
+		return []string{MemoryBlockTypeRelationshipArcMemory}
+	case query.MemoryAbility == memsqlite.MemoryAbilityHistorical || query.EvidenceNeed == memsqlite.EvidenceNeedStateTransition || query.TimeMode == memsqlite.QueryTimeModeHistorical:
+		return []string{MemoryBlockTypeHistoricalTransitionMemory}
+	case query.MemoryAbility == memsqlite.MemoryAbilitySupportive:
+		return []string{MemoryBlockTypeSupportiveMemory}
+	default:
+		return nil
+	}
+}
+
 func visibleEntitySet(hints []VisibleEntityHint) map[string]struct{} {
 	visible := map[string]struct{}{}
 	for _, hint := range hints {
@@ -1099,9 +1302,23 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
+		diagnostics.SemanticAnalysis = cloneStoreSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
 	}
 	return out
+}
+
+func cloneStoreSemanticQueryAnalysisDiagnostics(value *memsqlite.SemanticQueryAnalysisDiagnostics) *memsqlite.SemanticQueryAnalysisDiagnostics {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.Signals = append([]string(nil), value.Signals...)
+	out.EntityMentions = append([]memsqlite.SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
+	out.QueryRewrites = append([]memsqlite.QueryRewrite(nil), value.QueryRewrites...)
+	out.SemanticAnchors = append([]memsqlite.SemanticAnchor(nil), value.SemanticAnchors...)
+	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
+	return &out
 }
 
 func retrievalPolicyToStore(policy RetrievalPolicy) memsqlite.RetrievalPolicy {
@@ -1141,6 +1358,21 @@ func maxInt(a int, b int) int {
 		return a
 	}
 	return b
+}
+
+func durationMillis(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	ms := value / time.Millisecond
+	if ms <= 0 {
+		return 1
+	}
+	const maxInt32 = int64(1<<31 - 1)
+	if ms > time.Duration(maxInt32) {
+		return int(maxInt32)
+	}
+	return int(ms)
 }
 
 func containsAny(value string, needles ...string) bool {

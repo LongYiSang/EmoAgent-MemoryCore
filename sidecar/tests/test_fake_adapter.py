@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from memorycore_sidecar.adapters.fake import FakeMirrorAdapter
@@ -43,6 +46,122 @@ def test_fuse_dense_results_weights_rrf_support_and_damps_by_primary_score():
     assert breakdown["support_bonus"] == pytest.approx(expected_bonus)
     assert breakdown["support_bonus"] < 0.12
     assert breakdown["score_norm_method"] == "weighted_max_rrf"
+
+
+def test_fuse_dense_results_trims_fanout_and_reports_query_diagnostics():
+    request = {
+        "request_id": "candidate-1",
+        "persona_id": "alice",
+        "limit": 2,
+        "debug_scores": True,
+        "query": {
+            "raw_text": "coffee preference",
+            "rewrites": [
+                {"text": "coffee preference", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "semantic memory", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "coffee", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "espresso", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "latte", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "pour over", "weight": 0.8, "purpose": "semantic_recall"},
+                {"text": "cappuccino", "weight": 0.8, "purpose": "semantic_recall"},
+            ],
+            "semantic_anchors": [
+                {"text": "coffee preference", "weight": 0.5, "purpose": "semantic_anchor"},
+                {"text": "memory", "weight": 0.5, "purpose": "semantic_anchor"},
+                {"text": "espresso", "weight": 0.5, "purpose": "semantic_anchor"},
+                {"text": "music", "weight": 0.5, "purpose": "semantic_anchor"},
+                {"text": "tea", "weight": 0.5, "purpose": "semantic_anchor"},
+            ],
+        },
+    }
+    seen_queries = []
+
+    def search(query):
+        seen_queries.append(query.text)
+        return []
+
+    result = fuse_dense_results(request, search)
+
+    assert seen_queries == [
+        "coffee preference",
+        "coffee",
+        "espresso",
+        "latte",
+        "music",
+        "tea",
+    ]
+    diagnostics = result["diagnostics"]
+    assert diagnostics["query_count"] == 6
+    assert diagnostics["rewrite_query_count"] == 3
+    assert diagnostics["anchor_query_count"] == 2
+    assert diagnostics["query_trims"] == {
+        "dropped_rewrite_count": 4,
+        "dropped_anchor_count": 3,
+        "dropped_similar_count": 2,
+        "dropped_generic_count": 2,
+        "dropped_duplicate_count": 1,
+        "dropped_fanout_limit_count": 2,
+        "max_dense_queries": 6,
+    }
+    assert diagnostics["merge_order"] == [
+        "fused_score_desc",
+        "primary_score_desc",
+        "hit_count_desc",
+        "source_priority_asc",
+        "trivium_node_id_asc",
+    ]
+    assert all(item["latency_ms"] >= 0 for item in diagnostics["per_query_counts"])
+
+
+def test_fuse_dense_results_executes_fanout_in_parallel_and_keeps_diagnostics_order():
+    request = {
+        "request_id": "candidate-1",
+        "persona_id": "alice",
+        "limit": 3,
+        "debug_scores": True,
+        "query": {
+            "raw_text": "raw",
+            "rewrites": [
+                {"text": "rewrite-a", "weight": 0.5, "purpose": "semantic_recall"},
+                {"text": "rewrite-b", "weight": 0.5, "purpose": "semantic_recall"},
+            ],
+            "semantic_anchors": [
+                {"text": "anchor", "weight": 0.4, "purpose": "semantic_anchor"}
+            ],
+        },
+    }
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def search(query):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.03)
+            return [DenseHit(len(query.text), 0.7)]
+        finally:
+            with lock:
+                active -= 1
+
+    result = fuse_dense_results(request, search)
+
+    assert max_active > 1
+    assert [
+        (item["source"], item["purpose"], item["count"])
+        for item in result["diagnostics"]["per_query_counts"]
+    ] == [
+        ("raw_dense", "raw_query", 1),
+        ("semantic_rewrite_dense", "semantic_recall", 1),
+        ("semantic_rewrite_dense", "semantic_recall", 1),
+        ("semantic_anchor_dense", "semantic_anchor", 1),
+    ]
+    assert result["diagnostics"]["dense_embedding_wall_latency_ms"] == 0
+    assert result["diagnostics"]["dense_embedding_batch_latency_ms"] == 0
+    assert result["diagnostics"]["dense_search_total_latency_ms"] >= 0
+    assert result["diagnostics"]["query_count_trimmed_by_budget"] == 0
 
 
 def test_fake_adapter_upsert_node_returns_stable_positive_trivium_id():

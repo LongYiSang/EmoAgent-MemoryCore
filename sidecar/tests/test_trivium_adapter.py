@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -211,10 +212,97 @@ def test_trivium_adapter_candidate_v02_overfetches_merges_and_exposes_debug_brea
     assert result["candidates"][0]["hit_count"] == 2
     assert result["candidates"][0]["score_breakdown"]["score_norm_method"] == "weighted_max_rrf"
     assert result["diagnostics"]["query_count"] == 3
-    assert result["diagnostics"]["per_query_counts"] == [
+    assert [
+        {key: item[key] for key in ("source", "purpose", "count")}
+        for item in result["diagnostics"]["per_query_counts"]
+    ] == [
         {"source": "raw_dense", "purpose": "raw_query", "count": 1},
         {"source": "semantic_rewrite_dense", "purpose": "semantic_recall", "count": 2},
         {"source": "semantic_anchor_dense", "purpose": "semantic_anchor", "count": 1},
+    ]
+    assert all(
+        item["latency_ms"] >= 0 for item in result["diagnostics"]["per_query_counts"]
+    )
+
+
+def test_trivium_adapter_fanout_embeddings_overlap_and_report_split_latency():
+    class Hit:
+        def __init__(self, node_id: int, score: Any) -> None:
+            self.id = node_id
+            self.score = score
+
+    class SlowEmbeddingProvider:
+        def __init__(self) -> None:
+            self._vectors = {
+                "raw": [1.0, 0.0, 0.0],
+                "rewrite-a": [0.0, 1.0, 0.0],
+                "rewrite-b": [0.0, 0.0, 1.0],
+            }
+            self._lock = threading.Lock()
+            self._active = 0
+            self.max_active = 0
+
+        def embed(self, text: str, ref: dict[str, str] | None = None):
+            with self._lock:
+                self._active += 1
+                self.max_active = max(self.max_active, self._active)
+            try:
+                time.sleep(0.03)
+                return self._vectors[text]
+            finally:
+                with self._lock:
+                    self._active -= 1
+
+    class SearchDB:
+        def search(self, query_vector, *, top_k, expand_depth, min_score, payload_filter):
+            key = tuple(query_vector)
+            if key == (1.0, 0.0, 0.0):
+                return [Hit(1, 0.9)]
+            if key == (0.0, 1.0, 0.0):
+                return [Hit(2, 0.8)]
+            if key == (0.0, 0.0, 1.0):
+                return [Hit(3, 0.7)]
+            return []
+
+    provider = SlowEmbeddingProvider()
+    adapter = TriviumAdapter.__new__(TriviumAdapter)
+    adapter.embedding_provider = provider
+    adapter._lock = threading.RLock()
+    adapter._dbs = {"alice": SearchDB()}
+
+    result = adapter.find_candidates(
+        {
+            "request_id": "candidate-1",
+            "persona_id": "alice",
+            "limit": 3,
+            "debug_scores": True,
+            "query": {
+                "raw_text": "raw",
+                "rewrites": [
+                    {"text": "rewrite-a", "weight": 0.5, "purpose": "semantic_recall"},
+                    {"text": "rewrite-b", "weight": 0.5, "purpose": "semantic_recall"},
+                ],
+            },
+        }
+    )
+
+    assert provider.max_active > 1
+    assert [candidate["trivium_node_id"] for candidate in result["candidates"]] == [
+        1,
+        2,
+        3,
+    ]
+    diagnostics = result["diagnostics"]
+    assert diagnostics["dense_embedding_wall_latency_ms"] >= 0
+    assert diagnostics["dense_embedding_batch_latency_ms"] >= 0
+    assert diagnostics["dense_search_total_latency_ms"] >= 0
+    assert [
+        (item["source"], item["count"])
+        for item in diagnostics["per_query_counts"]
+    ] == [
+        ("raw_dense", 1),
+        ("semantic_rewrite_dense", 1),
+        ("semantic_rewrite_dense", 1),
     ]
 
 

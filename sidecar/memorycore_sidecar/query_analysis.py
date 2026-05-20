@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Mapping
@@ -10,19 +11,18 @@ from typing import Any, Mapping
 from .config import QueryAnalysisConfig
 from .candidates import clamp_float
 
-_REQUIRED_ANALYSIS_FIELDS = (
+_LEGACY_PROVIDER_FIELDS = (
     "time_mode",
     "memory_domain",
     "memory_ability",
     "evidence_need",
-    "signals",
+)
+
+_MINIMAL_PROVIDER_FIELDS = (
+    "intent",
     "confidence",
-    "field_confidence",
-    "entity_mentions",
-    "query_rewrites",
-    "semantic_anchors",
-    "context_block_hints",
-    "policy_hints",
+    "rewrite",
+    "language",
 )
 
 _ENUM_ANALYSIS_FIELDS = (
@@ -39,26 +39,55 @@ _ALLOWED_ENUM_KEYS = {
     "evidence_need": ("evidence_need", "evidence_needs"),
 }
 
+_MIN_PROVIDER_BUDGET_MS = 700
+_MAX_PROVIDER_TOKENS = 512
+_DEFAULT_ENUMS = {
+    "time_mode": "unspecified",
+    "memory_domain": "general",
+    "memory_ability": "recall",
+    "evidence_need": "medium",
+}
+
 
 def analyze_query(
     request: dict[str, Any],
     config: QueryAnalysisConfig,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    started_monotonic = time.monotonic()
     env_values = os.environ if env is None else env
     if config.provider == "none":
         return _fallback(request, config, "provider_none")
+    if _effective_provider_budget_ms(request, config, started_monotonic) < _MIN_PROVIDER_BUDGET_MS:
+        return _fallback(
+            request,
+            config,
+            "provider_budget_exhausted",
+            final_fallback_reason="provider_budget_exhausted",
+        )
     api_key = env_values.get(config.api_key_env, "")
     if not api_key.strip():
         return _fallback(request, config, "missing_api_key")
 
     first_failure_reason: str | None = None
     for attempt in range(2):
+        provider_budget_ms = _effective_provider_budget_ms(
+            request, config, started_monotonic
+        )
+        if provider_budget_ms < _MIN_PROVIDER_BUDGET_MS:
+            return _fallback(
+                request,
+                config,
+                "provider_budget_exhausted",
+                first_failure_reason=first_failure_reason,
+                final_fallback_reason="provider_budget_exhausted",
+            )
         try:
             payload = _call_openai_compatible(
                 request,
                 config,
                 api_key,
+                timeout_seconds=provider_budget_ms / 1000.0,
                 retry_after_validation_failure=attempt > 0,
             )
         except json.JSONDecodeError:
@@ -72,9 +101,9 @@ def analyze_query(
                 return _fallback(
                     request,
                     config,
-                    "provider_timeout",
+                    "sidecar_provider_timeout",
                     first_failure_reason=first_failure_reason,
-                    final_fallback_reason="provider_timeout",
+                    final_fallback_reason="sidecar_provider_timeout",
                 )
             return _fallback(
                 request,
@@ -124,12 +153,13 @@ def _call_openai_compatible(
     config: QueryAnalysisConfig,
     api_key: str,
     *,
+    timeout_seconds: float,
     retry_after_validation_failure: bool,
 ) -> Any:
     body = {
         "model": config.model,
         "temperature": 0,
-        "max_tokens": config.max_tokens,
+        "max_tokens": _provider_max_tokens(config.max_tokens),
         "response_format": {"type": config.response_format},
         "messages": [
             {"role": "system", "content": _system_prompt(config.prompt_version)},
@@ -155,9 +185,7 @@ def _call_openai_compatible(
         },
         method="POST",
     )
-    with urllib.request.urlopen(
-        http_request, timeout=config.timeout_seconds
-    ) as response:
+    with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
         raw = response.read()
     payload = json.loads(raw.decode("utf-8"))
     content = _extract_content(payload)
@@ -168,7 +196,8 @@ def _system_prompt(prompt_version: str) -> str:
     return (
         f"You are EmoAgent SemanticQueryAnalyzer ({prompt_version}). "
         "Do not answer the user. Return strict JSON object only. No markdown. "
-        "No code fences. Return only the analysis object. Do not wrap it. "
+        "No code fences. Return only the provider-minimal JSON schema object. "
+        "Do not wrap it. "
         "Use only allowed enum values from allowed_enums. Use only query_text, "
         "input_language, now, timezone, rule_analysis, visible_entity_hints, "
         "conversation_window, retrieval_policy, allowed_enums, and output_contract. "
@@ -194,10 +223,14 @@ def _system_prompt(prompt_version: str) -> str:
         "trigger counterexample retrieval. For provenance questions, set "
         "memory_ability=provenance and evidence_need=provenance_source. "
         "For causal why questions, set memory_ability=causal_explain and include "
-        "a causal signal. Include required fields: time_mode, memory_domain, "
-        "memory_ability, evidence_need, signals, confidence, field_confidence, "
-        "entity_mentions, query_rewrites, semantic_anchors, context_block_hints, "
-        "and policy_hints."
+        "a causal signal. Required provider fields are intent, confidence, rewrite, "
+        "and language. Optional arrays/objects such as anchors, semantic_anchors, "
+        "entity_mentions, signals, policy_hints, and context_block_hints may be "
+        "omitted; the sidecar treats missing values as empty. "
+        "counterexample_rewrite is optional and may be omitted when there is no "
+        "counterexample query. Protocol enum fields such as "
+        "time_mode, memory_domain, memory_ability, and evidence_need are optional "
+        "overrides only; the sidecar fills safe protocol defaults for Go."
     )
 
 
@@ -221,10 +254,31 @@ def _provider_user_payload(
         "include_rationale": bool(request.get("include_rationale", False)),
         "retry_schema_validation": retry_after_validation_failure,
         "output_contract": {
-            "return_only": "analysis_object",
+            "return_only": "provider_minimal_analysis_object",
+            "required_fields": [
+                "intent",
+                "confidence",
+                "rewrite",
+                "language",
+            ],
+            "optional_fields": [
+                "counterexample_rewrite",
+                "anchors",
+                "semantic_anchors",
+                "query_rewrites",
+                "signals",
+                "entity_mentions",
+                "context_block_hints",
+                "time_mode",
+                "memory_domain",
+                "memory_ability",
+                "evidence_need",
+                "policy_hints",
+                "rationale_summary",
+            ],
+            "sidecar_completes_protocol_fields": True,
             "rewrite_language": "same_as_query",
-            "max_query_rewrites": 3,
-            "max_semantic_anchors": 4,
+            "max_anchors": 4,
         },
     }
 
@@ -257,6 +311,40 @@ def _is_provider_timeout_error(exc: BaseException) -> bool:
     return "timed out" in text or "timeout" in text
 
 
+def _effective_provider_budget_ms(
+    request: dict[str, Any],
+    config: QueryAnalysisConfig,
+    started_monotonic: float,
+) -> int:
+    budgets = [max(0, int(config.timeout_seconds * 1000))]
+    provider_timeout_ms = _request_budget_ms(request.get("provider_timeout_ms"))
+    if provider_timeout_ms is not None:
+        budgets.append(provider_timeout_ms)
+    deadline_ms = _request_budget_ms(request.get("deadline_ms"))
+    if deadline_ms is not None:
+        elapsed_ms = int(max(0.0, time.monotonic() - started_monotonic) * 1000)
+        budgets.append(max(0, deadline_ms - elapsed_ms))
+    return min(budgets)
+
+
+def _request_budget_ms(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0:
+        return 0
+    return value
+
+
+def _provider_max_tokens(value: Any) -> int:
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        tokens = _MAX_PROVIDER_TOKENS
+    if tokens <= 0:
+        tokens = _MAX_PROVIDER_TOKENS
+    return min(tokens, _MAX_PROVIDER_TOKENS)
+
+
 def _validate_provider_analysis(
     payload: Any,
     request: dict[str, Any],
@@ -266,14 +354,11 @@ def _validate_provider_analysis(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("analysis must be a JSON object")
-    for field in _REQUIRED_ANALYSIS_FIELDS:
-        if field not in payload:
-            raise ValueError(f"analysis missing {field}")
-
-    parsed_enums = {
-        field: _string(payload[field], field) for field in _ENUM_ANALYSIS_FIELDS
-    }
+    _validate_provider_shape(payload)
+    parsed_enums = _analysis_enums(payload, request)
     _validate_allowed_enums(parsed_enums, request.get("allowed_enums"))
+    query_rewrites = _provider_query_rewrites(payload)
+    semantic_anchors = _provider_semantic_anchors(payload)
 
     result = _base_result(config, degraded=False, fallback_reason=None)
     result.update(
@@ -282,23 +367,122 @@ def _validate_provider_analysis(
             "memory_domain": parsed_enums["memory_domain"],
             "memory_ability": parsed_enums["memory_ability"],
             "evidence_need": parsed_enums["evidence_need"],
-            "signals": _string_list(payload["signals"], "signals")[:12],
+            "signals": _provider_signals(payload)[:12],
             "confidence": round(
-                clamp_float(payload["confidence"], 0.0, 1.0, 0.0), 6
+                clamp_float(payload.get("confidence"), 0.0, 1.0, 0.5), 6
             ),
-            "field_confidence": _field_confidence(payload["field_confidence"]),
-            "entity_mentions": _entity_mention_list(payload["entity_mentions"])[:12],
-            "query_rewrites": _query_rewrites(payload["query_rewrites"])[:5],
-            "semantic_anchors": _semantic_anchors(payload["semantic_anchors"])[:8],
+            "field_confidence": _field_confidence(payload.get("field_confidence", {})),
+            "entity_mentions": _entity_mention_list(
+                payload.get("entity_mentions", [])
+            )[:12],
+            "query_rewrites": query_rewrites[:5],
+            "semantic_anchors": semantic_anchors[:8],
             "context_block_hints": _string_list(
-                payload["context_block_hints"], "context_block_hints"
+                payload.get("context_block_hints", []), "context_block_hints"
             )[:8],
-            "policy_hints": _policy_hints(payload["policy_hints"]),
+            "policy_hints": _policy_hints(payload.get("policy_hints", {})),
         }
     )
     if include_rationale and isinstance(payload.get("rationale_summary"), str):
         result["rationale_summary"] = payload["rationale_summary"].strip()[:240]
     return result
+
+
+def _validate_provider_shape(payload: dict[str, Any]) -> None:
+    if all(field in payload for field in _LEGACY_PROVIDER_FIELDS):
+        return
+    missing = [field for field in _MINIMAL_PROVIDER_FIELDS if field not in payload]
+    if missing:
+        raise ValueError(f"analysis missing {missing[0]}")
+
+
+def _analysis_enums(
+    payload: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        field: _analysis_enum_value(payload, request, field)
+        for field in _ENUM_ANALYSIS_FIELDS
+    }
+
+
+def _analysis_enum_value(
+    payload: dict[str, Any],
+    request: dict[str, Any],
+    field: str,
+) -> str:
+    if field in payload:
+        return _string(payload[field], field)
+    rule_analysis = request.get("rule_analysis")
+    allowed = _allowed_enum_values(request.get("allowed_enums"), field)
+    if isinstance(rule_analysis, dict):
+        rule_value = _optional_string(rule_analysis.get(field))[:64]
+        if rule_value and (not allowed or rule_value in allowed):
+            return rule_value
+    default_value = _DEFAULT_ENUMS[field]
+    if not allowed or default_value in allowed:
+        return default_value
+    return sorted(allowed)[0]
+
+
+def _allowed_enum_values(allowed_enums: Any, field: str) -> set[str]:
+    if not isinstance(allowed_enums, dict):
+        return set()
+    for enum_key in _ALLOWED_ENUM_KEYS.get(field, (field,)):
+        allowed = allowed_enums.get(enum_key)
+        if isinstance(allowed, list):
+            return {item for item in allowed if isinstance(item, str) and item}
+    return set()
+
+
+def _provider_signals(payload: dict[str, Any]) -> list[str]:
+    signals = _string_list(payload.get("signals", []), "signals")
+    intent = _optional_string(payload.get("intent")).casefold()
+    intent_signal = {
+        "causal": "causal",
+        "causal_explain": "causal",
+        "historical": "historical",
+        "premise_check": "premise_check",
+        "provenance": "provenance",
+        "relationship_arc": "relationship_arc",
+    }.get(intent)
+    if intent_signal:
+        signals.append(intent_signal)
+    if _optional_string(payload.get("counterexample_rewrite")):
+        signals.append("premise_check")
+    seen: set[str] = set()
+    out: list[str] = []
+    for signal in signals:
+        if signal in seen:
+            continue
+        seen.add(signal)
+        out.append(signal)
+    return out
+
+
+def _provider_query_rewrites(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    values: list[Any] = []
+    if "query_rewrites" in payload:
+        values.extend(_optional_array(payload.get("query_rewrites")))
+    rewrite = _optional_string(payload.get("rewrite"))
+    if rewrite:
+        values.append({"text": rewrite, "weight": 0.7, "purpose": "semantic_recall"})
+    counterexample_rewrite = _optional_string(payload.get("counterexample_rewrite"))
+    if counterexample_rewrite:
+        values.append(
+            {
+                "text": counterexample_rewrite,
+                "weight": 0.7,
+                "purpose": "counterexample",
+            }
+        )
+    return _query_rewrites(values)
+
+
+def _provider_semantic_anchors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if "semantic_anchors" in payload:
+        return _semantic_anchors(payload.get("semantic_anchors", []))
+    return _semantic_anchors(payload.get("anchors", []))
 
 
 def _fallback(

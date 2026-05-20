@@ -27,6 +27,7 @@ const (
 	QueryAnalysisModeRuleOnlyExplicit        QueryAnalysisMode = "rule_only"
 	QueryAnalysisModeSemanticAlways          QueryAnalysisMode = "semantic_always"
 	QueryAnalysisModeSemanticOnLowConfidence QueryAnalysisMode = "semantic_on_low_confidence"
+	QueryAnalysisModeSemanticRewriteOnly     QueryAnalysisMode = "semantic_rewrite_only"
 )
 
 type QueryAnalysisOptions struct {
@@ -34,6 +35,7 @@ type QueryAnalysisOptions struct {
 	Mode                        QueryAnalysisMode
 	SidecarURL                  string
 	Timeout                     time.Duration
+	SoftJoinTimeout             time.Duration
 	Cache                       *QueryAnalysisCache
 	MinConfidenceToOverride     float64
 	MinEntitySemanticConfidence float64
@@ -42,6 +44,7 @@ type QueryAnalysisOptions struct {
 	SemanticTotalEnergyCap      float64
 	MaxGeneratedDenseWeightSum  float64
 	IncludeRationaleSummary     bool
+	DisableGeneratedDense       bool
 }
 
 type SidecarBreakerMode string

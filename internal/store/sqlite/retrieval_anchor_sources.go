@@ -65,20 +65,58 @@ func (r *RetrievalRepository) addMirrorAnchorHits(ctx context.Context, personaID
 			markMirrorCandidateAuthorityDrop(mirrorDiagnostics, mirror)
 			continue
 		}
+		for _, hit := range mirrorAnchorHits(fact.ID, mirror, rank) {
+			*hits = append(*hits, hit)
+		}
+	}
+	return nil
+}
+
+func mirrorAnchorHits(factID string, mirror RetrievalMirrorCandidate, fallbackRank int) []AnchorHit {
+	if len(mirror.SourceBreakdown) == 0 {
 		source := strings.TrimSpace(mirror.Source)
 		if source == "" {
 			source = AnchorSourceTriviumDense
 		}
-		*hits = append(*hits, AnchorHit{
-			NodeID:      fact.ID,
+		return []AnchorHit{{
+			NodeID:      factID,
+			NodeType:    core.NodeTypeFact,
+			Source:      source,
+			Rank:        fallbackRank,
+			RawScore:    mirror.Score,
+			DebugReason: fmt.Sprintf("mirror candidate rank=%d", fallbackRank),
+		}}
+	}
+	hits := make([]AnchorHit, 0, len(mirror.SourceBreakdown))
+	for _, item := range mirror.SourceBreakdown {
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			continue
+		}
+		rank := item.Rank
+		if rank <= 0 {
+			rank = fallbackRank
+		}
+		score := item.Score
+		if score <= 0 {
+			score = mirror.Score
+		}
+		hits = append(hits, AnchorHit{
+			NodeID:      factID,
 			NodeType:    core.NodeTypeFact,
 			Source:      source,
 			Rank:        rank,
-			RawScore:    mirror.Score,
-			DebugReason: fmt.Sprintf("mirror candidate rank=%d", rank),
+			RawScore:    score,
+			DebugReason: fmt.Sprintf("mirror %s rank=%d", source, rank),
 		})
 	}
-	return nil
+	if len(hits) == 0 {
+		return mirrorAnchorHits(factID, RetrievalMirrorCandidate{
+			Score:  mirror.Score,
+			Source: mirror.Source,
+		}, fallbackRank)
+	}
+	return hits
 }
 
 func (r *RetrievalRepository) addSearchAnchorHits(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, hits *[]AnchorHit) error {
@@ -308,6 +346,7 @@ func factCandidatesFromAnchors(anchors []FusedAnchor) map[string]retrievalCandid
 			FactID:           anchor.NodeID,
 			FusedAnchorScore: anchor.FusedAnchorScore,
 			AnchorEnergy:     anchor.SeedEnergy,
+			SourceBreakdown:  cloneAnchorSourceBreakdown(anchor.SourceBreakdown),
 		}
 	}
 	return candidates
@@ -323,8 +362,23 @@ func mergeActivationCandidates(candidates map[string]retrievalCandidate, graphCa
 		if graph.Score > candidate.GraphEnergy {
 			candidate.GraphEnergy = graph.Score
 		}
+		candidate.SourceBreakdown = append(candidate.SourceBreakdown, AnchorSourceBreakdown{
+			Source:          strings.TrimSpace(graph.Source),
+			Rank:            graph.Rank,
+			RawScore:        graph.Score,
+			Weight:          1,
+			RRFContribution: graph.Score,
+			DebugReason:     "graph activation candidate",
+		})
 		candidates[graph.FactID] = candidate
 	}
+}
+
+func cloneAnchorSourceBreakdown(values []AnchorSourceBreakdown) []AnchorSourceBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]AnchorSourceBreakdown(nil), values...)
 }
 
 func cloneGraphActivationPaths(paths []GraphActivationPath) []GraphActivationPath {

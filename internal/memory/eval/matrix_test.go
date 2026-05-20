@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,7 +165,7 @@ func TestMatrixRunnerQueryAnalysisOnlyAppliesToMirrorProfiles(t *testing.T) {
 
 func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
 	fixture := minimalRetrievalFixture()
-	semanticCalls := 0
+	var semanticCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/retrieval/query-analysis" {
 			t.Fatalf("unexpected semantic path %s", r.URL.Path)
@@ -173,7 +174,7 @@ func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode semantic request: %v", err)
 		}
-		semanticCalls++
+		semanticCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"schema_version": "memory_query_analysis_result.v0.1",
 			"request_id":     request["request_id"],
@@ -212,8 +213,8 @@ func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
 	if report.Failed() {
 		t.Fatalf("matrix report failed: %s", report.Error())
 	}
-	if semanticCalls != 1 {
-		t.Fatalf("semantic calls = %d, want one cached call shared by mirror profiles", semanticCalls)
+	if semanticCalls.Load() != 1 {
+		t.Fatalf("semantic calls = %d, want one cached call shared by mirror profiles", semanticCalls.Load())
 	}
 	for _, profile := range report.Profiles {
 		analysis := firstRetrievalAnalysis(t, profile.Report)
@@ -223,14 +224,14 @@ func TestMatrixRunnerReusesQueryAnalysisAcrossMirrorProfiles(t *testing.T) {
 	}
 }
 
-func TestMatrixRunnerReusesQueryAnalysisTimeoutAcrossMirrorProfiles(t *testing.T) {
+func TestMatrixRunnerDoesNotCacheQueryAnalysisSoftTimeoutAcrossMirrorProfiles(t *testing.T) {
 	fixture := minimalRetrievalFixture()
-	semanticCalls := 0
+	var semanticCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/retrieval/query-analysis" {
 			t.Fatalf("unexpected semantic path %s", r.URL.Path)
 		}
-		semanticCalls++
+		semanticCalls.Add(1)
 		time.Sleep(50 * time.Millisecond)
 	}))
 	defer server.Close()
@@ -252,16 +253,25 @@ func TestMatrixRunnerReusesQueryAnalysisTimeoutAcrossMirrorProfiles(t *testing.T
 	if report.Failed() {
 		t.Fatalf("matrix report failed: %s", report.Error())
 	}
-	if semanticCalls != 1 {
-		t.Fatalf("semantic calls = %d, want one cached timeout shared by mirror profiles", semanticCalls)
+	if semanticCalls.Load() != int64(len(report.Profiles)) {
+		t.Fatalf("semantic calls = %d, want one timeout attempt per mirror profile", semanticCalls.Load())
 	}
 	for _, profile := range report.Profiles {
 		analysis := firstRetrievalAnalysis(t, profile.Report)
 		if analysis.Source != memorycore.QueryAnalysisSourceSemanticFallback ||
 			analysis.Diagnostics == nil ||
-			analysis.Diagnostics.FallbackReason != "semantic_timeout" {
-			t.Fatalf("%s query analysis = %#v, want cached semantic timeout fallback", profile.Profile, analysis)
+			!isSemanticTimeoutFallback(analysis.Diagnostics.FallbackReason) {
+			t.Fatalf("%s query analysis = %#v, want semantic timeout fallback", profile.Profile, analysis)
 		}
+	}
+}
+
+func isSemanticTimeoutFallback(reason string) bool {
+	switch reason {
+	case "semantic_soft_timeout", "semantic_timeout":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -482,6 +492,69 @@ func TestProfileHardMetricsFailQualityProfiles(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", reason, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseProfilesAcceptsSemanticABProfiles(t *testing.T) {
+	profiles, err := ParseProfiles("rule_only_raw,semantic_parse_only,semantic_rewrite_only,semantic_full_current,semantic_full_soft_gated")
+	if err != nil {
+		t.Fatalf("parse profiles: %v", err)
+	}
+	want := []Profile{ProfileRuleOnlyRaw, ProfileSemanticParseOnly, ProfileSemanticRewriteOnly, ProfileSemanticFullCurrent, ProfileSemanticFullSoftGated}
+	if len(profiles) != len(want) {
+		t.Fatalf("profiles = %#v, want %#v", profiles, want)
+	}
+	for i := range want {
+		if profiles[i] != want[i] {
+			t.Fatalf("profiles[%d] = %q, want %q", i, profiles[i], want[i])
+		}
+		if !profiles[i].UsesMirror() {
+			t.Fatalf("profile %q should use mirror", profiles[i])
+		}
+	}
+}
+
+func TestMatrixMetricsDistinguishSemanticFallbackReasons(t *testing.T) {
+	metrics := ComputeProfileMatrixMetrics(nil, Report{Steps: []StepReport{{
+		Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				Source: memorycore.QueryAnalysisSourceSemanticFallback,
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+					FallbackReason:    "provider_timeout",
+					SemanticLatencyMs: 123,
+				},
+			},
+			Mirror: &memorycore.MirrorRetrievalDiagnostics{
+				Status:         "sidecar_degraded",
+				Degraded:       true,
+				FallbackReason: "sidecar_provider_timeout",
+			},
+		},
+	}}}, ProfileSemanticFullCurrent)
+	if metrics.QueryAnalysisFallbackCount != 1 ||
+		metrics.ProviderTimeoutCount != 1 ||
+		metrics.SidecarProviderTimeoutCount != 1 ||
+		metrics.SemanticTimeoutRuleFallbackCount != 1 {
+		t.Fatalf("metrics = %#v, want provider timeout and sidecar provider timeout counted", metrics)
+	}
+
+	budgetMetrics := ComputeProfileMatrixMetrics(nil, Report{Steps: []StepReport{{
+		Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				Source: memorycore.QueryAnalysisSourceSemanticFallback,
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+					FallbackReason: "provider_budget_exhausted",
+				},
+			},
+			Mirror: &memorycore.MirrorRetrievalDiagnostics{
+				Status:         "sidecar_degraded",
+				Degraded:       true,
+				FallbackReason: "provider_budget_exhausted",
+			},
+		},
+	}}}, ProfileSemanticFullCurrent)
+	if budgetMetrics.ProviderBudgetExhaustedCount != 2 {
+		t.Fatalf("budget metrics = %#v, want query-analysis and sidecar provider budget exhaustion counted separately", budgetMetrics)
 	}
 }
 
@@ -764,6 +837,7 @@ func TestComputeMatrixMetricsIncludesQueryAnalysisDiagnostics(t *testing.T) {
 							EnglishRewriteCount:   2,
 							DroppedRewriteCount:   1,
 							DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
+							SemanticDriftCount:    2,
 						},
 					},
 					Mirror: &memorycore.MirrorRetrievalDiagnostics{
@@ -825,6 +899,9 @@ func TestComputeMatrixMetricsIncludesQueryAnalysisDiagnostics(t *testing.T) {
 	if metrics.EnglishRewriteCount != 2 || metrics.DroppedRewriteCount != 1 {
 		t.Fatalf("rewrite diagnostics english=%d dropped=%d, want 2/1", metrics.EnglishRewriteCount, metrics.DroppedRewriteCount)
 	}
+	if metrics.SemanticDriftCount != 2 {
+		t.Fatalf("semantic drift count = %d, want 2", metrics.SemanticDriftCount)
+	}
 	if metrics.SemanticRewriteDenseCount != 2 {
 		t.Fatalf("semantic rewrite dense count = %d, want 2", metrics.SemanticRewriteDenseCount)
 	}
@@ -833,6 +910,39 @@ func TestComputeMatrixMetricsIncludesQueryAnalysisDiagnostics(t *testing.T) {
 	}
 	if metrics.FallbackCount != 0 {
 		t.Fatalf("fallback count = %d, want existing stage fallback metric unchanged", metrics.FallbackCount)
+	}
+}
+
+func TestComputeMatrixMetricsIncludesSourceLevelRecall(t *testing.T) {
+	fixture := &Fixture{
+		Assertions: []Assertion{{
+			Type:            "selected_recall_at_k",
+			Step:            "q1",
+			RelevantNodeIDs: []string{"f1"},
+			At:              8,
+		}},
+	}
+	report := Report{Steps: []StepReport{{
+		ID: "q1",
+		Retrieval: &memorycore.MemoryContext{
+			Blocks: []memorycore.MemoryBlock{{
+				Items: []memorycore.MemoryContextItem{{NodeID: "f1"}},
+			}},
+			Mirror: &memorycore.MirrorRetrievalDiagnostics{
+				Candidates: []memorycore.MirrorCandidateDiagnostics{
+					{SQLiteFactID: "f1", Source: "raw_dense"},
+					{SQLiteFactID: "f2", Source: "semantic_rewrite_dense"},
+				},
+			},
+		},
+	}}}
+
+	metrics := ComputeMatrixMetrics(fixture, report)
+	if metrics.CandidateRecallBySource["raw_dense"] != 1 || metrics.SelectedRecallBySource["raw_dense"] != 1 {
+		t.Fatalf("raw source recall candidate=%v selected=%v, want 1/1", metrics.CandidateRecallBySource["raw_dense"], metrics.SelectedRecallBySource["raw_dense"])
+	}
+	if metrics.CandidateRecallBySource["semantic_rewrite_dense"] != 0 || metrics.SelectedRecallBySource["semantic_rewrite_dense"] != 0 {
+		t.Fatalf("semantic source recall candidate=%v selected=%v, want 0/0", metrics.CandidateRecallBySource["semantic_rewrite_dense"], metrics.SelectedRecallBySource["semantic_rewrite_dense"])
 	}
 }
 
@@ -853,6 +963,11 @@ func TestFormatMatrixReportIncludesQueryAnalysisMetrics(t *testing.T) {
 				DroppedRewriteCount:                2,
 				SemanticRewriteDenseCount:          4,
 				CandidateQueryCount:                5,
+				SemanticDriftCount:                 6,
+				SidecarProviderTimeoutCount:        7,
+				ProviderBudgetExhaustedCount:       8,
+				CandidateRecallBySource:            map[string]float64{"raw_dense": 1},
+				SelectedRecallBySource:             map[string]float64{"raw_dense": 0.5},
 			},
 		}},
 	})
@@ -868,6 +983,11 @@ func TestFormatMatrixReportIncludesQueryAnalysisMetrics(t *testing.T) {
 		"dropped_rewrite_count: 2",
 		"semantic_rewrite_dense_count: 4",
 		"candidate_query_count: 5",
+		"semantic_drift_count: 6",
+		"sidecar_provider_timeout_count: 7",
+		"provider_budget_exhausted_count: 8",
+		"candidate_recall_by_source: raw_dense=1.000",
+		"selected_recall_by_source: raw_dense=0.500",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("report =\n%s\nwant %q", out, want)

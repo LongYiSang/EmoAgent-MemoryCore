@@ -266,6 +266,48 @@ def test_server_query_analysis_provider_none_returns_degraded_fallback():
         thread.join(timeout=2)
 
 
+def test_server_query_analysis_budget_exhausted_returns_degraded_without_provider(
+    monkeypatch,
+):
+    original_urlopen = urllib.request.urlopen
+
+    def fail_provider_urlopen(request, timeout):
+        if "example.test" not in request.full_url:
+            return original_urlopen(request, timeout=timeout)
+        raise AssertionError("provider must not be called when request budget is exhausted")
+
+    monkeypatch.setenv("QUERY_KEY", "secret")
+    monkeypatch.setattr("urllib.request.urlopen", fail_provider_urlopen)
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter(), _query_config())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        body = _post_json(
+            base_url,
+            "/retrieval/query-analysis",
+            {
+                "schema_version": QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
+                "request_id": "qa-budget",
+                "persona_id": "default",
+                "query_text": "coffee preference",
+                "deadline_ms": 600,
+                "provider_timeout_ms": 600,
+            },
+        )
+
+        assert body["schema_version"] == QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "qa-budget"
+        assert body["status"] == "degraded"
+        assert body["degraded"] is True
+        assert body["fallback_reason"] == "provider_budget_exhausted"
+        assert body["diagnostics"]["final_fallback_reason"] == "provider_budget_exhausted"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_server_query_analysis_preserves_go_context_for_provider(monkeypatch):
     calls = []
     original_urlopen = urllib.request.urlopen

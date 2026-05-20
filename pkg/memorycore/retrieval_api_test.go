@@ -633,14 +633,18 @@ func TestServiceRetrieveRunsSemanticAnalysisBeforeMirrorAndPassesMergedAnalysis(
 		t.Fatalf("retrieve: %v", err)
 	}
 	requireMemoryItem(t, contextResult, fact.ID, "用户记录过 repo 来源。", "")
-	if adapter.calls != 1 {
-		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
+	if adapter.calls != 2 {
+		t.Fatalf("mirror calls = %d, want 2 dual-lane calls", adapter.calls)
 	}
-	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceMerged {
-		t.Fatalf("mirror query source = %q, want merged: %#v", adapter.lastCandidateRequest.Query.Source, adapter.lastCandidateRequest.Query)
+	if adapter.candidateRequests[0].Query.Source != memorycore.QueryAnalysisSourceRuleOnly {
+		t.Fatalf("raw lane query source = %q, want rule_only", adapter.candidateRequests[0].Query.Source)
 	}
-	if len(adapter.lastCandidateRequest.Query.QueryRewrites) != 1 || adapter.lastCandidateRequest.Query.QueryRewrites[0].Text != "semantic rewrite target" {
-		t.Fatalf("mirror query rewrites = %#v", adapter.lastCandidateRequest.Query.QueryRewrites)
+	semanticRequest := adapter.candidateRequests[1]
+	if semanticRequest.Query.Source != memorycore.QueryAnalysisSourceMerged {
+		t.Fatalf("semantic lane query source = %q, want merged: %#v", semanticRequest.Query.Source, semanticRequest.Query)
+	}
+	if len(semanticRequest.Query.QueryRewrites) != 1 || semanticRequest.Query.QueryRewrites[0].Text != "semantic rewrite target" {
+		t.Fatalf("semantic lane query rewrites = %#v", semanticRequest.Query.QueryRewrites)
 	}
 	if contextResult.QueryAnalysis == nil || contextResult.QueryAnalysis.Source != memorycore.QueryAnalysisSourceMerged {
 		t.Fatalf("result query analysis = %#v, want merged", contextResult.QueryAnalysis)
@@ -654,6 +658,7 @@ func TestRetrievalAPIDoesNotSendDroppedEnglishRewriteToMirrorCandidates(t *testi
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode query analysis request: %v", err)
 		}
+		time.Sleep(80 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"schema_version": "memory_query_analysis_result.v0.1",
 			"request_id":     request["request_id"],
@@ -683,10 +688,11 @@ func TestRetrievalAPIDoesNotSendDroppedEnglishRewriteToMirrorCandidates(t *testi
 
 	adapter := &retrievalMirrorAdapter{}
 	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
-		Provider:   memorycore.QueryAnalysisProviderSidecar,
-		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
-		SidecarURL: semanticSidecar.URL,
-		Timeout:    time.Second,
+		Provider:        memorycore.QueryAnalysisProviderSidecar,
+		Mode:            memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL:      semanticSidecar.URL,
+		Timeout:         time.Second,
+		SoftJoinTimeout: 500 * time.Millisecond,
 	})
 	defer svc.Close()
 
@@ -707,8 +713,8 @@ func TestRetrievalAPIDoesNotSendDroppedEnglishRewriteToMirrorCandidates(t *testi
 		t.Fatalf("retrieve: %v", err)
 	}
 	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢Laufey。", "")
-	if adapter.calls != 1 {
-		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
+	if adapter.calls != 2 {
+		t.Fatalf("mirror calls = %d, want 2 dual-lane calls", adapter.calls)
 	}
 	if len(adapter.lastCandidateRequest.Query.QueryRewrites) != 2 {
 		t.Fatalf("mirror query rewrites = %#v, want dropped English rewrite excluded", adapter.lastCandidateRequest.Query.QueryRewrites)
@@ -762,11 +768,84 @@ func TestServiceRetrieveSemanticFailureStillCallsMirrorWithRuleFallbackAnalysis(
 	if adapter.calls != 1 {
 		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
 	}
-	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceSemanticFallback {
-		t.Fatalf("mirror query source = %q, want semantic fallback", adapter.lastCandidateRequest.Query.Source)
+	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceRuleOnly {
+		t.Fatalf("raw lane query source = %q, want rule_only", adapter.lastCandidateRequest.Query.Source)
 	}
 	if adapter.lastCandidateRequest.Query.Raw != "咖啡" || len(adapter.lastCandidateRequest.Query.QueryRewrites) != 0 || len(adapter.lastCandidateRequest.Query.SemanticAnchors) != 0 {
 		t.Fatalf("mirror query = %#v, want raw rule fallback without generated semantic queries", adapter.lastCandidateRequest.Query)
+	}
+	if contextResult.QueryAnalysis == nil || contextResult.QueryAnalysis.Source != memorycore.QueryAnalysisSourceSemanticFallback {
+		t.Fatalf("result query analysis = %#v, want semantic fallback diagnostics", contextResult.QueryAnalysis)
+	}
+}
+
+func TestServiceRetrieveDoesNotWaitFullSemanticTimeoutAfterRawMirror(t *testing.T) {
+	ctx := context.Background()
+	semanticStarted := make(chan struct{})
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(semanticStarted)
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     r.Header.Get("x-request-id"),
+			"status":         "ok",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "direct_fact",
+				"evidence_need":  "exact_observation",
+				"confidence":     0.9,
+			},
+		})
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:        memorycore.QueryAnalysisProviderSidecar,
+		Mode:            memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL:      semanticSidecar.URL,
+		Timeout:         500 * time.Millisecond,
+		SoftJoinTimeout: 50 * time.Millisecond,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 7255, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7255, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+
+	started := time.Now()
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
+	})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	select {
+	case <-semanticStarted:
+	default:
+		t.Fatal("semantic sidecar was not called")
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("retrieve elapsed %s, want raw path to finish before full semantic timeout", elapsed)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("mirror calls = %d, want only raw lane when semantic is not soft-join ready", adapter.calls)
+	}
+	if contextResult.QueryAnalysis == nil || contextResult.QueryAnalysis.Diagnostics == nil || contextResult.QueryAnalysis.Diagnostics.FallbackReason != "semantic_soft_timeout" {
+		t.Fatalf("query analysis = %#v, want semantic soft-timeout fallback diagnostic", contextResult.QueryAnalysis)
 	}
 }
 
@@ -1100,7 +1179,7 @@ func TestServiceRetrieveUseMirrorFallsBackWhenAdapterFails(t *testing.T) {
 
 func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
 	ctx := context.Background()
-	adapter := &retrievalMirrorAdapter{degraded: true}
+	adapter := &retrievalMirrorAdapter{degraded: true, fallbackReason: "provider_budget_exhausted"}
 	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
 	defer svc.Close()
 
@@ -1112,17 +1191,23 @@ func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
 	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
 	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "degraded"}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
-		SessionID: &sessionID,
-		QueryText: "espresso-only",
-		Policy: memorycore.RetrievalPolicy{
-			UseMirror: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("retrieve with degraded mirror: %v", err)
+	for _, reason := range []string{"provider_budget_exhausted", "sidecar_provider_timeout"} {
+		adapter.fallbackReason = reason
+		contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			SessionID: &sessionID,
+			QueryText: "espresso-only",
+			Policy: memorycore.RetrievalPolicy{
+				UseMirror: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("retrieve with degraded mirror: %v", err)
+		}
+		requireNoMemoryItem(t, contextResult, fact.ID)
+		if contextResult.Mirror == nil || contextResult.Mirror.FallbackReason != reason {
+			t.Fatalf("mirror diagnostics = %#v, want %s fallback", contextResult.Mirror, reason)
+		}
 	}
-	requireNoMemoryItem(t, contextResult, fact.ID)
 }
 
 func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testing.T) {
@@ -1621,6 +1706,7 @@ type retrievalMirrorAdapter struct {
 	activationCalls          int
 	rerankCalls              int
 	lastCandidateRequest     memorycore.MirrorCandidateRequest
+	candidateRequests        []memorycore.MirrorCandidateRequest
 	lastActivationRequest    memorycore.MirrorActivationRequest
 	lastRerankRequest        memorycore.MirrorRerankRequest
 }
@@ -1628,6 +1714,7 @@ type retrievalMirrorAdapter struct {
 func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
 	a.calls++
 	a.lastCandidateRequest = req
+	a.candidateRequests = append(a.candidateRequests, req)
 	if a.err != nil {
 		return nil, a.err
 	}

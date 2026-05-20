@@ -77,27 +77,42 @@ type MirrorCandidateRequest struct {
 }
 
 type MirrorCandidate struct {
-	TriviumNodeID  int64   `json:"trivium_node_id"`
-	Score          float64 `json:"score"`
-	Source         string  `json:"source"`
-	PrimaryPurpose string  `json:"primary_purpose,omitempty"`
-	Rank           int     `json:"rank,omitempty"`
-	HitCount       int     `json:"hit_count,omitempty"`
+	TriviumNodeID   int64                            `json:"trivium_node_id"`
+	Score           float64                          `json:"score"`
+	Source          string                           `json:"source"`
+	PrimaryPurpose  string                           `json:"primary_purpose,omitempty"`
+	Rank            int                              `json:"rank,omitempty"`
+	HitCount        int                              `json:"hit_count,omitempty"`
+	SourceBreakdown []MirrorCandidateSourceBreakdown `json:"source_breakdown,omitempty"`
+}
+
+type MirrorCandidateSourceBreakdown struct {
+	Source  string  `json:"source,omitempty"`
+	Purpose string  `json:"purpose,omitempty"`
+	Rank    int     `json:"rank,omitempty"`
+	Score   float64 `json:"score,omitempty"`
+	Weight  float64 `json:"weight,omitempty"`
 }
 
 type MirrorCandidateSidecarDiagnostics struct {
-	QueryCount           int                                 `json:"query_count,omitempty"`
-	RawQueryCount        int                                 `json:"raw_query_count,omitempty"`
-	RewriteQueryCount    int                                 `json:"rewrite_query_count,omitempty"`
-	AnchorQueryCount     int                                 `json:"anchor_query_count,omitempty"`
-	MergedCandidateCount int                                 `json:"merged_candidate_count,omitempty"`
-	PerQuery             []MirrorCandidatePerQueryDiagnostic `json:"per_query,omitempty"`
+	QueryCount                   int                                 `json:"query_count,omitempty"`
+	RawQueryCount                int                                 `json:"raw_query_count,omitempty"`
+	RewriteQueryCount            int                                 `json:"rewrite_query_count,omitempty"`
+	AnchorQueryCount             int                                 `json:"anchor_query_count,omitempty"`
+	MergedCandidateCount         int                                 `json:"merged_candidate_count,omitempty"`
+	QueryTrimCount               int                                 `json:"query_trim_count,omitempty"`
+	DenseEmbeddingWallLatencyMs  int64                               `json:"dense_embedding_wall_latency_ms,omitempty"`
+	DenseEmbeddingBatchLatencyMs int64                               `json:"dense_embedding_batch_latency_ms,omitempty"`
+	DenseSearchTotalLatencyMs    int64                               `json:"dense_search_total_latency_ms,omitempty"`
+	QueryCountTrimmedByBudget    int                                 `json:"query_count_trimmed_by_budget,omitempty"`
+	PerQuery                     []MirrorCandidatePerQueryDiagnostic `json:"per_query,omitempty"`
 }
 
 type MirrorCandidatePerQueryDiagnostic struct {
-	Source  string `json:"source,omitempty"`
-	Purpose string `json:"purpose,omitempty"`
-	Count   int    `json:"count,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Purpose   string `json:"purpose,omitempty"`
+	Count     int    `json:"count,omitempty"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
 }
 
 type MirrorCandidateResult struct {
@@ -161,12 +176,13 @@ type MirrorRerankRequest struct {
 }
 
 type MirrorRerankCandidate struct {
-	NodeID       string  `json:"node_id"`
-	NodeType     string  `json:"node_type"`
-	SafeSummary  string  `json:"safe_summary"`
-	CurrentScore float64 `json:"current_score"`
-	AnchorEnergy float64 `json:"anchor_energy"`
-	GraphEnergy  float64 `json:"graph_energy"`
+	NodeID       string             `json:"node_id"`
+	NodeType     string             `json:"node_type"`
+	SafeSummary  string             `json:"safe_summary"`
+	CurrentScore float64            `json:"current_score"`
+	AnchorEnergy float64            `json:"anchor_energy"`
+	GraphEnergy  float64            `json:"graph_energy"`
+	SourceScores map[string]float64 `json:"source_scores,omitempty"`
 }
 
 type MirrorRerankResult struct {

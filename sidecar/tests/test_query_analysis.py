@@ -150,6 +150,30 @@ def test_analyze_query_missing_api_key_does_not_call_provider_or_leak_env_name(m
     assert "SECRET_QUERY_KEY" not in str(result)
 
 
+def test_analyze_query_budget_exhausted_does_not_call_provider(monkeypatch):
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("provider must not be called when budget is exhausted")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-budget",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "provider_timeout_ms": 699,
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["status"] == "degraded"
+    assert result["degraded"] is True
+    assert result["fallback_reason"] == "provider_budget_exhausted"
+    assert result["diagnostics"]["final_fallback_reason"] == "provider_budget_exhausted"
+    assert "secret" not in str(result)
+
+
 def test_analyze_query_retries_once_after_schema_validation_failure(monkeypatch):
     responses = [
         {"choices": [{"message": {"content": json.dumps({"time_mode": "recent"})}}]},
@@ -306,6 +330,58 @@ def test_analyze_query_retries_missing_field_then_ok(monkeypatch):
     assert result["status"] == "ok"
     assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
     assert len(result["diagnostics"]["first_failure_reason"]) <= 64
+
+
+def test_analyze_query_completes_missing_optional_fields_from_minimal_schema(monkeypatch):
+    calls = []
+    responses = [
+        _provider_response(
+            json.dumps(
+                {
+                    "intent": "direct_fact",
+                    "confidence": 0.72,
+                    "rewrite": "coffee preference",
+                    "language": "en",
+                }
+            )
+        ),
+    ]
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "rule_analysis": {
+                "time_mode": "recent",
+                "memory_domain": "preference",
+                "memory_ability": "recall",
+                "evidence_need": "medium",
+            },
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 1
+    assert result["status"] == "ok"
+    assert result["time_mode"] == "recent"
+    assert result["signals"] == []
+    assert result["confidence"] == 0.72
+    assert result["field_confidence"] == {}
+    assert result["entity_mentions"] == []
+    assert result["query_rewrites"] == [
+        {"text": "coffee preference", "weight": 0.7, "purpose": "semantic_recall"}
+    ]
+    assert result["semantic_anchors"] == []
+    assert result["context_block_hints"] == []
+    assert result["policy_hints"] == {}
 
 
 def test_analyze_query_retries_invalid_enum_then_ok(monkeypatch):
@@ -576,14 +652,37 @@ def test_analyze_query_sends_rich_request_payload_and_strict_prompt(monkeypatch)
     assert user_payload["conversation_window"] == []
     assert user_payload["include_rationale"] is False
     assert user_payload["output_contract"] == {
-        "return_only": "analysis_object",
+        "return_only": "provider_minimal_analysis_object",
+        "required_fields": [
+            "intent",
+            "confidence",
+            "rewrite",
+            "language",
+        ],
+        "optional_fields": [
+            "counterexample_rewrite",
+            "anchors",
+            "semantic_anchors",
+            "query_rewrites",
+            "signals",
+            "entity_mentions",
+            "context_block_hints",
+            "time_mode",
+            "memory_domain",
+            "memory_ability",
+            "evidence_need",
+            "policy_hints",
+            "rationale_summary",
+        ],
+        "sidecar_completes_protocol_fields": True,
         "rewrite_language": "same_as_query",
-        "max_query_rewrites": 3,
-        "max_semantic_anchors": 4,
+        "max_anchors": 4,
     }
     prompt = calls[0]["messages"][0]["content"]
     assert "Return strict JSON object only" in prompt
+    assert "provider-minimal JSON schema" in prompt
     assert "Do not translate Chinese queries into English" in prompt
+    assert "Optional arrays/objects" in prompt
     assert "premise_counterexample" in prompt
     assert "causal" in prompt
 
@@ -680,6 +779,39 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
     assert result["degraded"] is False
     assert calls[0]["temperature"] == 0
     assert calls[0]["max_tokens"] == 384
+
+
+def test_analyze_query_provider_max_tokens_clamps_to_512(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(_provider_response(json.dumps(_valid_analysis())))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        QueryAnalysisConfig(
+            provider="openai-compatible",
+            base_url="https://example.test/v1",
+            api_key_env="QUERY_KEY",
+            model="test-model",
+            timeout_seconds=2,
+            max_tokens=900,
+            temperature=0.0,
+            response_format="json_object",
+            prompt_version="query-analysis-v0.1",
+        ),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["degraded"] is False
+    assert calls[0]["max_tokens"] == 512
 
 
 def test_analyze_query_invalid_json_provider_wrapper_retries_then_falls_back(monkeypatch):
@@ -869,7 +1001,33 @@ def test_analyze_query_provider_timeout_returns_distinct_fallback_without_retry(
 
     assert calls == 1
     assert result["degraded"] is True
-    assert result["fallback_reason"] == "provider_timeout"
+    assert result["fallback_reason"] == "sidecar_provider_timeout"
+
+
+def test_analyze_query_clips_provider_timeout_to_request_budget(monkeypatch):
+    timeouts = []
+
+    def fake_urlopen(request, timeout):
+        timeouts.append(timeout)
+        return _Response(_provider_response(json.dumps(_valid_analysis())))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-timeout-budget",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "deadline_ms": 1200,
+            "provider_timeout_ms": 1500,
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["status"] == "ok"
+    assert len(timeouts) == 1
+    assert 0.7 <= timeouts[0] <= 1.2
 
 
 class _Response:
