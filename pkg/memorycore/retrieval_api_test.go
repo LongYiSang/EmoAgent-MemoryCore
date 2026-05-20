@@ -39,6 +39,42 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	requireAccessEvent(t, db, fact.ID, "retrieved")
 }
 
+func TestServiceRetrieveChineseCounterexampleExpansionWorksWithQueryAnalysisDisabled(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, nil, memorycore.QueryAnalysisOptions{
+		Provider: memorycore.QueryAnalysisProviderNone,
+		Mode:     memorycore.QueryAnalysisModeRuleOnlyExplicit,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "后来我自己做了糖醋排骨，味道不错。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "糖醋排骨", "用户后来自己做了糖醋排骨，味道不错。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, fact.ID, "importance", 0.1)
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "我是不是完全不会做饭，从来没下厨房？",
+		Policy: memorycore.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        false,
+			UseFTS:           false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if contextResult.QueryAnalysis == nil {
+		t.Fatalf("query analysis is nil")
+	}
+	if contextResult.QueryAnalysis.Source != memorycore.QueryAnalysisSourceRuleOnly {
+		t.Fatalf("query analysis source = %q, want rule_only", contextResult.QueryAnalysis.Source)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户后来自己做了糖醋排骨，味道不错。", "")
+}
+
 func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)
@@ -69,11 +105,14 @@ func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(
 	if !hasQuerySignal(historical.QueryAnalysis.Signals, memorycore.QuerySignalHistorical) {
 		t.Fatalf("signals = %#v, want historical", historical.QueryAnalysis.Signals)
 	}
-	if historical.QueryAnalysis.MemoryAbility != memorycore.MemoryAbilityHistorical {
-		t.Fatalf("memory_ability = %q, want historical", historical.QueryAnalysis.MemoryAbility)
+	if historical.QueryAnalysis.MemoryAbility != memorycore.MemoryAbilityDirectFact {
+		t.Fatalf("memory_ability = %q, want direct_fact", historical.QueryAnalysis.MemoryAbility)
 	}
-	if historical.QueryAnalysis.EvidenceNeed != memorycore.EvidenceNeedStateTransition {
-		t.Fatalf("evidence_need = %q, want state_transition", historical.QueryAnalysis.EvidenceNeed)
+	if historical.QueryAnalysis.EvidenceNeed != memorycore.EvidenceNeedExactObservation {
+		t.Fatalf("evidence_need = %q, want exact_observation", historical.QueryAnalysis.EvidenceNeed)
+	}
+	if hasQuerySignal(historical.QueryAnalysis.Signals, memorycore.QuerySignalStateTransition) {
+		t.Fatalf("signals = %#v, should not include state_transition for bare historical lookup", historical.QueryAnalysis.Signals)
 	}
 
 	updateFactColumn(t, db, fact.ID, "lifecycle_status", "deep_archived")
@@ -863,8 +902,9 @@ func TestServiceRetrieveRerankInputExcludesSemanticRewritesAndAnchors(t *testing
 			"analysis": map[string]any{
 				"time_mode":      "current",
 				"memory_domain":  "user_profile_memory",
-				"memory_ability": "direct_fact",
-				"evidence_need":  "exact_observation",
+				"memory_ability": "provenance",
+				"evidence_need":  "provenance_source",
+				"signals":        []string{"provenance_source"},
 				"confidence":     0.95,
 				"field_confidence": map[string]any{
 					"overall":        0.95,
@@ -914,6 +954,101 @@ func TestServiceRetrieveRerankInputExcludesSemanticRewritesAndAnchors(t *testing
 	}
 	if !strings.Contains(adapter.lastRerankRequest.QueryText, "query=咖啡") {
 		t.Fatalf("rerank query = %q, want bounded raw/normalized query", adapter.lastRerankRequest.QueryText)
+	}
+}
+
+func TestServiceRetrieveDirectFactSkipsRerankWhenRawExactMarginHigh(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	insertMirrorMapForFact(t, db, fact.ID, 9251, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 9251, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy:    memorycore.RetrievalPolicy{UseMirror: true, UseFTS: true},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	if adapter.rerankCalls != 0 {
+		t.Fatalf("rerank calls = %d, want 0 for high-confidence direct fact; request=%#v", adapter.rerankCalls, adapter.lastRerankRequest)
+	}
+	if contextResult.Rerank == nil || contextResult.Rerank.Status != "skipped" || contextResult.Rerank.SkippedReason == "" {
+		t.Fatalf("rerank diagnostics = %#v, want skipped with reason", contextResult.Rerank)
+	}
+	if contextResult.Rerank.InputCount == 0 {
+		t.Fatalf("rerank diagnostics = %#v, want input count", contextResult.Rerank)
+	}
+}
+
+func TestServiceRetrievePremiseAndProvenanceQueriesStillCallRerank(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		object   string
+		summary  string
+		source   string
+		mirrorID int64
+	}{
+		{
+			name:     "premise counterexample",
+			query:    "我是不是完全不会做饭，从来没下厨房？",
+			object:   "糖醋排骨",
+			summary:  "用户后来自己做了糖醋排骨，味道不错。",
+			source:   "后来我自己做了糖醋排骨，味道不错。",
+			mirrorID: 9252,
+		},
+		{
+			name:     "provenance source",
+			query:    "小陈建议我睡前听白噪音这件事，是什么时候告诉我的？",
+			object:   "白噪音",
+			summary:  "小陈建议用户睡前听白噪音。",
+			source:   "小陈建议我睡前听白噪音。",
+			mirrorID: 9253,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			adapter := &retrievalMirrorAdapter{}
+			svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+			defer svc.Close()
+
+			sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+			episode := appendConsolidationEpisode(t, ctx, svc, sessionID, tt.source, time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+			fact := consolidateLiteral(t, ctx, svc, userID, "likes", tt.object, tt.summary, episode.ID).Fact
+			db := openSQLDB(t, dbPath)
+			defer db.Close()
+			insertMirrorMapForFact(t, db, fact.ID, tt.mirrorID, "indexed")
+			adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: tt.mirrorID, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+			adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.9, DebugReason: "intent requires rerank"}}
+
+			contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+				SessionID: &sessionID,
+				QueryText: tt.query,
+				Policy:    memorycore.RetrievalPolicy{UseMirror: true, UseFTS: true},
+			})
+			if err != nil {
+				t.Fatalf("retrieve: %v", err)
+			}
+			requireMemoryItem(t, contextResult, fact.ID, tt.summary, "")
+			if adapter.rerankCalls != 1 {
+				t.Fatalf("rerank calls = %d, want 1", adapter.rerankCalls)
+			}
+			if contextResult.Rerank == nil || contextResult.Rerank.Status != "used" {
+				t.Fatalf("rerank diagnostics = %#v, want used", contextResult.Rerank)
+			}
+		})
 	}
 }
 
@@ -1222,8 +1357,10 @@ func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testin
 	related := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会。", episode.ID).Fact
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
+	updateFactColumn(t, db, related.ID, "importance", 1.0)
 	insertMirrorMapForFact(t, db, seed.ID, 8101, "indexed")
 	insertMirrorMapForFact(t, db, related.ID, 8102, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 8101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
 		{
 			TriviumNodeID: 8102,
@@ -1235,6 +1372,7 @@ func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testin
 			},
 		},
 	}
+	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: related.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "graph candidate relevant"}}
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
@@ -1382,7 +1520,7 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
-		QueryText: "咖啡\n" + strings.Repeat("x", 220) + " RAW_PROMPT_SUFFIX",
+		QueryText: "咖啡是什么时候告诉我的\n" + strings.Repeat("x", 220) + " RAW_PROMPT_SUFFIX",
 		Policy: memorycore.RetrievalPolicy{
 			UseFTS:    true,
 			UseMirror: true,
@@ -1397,8 +1535,8 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 	if !strings.Contains(adapter.lastRerankRequest.QueryText, "query=咖啡") {
 		t.Fatalf("rerank query = %q, want capped normalized query surface", adapter.lastRerankRequest.QueryText)
 	}
-	if !strings.Contains(adapter.lastRerankRequest.QueryText, "memory_ability=direct_fact") ||
-		!strings.Contains(adapter.lastRerankRequest.QueryText, "evidence_need=exact_observation") {
+	if !strings.Contains(adapter.lastRerankRequest.QueryText, "memory_ability=provenance") ||
+		!strings.Contains(adapter.lastRerankRequest.QueryText, "evidence_need=provenance_source") {
 		t.Fatalf("rerank query = %q, want retrieval intent labels", adapter.lastRerankRequest.QueryText)
 	}
 	if strings.Contains(adapter.lastRerankRequest.QueryText, "RAW_PROMPT_SUFFIX") || strings.Contains(adapter.lastRerankRequest.QueryText, "\n") {
@@ -1433,7 +1571,7 @@ func TestServiceRetrieveRerankFallsBackWhenAdapterFails(t *testing.T) {
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
-		QueryText: "咖啡",
+		QueryText: "咖啡是什么时候告诉我的",
 		Policy: memorycore.RetrievalPolicy{
 			UseFTS:    true,
 			UseMirror: true,
@@ -1665,12 +1803,15 @@ func TestServiceRetrieveGraphActivationBudgetDegradedKeepsPartialCandidates(t *t
 	partial := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户不喜欢早会。", episode.ID).Fact
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
+	updateFactColumn(t, db, partial.ID, "importance", 1.0)
 	insertMirrorMapForFact(t, db, seed.ID, 9101, "indexed")
 	insertMirrorMapForFact(t, db, partial.ID, 9102, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 9101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 	adapter.activationFallbackReason = "activation_budget_exceeded"
 	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
 		{TriviumNodeID: 9102, Score: 0.77, Source: "graph_activation", Rank: 1},
 	}
+	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: partial.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "partial graph candidate relevant"}}
 
 	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
@@ -1950,6 +2091,23 @@ func requirePublicGraphActivationCandidate(t *testing.T, diagnostics *memorycore
 	t.Fatalf("graph activation candidate %s source=%s rank=%d not found in %#v", nodeID, source, rank, diagnostics)
 }
 
+func TestRetrievalQuerySignalPreciseConstantsArePublic(t *testing.T) {
+	for _, signal := range []memorycore.QuerySignal{
+		memorycore.QuerySignalPastEventDirectFact,
+		memorycore.QuerySignalStateTransition,
+		memorycore.QuerySignalProvenanceSource,
+		memorycore.QuerySignalCausalChain,
+		memorycore.QuerySignalPremiseCounterexample,
+		memorycore.QuerySignalEventBundle,
+		memorycore.QuerySignalReflectionSummary,
+		memorycore.QuerySignalExactFact,
+	} {
+		if signal == "" {
+			t.Fatalf("query signal constant is empty")
+		}
+	}
+}
+
 func hasQuerySignal(signals []memorycore.QuerySignal, want memorycore.QuerySignal) bool {
 	for _, signal := range signals {
 		if signal == want {
@@ -1978,7 +2136,7 @@ func updateFactColumn(t *testing.T, db *sql.DB, factID string, column string, va
 	t.Helper()
 
 	switch column {
-	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level":
+	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "importance":
 	default:
 		t.Fatalf("unsupported fact column %q", column)
 	}

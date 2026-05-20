@@ -121,7 +121,7 @@ steps:
           rank: 4
     retrieve:
       session_id: s1
-      query_text: nosqlitematch
+      query_text: 早会
       policy:
         use_mirror: true
         final_memory_count: 2

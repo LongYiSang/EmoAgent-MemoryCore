@@ -18,6 +18,9 @@ const (
 	ProfileSemanticRewriteOnly     Profile = "semantic_rewrite_only"
 	ProfileSemanticFullCurrent     Profile = "semantic_full_current"
 	ProfileSemanticFullSoftGated   Profile = "semantic_full_soft_gated"
+	ProfileRerankOff               Profile = "rerank_off"
+	ProfileRerankSelective         Profile = "rerank_selective"
+	ProfileSoftRoutingEnabled      Profile = "soft_routing_enabled"
 )
 
 type ProfileStatus string
@@ -86,6 +89,12 @@ func ParseProfiles(value string) ([]Profile, error) {
 func ParseProfile(value string) (Profile, error) {
 	profile := Profile(strings.TrimSpace(value))
 	switch profile {
+	case "semantic_on_low_confidence":
+		return ProfileSemanticFullSoftGated, nil
+	case "semantic_full":
+		return ProfileSemanticFullCurrent, nil
+	}
+	switch profile {
 	case ProfileSQLiteGo,
 		ProfileMirrorRealDense,
 		ProfileMirrorRealGraph,
@@ -95,7 +104,10 @@ func ParseProfile(value string) (Profile, error) {
 		ProfileSemanticParseOnly,
 		ProfileSemanticRewriteOnly,
 		ProfileSemanticFullCurrent,
-		ProfileSemanticFullSoftGated:
+		ProfileSemanticFullSoftGated,
+		ProfileRerankOff,
+		ProfileRerankSelective,
+		ProfileSoftRoutingEnabled:
 		return profile, nil
 	default:
 		return "", fmt.Errorf("unknown profile %q", value)
@@ -126,11 +138,20 @@ func (p Profile) Requirements() profileRequirements {
 		ProfileSemanticParseOnly,
 		ProfileSemanticRewriteOnly,
 		ProfileSemanticFullCurrent,
-		ProfileSemanticFullSoftGated:
+		ProfileSemanticFullSoftGated,
+		ProfileRerankOff,
+		ProfileSoftRoutingEnabled:
 		return profileRequirements{
 			RequiresSidecar:   true,
 			RequiresEmbedding: true,
 			RequiresMirror:    true,
+		}
+	case ProfileRerankSelective:
+		return profileRequirements{
+			RequiresSidecar:        true,
+			RequiresEmbedding:      true,
+			RequiresMirror:         true,
+			RequiresRerankProvider: true,
 		}
 	case ProfileMirrorRealGraph:
 		return profileRequirements{
@@ -161,4 +182,17 @@ func (p Profile) Requirements() profileRequirements {
 
 func (p Profile) UsesMirror() bool {
 	return p.Requirements().RequiresMirror
+}
+
+func (p Profile) UsesSemanticQueryAnalysis() bool {
+	switch p {
+	case ProfileSemanticParseOnly,
+		ProfileSemanticRewriteOnly,
+		ProfileSemanticFullCurrent,
+		ProfileSemanticFullSoftGated,
+		ProfileSoftRoutingEnabled:
+		return true
+	default:
+		return false
+	}
 }

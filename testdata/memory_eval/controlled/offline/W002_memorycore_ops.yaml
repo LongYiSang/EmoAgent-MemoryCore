@@ -267,7 +267,7 @@ steps:
           rank: 2
     retrieve:
       session_id: s_q004_historical
-      query_text: 以前 sidecar 被当作权威结果的状态
+      query_text: 以前 sidecar 被当作权威结果，现在是什么状态变化
       policy:
         use_mirror: true
         allow_historical: true
@@ -432,7 +432,7 @@ assertions:
     step: q002_fact_sqlite_first
     node_id: $f_sqlite_eval_first.fact_id
   - type: query_analysis
-    name: q004 is routed as historical
+    name: q004 is routed as historical transition
     step: q004_historical_sidecar_authority
     time_mode: historical
     memory_ability: historical

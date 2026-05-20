@@ -208,7 +208,7 @@ steps:
           rank: 2
     retrieve:
       session_id: s_q003_historical
-      query_text: 以前住在哪里
+      query_text: 以前住在青禾园，现在住在星桥公寓有什么变化
       policy:
         use_mirror: true
         allow_historical: true
@@ -282,7 +282,7 @@ assertions:
     forbidden_node_ids:
       - $f_morning_work_preference_wrong.fact_id
   - type: query_analysis
-    name: q003 is routed as historical
+    name: q003 is routed as historical transition
     step: q003_historical_old_location
     time_mode: historical
     memory_ability: historical

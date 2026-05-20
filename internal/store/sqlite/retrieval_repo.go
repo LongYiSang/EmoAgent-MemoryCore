@@ -42,6 +42,7 @@ const (
 	defaultMinFinalScore      = 0.20
 	rerankBoostWeight         = 0.08
 	defaultRerankTopN         = 30
+	rawFloorRerankTopN        = 12
 	maxRerankSafeSummaryRunes = 512
 )
 
@@ -154,6 +155,8 @@ type GraphActivationPath struct {
 
 type RerankDiagnostics struct {
 	Status             string
+	SkippedReason      string
+	InputCount         int
 	SafeCandidateCount int
 	ResultCount        int
 	Degraded           bool
@@ -301,6 +304,10 @@ type retrievalScoreBreakdown struct {
 	CompletionSource    string  `json:"completion_source,omitempty"`
 	CompletionLinkType  string  `json:"completion_link_type,omitempty"`
 	LexicalCoverage     float64 `json:"lexical_coverage,omitempty"`
+	SlotCoverage        float64 `json:"slot_coverage,omitempty"`
+	ReflectionBoost     float64 `json:"reflection_boost,omitempty"`
+	HubSuppression      float64 `json:"hub_suppression,omitempty"`
+	PremiseRestatement  float64 `json:"premise_restatement_penalty,omitempty"`
 	FinalScore          float64 `json:"final_score"`
 	SuppressionReason   string  `json:"suppression_reason,omitempty"`
 }
@@ -547,6 +554,10 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 			return MemoryContext{}, err
 		}
 	}
+	selected, err := r.ensureSelectedHistoricalSupersedesCompletions(ctx, req, query, policy, finalCandidates.Now, selected, scored)
+	if err != nil {
+		return MemoryContext{}, err
+	}
 	blocks, blockTypeByFactID, tokenEstimate, err := r.reconstructMemoryBlocks(ctx, req, query, policy, selected)
 	if err != nil {
 		return MemoryContext{}, err
@@ -673,6 +684,11 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		searchText := searchTextByFact[fact.ID]
 		completionBonus, completionSource, completionLinkType := retrievalCandidateCompletionBonus(query, fact, searchText, candidate, mirrorByFact[fact.ID])
 		lexicalCoverage := textMatchScore(query, searchText)
+		slotCoverage := discriminatingSlotCoverage(query, searchText)
+		slotBoost := directSlotCoverageBoost(query, slotCoverage)
+		reflectionBoost := reflectionSummaryBoost(query, fact, searchText, candidate)
+		hubSuppression := broadHubSuppression(query, fact, candidate, completionSource, lexicalCoverage, slotCoverage)
+		premiseRestatement := premiseRestatementPenalty(query, fact, searchText)
 		baseScore := 0.55*candidate.AnchorEnergy +
 			0.25*candidate.GraphEnergy +
 			0.20*fact.Importance +
@@ -681,7 +697,11 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			0.10*evidenceStrength +
 			0.05*pinned +
 			0.12*lexicalCoverage +
+			slotBoost +
+			reflectionBoost -
+			hubSuppression +
 			completionBonus -
+			premiseRestatement -
 			fatiguePenalty -
 			sensitivityPenalty
 		score := baseScore * lifecycleMultiplier
@@ -701,6 +721,10 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			CompletionSource:    completionSource,
 			CompletionLinkType:  completionLinkType,
 			LexicalCoverage:     lexicalCoverage,
+			SlotCoverage:        slotCoverage,
+			ReflectionBoost:     reflectionBoost,
+			HubSuppression:      hubSuppression,
+			PremiseRestatement:  premiseRestatement,
 			FinalScore:          score,
 		}
 		item := scoredFact{
@@ -742,9 +766,11 @@ func safeRerankCandidates(scored []scoredFact, query QueryAnalysis) []RerankCand
 		}
 		return safe[i].Score > safe[j].Score
 	})
+	if protected := rawFloorCandidates(safe, query); len(protected) > 0 {
+		safe = mergeRawFloorIntoPrefix(safe, protected, rawFloorRerankTopN)
+	}
 	if len(safe) > defaultRerankTopN {
-		protected := rawFloorCandidates(safe, query)
-		safe = mergeRawFloorIntoTopN(safe[:defaultRerankTopN], protected, defaultRerankTopN)
+		safe = safe[:defaultRerankTopN]
 	}
 
 	result := make([]RerankCandidate, 0, len(safe))
@@ -763,16 +789,83 @@ func safeRerankCandidates(scored []scoredFact, query QueryAnalysis) []RerankCand
 }
 
 func rawFloorCandidates(scored []scoredFact, query QueryAnalysis) []scoredFact {
-	if query.MemoryAbility != MemoryAbilityDirectFact {
+	if !queryProtectsRawFloor(query) {
 		return nil
 	}
 	var protected []scoredFact
-	protected = append(protected, topRawSourceCandidates(scored, "raw_dense", 4)...)
-	protected = append(protected, topRawSourceCandidates(scored, "raw_query", 4-len(protected))...)
+	protected = append(protected, topSupportedRawSourceCandidates(scored, query, "raw_dense", 4)...)
+	protected = append(protected, topSupportedRawSourceCandidates(scored, query, "raw_query", 4-len(protected))...)
 	if query.EvidenceNeed == EvidenceNeedExactObservation {
 		protected = append(protected, topRawExactCandidates(scored, 2)...)
 	}
 	return uniqueScoredFactsByID(protected)
+}
+
+func queryProtectsRawFloor(query QueryAnalysis) bool {
+	return query.MemoryAbility == MemoryAbilityDirectFact ||
+		hasQuerySignal(query, QuerySignalPastEventDirectFact)
+}
+
+func mergeRawFloorIntoPrefix(candidates []scoredFact, protected []scoredFact, limit int) []scoredFact {
+	if limit <= 0 || len(protected) == 0 || len(candidates) <= limit {
+		return candidates
+	}
+	prefix := mergeRawFloorIntoTopN(candidates[:limit], protected, limit)
+	result := make([]scoredFact, 0, len(candidates))
+	seen := make(map[string]struct{}, len(prefix))
+	for _, candidate := range prefix {
+		seen[candidate.Fact.ID] = struct{}{}
+		result = append(result, candidate)
+	}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.Fact.ID]; ok {
+			continue
+		}
+		seen[candidate.Fact.ID] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func topSupportedRawSourceCandidates(scored []scoredFact, query QueryAnalysis, source string, limit int) []scoredFact {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := topRawSourceCandidates(scored, source, len(scored))
+	supported := make([]scoredFact, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !rawFloorCandidateHasDirectSupport(query, candidate) {
+			continue
+		}
+		supported = append(supported, candidate)
+	}
+	if len(supported) > limit {
+		supported = supported[:limit]
+	}
+	return supported
+}
+
+func rawFloorCandidateHasDirectSupport(query QueryAnalysis, candidate scoredFact) bool {
+	if candidate.Breakdown.HubSuppression > 0 {
+		return false
+	}
+	if candidate.Breakdown.LexicalCoverage > 0 || candidate.Breakdown.SlotCoverage > 0 {
+		return true
+	}
+	fallbackText := strings.Join(nonEmptyStrings(
+		candidate.Fact.ContentSummary,
+		string(candidate.Fact.Predicate),
+		stringFromPtr(candidate.Fact.ObjectLiteral),
+	), " ")
+	if textMatchScore(query, fallbackText) > 0 || discriminatingSlotCoverage(query, fallbackText) > 0 {
+		return true
+	}
+	if hasAnchorSource(candidate.SourceBreakdown, "raw_exact") ||
+		hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteFTS) ||
+		hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteSparse) {
+		return true
+	}
+	return false
 }
 
 func topRawSourceCandidates(scored []scoredFact, source string, limit int) []scoredFact {
@@ -786,6 +879,11 @@ func topRawSourceCandidates(scored []scoredFact, source string, limit int) []sco
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		leftSuppressed := candidates[i].Breakdown.HubSuppression > 0
+		rightSuppressed := candidates[j].Breakdown.HubSuppression > 0
+		if leftSuppressed != rightSuppressed {
+			return !leftSuppressed
+		}
 		leftRank := bestAnchorSourceRank(candidates[i].SourceBreakdown, source)
 		rightRank := bestAnchorSourceRank(candidates[j].SourceBreakdown, source)
 		if leftRank == rightRank {
@@ -816,6 +914,11 @@ func topRawExactCandidates(scored []scoredFact, limit int) []scoredFact {
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		leftSuppressed := candidates[i].Breakdown.HubSuppression > 0
+		rightSuppressed := candidates[j].Breakdown.HubSuppression > 0
+		if leftSuppressed != rightSuppressed {
+			return !leftSuppressed
+		}
 		if candidates[i].Breakdown.LexicalCoverage == candidates[j].Breakdown.LexicalCoverage {
 			if candidates[i].Score == candidates[j].Score {
 				return candidates[i].Fact.ID < candidates[j].Fact.ID
@@ -1016,7 +1119,7 @@ func (r *RetrievalRepository) authorityAllows(ctx context.Context, fact core.Fac
 	} else if !ok {
 		return false, nil
 	}
-	return r.provenanceAllows(ctx, fact)
+	return r.provenanceAllows(ctx, fact, policy)
 }
 
 func (r *RetrievalRepository) linkedEntitiesAllow(ctx context.Context, fact core.Fact, policy RetrievalPolicy) (bool, error) {
@@ -1065,12 +1168,23 @@ func linkedEntityIDs(fact core.Fact) []string {
 	return ids
 }
 
-func (r *RetrievalRepository) provenanceAllows(ctx context.Context, fact core.Fact) (bool, error) {
+func (r *RetrievalRepository) provenanceAllows(ctx context.Context, fact core.Fact, policy RetrievalPolicy) (bool, error) {
 	var evidenceCount int
 	var visibleEvidenceCount int
+	allowedSensitivityRank := sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission))
 	err := r.db.QueryRowContext(ctx, `
 SELECT COUNT(*),
-       COALESCE(SUM(CASE WHEN e.visibility_status = 'visible' AND e.searchable = 1 THEN 1 ELSE 0 END), 0)
+       COALESCE(SUM(CASE WHEN l.visibility_status = 'visible'
+                            AND l.searchable = 1
+                            AND e.visibility_status = 'visible'
+                            AND e.searchable = 1
+                            AND CASE e.sensitivity_level
+                                WHEN 'normal' THEN 0
+                                WHEN 'sensitive' THEN 1
+                                WHEN 'highly_sensitive' THEN 2
+                                ELSE 3
+                            END <= ?
+                         THEN 1 ELSE 0 END), 0)
 FROM memory_links l
 JOIN episodes e
   ON e.persona_id = l.persona_id
@@ -1079,7 +1193,7 @@ WHERE l.persona_id = ?
   AND l.from_node_type = 'fact'
   AND l.from_node_id = ?
   AND l.link_type = 'EVIDENCED_BY'
-  AND l.to_node_type = 'episode'`, fact.PersonaID, fact.ID).Scan(&evidenceCount, &visibleEvidenceCount)
+  AND l.to_node_type = 'episode'`, allowedSensitivityRank, fact.PersonaID, fact.ID).Scan(&evidenceCount, &visibleEvidenceCount)
 	if err != nil {
 		return false, err
 	}
@@ -1298,10 +1412,346 @@ func textMatchTerms(query QueryAnalysis) []string {
 	for _, term := range query.Terms {
 		add(term)
 	}
+	for _, term := range premiseCounterexampleExpansionsForQuery(query) {
+		add(term)
+	}
 	for _, term := range cjkBigrams(query.Normalized) {
 		add(term)
 	}
 	return terms
+}
+
+func directSlotCoverageBoost(query QueryAnalysis, slotCoverage float64) float64 {
+	if !queryProtectsRawFloor(query) || slotCoverage <= 0 {
+		return 0
+	}
+	return 0.16 * slotCoverage
+}
+
+func discriminatingSlotCoverage(query QueryAnalysis, searchText string) float64 {
+	terms := discriminatingSlotTerms(query)
+	if len(terms) == 0 {
+		return 0
+	}
+	normalizedText := strings.ToLower(searchText)
+	matches := 0
+	for _, term := range terms {
+		if strings.Contains(normalizedText, term) {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(terms))
+}
+
+func discriminatingSlotTerms(query QueryAnalysis) []string {
+	seen := map[string]struct{}{}
+	var terms []string
+	add := func(value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if !isDiscriminatingSlotTerm(value) {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		terms = append(terms, value)
+	}
+	for _, term := range query.Terms {
+		add(term)
+	}
+	for _, term := range premiseCounterexampleExpansionsForQuery(query) {
+		add(term)
+	}
+	if len(terms) == 0 {
+		for _, term := range cjkBigrams(query.Normalized) {
+			add(term)
+		}
+	}
+	return terms
+}
+
+func isDiscriminatingSlotTerm(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return false
+	}
+	if _, ok := lowDiscriminationQueryTerms[value]; ok {
+		return false
+	}
+	if len([]rune(value)) < 2 {
+		return false
+	}
+	hasLetterOrNumber := false
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			hasLetterOrNumber = true
+			continue
+		}
+		if unicode.IsSpace(r) {
+			continue
+		}
+		return false
+	}
+	return hasLetterOrNumber
+}
+
+var lowDiscriminationQueryTerms = map[string]struct{}{
+	"什么": {}, "什么事": {}, "什么时候": {}, "哪里": {}, "哪次": {}, "谁": {}, "多久": {},
+	"怎么": {}, "为什么": {}, "是否": {}, "是不是": {}, "有没有": {}, "有无": {},
+	"上次": {}, "那天": {}, "那次": {}, "最近": {}, "最近一次": {}, "一次": {},
+	"以前": {}, "过去": {}, "现在": {}, "后来": {}, "当前": {},
+	"我": {}, "你": {}, "他": {}, "她": {}, "它": {}, "我们": {}, "他们": {},
+	"the": {}, "and": {}, "or": {}, "who": {}, "what": {}, "when": {}, "where": {}, "why": {}, "how": {},
+}
+
+func broadHubSuppression(query QueryAnalysis, fact core.Fact, candidate retrievalCandidate, completionSource string, lexicalCoverage float64, slotCoverage float64) float64 {
+	if !queryProtectsRawFloor(query) || hasQuerySignal(query, QuerySignalReflectionSummary) {
+		return 0
+	}
+	if completionSource == completionSourceEventBundle || slotCoverage >= 0.50 || lexicalCoverage >= 0.75 {
+		return 0
+	}
+	if !looksLikeBroadHubSummary(fact, candidate) {
+		return 0
+	}
+	return 0.45
+}
+
+func looksLikeBroadHubSummary(fact core.Fact, candidate retrievalCandidate) bool {
+	if fact.FactType == core.FactTypeRelationalState || fact.FactType == core.FactTypeCoreIdentity {
+		return true
+	}
+	text := strings.ToLower(strings.Join(nonEmptyStrings(
+		fact.ContentSummary,
+		string(fact.Predicate),
+	), " "))
+	for _, marker := range []string{
+		"summary", "overall", "relationship", "pattern", "theme", "stable",
+		"总结", "整体", "关系", "模式", "主题", "长期", "稳定", "通常", "经常", "倾向",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	for _, item := range candidate.SourceBreakdown {
+		switch item.Source {
+		case "semantic_rewrite_dense", "semantic_anchor_dense", AnchorSourceNarrativeInsight, AnchorSourceRecentImportant:
+			return true
+		}
+	}
+	return false
+}
+
+func reflectionSummaryBoost(query QueryAnalysis, fact core.Fact, searchText string, candidate retrievalCandidate) float64 {
+	if !hasQuerySignal(query, QuerySignalReflectionSummary) {
+		return 0
+	}
+	text := strings.ToLower(strings.Join(nonEmptyStrings(
+		fact.ContentSummary,
+		string(fact.Predicate),
+		string(fact.FactType),
+		searchText,
+	), " "))
+	for _, marker := range []string{
+		"reflection", "growth", "progress", "self_reflection", "growth_summary",
+		"反思", "复盘", "成长", "进步", "变化", "调整", "改善", "主动",
+	} {
+		if strings.Contains(text, marker) {
+			return 0.30
+		}
+	}
+	for _, item := range candidate.SourceBreakdown {
+		if item.Source == AnchorSourceNarrativeInsight {
+			return 0.20
+		}
+	}
+	return 0
+}
+
+func premiseRestatementPenalty(query QueryAnalysis, fact core.Fact, searchText string) float64 {
+	if !queryWantsPremiseCounterexample(query) {
+		return 0
+	}
+	text := strings.ToLower(strings.Join(nonEmptyStrings(
+		fact.ContentSummary,
+		string(fact.Predicate),
+		string(fact.FactType),
+		stringFromPtr(fact.ObjectLiteral),
+		searchText,
+	), " "))
+	if strings.TrimSpace(text) == "" {
+		return 0
+	}
+	if containsAny(text, premiseCounterexamplePositiveMarkers...) ||
+		containsAny(text, "不再", "不是所有", "反例", "例外", "恢复", "解决", "和解", "不能暴露", "不能把", "禁止", "不要", "不得", "不允许") {
+		return 0
+	}
+	if !containsAny(text, "不会", "不能", "没有", "没", "不是", "不", "从来", "完全", "一点", "任何", "每个", "所有", "只有", "never", "not ", "no ") {
+		return 0
+	}
+	queryTerms := premiseCounterexampleConceptTerms(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " "))
+	if len(queryTerms) == 0 || textMatchAny(text, queryTerms) {
+		return 1.0
+	}
+	return 0
+}
+
+func textMatchAny(text string, terms []string) bool {
+	for _, term := range terms {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term != "" && strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func premiseCounterexampleExpansionsForQuery(query QueryAnalysis) []string {
+	if !queryAllowsPremiseCounterexampleExpansion(query) {
+		return nil
+	}
+	return deterministicPremiseCounterexampleExpansions(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " "))
+}
+
+func queryAllowsPremiseCounterexampleExpansion(query QueryAnalysis) bool {
+	return queryWantsPremiseCounterexample(query) ||
+		hasQuerySignal(query, QuerySignalPremiseCounterexample)
+}
+
+func deterministicPremiseCounterexampleExpansions(query string) []string {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	if normalized == "" {
+		return nil
+	}
+	if !looksLikeNegatedPremiseQuery(normalized) {
+		return nil
+	}
+	expansions := append([]string{}, premiseCounterexamplePositiveMarkers...)
+	concepts := premiseCounterexampleConceptTerms(normalized)
+	expansions = append(expansions, concepts...)
+	for _, concept := range concepts {
+		expansions = append(expansions, cjkBigrams(concept)...)
+	}
+	for _, group := range premiseCounterexampleConceptGroups {
+		if containsAny(normalized, group.triggers...) || containsAny(strings.Join(concepts, " "), group.triggers...) {
+			expansions = append(expansions, group.expansions...)
+		}
+	}
+	return uniqueOrderedStrings(expansions)
+}
+
+func looksLikeNegatedPremiseQuery(query string) bool {
+	return containsAny(query,
+		"不会", "不能", "不再", "没有", "没", "不是", "不", "从来", "完全", "一点", "任何", "每个", "所有", "只有", "再也",
+		"never", "no ", "not ", "nothing", "only ", "always ",
+	)
+}
+
+func premiseCounterexampleConceptTerms(query string) []string {
+	var concepts []string
+	for _, marker := range []string{"从来没有", "从来没", "从来不", "完全没有", "完全没", "完全不", "再也没有", "再也没", "再也不", "不会", "不能", "没有", "不是", "不再", "没", "不"} {
+		concepts = append(concepts, extractCounterexampleConceptAfter(query, marker)...)
+	}
+	for _, term := range cjkBigrams(removePremiseCounterexampleNoise(query)) {
+		concepts = append(concepts, term)
+	}
+	return uniqueOrderedStrings(concepts)
+}
+
+func extractCounterexampleConceptAfter(query, marker string) []string {
+	idx := strings.Index(query, marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := strings.TrimSpace(query[idx+len(marker):])
+	if rest == "" {
+		return nil
+	}
+	var runes []rune
+	for _, r := range rest {
+		if unicode.IsSpace(r) || strings.ContainsRune("，。？！；,.?!;:：、（）()[]【】\"'“”‘’", r) {
+			break
+		}
+		runes = append(runes, r)
+		if len(runes) >= 8 {
+			break
+		}
+	}
+	concept := strings.TrimSpace(string(runes))
+	concept = removePremiseCounterexampleNoise(concept)
+	if concept == "" {
+		return nil
+	}
+	terms := []string{concept}
+	conceptRunes := []rune(concept)
+	if len(conceptRunes) >= 2 {
+		terms = append(terms, cjkBigrams(concept)...)
+	}
+	if len(conceptRunes) >= 1 {
+		terms = append(terms, string(conceptRunes[0])+"了", string(conceptRunes[0])+"过")
+	}
+	return terms
+}
+
+func removePremiseCounterexampleNoise(value string) string {
+	replacer := strings.NewReplacer(
+		"是不是", "", "是否", "", "完全", "", "从来", "", "一直", "", "再也", "",
+		"任何", "", "所有", "", "每个", "", "只有", "", "还是", "", "都", "",
+		"吗", "", "呢", "", "啊", "", "？", "", "?", "",
+	)
+	return strings.TrimSpace(replacer.Replace(value))
+}
+
+type premiseCounterexampleConceptGroup struct {
+	triggers   []string
+	expansions []string
+}
+
+var premiseCounterexamplePositiveMarkers = []string{
+	"后来", "现在", "已经", "开始", "尝试", "做到", "做了", "做过", "变得", "改善", "好转", "恢复", "坚持", "主动", "成功", "可以", "能够",
+	"counterexample", "exception", "now", "later", "started", "improved", "resolved", "able",
+}
+
+var premiseCounterexampleConceptGroups = []premiseCounterexampleConceptGroup{
+	{
+		triggers:   []string{"做饭", "做菜", "下厨", "厨房", "cooking", "cook"},
+		expansions: []string{"做饭", "做菜", "下厨", "做了", "做过", "会做", "在家做"},
+	},
+	{
+		triggers:   []string{"运动", "锻炼", "健身", "exercise", "workout"},
+		expansions: []string{"运动", "锻炼", "健身", "开始运动", "坚持锻炼", "运动习惯"},
+	},
+	{
+		triggers:   []string{"改变", "变化", "老样子", "change", "same"},
+		expansions: []string{"改变", "变化", "改善", "调整", "进步", "翻篇"},
+	},
+	{
+		triggers:   []string{"朋友", "关系", "矛盾", "吵架", "人际", "friend", "relationship", "conflict"},
+		expansions: []string{"和解", "道歉", "互相理解", "关系修复", "支持", "一起"},
+	},
+	{
+		triggers:   []string{"睡", "失眠", "睡眠", "sleep", "insomnia"},
+		expansions: []string{"睡着", "睡眠改善", "睡得", "好转"},
+	},
+}
+
+func uniqueOrderedStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func cjkBigrams(value string) []string {

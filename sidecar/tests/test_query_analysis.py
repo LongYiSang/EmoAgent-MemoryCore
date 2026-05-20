@@ -11,7 +11,7 @@ from memorycore_sidecar.protocol import (
     build_query_analysis_result,
     parse_query_analysis_request,
 )
-from memorycore_sidecar.query_analysis import analyze_query
+from memorycore_sidecar.query_analysis import _system_prompt, analyze_query
 
 
 def test_parse_query_analysis_request_accepts_optional_rationale_flag():
@@ -39,6 +39,46 @@ def test_parse_query_analysis_request_accepts_optional_rationale_flag():
         "conversation_window": [],
         "include_rationale": True,
     }
+
+
+def test_system_prompt_keeps_bare_historical_lookup_out_of_state_transition():
+    prompt = _system_prompt("query-analysis-v0.1")
+
+    assert "Bare historical lookup phrases" in prompt
+    assert "memory_ability=direct_fact" in prompt
+    assert "evidence_need=exact_observation" in prompt
+    assert "以前/之前...现在/后来/已经" in prompt
+    assert "之前闹矛盾...后来和好/和解/翻篇" in prompt
+    assert "old negative premise is still true" in prompt
+    assert "以前, 曾经, 从前, 发生变化" not in prompt
+
+
+def test_system_prompt_keeps_ordinary_boolean_and_bare_always_out_of_premise():
+    prompt = _system_prompt("query-analysis-v0.1")
+
+    assert "Ordinary yes/no questions" in prompt
+    assert "我是不是喜欢咖啡" in prompt
+    assert "Bare 一直" in prompt
+    assert "我一直喜欢的饮料是什么" in prompt
+    assert "一直都/一直没有/一直不" in prompt
+    assert "Universal words like 所有, 一直," not in prompt
+
+
+def test_system_prompt_keeps_conditional_boolean_risk_as_premise():
+    prompt = _system_prompt("query-analysis-v0.1")
+
+    assert "Conditional risk questions" in prompt
+    assert "如果 episode 被 redacted，是否还能暴露原文内容" in prompt
+    assert "premise_check" in prompt
+    assert "premise_counterexample" in prompt
+
+
+def test_system_prompt_keeps_event_occasion_slots_out_of_causal():
+    prompt = _system_prompt("query-analysis-v0.1")
+
+    assert "event occasion" in prompt
+    assert "direct_fact" in prompt
+    assert "causal_explain" in prompt
 
 
 def test_parse_query_analysis_request_rejects_blank_query_text():
@@ -299,8 +339,11 @@ def test_analyze_query_retries_invalid_json_then_ok(monkeypatch):
     assert len(calls) == 2
     assert result["status"] == "ok"
     assert result["degraded"] is False
+    assert result["diagnostics"]["first_failure_reason"] == "invalid_json"
     assert _user_payload(calls[0])["retry_schema_validation"] is False
     assert _user_payload(calls[1])["retry_schema_validation"] is True
+    assert "{not-json" not in str(result)
+    assert "secret" not in str(result)
 
 
 def test_analyze_query_retries_missing_field_then_ok(monkeypatch):
@@ -496,6 +539,7 @@ def test_analyze_query_two_invalid_json_falls_back(monkeypatch):
     assert len(calls) == 2
     assert result["status"] == "degraded"
     assert result["fallback_reason"] == "invalid_json"
+    assert result["diagnostics"]["first_failure_reason"] == "invalid_json"
     assert result["diagnostics"]["final_fallback_reason"] == "invalid_json"
 
 
@@ -1002,6 +1046,43 @@ def test_analyze_query_provider_timeout_returns_distinct_fallback_without_retry(
     assert calls == 1
     assert result["degraded"] is True
     assert result["fallback_reason"] == "sidecar_provider_timeout"
+
+
+def test_analyze_query_does_not_retry_when_budget_exhausted_after_first_failure(
+    monkeypatch,
+):
+    calls = []
+    monotonic_values = iter([100.0, 100.0, 100.0, 102.0])
+
+    def fake_monotonic():
+        return next(monotonic_values)
+
+    def fake_urlopen(request, timeout):
+        calls.append({"body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
+        return _Response(_provider_response("{not-json"))
+
+    monkeypatch.setattr("memorycore_sidecar.query_analysis.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-budget-after-failure",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+            "deadline_ms": 1000,
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert len(calls) == 1
+    assert 0.7 <= calls[0]["timeout"] <= 1.0
+    assert result["status"] == "degraded"
+    assert result["fallback_reason"] == "provider_budget_exhausted"
+    assert result["diagnostics"]["first_failure_reason"] == "invalid_json"
+    assert result["diagnostics"]["final_fallback_reason"] == "provider_budget_exhausted"
+    assert "{not-json" not in str(result)
+    assert "secret" not in str(result)
 
 
 def test_analyze_query_clips_provider_timeout_to_request_budget(monkeypatch):

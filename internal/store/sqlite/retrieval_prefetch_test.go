@@ -234,6 +234,7 @@ func TestRetrievalBatchPrefetchGoldenBehavior(t *testing.T) {
 			Normalized:    "为什么早会让我焦虑",
 			Terms:         []string{"为什么早会让我焦虑"},
 			MemoryAbility: MemoryAbilityCausalExplain,
+			Signals:       []QuerySignal{QuerySignalCausal},
 		},
 		Policy: RetrievalPolicy{
 			SensitivityPermission: string(core.SensitivityNormal),

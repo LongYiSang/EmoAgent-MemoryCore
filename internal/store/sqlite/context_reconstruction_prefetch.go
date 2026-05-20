@@ -8,11 +8,12 @@ import (
 )
 
 type reconstructionPrefetch struct {
-	facts              map[string]core.Fact
-	authority          scoringPrefetch
-	sourceRefsByFact   map[string][]MemorySourceRef
-	relatedLinksByFact map[string][]relatedLinkSnapshot
-	supersedesByFact   map[string][]string
+	facts                    map[string]core.Fact
+	authority                scoringPrefetch
+	sourceRefsByFact         map[string][]MemorySourceRef
+	relatedLinksByFact       map[string][]relatedLinkSnapshot
+	supersedesByFact         map[string][]string
+	completionSourceByFactID map[string]string
 }
 
 type relatedLinkSnapshot struct {
@@ -59,11 +60,12 @@ func (r *RetrievalRepository) buildReconstructionPrefetch(ctx context.Context, p
 		return reconstructionPrefetch{}, err
 	}
 	return reconstructionPrefetch{
-		facts:              authority.facts,
-		authority:          authority,
-		sourceRefsByFact:   sourceRefsByFact,
-		relatedLinksByFact: relatedLinksByFact,
-		supersedesByFact:   supersedesByFact,
+		facts:                    authority.facts,
+		authority:                authority,
+		sourceRefsByFact:         sourceRefsByFact,
+		relatedLinksByFact:       relatedLinksByFact,
+		supersedesByFact:         supersedesByFact,
+		completionSourceByFactID: completionSourceByFactID(selected),
 	}, nil
 }
 
@@ -364,4 +366,15 @@ func combineStringIDs(groups ...[]string) []string {
 		values = append(values, group...)
 	}
 	return uniqueSortedStrings(values)
+}
+
+func completionSourceByFactID(selected []scoredFact) map[string]string {
+	result := make(map[string]string, len(selected))
+	for _, candidate := range selected {
+		if candidate.Breakdown.CompletionSource == "" {
+			continue
+		}
+		result[candidate.Fact.ID] = candidate.Breakdown.CompletionSource
+	}
+	return result
 }

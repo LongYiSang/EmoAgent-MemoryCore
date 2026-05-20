@@ -20,6 +20,9 @@ func (r *RetrievalRepository) collectFusedAnchors(ctx context.Context, personaID
 
 func (r *RetrievalRepository) collectAnchorHits(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, mirrorCandidates []RetrievalMirrorCandidate, mirrorDiagnostics *MirrorDiagnostics) ([]AnchorHit, error) {
 	var hits []AnchorHit
+	if querySuppressesOperationTargetContext(query) {
+		return hits, nil
+	}
 	if err := r.addMirrorAnchorHits(ctx, personaID, policy, mirrorCandidates, mirrorDiagnostics, &hits); err != nil {
 		return nil, err
 	}
@@ -120,7 +123,10 @@ func mirrorAnchorHits(factID string, mirror RetrievalMirrorCandidate, fallbackRa
 }
 
 func (r *RetrievalRepository) addSearchAnchorHits(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, hits *[]AnchorHit) error {
-	docs, err := r.search.SearchDocumentsForRetrieval(ctx, personaID, query.Raw, policy.UseFTS, policy.FinalMemoryCount*4, policy)
+	if querySuppressesOperationTargetContext(query) {
+		return nil
+	}
+	docs, err := r.search.SearchDocumentsForAnalyzedRetrieval(ctx, personaID, query, policy.UseFTS, policy.FinalMemoryCount*4, policy)
 	if err != nil {
 		return err
 	}
@@ -158,6 +164,23 @@ func (r *RetrievalRepository) addSearchAnchorHits(ctx context.Context, personaID
 		})
 	}
 	return nil
+}
+
+func querySuppressesOperationTargetContext(query QueryAnalysis) bool {
+	if !hasQuerySignal(query, QuerySignalForgetDelete) {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(query.Raw))
+	if text == "" {
+		text = strings.ToLower(strings.TrimSpace(query.Normalized))
+	}
+	if containsAny(text, "忘掉", "删除", "删掉", "不要再提", "forget", "delete", "remove") {
+		return true
+	}
+	if strings.Contains(text, "清除") && !containsAny(text, "已清除", "被清除") {
+		return true
+	}
+	return false
 }
 
 func (r *RetrievalRepository) addEntityAnchorHits(ctx context.Context, personaID string, query QueryAnalysis, policy RetrievalPolicy, hits *[]AnchorHit) error {
@@ -393,12 +416,18 @@ func cloneGraphActivationPaths(paths []GraphActivationPath) []GraphActivationPat
 }
 
 func queryAllowsPinnedCoreAnchors(query QueryAnalysis) bool {
+	if querySuppressesOperationTargetContext(query) {
+		return false
+	}
 	return query.MemoryAbility == MemoryAbilityBoundary ||
 		query.MemoryAbility == MemoryAbilitySupportive ||
 		query.MemoryAbility == MemoryAbilityPremiseCheck
 }
 
 func queryAllowsRecentImportantAnchors(query QueryAnalysis) bool {
+	if querySuppressesOperationTargetContext(query) {
+		return false
+	}
 	return query.MemoryAbility == MemoryAbilityCausalExplain ||
 		query.MemoryAbility == MemoryAbilityHistorical ||
 		query.MemoryAbility == MemoryAbilityProvenance ||
@@ -409,6 +438,9 @@ func queryAllowsRecentImportantAnchors(query QueryAnalysis) bool {
 }
 
 func queryAllowsNarrativeInsightAnchors(query QueryAnalysis) bool {
+	if querySuppressesOperationTargetContext(query) {
+		return false
+	}
 	if (query.MemoryAbility == MemoryAbilityRelationshipArc || query.MemoryAbility == MemoryAbilityDynamicState) &&
 		(query.EvidenceNeed == EvidenceNeedStateTransition || query.EvidenceNeed == EvidenceNeedRelationshipTimeline) {
 		return true

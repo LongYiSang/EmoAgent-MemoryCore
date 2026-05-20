@@ -699,6 +699,64 @@ func TestRetrievalRepositoryBuildRerankCandidatesUsesAuthorityFilteredScoredFact
 	}
 }
 
+func TestRetrievalRepositoryRejectsNormalFactWithOnlySensitiveEvidence(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_normal_source", "用户喜欢普通来源咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_sensitive_source_only", "用户喜欢敏感来源咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_normal_source", "fact_normal_source")
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:               "ep_sensitive_source_only",
+		PersonaID:        "default",
+		SessionID:        "s1",
+		Role:             core.RoleUser,
+		Content:          "sensitive source only",
+		OccurredAt:       fixedRetrievalNow().Add(time.Hour),
+		SourceType:       core.SourceTypeChat,
+		SensitivityLevel: core.SensitivitySensitive,
+	}); err != nil {
+		t.Fatalf("append sensitive source episode: %v", err)
+	}
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_sensitive_source_only", "fact_sensitive_source_only", "ep_sensitive_source_only")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+		PrecomputedQueryAnalysis: &memsqlite.QueryAnalysis{
+			Raw:           "咖啡",
+			Normalized:    "咖啡",
+			Terms:         []string{"咖啡"},
+			MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+			EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+			Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalExactFact},
+		},
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount:      2,
+			UseMirror:             true,
+			SensitivityPermission: string(core.SensitivityNormal),
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_sensitive_source_only", TriviumNodeID: 7331, Score: 1.0, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_normal_source", TriviumNodeID: 7332, Score: 0.9, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_normal_source")
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_sensitive_source_only" {
+			t.Fatalf("normal fact with only sensitive evidence leaked into retrieval result: %#v", item)
+		}
+	}
+}
+
 func TestRetrievalRepositoryBuildRerankCandidatesCapsSafeCandidatesByPreliminaryScore(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -876,6 +934,274 @@ func TestRetrievalRepositoryRerankCandidatesPreserveDirectFactRawFloor(t *testin
 		if safeCandidates[i].SourceScores["raw_dense"] == 0 {
 			t.Fatalf("raw floor source_scores missing raw_dense: %#v", safeCandidates[i].SourceScores)
 		}
+	}
+}
+
+func TestRetrievalRepositoryRerankCandidatesPreserveDirectFactRawFloorBeforeSelectiveTop12(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	var graphCandidates []memsqlite.RetrievalActivationCandidate
+	for i := 0; i < 13; i++ {
+		factID := fmt.Sprintf("fact_top12_graph_high_%02d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "高分图候选 "+factID, core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(9600 + i),
+			Score:         5.0,
+			Source:        "graph_activation",
+			Rank:          i + 1,
+		})
+	}
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_top12_raw_floor", "top12 raw floor", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fact_top12_raw_floor", "fact_top12_raw_floor")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "top12 raw floor",
+		Normalized:    "top12 raw floor",
+		Terms:         []string{"top12", "raw", "floor"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 8,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_top12_raw_floor", TriviumNodeID: 9700, Score: 0.10, Source: "raw_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, graphCandidates, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	if len(safeCandidates) < 12 {
+		t.Fatalf("safe candidates = %d, want at least 12 to exercise selective rerank cap", len(safeCandidates))
+	}
+	for _, candidate := range safeCandidates[:12] {
+		if candidate.NodeID == "fact_top12_raw_floor" {
+			return
+		}
+	}
+	t.Fatalf("first 12 safe candidates dropped raw floor: %#v", safeCandidates[:12])
+}
+
+func TestRetrievalRepositoryRerankCandidatesPreservePastEventRawFloor(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	var graphCandidates []memsqlite.RetrievalActivationCandidate
+	for i := 0; i < 30; i++ {
+		factID := fmt.Sprintf("fact_past_event_graph_high_%02d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "高分过去事件图候选 "+factID, core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+		graphCandidates = append(graphCandidates, memsqlite.RetrievalActivationCandidate{
+			FactID:        factID,
+			TriviumNodeID: int64(9400 + i),
+			Score:         0.95,
+			Source:        "graph_activation",
+			Rank:          i + 1,
+		})
+	}
+	for i := 0; i < 4; i++ {
+		factID := fmt.Sprintf("fact_past_event_raw_floor_%02d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, "past event raw floor "+factID, core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+	}
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "past event raw floor",
+		Normalized:    "past event raw floor",
+		Terms:         []string{"past", "event", "raw", "floor"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryDomain:  memsqlite.MemoryDomainRelationship,
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalPastEventDirectFact},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                "past event raw floor",
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 8,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_past_event_raw_floor_00", TriviumNodeID: 9500, Score: 0.10, Source: "raw_dense", Rank: 1},
+			{FactID: "fact_past_event_raw_floor_01", TriviumNodeID: 9501, Score: 0.10, Source: "raw_dense", Rank: 2},
+			{FactID: "fact_past_event_raw_floor_02", TriviumNodeID: 9502, Score: 0.10, Source: "raw_dense", Rank: 3},
+			{FactID: "fact_past_event_raw_floor_03", TriviumNodeID: 9503, Score: 0.10, Source: "raw_dense", Rank: 4},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, graphCandidates, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		wantID := fmt.Sprintf("fact_past_event_raw_floor_%02d", i)
+		if safeCandidates[i].NodeID != wantID {
+			t.Fatalf("safe candidate[%d] = %s, want past-event raw floor %s", i, safeCandidates[i].NodeID, wantID)
+		}
+	}
+}
+
+func TestRetrievalRepositoryPastEventDirectQueryKeepsSpecificFactOverBroadSummary(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_q001_broad_relationship_summary", "用户和小陈关系稳定，最近经常一起吃饭聊天，也会互相关心。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_q001_hotpot_queue_specific", "上次去蜀九香火锅时，用户和小陈一起去，排队四十分钟才吃上。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_q001_hotpot_queue_specific", "fact_q001_hotpot_queue_specific")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_q001_broad_relationship_summary", "fact_type", string(core.FactTypeRelationalState))
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "上次去蜀九香火锅，我跟谁去的，排了多久的队才吃上？",
+		Normalized:    "上次去蜀九香火锅，我跟谁去的，排了多久的队才吃上？",
+		Terms:         []string{"蜀九香", "火锅", "谁", "排队", "多久"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryDomain:  memsqlite.MemoryDomainRelationship,
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals: []memsqlite.QuerySignal{
+			memsqlite.QuerySignalPastEventDirectFact,
+			memsqlite.QuerySignalEventBundle,
+		},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 1,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_q001_broad_relationship_summary", TriviumNodeID: 9600, Score: 1.0, Source: "semantic_rewrite_dense", Rank: 1},
+			{FactID: "fact_q001_broad_relationship_summary", TriviumNodeID: 9600, Score: 0.90, Source: "raw_dense", Rank: 1},
+			{FactID: "fact_q001_hotpot_queue_specific", TriviumNodeID: 9601, Score: 0.10, Source: "raw_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_q001_hotpot_queue_specific" {
+		t.Fatalf("selected items = %#v, want specific hotpot queue fact over broad relationship summary", items)
+	}
+}
+
+func TestRetrievalRepositoryFinalRawFloorKeepsLexicallySupportedDirectCandidate(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_raw_dense_neighbor", "用户最近记录了一次普通通勤和晚饭。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_raw_dense_direct_match", "用户在星桥陶艺教室报名，每周一周三下班后去上课。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fact_raw_dense_neighbor", "fact_raw_dense_neighbor")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_fact_raw_dense_direct_match", "fact_raw_dense_direct_match")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我报名的是哪家陶艺教室，每周哪几天去上课？",
+		Normalized:    "我报名的是哪家陶艺教室，每周哪几天去上课？",
+		Terms:         []string{"陶艺", "教室", "每周", "上课"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 1,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_raw_dense_neighbor", TriviumNodeID: 9710, Score: 0.99, Source: "raw_dense", Rank: 1},
+			{FactID: "fact_raw_dense_direct_match", TriviumNodeID: 9711, Score: 0.60, Source: "raw_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_raw_dense_direct_match" {
+		t.Fatalf("selected items = %#v, want query-supported raw_dense direct match", items)
+	}
+}
+
+func TestRetrievalRepositoryReflectionSummaryUsesNarrativeGrowthFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchNarrative(t, ctx, db.SQLDB(), "narrative_reflection_growth", "这两个月变化最大的是用户开始复盘压力并主动调整。")
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_reflection_growth_summary", "用户开始复盘压力并主动调整。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_reflection_generic_history", "用户最近有一些普通历史记录。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_reflection_growth_summary", "fact_reflection_growth_summary")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_reflection_generic_history", "fact_reflection_generic_history")
+	insertNodeLink(t, ctx, db.SQLDB(), "link_reflection_narrative_to_growth_fact", core.NodeTypeNarrative, "narrative_reflection_growth", "DERIVED_FROM", core.NodeTypeFact, "fact_reflection_growth_summary")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "这两个月我变化最大或者进步最大的是什么？",
+		Normalized:    "这两个月我变化最大或者进步最大的是什么？",
+		Terms:         []string{"变化", "进步"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryAbility: memsqlite.MemoryAbilityHistorical,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalReflectionSummary},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			UseFTS:           true,
+			FinalMemoryCount: 1,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_reflection_generic_history", TriviumNodeID: 9700, Score: 1.0, Source: "semantic_rewrite_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) == 0 || items[0].NodeID != "fact_reflection_growth_summary" {
+		t.Fatalf("selected items = %#v, want reflection growth summary fact", items)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_reflection_growth_summary", "retrieved")
+	if got, ok := breakdown["reflection_boost"].(float64); !ok || got <= 0 {
+		t.Fatalf("reflection_boost = %#v, want positive boost", breakdown["reflection_boost"])
 	}
 }
 
@@ -1186,7 +1512,7 @@ func TestRetrievalRepositoryReconstructsHistoricalAndProvenanceContextSafely(t *
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	historical, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
 		PersonaID: "default",
-		QueryText: "以前 北京",
+		QueryText: "以前北京现在上海发生了什么变化",
 	})
 	if err != nil {
 		t.Fatalf("retrieve historical: %v", err)
@@ -1282,6 +1608,63 @@ func TestRetrievalCompletesHistoricalSupersedesPairBeforeSelection(t *testing.T)
 	}
 }
 
+func TestRetrievalKeepsSelectedCurrentSupersedesOldStateWhenCrowded(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_current_running", "用户最近开始跑步，每周训练两次。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_no_running", "用户以前没有跑步习惯。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_running_evidence", "fact_current_running")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_no_running_evidence", "fact_old_no_running")
+	insertFactLink(t, ctx, db.SQLDB(), "link_current_running_supersedes_old", "fact_current_running", "SUPERSEDES", "fact_old_no_running")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_no_running", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_no_running", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+
+	for i := 0; i < 3; i++ {
+		factID := fmt.Sprintf("fact_unrelated_crowd_%d", i)
+		insertSearchFact(t, ctx, db.SQLDB(), factID, fmt.Sprintf("用户最近还有第 %d 条重要日常记录。", i), core.LifecycleActive)
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+factID, factID)
+	}
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "以前不跑步，最近开始跑步后有什么变化？",
+		Normalized:    "以前不跑步，最近开始跑步后有什么变化？",
+		Terms:         []string{"跑步", "变化"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityHistorical,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalStateTransition, memsqlite.QuerySignalHistorical},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 2,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_current_running", TriviumNodeID: 9101, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_unrelated_crowd_0", TriviumNodeID: 9102, Score: 0.98, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_unrelated_crowd_1", TriviumNodeID: 9103, Score: 0.97, Source: "trivium_dense", Rank: 3},
+			{FactID: "fact_unrelated_crowd_2", TriviumNodeID: 9104, Score: 0.96, Source: "trivium_dense", Rank: 4},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	historicalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
+	oldItem := requireBlockItem(t, historicalBlock, "fact_old_no_running")
+	if oldItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
+		t.Fatalf("old running status = %q, want superseded", oldItem.HistoricalStatus)
+	}
+	requireRelatedFact(t, oldItem, "fact_current_running", "SUPERSEDES", "inbound", memsqlite.MemoryHistoricalStatusCurrent)
+}
+
 func TestRetrievalCompletesHistoricalRelationshipStateTransitionIntoHistoricalBlock(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1327,8 +1710,458 @@ func TestRetrievalCompletesHistoricalRelationshipStateTransitionIntoHistoricalBl
 	if oldItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
 		t.Fatalf("old relationship historical_status = %q, want superseded", oldItem.HistoricalStatus)
 	}
-	relationshipBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelationshipArcMemory)
-	requireBlockItem(t, relationshipBlock, "fact_current_relationship_trust")
+	requireBlockItem(t, historicalBlock, "fact_current_relationship_trust")
+}
+
+func TestRetrievalEventBundleCompletesSameEpisodeSiblingFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_hotpot_primary", "用户上周和朋友吃火锅。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_queue_sibling", "那次火锅排队等了四十分钟。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_hidden_sibling", "隐藏的同场事件事实不应被补全。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_unsearchable_sibling", "不可搜索的同场事件事实不应被补全。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_hotpot_primary_evidence", "fact_bundle_hotpot_primary")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_queue_sibling_evidence", "fact_bundle_queue_sibling")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_hidden_sibling_evidence", "fact_bundle_hidden_sibling")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_unsearchable_sibling_evidence", "fact_bundle_unsearchable_sibling")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_bundle_hidden_sibling", "visibility_status", string(core.VisibilityHidden))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_bundle_unsearchable_sibling", "searchable", 0)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "上周吃火锅那次还发生了什么",
+		Normalized:    "上周吃火锅那次还发生了什么",
+		Terms:         []string{"火锅"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals: []memsqlite.QuerySignal{
+			memsqlite.QuerySignalPastEventDirectFact,
+			memsqlite.QuerySignalEventBundle,
+		},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 4,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_bundle_hotpot_primary", TriviumNodeID: 9101, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_bundle_hotpot_primary")
+	requireBlockItem(t, factsBlock, "fact_bundle_queue_sibling")
+	for _, item := range flattenMemoryItems(result) {
+		switch item.NodeID {
+		case "fact_bundle_hidden_sibling", "fact_bundle_unsearchable_sibling":
+			t.Fatalf("unauthorized sibling fact was completed: %#v", item)
+		}
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_bundle_queue_sibling", "retrieved")
+	if got := breakdown["completion_source"]; got != "event_bundle" {
+		t.Fatalf("completion_source = %#v, want event_bundle", got)
+	}
+	if got := breakdown["completion_link_type"]; got != "EVIDENCED_BY" {
+		t.Fatalf("completion_link_type = %#v, want EVIDENCED_BY", got)
+	}
+}
+
+func TestRetrievalEventBundleIgnoresHiddenSharedEpisodeBridge(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_visible_episode_primary", "用户上周吃了火锅。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_hidden_episode_sibling", "隐藏桥接来源里的排队细节不应被补全。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_visible_episode_primary_evidence", "fact_bundle_visible_episode_primary")
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:         "ep_hidden_bundle_bridge",
+		PersonaID:  "default",
+		SessionID:  "s1",
+		Role:       core.RoleUser,
+		Content:    "隐藏桥接来源。",
+		OccurredAt: fixedRetrievalNow().Add(3 * time.Hour),
+		SourceType: core.SourceTypeChat,
+	}); err != nil {
+		t.Fatalf("append hidden bridge episode: %v", err)
+	}
+	updateEpisodeRetrievalColumn(t, db.SQLDB(), "ep_hidden_bundle_bridge", "visibility_status", string(core.VisibilityHidden))
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:         "ep_hidden_bridge_sibling_visible_source",
+		PersonaID:  "default",
+		SessionID:  "s1",
+		Role:       core.RoleUser,
+		Content:    "可见但距离很远的 sibling 来源。",
+		OccurredAt: fixedRetrievalNow().Add(24 * time.Hour),
+		SourceType: core.SourceTypeChat,
+	}); err != nil {
+		t.Fatalf("append visible sibling source episode: %v", err)
+	}
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_visible_primary_hidden_bridge", "fact_bundle_visible_episode_primary", "ep_hidden_bundle_bridge")
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_hidden_sibling_hidden_bridge", "fact_bundle_hidden_episode_sibling", "ep_hidden_bundle_bridge")
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_hidden_sibling_visible_source", "fact_bundle_hidden_episode_sibling", "ep_hidden_bridge_sibling_visible_source")
+
+	query := eventBundleQuery("上周火锅那次还发生了什么", []string{"火锅"})
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_bundle_visible_episode_primary", TriviumNodeID: 9141, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_bundle_hidden_episode_sibling" {
+			t.Fatalf("hidden shared episode bridge completed sibling: %#v", result.Blocks)
+		}
+	}
+}
+
+func TestRetrievalEventBundleCompletesSharedCoOccursWithSiblingFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_market_primary", "用户周末去了杭州夜市。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_market_sibling", "那次夜市还和朋友聊了创业想法。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_market_primary_evidence", "fact_bundle_market_primary")
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:         "ep_market_sibling_far",
+		PersonaID:  "default",
+		SessionID:  "s1",
+		Role:       core.RoleUser,
+		Content:    "夜市创业想法。",
+		OccurredAt: fixedRetrievalNow().Add(24 * time.Hour),
+		SourceType: core.SourceTypeChat,
+	}); err != nil {
+		t.Fatalf("append market sibling episode: %v", err)
+	}
+	if err := memsqlite.NewLinkRepository(db.SQLDB()).Insert(ctx, core.MemoryLink{
+		ID:           "link_bundle_market_sibling_evidence",
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeFact,
+		FromNodeID:   "fact_bundle_market_sibling",
+		LinkType:     core.LinkTypeEvidencedBy,
+		ToNodeType:   core.NodeTypeEpisode,
+		ToNodeID:     "ep_market_sibling_far",
+	}); err != nil {
+		t.Fatalf("insert market sibling evidence: %v", err)
+	}
+	insertNodeLink(t, ctx, db.SQLDB(), "link_bundle_market_primary_place", core.NodeTypeFact, "fact_bundle_market_primary", "CO_OCCURS_WITH", core.NodeTypeEntity, "ent_hangzhou")
+	insertNodeLink(t, ctx, db.SQLDB(), "link_bundle_market_sibling_place", core.NodeTypeFact, "fact_bundle_market_sibling", "CO_OCCURS_WITH", core.NodeTypeEntity, "ent_hangzhou")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "周末夜市那次还发生了什么",
+		Normalized:    "周末夜市那次还发生了什么",
+		Terms:         []string{"夜市"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals: []memsqlite.QuerySignal{
+			memsqlite.QuerySignalPastEventDirectFact,
+			memsqlite.QuerySignalEventBundle,
+		},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_bundle_market_primary", TriviumNodeID: 9131, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_bundle_market_primary")
+	requireBlockItem(t, factsBlock, "fact_bundle_market_sibling")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_bundle_market_sibling", "retrieved")
+	if got := breakdown["completion_source"]; got != "event_bundle" {
+		t.Fatalf("completion_source = %#v, want event_bundle", got)
+	}
+	if got := breakdown["completion_link_type"]; got != "CO_OCCURS_WITH" {
+		t.Fatalf("completion_link_type = %#v, want CO_OCCURS_WITH", got)
+	}
+}
+
+func TestRetrievalEventBundleIgnoresHiddenSharedEntityBridge(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	if err := memsqlite.NewEntityRepository(db.SQLDB()).Upsert(ctx, core.Entity{
+		ID:            "ent_hidden_bundle_bridge",
+		PersonaID:     "default",
+		CanonicalName: "隐藏地点",
+		EntityType:    core.EntityTypePlace,
+	}); err != nil {
+		t.Fatalf("upsert hidden bridge entity: %v", err)
+	}
+	updateEntityRetrievalColumn(t, db.SQLDB(), "ent_hidden_bundle_bridge", "visibility_status", string(core.VisibilityHidden))
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_hidden_entity_primary", "用户去了夜市。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_hidden_entity_sibling", "隐藏地点桥接出的同行细节不应被补全。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_hidden_entity_primary_evidence", "fact_bundle_hidden_entity_primary")
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:         "ep_hidden_entity_sibling_far",
+		PersonaID:  "default",
+		SessionID:  "s1",
+		Role:       core.RoleUser,
+		Content:    "隐藏实体桥接 sibling 来源。",
+		OccurredAt: fixedRetrievalNow().Add(24 * time.Hour),
+		SourceType: core.SourceTypeChat,
+	}); err != nil {
+		t.Fatalf("append hidden entity sibling source: %v", err)
+	}
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_hidden_entity_sibling_evidence", "fact_bundle_hidden_entity_sibling", "ep_hidden_entity_sibling_far")
+	insertNodeLink(t, ctx, db.SQLDB(), "link_hidden_entity_primary_bridge", core.NodeTypeFact, "fact_bundle_hidden_entity_primary", "CO_OCCURS_WITH", core.NodeTypeEntity, "ent_hidden_bundle_bridge")
+	insertNodeLink(t, ctx, db.SQLDB(), "link_hidden_entity_sibling_bridge", core.NodeTypeFact, "fact_bundle_hidden_entity_sibling", "CO_OCCURS_WITH", core.NodeTypeEntity, "ent_hidden_bundle_bridge")
+
+	query := eventBundleQuery("夜市那次还发生了什么", []string{"夜市"})
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_bundle_hidden_entity_primary", TriviumNodeID: 9151, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_bundle_hidden_entity_sibling" {
+			t.Fatalf("hidden shared entity bridge completed sibling: %#v", result.Blocks)
+		}
+	}
+}
+
+func TestRetrievalEventBundleCompletesSameSessionWindowSiblingFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_session_primary", "用户周末去了夜市。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_bundle_session_sibling", "那次夜市一小时后又聊了创业想法。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_bundle_session_primary_evidence", "fact_bundle_session_primary")
+	insertEvidenceLinkToEpisode(t, ctx, db.SQLDB(), "link_bundle_session_sibling_evidence", "fact_bundle_session_sibling", "ep_later")
+
+	query := eventBundleQuery("周末夜市那次还发生了什么", []string{"夜市"})
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_bundle_session_primary", TriviumNodeID: 9161, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_bundle_session_sibling")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_bundle_session_sibling", "retrieved")
+	if got := breakdown["completion_link_type"]; got != "session_window" {
+		t.Fatalf("completion_link_type = %#v, want session_window", got)
+	}
+}
+
+func TestRetrievalPastEventDirectFactDoesNotCompleteSupersedesPair(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_current_phone_for_past_event", "用户现在使用新手机。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_phone_should_not_complete", "用户以前使用旧手机。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_phone_for_past_event_evidence", "fact_current_phone_for_past_event")
+	if err := memsqlite.NewEpisodeRepository(db.SQLDB()).Append(ctx, core.Episode{
+		ID:         "ep_old_phone_far",
+		PersonaID:  "default",
+		SessionID:  "s1",
+		Role:       core.RoleUser,
+		Content:    "旧手机记录。",
+		OccurredAt: fixedRetrievalNow().Add(-24 * time.Hour),
+		SourceType: core.SourceTypeChat,
+	}); err != nil {
+		t.Fatalf("append old phone episode: %v", err)
+	}
+	if err := memsqlite.NewLinkRepository(db.SQLDB()).Insert(ctx, core.MemoryLink{
+		ID:           "link_old_phone_should_not_complete_evidence",
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeFact,
+		FromNodeID:   "fact_old_phone_should_not_complete",
+		LinkType:     core.LinkTypeEvidencedBy,
+		ToNodeType:   core.NodeTypeEpisode,
+		ToNodeID:     "ep_old_phone_far",
+	}); err != nil {
+		t.Fatalf("insert old phone evidence: %v", err)
+	}
+	insertFactLink(t, ctx, db.SQLDB(), "link_current_phone_supersedes_old_for_past_event", "fact_current_phone_for_past_event", "SUPERSEDES", "fact_old_phone_should_not_complete")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_phone_should_not_complete", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_phone_should_not_complete", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "以前那次手机记录是什么",
+		Normalized:    "以前那次手机记录是什么",
+		Terms:         []string{"手机"},
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalPastEventDirectFact},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_current_phone_for_past_event", TriviumNodeID: 9111, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_old_phone_should_not_complete" {
+			t.Fatalf("past-event direct fact query completed SUPERSEDES sibling: %#v", result.Blocks)
+		}
+	}
+}
+
+func TestRetrievalProvenanceSourceCompletionBoostsSourcedCandidate(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_source_ref", "用户提到火锅排队很久。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_pinned_no_source", "用户提到火锅锅底很香。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_provenance_source_ref_evidence", "fact_provenance_source_ref")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_provenance_pinned_no_source", "pinned", 1)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "这条火锅记忆的来源是什么",
+		Normalized:    "这条火锅记忆的来源是什么",
+		Terms:         []string{"火锅", "来源"},
+		MemoryAbility: memsqlite.MemoryAbilityProvenance,
+		EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalProvenanceSource},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_provenance_pinned_no_source", TriviumNodeID: 9121, Score: 0.82, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_provenance_source_ref", TriviumNodeID: 9122, Score: 0.80, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+
+	provenanceBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeProvenanceMemory)
+	item := requireBlockItem(t, provenanceBlock, "fact_provenance_source_ref")
+	if len(item.SourceRefs) == 0 {
+		t.Fatalf("source refs = %#v, want at least one provenance source ref", item.SourceRefs)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_provenance_source_ref", "retrieved")
+	if got := breakdown["completion_source"]; got != "provenance_source" {
+		t.Fatalf("completion_source = %#v, want provenance_source", got)
+	}
+}
+
+func TestRetrievalProvenanceSourceCompletionSkipsUnrelatedSourcedCandidate(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_relevant_no_source", "用户提到火锅锅底很香。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_unrelated_source", "用户喜欢咖啡和手冲器具。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_provenance_unrelated_source_evidence", "fact_provenance_unrelated_source")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_provenance_relevant_no_source", "pinned", 1)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "这条火锅记忆的来源是什么",
+		Normalized:    "这条火锅记忆的来源是什么",
+		Terms:         []string{"火锅", "来源"},
+		MemoryAbility: memsqlite.MemoryAbilityProvenance,
+		EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalProvenanceSource},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_provenance_relevant_no_source", TriviumNodeID: 9171, Score: 0.82, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_provenance_unrelated_source", TriviumNodeID: 9172, Score: 0.80, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_provenance_unrelated_source" {
+			t.Fatalf("unrelated sourced fact was provenance-boosted above relevant candidate: %#v", result.Blocks)
+		}
+	}
 }
 
 func TestRetrievalCompletesCausalPairBeforeSelection(t *testing.T) {
@@ -1337,12 +2170,12 @@ func TestRetrievalCompletesCausalPairBeforeSelection(t *testing.T) {
 	defer db.Close()
 	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
 
-	insertSearchFact(t, ctx, db.SQLDB(), "fact_anxious_after_meeting", "用户开完早会以后明显焦虑。", core.LifecycleActive)
-	insertSearchFact(t, ctx, db.SQLDB(), "fact_morning_meeting_trigger", "早会安排触发了用户的焦虑。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_anxious_after_meeting", "用户当天情绪突然低落。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_morning_meeting_trigger", "早会安排是当天情绪变化的触发因素。", core.LifecycleActive)
 	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_anxious_after_meeting_evidence", "fact_anxious_after_meeting")
 	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_morning_meeting_trigger_evidence", "fact_morning_meeting_trigger")
 	insertFactLink(t, ctx, db.SQLDB(), "link_meeting_triggered_anxiety", "fact_anxious_after_meeting", "TRIGGERED_BY", "fact_morning_meeting_trigger")
-	updateFactRetrievalColumn(t, db.SQLDB(), "fact_morning_meeting_trigger", "importance", 0.2)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_morning_meeting_trigger", "importance", 1.0)
 
 	query := memsqlite.QueryAnalysis{
 		Raw:           "为什么早会后焦虑",
@@ -1350,6 +2183,7 @@ func TestRetrievalCompletesCausalPairBeforeSelection(t *testing.T) {
 		Terms:         []string{"早会", "焦虑"},
 		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
 		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalCausal},
 	}
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
@@ -1380,6 +2214,53 @@ func TestRetrievalCompletesCausalPairBeforeSelection(t *testing.T) {
 	}
 }
 
+func TestRetrievalCompletesCausalPairForCausalChainSignalOnly(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_anxious_after_meeting", "用户当天情绪突然低落。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_morning_meeting_trigger", "早会安排是当天情绪变化的触发因素。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_anxious_after_meeting_evidence", "fact_anxious_after_meeting")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_morning_meeting_trigger_evidence", "fact_morning_meeting_trigger")
+	insertFactLink(t, ctx, db.SQLDB(), "link_meeting_triggered_anxiety", "fact_anxious_after_meeting", "TRIGGERED_BY", "fact_morning_meeting_trigger")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_morning_meeting_trigger", "importance", 1.0)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "早会后焦虑这条链路是什么",
+		Normalized:    "早会后焦虑这条链路是什么",
+		Terms:         []string{"早会", "焦虑", "链路"},
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalCausalChain},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_anxious_after_meeting", TriviumNodeID: 9011, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	causalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeRelevantCausalMemory)
+	requireBlockItem(t, causalBlock, "fact_anxious_after_meeting")
+	requireBlockItem(t, causalBlock, "fact_morning_meeting_trigger")
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_morning_meeting_trigger", "retrieved")
+	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.36)
+	if got := breakdown["completion_source"]; got != "causal_chain" {
+		t.Fatalf("completion_source = %#v, want causal_chain", got)
+	}
+}
+
 func TestRetrievalCausalCompletionBoostsAlreadyPresentSourceEndpoint(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1402,6 +2283,7 @@ func TestRetrievalCausalCompletionBoostsAlreadyPresentSourceEndpoint(t *testing.
 		Terms:         []string{"团子", "奶奶"},
 		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
 		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalCausal},
 	}
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
@@ -1501,7 +2383,7 @@ func TestRetrievalRepositoryIgnoresUnauthorizedSupersedingSources(t *testing.T) 
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	historical, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
 		PersonaID: "default",
-		QueryText: "以前 旧手机",
+		QueryText: "以前旧手机现在手机发生了什么变化",
 		Policy: memsqlite.RetrievalPolicy{
 			FinalMemoryCount: 1,
 		},
@@ -1562,6 +2444,136 @@ func TestRetrievalRepositoryUsesFactsFallbackAndNarrowExperienceContext(t *testi
 	requireBlockItem(t, experienceBlock, "fact_workflow")
 	if hasBlock(experience, memsqlite.MemoryBlockTypeFacts) {
 		t.Fatalf("experience query also emitted fallback facts block: %#v", experience.Blocks)
+	}
+}
+
+func TestRetrievalRepositoryDirectChineseRecallUsesSparseCJKTerms(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_home_recipe_direct", "用户最近在家试着做了番茄炒蛋，卖相普通但味道不错。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_home_cleanup_noise", "用户最近在家整理了书柜。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_home_recipe_direct", "fact_home_recipe_direct")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_home_cleanup_noise", "fact_home_cleanup_noise")
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertFactDocument(ctx, "default", "fact_home_recipe_direct"); err != nil {
+		t.Fatalf("upsert recipe search document: %v", err)
+	}
+	if err := search.UpsertFactDocument(ctx, "default", "fact_home_cleanup_noise"); err != nil {
+		t.Fatalf("upsert noise search document: %v", err)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "我最近在家自己尝试做了什么菜，做出来味道怎么样？",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_home_recipe_direct")
+}
+
+func TestRetrievalForgetDeleteSkipsEntityAnchorOperationTarget(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchEntity(t, ctx, db.SQLDB(), "ent_xiaoli_delete", "小李", core.VisibilityVisible, core.SensitivityNormal, true)
+	object := "薄荷茶"
+	if err := memsqlite.NewFactRepository(db.SQLDB()).Insert(ctx, core.Fact{
+		ID:                   "fact_xiaoli_operation_target",
+		PersonaID:            "default",
+		SubjectEntityID:      ptr("ent_xiaoli_delete"),
+		Predicate:            "likes",
+		ObjectLiteral:        &object,
+		ContentSummary:       "小李喜欢薄荷茶。",
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		SensitivityLevel:     core.SensitivityNormal,
+		Importance:           0.9,
+	}); err != nil {
+		t.Fatalf("insert operation target fact: %v", err)
+	}
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_xiaoli_operation_target_evidence", "fact_xiaoli_operation_target")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "删除小李这条记忆",
+		Normalized:    "删除小李这条记忆",
+		Terms:         []string{"小李"},
+		MemoryAbility: memsqlite.MemoryAbilityBoundary,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalForgetDelete},
+		EntityMentions: []memsqlite.QueryEntityMention{{
+			EntityID:      "ent_xiaoli_delete",
+			CanonicalName: "小李",
+			MatchText:     "小李",
+			MatchKind:     memsqlite.QueryEntityMentionKindCanonical,
+		}},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseFTS:           true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_xiaoli_operation_target" {
+			t.Fatalf("forget/delete query retrieved entity operation target fact: blocks=%#v", result.Blocks)
+		}
+	}
+}
+
+func TestRetrievalForgetDeleteSkipsPinnedCoreOperationTarget(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_pinned_operation_target", "用户喜欢茉莉花茶。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_pinned_operation_target_evidence", "fact_pinned_operation_target")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_pinned_operation_target", "pinned", 1)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_pinned_operation_target", "importance", 1.0)
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "删除茉莉花茶这条记忆",
+		Normalized:    "删除茉莉花茶这条记忆",
+		Terms:         []string{"茉莉花茶"},
+		MemoryAbility: memsqlite.MemoryAbilityBoundary,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalForgetDelete},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseFTS:           true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_pinned_operation_target" {
+			t.Fatalf("forget/delete query retrieved pinned/core operation target fact: blocks=%#v", result.Blocks)
+		}
 	}
 }
 
@@ -1695,6 +2707,100 @@ func TestRetrievalPremiseCounterexampleBoostUsesFactSearchText(t *testing.T) {
 	requireBreakdownNumber(t, breakdown, "completion_bonus", 0.2)
 	if got := breakdown["completion_source"]; got != "premise_counterexample" {
 		t.Fatalf("completion_source = %#v, want premise_counterexample", got)
+	}
+}
+
+func TestRetrievalChineseCounterexampleExpansionFindsPositiveAbilityFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_no_cooking", "用户以前说自己完全不会做饭，也从来没下厨房。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_cooked_dinner", "用户后来自己开始做饭，还给朋友留了一份。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_no_cooking_evidence", "fact_old_no_cooking")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_cooked_dinner_evidence", "fact_cooked_dinner")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_no_cooking", "importance", 0.3)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_cooked_dinner", "importance", 1.0)
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	if err := search.UpsertFactDocument(ctx, "default", "fact_old_no_cooking"); err != nil {
+		t.Fatalf("upsert old cooking search document: %v", err)
+	}
+	if err := search.UpsertFactDocument(ctx, "default", "fact_cooked_dinner"); err != nil {
+		t.Fatalf("upsert cooking counterexample search document: %v", err)
+	}
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我是不是完全不会做饭，从来没下厨房？",
+		Normalized:    "我是不是完全不会做饭，从来没下厨房",
+		Terms:         []string{"完全不会做饭", "从来没下厨房"},
+		MemoryAbility: memsqlite.MemoryAbilityPremiseCheck,
+		EvidenceNeed:  memsqlite.EvidenceNeedPremiseCounterexample,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseFTS:           false,
+			UseMirror:        false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	premiseBlock := requireBlock(t, result, memsqlite.MemoryBlockTypePremiseCheckMemory)
+	if got := premiseBlock.Items[0].NodeID; got != "fact_cooked_dinner" {
+		t.Fatalf("selected item = %s, want cooking counterexample; blocks=%#v", got, result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_cooked_dinner", "retrieved")
+	if got := breakdown["completion_source"]; got != "premise_counterexample" {
+		t.Fatalf("completion_source = %#v, want premise_counterexample", got)
+	}
+	if got, ok := breakdown["lexical_coverage"].(float64); !ok || got <= 0 {
+		t.Fatalf("lexical_coverage = %#v, want expansion-driven lexical match", breakdown["lexical_coverage"])
+	}
+}
+
+func TestRetrievalDirectNegativeQueryDoesNotUseCounterexampleExpansion(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_direct_negative_positive_cooking", "用户后来开始做饭，还给朋友留了一份。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_direct_negative_positive_cooking", "fact_direct_negative_positive_cooking")
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_direct_negative_positive_cooking"); err != nil {
+		t.Fatalf("upsert positive cooking search document: %v", err)
+	}
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我是不是完全不会下厨房",
+		Normalized:    "我是不是完全不会下厨房",
+		Terms:         []string{"下厨房"},
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 1,
+			UseFTS:           false,
+			UseMirror:        false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	for _, item := range flattenMemoryItems(result) {
+		if item.NodeID == "fact_direct_negative_positive_cooking" {
+			t.Fatalf("direct negative query retrieved counterexample-expanded positive fact: blocks=%#v", result.Blocks)
+		}
 	}
 }
 
@@ -2036,6 +3142,93 @@ func TestSearchDocumentsForRetrievalSparseUsesTermMatchCountBeforeRecency(t *tes
 	}
 }
 
+func TestFactSearchDocumentOmitsUnauthorizedEntityNamesAndAliases(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchEntity(t, ctx, db.SQLDB(), "ent_hidden_search", "隐藏实体名", core.VisibilityHidden, core.SensitivityNormal, true)
+	insertSearchEntity(t, ctx, db.SQLDB(), "ent_unsearchable_search", "不可搜实体名", core.VisibilityVisible, core.SensitivityNormal, false)
+	insertSearchEntity(t, ctx, db.SQLDB(), "ent_sensitive_search", "敏感实体名", core.VisibilityVisible, core.SensitivitySensitive, true)
+	insertEntityAliasForSearch(t, ctx, db.SQLDB(), "alias_hidden_search", "ent_hidden_search", "隐藏别名")
+	insertEntityAliasForSearch(t, ctx, db.SQLDB(), "alias_unsearchable_search", "ent_unsearchable_search", "不可搜别名")
+	insertEntityAliasForSearch(t, ctx, db.SQLDB(), "alias_sensitive_search", "ent_sensitive_search", "敏感别名")
+
+	factRepo := memsqlite.NewFactRepository(db.SQLDB())
+	if err := factRepo.Insert(ctx, core.Fact{
+		ID:                   "fact_hidden_entity_ref",
+		PersonaID:            "default",
+		SubjectEntityID:      ptr("ent_hidden_search"),
+		Predicate:            "likes",
+		ObjectLiteral:        ptr("普通对象A"),
+		ContentSummary:       "用户记录了普通事实A。",
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		SensitivityLevel:     core.SensitivityNormal,
+		Importance:           0.7,
+	}); err != nil {
+		t.Fatalf("insert hidden entity fact: %v", err)
+	}
+	if err := factRepo.Insert(ctx, core.Fact{
+		ID:                   "fact_unsearchable_entity_ref",
+		PersonaID:            "default",
+		SubjectEntityID:      ptr("ent_unsearchable_search"),
+		Predicate:            "likes",
+		ObjectLiteral:        ptr("普通对象B"),
+		ContentSummary:       "用户记录了普通事实B。",
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		SensitivityLevel:     core.SensitivityNormal,
+		Importance:           0.7,
+	}); err != nil {
+		t.Fatalf("insert unsearchable entity fact: %v", err)
+	}
+	if err := factRepo.Insert(ctx, core.Fact{
+		ID:                   "fact_sensitive_entity_ref",
+		PersonaID:            "default",
+		SubjectEntityID:      ptr("ent_sensitive_search"),
+		Predicate:            "likes",
+		ObjectLiteral:        ptr("普通对象C"),
+		ContentSummary:       "用户记录了普通事实C。",
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		SensitivityLevel:     core.SensitivityNormal,
+		Importance:           0.7,
+	}); err != nil {
+		t.Fatalf("insert sensitive entity fact: %v", err)
+	}
+
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, factID := range []string{"fact_hidden_entity_ref", "fact_unsearchable_entity_ref", "fact_sensitive_entity_ref"} {
+		if err := search.UpsertFactDocument(ctx, "default", factID); err != nil {
+			t.Fatalf("upsert fact search document %s: %v", factID, err)
+		}
+	}
+	for _, leak := range []struct {
+		factID string
+		text   string
+	}{
+		{"fact_hidden_entity_ref", "隐藏实体名"},
+		{"fact_hidden_entity_ref", "隐藏别名"},
+		{"fact_unsearchable_entity_ref", "不可搜实体名"},
+		{"fact_unsearchable_entity_ref", "不可搜别名"},
+		{"fact_sensitive_entity_ref", "敏感实体名"},
+		{"fact_sensitive_entity_ref", "敏感别名"},
+	} {
+		requireSearchDocumentNotContains(t, db.SQLDB(), leak.factID, leak.text)
+		docs, err := search.SearchDocumentsForRetrieval(ctx, "default", leak.text, false, 10, memsqlite.RetrievalPolicy{})
+		if err != nil {
+			t.Fatalf("search documents for %q: %v", leak.text, err)
+		}
+		for _, doc := range docs {
+			if doc.NodeID == leak.factID {
+				t.Fatalf("fact %s was retrieved by unauthorized entity text %q: %#v", leak.factID, leak.text, docs)
+			}
+		}
+	}
+}
+
 func requireSearchDocument(t *testing.T, db *sql.DB, factID string, wantText string) {
 	t.Helper()
 
@@ -2048,6 +3241,21 @@ WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&searchText); err != nil
 	}
 	if !contains(searchText, wantText) {
 		t.Fatalf("search text = %q, want contains %q", searchText, wantText)
+	}
+}
+
+func requireSearchDocumentNotContains(t *testing.T, db *sql.DB, factID string, forbiddenText string) {
+	t.Helper()
+
+	var searchText string
+	if err := db.QueryRow(`
+SELECT search_text
+FROM memory_search_documents
+WHERE node_type = 'fact' AND node_id = ?`, factID).Scan(&searchText); err != nil {
+		t.Fatalf("query search document: %v", err)
+	}
+	if contains(searchText, forbiddenText) {
+		t.Fatalf("search text = %q, should not contain %q", searchText, forbiddenText)
 	}
 }
 
@@ -2157,6 +3365,21 @@ func flattenMemoryItems(context memsqlite.MemoryContext) []memsqlite.MemoryConte
 	return items
 }
 
+func eventBundleQuery(raw string, terms []string) memsqlite.QueryAnalysis {
+	return memsqlite.QueryAnalysis{
+		Raw:           raw,
+		Normalized:    raw,
+		Terms:         terms,
+		TimeMode:      memsqlite.QueryTimeModeHistorical,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals: []memsqlite.QuerySignal{
+			memsqlite.QuerySignalPastEventDirectFact,
+			memsqlite.QuerySignalEventBundle,
+		},
+	}
+}
+
 func requireRelatedFact(t *testing.T, item memsqlite.MemoryContextItem, nodeID string, linkType string, direction string, historicalStatus string) {
 	t.Helper()
 
@@ -2222,6 +3445,32 @@ func insertSearchFact(t *testing.T, ctx context.Context, db *sql.DB, factID stri
 	}
 }
 
+func insertSearchEntity(t *testing.T, ctx context.Context, db *sql.DB, entityID string, canonicalName string, visibility core.VisibilityStatus, sensitivity core.SensitivityLevel, searchable bool) {
+	t.Helper()
+
+	if err := memsqlite.NewEntityRepository(db).Upsert(ctx, core.Entity{
+		ID:               entityID,
+		PersonaID:        "default",
+		CanonicalName:    canonicalName,
+		EntityType:       core.EntityTypeConcept,
+		VisibilityStatus: visibility,
+		SensitivityLevel: sensitivity,
+		Searchable:       searchable,
+	}); err != nil {
+		t.Fatalf("insert entity %s: %v", entityID, err)
+	}
+}
+
+func insertEntityAliasForSearch(t *testing.T, ctx context.Context, db *sql.DB, aliasID string, entityID string, alias string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO entity_aliases(id, persona_id, entity_id, alias, alias_type, confidence)
+VALUES (?, 'default', ?, ?, 'surface', 1.0)`, aliasID, entityID, alias); err != nil {
+		t.Fatalf("insert alias %s: %v", aliasID, err)
+	}
+}
+
 func setFactRetrievalGate(t *testing.T, db *sql.DB, factID string, validity string, lifecycle string) {
 	t.Helper()
 
@@ -2237,12 +3486,38 @@ func updateFactRetrievalColumn(t *testing.T, db *sql.DB, factID string, column s
 	t.Helper()
 
 	switch column {
-	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "valid_to", "fact_type", "importance":
+	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "valid_to", "fact_type", "importance", "pinned":
 	default:
 		t.Fatalf("unsupported fact column %q", column)
 	}
 	if _, err := db.Exec("UPDATE facts SET "+column+" = ? WHERE id = ?", value, factID); err != nil {
 		t.Fatalf("update fact %s.%s: %v", factID, column, err)
+	}
+}
+
+func updateEpisodeRetrievalColumn(t *testing.T, db *sql.DB, episodeID string, column string, value any) {
+	t.Helper()
+
+	switch column {
+	case "visibility_status", "searchable", "sensitivity_level":
+	default:
+		t.Fatalf("unsupported episode column %q", column)
+	}
+	if _, err := db.Exec("UPDATE episodes SET "+column+" = ? WHERE id = ?", value, episodeID); err != nil {
+		t.Fatalf("update episode %s.%s: %v", episodeID, column, err)
+	}
+}
+
+func updateEntityRetrievalColumn(t *testing.T, db *sql.DB, entityID string, column string, value any) {
+	t.Helper()
+
+	switch column {
+	case "visibility_status", "searchable", "sensitivity_level":
+	default:
+		t.Fatalf("unsupported entity column %q", column)
+	}
+	if _, err := db.Exec("UPDATE entities SET "+column+" = ? WHERE id = ?", value, entityID); err != nil {
+		t.Fatalf("update entity %s.%s: %v", entityID, column, err)
 	}
 }
 
@@ -2304,6 +3579,12 @@ WHERE id = ?`, weight, linkID); err != nil {
 func insertRetrievalEvidenceLink(t *testing.T, ctx context.Context, db *sql.DB, linkID string, factID string) {
 	t.Helper()
 
+	insertEvidenceLinkToEpisode(t, ctx, db, linkID, factID, "ep_visible")
+}
+
+func insertEvidenceLinkToEpisode(t *testing.T, ctx context.Context, db *sql.DB, linkID string, factID string, episodeID string) {
+	t.Helper()
+
 	if err := memsqlite.NewLinkRepository(db).Insert(ctx, core.MemoryLink{
 		ID:           linkID,
 		PersonaID:    "default",
@@ -2311,7 +3592,7 @@ func insertRetrievalEvidenceLink(t *testing.T, ctx context.Context, db *sql.DB, 
 		FromNodeID:   factID,
 		LinkType:     core.LinkTypeEvidencedBy,
 		ToNodeType:   core.NodeTypeEpisode,
-		ToNodeID:     "ep_visible",
+		ToNodeID:     episodeID,
 	}); err != nil {
 		t.Fatalf("insert evidence link %s: %v", linkID, err)
 	}

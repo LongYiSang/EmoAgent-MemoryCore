@@ -453,6 +453,8 @@ func rerankDiagnosticsFromStore(value *memsqlite.RerankDiagnostics) *RerankDiagn
 	}
 	return &RerankDiagnostics{
 		Status:             value.Status,
+		SkippedReason:      value.SkippedReason,
+		InputCount:         value.InputCount,
 		SafeCandidateCount: value.SafeCandidateCount,
 		ResultCount:        value.ResultCount,
 		Degraded:           value.Degraded,

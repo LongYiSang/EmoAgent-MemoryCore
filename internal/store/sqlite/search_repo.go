@@ -182,6 +182,10 @@ func (r *SearchRepository) SearchDocuments(ctx context.Context, personaID string
 }
 
 func (r *SearchRepository) SearchDocumentsForRetrieval(ctx context.Context, personaID string, query string, useFTS bool, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+	return r.SearchDocumentsForAnalyzedRetrieval(ctx, personaID, QueryAnalysis{Raw: query, Normalized: query}, useFTS, limit, policy)
+}
+
+func (r *SearchRepository) SearchDocumentsForAnalyzedRetrieval(ctx context.Context, personaID string, query QueryAnalysis, useFTS bool, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
 	if useFTS {
 		docs, err := r.searchFTSForRetrieval(ctx, personaID, query, limit, policy)
 		if err == nil && len(docs) > 0 {
@@ -228,11 +232,11 @@ LIMIT ?`, personaID, ftsQuery(query), limit)
 	return scanSearchDocuments(rows)
 }
 
-func (r *SearchRepository) searchFTSForRetrieval(ctx context.Context, personaID string, query string, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+func (r *SearchRepository) searchFTSForRetrieval(ctx context.Context, personaID string, query QueryAnalysis, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if strings.TrimSpace(query) == "" {
+	if strings.TrimSpace(retrievalSearchQueryText(query)) == "" {
 		return nil, nil
 	}
 	if ok, err := searchFTSExists(ctx, r.db); err != nil || !ok {
@@ -265,7 +269,7 @@ WHERE fts.persona_id = ?
 ORDER BY bm25(memory_search_fts), d.updated_at DESC, d.node_id ASC
 LIMIT ?`,
 		personaID,
-		ftsQuery(query),
+		ftsQuery(retrievalExpandedSearchQuery(query)),
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowDeepArchive),
@@ -335,12 +339,12 @@ LIMIT ?`, personaID, like, limit)
 	return scanSearchDocuments(rows)
 }
 
-func (r *SearchRepository) keywordSearchForRetrieval(ctx context.Context, personaID string, query string, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
+func (r *SearchRepository) keywordSearchForRetrieval(ctx context.Context, personaID string, query QueryAnalysis, limit int, policy RetrievalPolicy) ([]core.SearchDocument, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	trimmed := strings.TrimSpace(query)
-	terms := keywordSearchTerms(trimmed)
+	trimmed := strings.TrimSpace(retrievalSearchQueryText(query))
+	terms := keywordSearchTermsForRetrieval(query)
 	if len(terms) == 0 {
 		return nil, nil
 	}
@@ -410,6 +414,28 @@ func keywordSearchTerms(query string) []string {
 		}
 		seen[field] = struct{}{}
 		terms = append(terms, field)
+	}
+	return terms
+}
+
+func keywordSearchTermsForRetrieval(query QueryAnalysis) []string {
+	text := retrievalSearchQueryText(query)
+	terms := keywordSearchTerms(text)
+	terms = append(terms, query.Terms...)
+	terms = append(terms, cjkRetrievalSearchTerms(text)...)
+	if query.Normalized != text {
+		terms = append(terms, cjkRetrievalSearchTerms(query.Normalized)...)
+	}
+	terms = append(terms, premiseCounterexampleExpansionsForQuery(query)...)
+	return uniqueOrderedStrings(terms)
+}
+
+func cjkRetrievalSearchTerms(value string) []string {
+	var terms []string
+	for _, term := range cjkBigrams(value) {
+		if isDiscriminatingSlotTerm(term) {
+			terms = append(terms, term)
+		}
 	}
 	return terms
 }
@@ -517,24 +543,80 @@ func upsertInsightSearchDocumentTx(ctx context.Context, runner sqlRunner, person
 
 func buildFactSearchDocument(ctx context.Context, runner sqlRunner, personaID string, factID string) (core.SearchDocument, error) {
 	var doc core.SearchDocument
-	var objectLiteral, objectEntityName sql.NullString
+	var objectLiteral, subjectEntityName, objectEntityName, predicateLabel, entityAliases sql.NullString
 	var predicate string
 	var searchable int
 	err := runner.QueryRowContext(ctx, `
 SELECT f.persona_id, f.id, f.content_summary, f.predicate,
-       f.object_literal, oe.canonical_name,
+       f.object_literal, se.canonical_name, oe.canonical_name, ps.canonical_label,
+       (
+           SELECT GROUP_CONCAT(a.alias, ' ')
+           FROM entity_aliases a
+           JOIN entities e
+             ON e.persona_id = a.persona_id
+            AND e.id = a.entity_id
+           WHERE a.persona_id = f.persona_id
+             AND a.entity_id IN (f.subject_entity_id, f.object_entity_id)
+             AND e.visibility_status = 'visible'
+             AND e.searchable = 1
+             AND CASE e.sensitivity_level
+                 WHEN 'normal' THEN 0
+                 WHEN 'sensitive' THEN 1
+                 WHEN 'highly_sensitive' THEN 2
+                 ELSE 3
+             END <= CASE f.sensitivity_level
+                 WHEN 'normal' THEN 0
+                 WHEN 'sensitive' THEN 1
+                 WHEN 'highly_sensitive' THEN 2
+                 ELSE 3
+             END
+       ) AS entity_aliases,
        f.visibility_status, f.sensitivity_level, f.lifecycle_status, f.searchable
 FROM facts f
+LEFT JOIN entities se
+  ON se.persona_id = f.persona_id
+ AND se.id = f.subject_entity_id
+ AND se.visibility_status = 'visible'
+ AND se.searchable = 1
+ AND CASE se.sensitivity_level
+     WHEN 'normal' THEN 0
+     WHEN 'sensitive' THEN 1
+     WHEN 'highly_sensitive' THEN 2
+     ELSE 3
+ END <= CASE f.sensitivity_level
+     WHEN 'normal' THEN 0
+     WHEN 'sensitive' THEN 1
+     WHEN 'highly_sensitive' THEN 2
+     ELSE 3
+ END
 LEFT JOIN entities oe
   ON oe.persona_id = f.persona_id
  AND oe.id = f.object_entity_id
+ AND oe.visibility_status = 'visible'
+ AND oe.searchable = 1
+ AND CASE oe.sensitivity_level
+     WHEN 'normal' THEN 0
+     WHEN 'sensitive' THEN 1
+     WHEN 'highly_sensitive' THEN 2
+     ELSE 3
+ END <= CASE f.sensitivity_level
+     WHEN 'normal' THEN 0
+     WHEN 'sensitive' THEN 1
+     WHEN 'highly_sensitive' THEN 2
+     ELSE 3
+ END
+LEFT JOIN predicate_schemas ps
+  ON ps.predicate = f.predicate
 WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 		&doc.PersonaID,
 		&doc.NodeID,
 		&doc.SearchText,
 		&predicate,
 		&objectLiteral,
+		&subjectEntityName,
 		&objectEntityName,
+		&predicateLabel,
+		&entityAliases,
 		&doc.VisibilityStatus,
 		&doc.SensitivityLevel,
 		&doc.LifecycleStatus,
@@ -553,12 +635,15 @@ WHERE f.persona_id = ? AND f.id = ?`, personaID, factID).Scan(
 	doc.ID = fmt.Sprintf("search_%s", factID)
 	doc.NodeType = core.NodeTypeFact
 	doc.SearchTier = searchTierForLifecycle(doc.LifecycleStatus)
-	doc.SearchText = strings.Join(nonEmptyStrings(
+	doc.SearchText = joinUniqueSearchText(
 		doc.SearchText,
 		predicate,
+		stringPtrValue(predicateLabel),
 		stringPtrValue(objectLiteral),
+		stringPtrValue(subjectEntityName),
 		stringPtrValue(objectEntityName),
-	), " ")
+		stringPtrValue(entityAliases),
+	)
 	doc.Searchable = intBool(searchable)
 	return doc, nil
 }
@@ -807,6 +892,17 @@ func ftsQuery(query string) string {
 	return strings.Join(terms, " OR ")
 }
 
+func retrievalExpandedSearchQuery(query QueryAnalysis) string {
+	return strings.Join(uniqueOrderedStrings(append([]string{retrievalSearchQueryText(query)}, premiseCounterexampleExpansionsForQuery(query)...)), " ")
+}
+
+func retrievalSearchQueryText(query QueryAnalysis) string {
+	if strings.TrimSpace(query.Raw) != "" {
+		return query.Raw
+	}
+	return query.Normalized
+}
+
 func isSearchIndexUnavailable(err error) bool {
 	if err == nil {
 		return false
@@ -837,4 +933,23 @@ func nonEmptyStrings(values ...string) []string {
 		}
 	}
 	return result
+}
+
+func joinUniqueSearchText(values ...string) string {
+	var parts []string
+	combined := ""
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		normalizedCombined := strings.ToLower(combined)
+		normalizedValue := strings.ToLower(value)
+		if normalizedCombined != "" && strings.Contains(normalizedCombined, normalizedValue) {
+			continue
+		}
+		parts = append(parts, value)
+		combined = strings.Join(parts, " ")
+	}
+	return combined
 }

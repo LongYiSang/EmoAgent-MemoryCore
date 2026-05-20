@@ -43,14 +43,22 @@ const (
 	QueryTimeModeHistorical      QueryTimeMode = "historical"
 	QueryTimeModeBitemporalCheck QueryTimeMode = "bitemporal_check"
 
-	QuerySignalCausal          QuerySignal = "causal"
-	QuerySignalHistorical      QuerySignal = "historical"
-	QuerySignalProvenance      QuerySignal = "provenance"
-	QuerySignalSensitivity     QuerySignal = "sensitivity"
-	QuerySignalDebug           QuerySignal = "debug"
-	QuerySignalPremiseCheck    QuerySignal = "premise_check"
-	QuerySignalRelationshipArc QuerySignal = "relationship_arc"
-	QuerySignalForgetDelete    QuerySignal = "forget_delete"
+	QuerySignalCausal                QuerySignal = "causal"
+	QuerySignalHistorical            QuerySignal = "historical"
+	QuerySignalProvenance            QuerySignal = "provenance"
+	QuerySignalSensitivity           QuerySignal = "sensitivity"
+	QuerySignalDebug                 QuerySignal = "debug"
+	QuerySignalPremiseCheck          QuerySignal = "premise_check"
+	QuerySignalRelationshipArc       QuerySignal = "relationship_arc"
+	QuerySignalForgetDelete          QuerySignal = "forget_delete"
+	QuerySignalPastEventDirectFact   QuerySignal = "past_event_direct_fact"
+	QuerySignalStateTransition       QuerySignal = "state_transition"
+	QuerySignalProvenanceSource      QuerySignal = "provenance_source"
+	QuerySignalCausalChain           QuerySignal = "causal_chain"
+	QuerySignalPremiseCounterexample QuerySignal = "premise_counterexample"
+	QuerySignalEventBundle           QuerySignal = "event_bundle"
+	QuerySignalReflectionSummary     QuerySignal = "reflection_summary"
+	QuerySignalExactFact             QuerySignal = "exact_fact"
 
 	MemoryDomainRelationship          MemoryDomain = "relationship_memory"
 	MemoryDomainUserProfile           MemoryDomain = "user_profile_memory"
@@ -360,6 +368,8 @@ type GraphActivationPath struct {
 
 type RerankDiagnostics struct {
 	Status             string `json:"status"`
+	SkippedReason      string `json:"skipped_reason,omitempty"`
+	InputCount         int    `json:"input_count,omitempty"`
 	SafeCandidateCount int    `json:"safe_candidate_count"`
 	ResultCount        int    `json:"result_count"`
 	Degraded           bool   `json:"degraded"`

@@ -52,7 +52,7 @@ steps:
           debug_reason: safe low score
     retrieve:
       session_id: s1
-      query_text: 咖啡
+      query_text: 咖啡这条记忆的来源是什么
       policy:
         use_fts: true
         use_mirror: true

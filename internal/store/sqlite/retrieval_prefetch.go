@@ -93,7 +93,7 @@ func (r *RetrievalRepository) buildScoringPrefetchForFactIDs(ctx context.Context
 	if err != nil {
 		return scoringPrefetch{}, err
 	}
-	provenance, err := r.loadEvidenceAndProvenanceByFactID(ctx, personaID, facts)
+	provenance, err := r.loadEvidenceAndProvenanceByFactID(ctx, personaID, facts, policy)
 	if err != nil {
 		return scoringPrefetch{}, err
 	}
@@ -186,16 +186,24 @@ ORDER BY id ASC`, args...)
 	return allowed, nil
 }
 
-func (r *RetrievalRepository) loadEvidenceAndProvenanceByFactID(ctx context.Context, personaID string, facts map[string]core.Fact) (map[string]provenanceSnapshot, error) {
+func (r *RetrievalRepository) loadEvidenceAndProvenanceByFactID(ctx context.Context, personaID string, facts map[string]core.Fact, policy RetrievalPolicy) (map[string]provenanceSnapshot, error) {
 	ids := factIDsFromMap(facts)
 	provenance := make(map[string]provenanceSnapshot, len(ids))
 	for _, id := range ids {
 		provenance[id] = provenanceSnapshot{}
 	}
+	allowedSensitivityRank := sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission))
 	for _, chunk := range chunkedIDs(ids, sqliteInChunkSize) {
 		args := stringArgs(personaID, chunk)
 		rows, err := r.db.QueryContext(ctx, `
-SELECT l.from_node_id AS fact_id, e.id AS episode_id, e.visibility_status, e.searchable, e.occurred_at
+SELECT l.from_node_id AS fact_id,
+       e.id AS episode_id,
+       l.visibility_status,
+       l.searchable,
+       e.visibility_status,
+       e.searchable,
+       e.sensitivity_level,
+       e.occurred_at
 FROM memory_links l
 LEFT JOIN episodes e
   ON e.persona_id = l.persona_id
@@ -212,20 +220,29 @@ ORDER BY l.from_node_id ASC, e.occurred_at ASC, e.id ASC`, args...)
 		for rows.Next() {
 			var factID string
 			var episodeID sql.NullString
-			var visibilityStatus sql.NullString
-			var searchable sql.NullInt64
+			var linkVisibilityStatus sql.NullString
+			var linkSearchable sql.NullInt64
+			var episodeVisibilityStatus sql.NullString
+			var episodeSearchable sql.NullInt64
+			var episodeSensitivity sql.NullString
 			var occurredAt sql.NullString
-			if err := rows.Scan(&factID, &episodeID, &visibilityStatus, &searchable, &occurredAt); err != nil {
+			if err := rows.Scan(&factID, &episodeID, &linkVisibilityStatus, &linkSearchable, &episodeVisibilityStatus, &episodeSearchable, &episodeSensitivity, &occurredAt); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
 			snapshot := provenance[factID]
 			snapshot.hasEvidenceLink = true
 			if episodeID.Valid &&
-				visibilityStatus.Valid &&
-				visibilityStatus.String == string(core.VisibilityVisible) &&
-				searchable.Valid &&
-				searchable.Int64 == 1 {
+				linkVisibilityStatus.Valid &&
+				linkVisibilityStatus.String == string(core.VisibilityVisible) &&
+				linkSearchable.Valid &&
+				linkSearchable.Int64 == 1 &&
+				episodeVisibilityStatus.Valid &&
+				episodeVisibilityStatus.String == string(core.VisibilityVisible) &&
+				episodeSearchable.Valid &&
+				episodeSearchable.Int64 == 1 &&
+				episodeSensitivity.Valid &&
+				sensitivityRank(core.SensitivityLevel(episodeSensitivity.String)) <= allowedSensitivityRank {
 				snapshot.visibleEpisodeIDs = append(snapshot.visibleEpisodeIDs, episodeID.String)
 			}
 			provenance[factID] = snapshot

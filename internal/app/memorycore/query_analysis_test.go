@@ -72,8 +72,13 @@ func TestQueryAnalysisSemanticMergeClampsUntrustedFields(t *testing.T) {
 			MemoryDomain:  string(memsqlite.MemoryDomainRelationship),
 			MemoryAbility: string(memsqlite.MemoryAbilityProvenance),
 			EvidenceNeed:  string(memsqlite.EvidenceNeedProvenanceSource),
-			Signals:       []string{string(memsqlite.QuerySignalProvenance), "made_up_signal"},
-			Confidence:    0.9,
+			Signals: []string{
+				string(memsqlite.QuerySignalProvenance),
+				string(memsqlite.QuerySignalPastEventDirectFact),
+				string(memsqlite.QuerySignalEventBundle),
+				"made_up_signal",
+			},
+			Confidence: 0.9,
 			FieldConfidence: QueryAnalysisConfidence{
 				Overall:       0.9,
 				TimeMode:      0.9,
@@ -125,8 +130,11 @@ func TestQueryAnalysisSemanticMergeClampsUntrustedFields(t *testing.T) {
 	if len(got.EntityMentions) != 1 || got.EntityMentions[0].EntityID != "ent_visible" {
 		t.Fatalf("entity mentions = %#v, want only visible confident entity", got.EntityMentions)
 	}
-	if len(got.Signals) != 1 || got.Signals[0] != memsqlite.QuerySignalProvenance {
-		t.Fatalf("signals = %#v, want valid semantic signal only", got.Signals)
+	if !hasStoreSignal(got.Signals, memsqlite.QuerySignalProvenance) ||
+		!hasStoreSignal(got.Signals, memsqlite.QuerySignalPastEventDirectFact) ||
+		!hasStoreSignal(got.Signals, memsqlite.QuerySignalEventBundle) ||
+		hasStoreSignal(got.Signals, memsqlite.QuerySignal("made_up_signal")) {
+		t.Fatalf("signals = %#v, want valid semantic signals only", got.Signals)
 	}
 	if got.Diagnostics == nil || got.Diagnostics.SemanticStatus != "ok" || got.Diagnostics.RewriteCount != 2 || got.Diagnostics.SemanticAnchorCount != 1 {
 		t.Fatalf("diagnostics = %#v, want semantic merge diagnostics", got.Diagnostics)
@@ -222,6 +230,180 @@ func TestQueryAnalysisSemanticRewriteOnlyKeepsRuleControlFields(t *testing.T) {
 	}
 	if len(got.ContextBlockHints) != 0 {
 		t.Fatalf("context block hints = %#v, want rule-derived none for direct fact", got.ContextBlockHints)
+	}
+}
+
+func TestQueryAnalysisSemanticMergeDoesNotForcePremiseForDirectFactRule(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "我是不是喜欢咖啡？",
+		Normalized:    "我是不是喜欢咖啡？",
+		Terms:         []string{"我是不是喜欢咖啡？"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalExactFact},
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.42,
+	}
+	semantic := SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			TimeMode:      string(memsqlite.QueryTimeModeBitemporalCheck),
+			MemoryDomain:  string(memsqlite.MemoryDomainUserProfile),
+			MemoryAbility: string(memsqlite.MemoryAbilityPremiseCheck),
+			EvidenceNeed:  string(memsqlite.EvidenceNeedPremiseCounterexample),
+			Signals: []string{
+				string(memsqlite.QuerySignalPremiseCheck),
+				string(memsqlite.QuerySignalPremiseCounterexample),
+			},
+			Confidence: 0.99,
+			FieldConfidence: QueryAnalysisConfidence{
+				Overall:       0.99,
+				TimeMode:      0.99,
+				MemoryAbility: 0.99,
+				MemoryDomain:  0.99,
+				EvidenceNeed:  0.99,
+			},
+		},
+	}
+
+	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{MinConfidenceToOverride: 0.72}, nil)
+
+	if got.TimeMode != memsqlite.QueryTimeModeCurrent {
+		t.Fatalf("time_mode = %q, want current direct fact routing", got.TimeMode)
+	}
+	if got.MemoryAbility != memsqlite.MemoryAbilityDirectFact {
+		t.Fatalf("memory_ability = %q, want direct_fact", got.MemoryAbility)
+	}
+	if got.EvidenceNeed != memsqlite.EvidenceNeedExactObservation {
+		t.Fatalf("evidence_need = %q, want exact_observation", got.EvidenceNeed)
+	}
+	for _, reject := range []memsqlite.QuerySignal{memsqlite.QuerySignalPremiseCheck, memsqlite.QuerySignalPremiseCounterexample} {
+		if hasStoreSignal(got.Signals, reject) {
+			t.Fatalf("signals = %#v, should not include semantic-only %q", got.Signals, reject)
+		}
+	}
+	if len(got.ContextBlockHints) != 0 {
+		t.Fatalf("context block hints = %#v, want no premise_check_memory for direct fact", got.ContextBlockHints)
+	}
+}
+
+func TestQueryAnalysisSemanticMergeAllowsPremiseWhenRuleSupportsPremise(t *testing.T) {
+	tests := []string{
+		"我的人际关系是不是很糟糕，跟身边每个朋友都闹过矛盾？",
+		"小李上次跟我吵架之后是不是老样子，完全没有任何改变？",
+		"如果 episode 被 redacted，是否还能暴露原文内容",
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			rule := memsqlite.QueryAnalysis{
+				Raw:           query,
+				Normalized:    strings.ToLower(query),
+				TimeMode:      memsqlite.QueryTimeModeBitemporalCheck,
+				MemoryDomain:  memsqlite.MemoryDomainRelationship,
+				MemoryAbility: memsqlite.MemoryAbilityPremiseCheck,
+				EvidenceNeed:  memsqlite.EvidenceNeedPremiseCounterexample,
+				Signals: []memsqlite.QuerySignal{
+					memsqlite.QuerySignalPremiseCounterexample,
+					memsqlite.QuerySignalPremiseCheck,
+				},
+				Source:     memsqlite.QueryAnalysisSourceRuleOnly,
+				Confidence: 0.78,
+			}
+			semantic := SemanticQueryAnalysisResult{
+				Status: "ok",
+				Analysis: SemanticQueryAnalysis{
+					TimeMode:      string(memsqlite.QueryTimeModeBitemporalCheck),
+					MemoryDomain:  string(memsqlite.MemoryDomainRelationship),
+					MemoryAbility: string(memsqlite.MemoryAbilityPremiseCheck),
+					EvidenceNeed:  string(memsqlite.EvidenceNeedPremiseCounterexample),
+					Signals: []string{
+						string(memsqlite.QuerySignalPremiseCounterexample),
+						string(memsqlite.QuerySignalPremiseCheck),
+					},
+					Confidence: 0.95,
+					FieldConfidence: QueryAnalysisConfidence{
+						Overall:       0.95,
+						TimeMode:      0.95,
+						MemoryAbility: 0.95,
+						MemoryDomain:  0.95,
+						EvidenceNeed:  0.95,
+					},
+				},
+			}
+
+			got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{MinConfidenceToOverride: 0.72}, nil)
+
+			if got.MemoryAbility != memsqlite.MemoryAbilityPremiseCheck {
+				t.Fatalf("memory_ability = %q, want premise_check", got.MemoryAbility)
+			}
+			if got.EvidenceNeed != memsqlite.EvidenceNeedPremiseCounterexample {
+				t.Fatalf("evidence_need = %q, want premise_counterexample", got.EvidenceNeed)
+			}
+			for _, want := range []memsqlite.QuerySignal{memsqlite.QuerySignalPremiseCheck, memsqlite.QuerySignalPremiseCounterexample} {
+				if !hasStoreSignal(got.Signals, want) {
+					t.Fatalf("signals = %#v, missing %q", got.Signals, want)
+				}
+			}
+			if len(got.ContextBlockHints) != 1 || got.ContextBlockHints[0] != MemoryBlockTypePremiseCheckMemory {
+				t.Fatalf("context block hints = %#v, want premise_check_memory", got.ContextBlockHints)
+			}
+		})
+	}
+}
+
+func TestPrimaryContextBlockHintRequiresPreciseSignalsForSoftGatedBlocks(t *testing.T) {
+	tests := []struct {
+		name  string
+		query memsqlite.QueryAnalysis
+		want  []string
+	}{
+		{
+			name:  "causal ability alone",
+			query: memsqlite.QueryAnalysis{MemoryAbility: memsqlite.MemoryAbilityCausalExplain},
+		},
+		{
+			name:  "provenance ability alone",
+			query: memsqlite.QueryAnalysis{MemoryAbility: memsqlite.MemoryAbilityProvenance},
+		},
+		{
+			name:  "historical ability alone",
+			query: memsqlite.QueryAnalysis{MemoryAbility: memsqlite.MemoryAbilityHistorical},
+		},
+		{
+			name:  "historical time alone",
+			query: memsqlite.QueryAnalysis{TimeMode: memsqlite.QueryTimeModeHistorical},
+		},
+		{
+			name:  "causal signal",
+			query: memsqlite.QueryAnalysis{Signals: []memsqlite.QuerySignal{memsqlite.QuerySignalCausal}},
+			want:  []string{MemoryBlockTypeRelevantCausalMemory},
+		},
+		{
+			name:  "provenance source",
+			query: memsqlite.QueryAnalysis{EvidenceNeed: memsqlite.EvidenceNeedProvenanceSource},
+			want:  []string{MemoryBlockTypeProvenanceMemory},
+		},
+		{
+			name:  "state transition",
+			query: memsqlite.QueryAnalysis{Signals: []memsqlite.QuerySignal{memsqlite.QuerySignalStateTransition}},
+			want:  []string{MemoryBlockTypeHistoricalTransitionMemory},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := primaryContextBlockHint(tt.query)
+			if len(got) != len(tt.want) {
+				t.Fatalf("primaryContextBlockHint() = %#v, want %#v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("primaryContextBlockHint() = %#v, want %#v", got, tt.want)
+				}
+			}
+		})
 	}
 }
 

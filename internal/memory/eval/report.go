@@ -16,11 +16,20 @@ type Report struct {
 }
 
 type StepReport struct {
-	ID         string
-	Action     string
-	QueryText  string
-	FusionMode string
-	Retrieval  *memorycore.MemoryContext
+	ID              string
+	Action          string
+	QueryText       string
+	FusionMode      string
+	Retrieval       *memorycore.MemoryContext
+	ScoreBreakdowns []RetrievalScoreBreakdownReport
+}
+
+type RetrievalScoreBreakdownReport struct {
+	NodeID           string  `json:"node_id,omitempty"`
+	AccessType       string  `json:"access_type,omitempty"`
+	ContextBlockType string  `json:"context_block_type,omitempty"`
+	CompletionSource string  `json:"completion_source,omitempty"`
+	ReflectionBoost  float64 `json:"reflection_boost,omitempty"`
 }
 
 type AssertionResult struct {

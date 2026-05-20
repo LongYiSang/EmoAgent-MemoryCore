@@ -50,7 +50,7 @@ func TestReconstructionPrefetchPreservesSourceRefsRelatedFactsAndHistory(t *test
 
 	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
 	effect := mustPrefetchFact(t, ctx, repo, "fact_effect")
-	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{MemoryAbility: MemoryAbilityCausalExplain}, RetrievalPolicy{
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{Signals: []QuerySignal{QuerySignalCausal}}, RetrievalPolicy{
 		SensitivityPermission: string(core.SensitivityNormal),
 		ContextBudgetTokens:   10000,
 	}, []scoredFact{{Fact: effect, Score: 1, TokenCost: 1}})
@@ -102,23 +102,583 @@ func TestContextBlockTypeUsesSemanticBlockNames(t *testing.T) {
 	tests := []struct {
 		name  string
 		query QueryAnalysis
+		fact  core.Fact
 		want  string
 	}{
-		{name: "provenance", query: QueryAnalysis{MemoryAbility: MemoryAbilityProvenance}, want: MemoryBlockTypeProvenanceMemory},
-		{name: "causal", query: QueryAnalysis{MemoryAbility: MemoryAbilityCausalExplain}, want: MemoryBlockTypeRelevantCausalMemory},
-		{name: "historical", query: QueryAnalysis{MemoryAbility: MemoryAbilityHistorical}, want: MemoryBlockTypeHistoricalTransitionMemory},
-		{name: "premise", query: QueryAnalysis{MemoryAbility: MemoryAbilityPremiseCheck}, want: MemoryBlockTypePremiseCheckMemory},
-		{name: "relationship arc", query: QueryAnalysis{MemoryAbility: MemoryAbilityRelationshipArc}, want: MemoryBlockTypeRelationshipArcMemory},
+		{name: "provenance", query: QueryAnalysis{EvidenceNeed: EvidenceNeedProvenanceSource, Signals: []QuerySignal{QuerySignalProvenanceSource}}, want: MemoryBlockTypeProvenanceMemory},
+		{name: "causal", query: QueryAnalysis{Signals: []QuerySignal{QuerySignalCausalChain}}, want: MemoryBlockTypeRelevantCausalMemory},
+		{name: "historical", query: QueryAnalysis{EvidenceNeed: EvidenceNeedStateTransition}, want: MemoryBlockTypeHistoricalTransitionMemory, fact: core.Fact{FactType: core.FactTypeStablePreference, ValidTo: ptrForPrefetchTime(prefetchNow())}},
+		{name: "premise", query: QueryAnalysis{EvidenceNeed: EvidenceNeedPremiseCounterexample, Signals: []QuerySignal{QuerySignalPremiseCounterexample}}, want: MemoryBlockTypePremiseCheckMemory},
+		{name: "relationship arc", query: QueryAnalysis{EvidenceNeed: EvidenceNeedRelationshipTimeline, Signals: []QuerySignal{QuerySignalRelationshipArc}}, want: MemoryBlockTypeRelationshipArcMemory},
 		{name: "supportive", query: QueryAnalysis{MemoryAbility: MemoryAbilitySupportive}, want: MemoryBlockTypeSupportiveMemory},
 		{name: "forget delete signal", query: QueryAnalysis{Signals: []QuerySignal{QuerySignalForgetDelete}}, want: MemoryBlockTypeSupportiveMemory},
-		{name: "relationship arc hint", query: QueryAnalysis{ContextBlockHints: []string{MemoryBlockTypeRelationshipArcMemory}}, want: MemoryBlockTypeRelationshipArcMemory},
+		{name: "relationship arc hint without gate", query: QueryAnalysis{ContextBlockHints: []string{MemoryBlockTypeRelationshipArcMemory}}, want: MemoryBlockTypeFacts, fact: core.Fact{FactType: core.FactTypeRelationalState}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := contextBlockType(tt.query, fact); got != tt.want {
+			testFact := fact
+			if tt.fact.FactType != "" || tt.fact.ValidTo != nil {
+				testFact = tt.fact
+			}
+			if got := contextBlockType(tt.query, testFact); got != tt.want {
 				t.Fatalf("contextBlockType() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSupportiveMemoryHintRequiresSupportiveSignal(t *testing.T) {
+	fact := core.Fact{ID: "fact_supportive_hint", FactType: core.FactTypeStablePreference}
+	pf := reconstructionPrefetch{}
+	policy := RetrievalPolicy{}
+
+	nonSupportive := QueryAnalysis{
+		MemoryAbility:     MemoryAbilityPlanning,
+		ContextBlockHints: []string{MemoryBlockTypeSupportiveMemory},
+	}
+	if got := secondaryContextBlockHint(nonSupportive, fact, policy, pf); got != "" {
+		t.Fatalf("secondaryContextBlockHint(non-supportive) = %q, want no block", got)
+	}
+	if got := primaryContextBlockForSelectedFact(nonSupportive, fact, policy, pf); got != MemoryBlockTypeFacts {
+		t.Fatalf("primaryContextBlockForSelectedFact(non-supportive) = %q, want %q", got, MemoryBlockTypeFacts)
+	}
+
+	supportive := QueryAnalysis{
+		MemoryAbility:     MemoryAbilitySupportive,
+		ContextBlockHints: []string{MemoryBlockTypeSupportiveMemory},
+	}
+	if got := secondaryContextBlockHint(supportive, fact, policy, pf); got != MemoryBlockTypeSupportiveMemory {
+		t.Fatalf("secondaryContextBlockHint(supportive) = %q, want %q", got, MemoryBlockTypeSupportiveMemory)
+	}
+	if got := primaryContextBlockForSelectedFact(supportive, fact, policy, pf); got != MemoryBlockTypeSupportiveMemory {
+		t.Fatalf("primaryContextBlockForSelectedFact(supportive) = %q, want %q", got, MemoryBlockTypeSupportiveMemory)
+	}
+}
+
+func TestReconstructionPastEventDirectFactDoesNotRouteToHistoricalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_past_trip", "用户去年去过杭州。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_past_trip_evidence", fact.ID, "ep_visible")
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		TimeMode:      QueryTimeModeHistorical,
+		MemoryAbility: MemoryAbilityDirectFact,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalPastEventDirectFact},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want facts or experience_context", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want direct past event in facts block", blocks)
+	}
+}
+
+func TestReconstructionBareHistoricalLookupDoesNotRouteToHistoricalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_bare_historical_city", "用户以前住在北京。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_bare_historical_city_evidence", fact.ID, "ep_visible")
+
+	queryText := "以前住在哪里"
+	query := QueryAnalysis{
+		Raw:           queryText,
+		Normalized:    queryText,
+		TimeMode:      queryTimeMode(queryText),
+		MemoryAbility: queryMemoryAbility(queryText),
+		EvidenceNeed:  queryEvidenceNeed(queryText),
+		Signals:       querySignals(queryText, queryTimeMode(queryText)),
+	}
+	if query.EvidenceNeed == EvidenceNeedStateTransition || hasQuerySignal(query, QuerySignalStateTransition) {
+		t.Fatalf("test setup query = %#v, want bare historical lookup without state_transition", query)
+	}
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, query, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-historical without state_transition or SUPERSEDES", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts for bare historical direct lookup", blocks)
+	}
+}
+
+func TestReconstructionConflictingPastEventAndStateTransitionSignalsStaysDirect(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_conflicting_past_transition", "用户去年去过杭州。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		TimeMode:      QueryTimeModeHistorical,
+		MemoryAbility: MemoryAbilityDirectFact,
+		EvidenceNeed:  EvidenceNeedStateTransition,
+		Signals:       []QuerySignal{QuerySignalPastEventDirectFact, QuerySignalStateTransition},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want direct block without authorized SUPERSEDES", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts for conflicting direct/state-transition signals", blocks)
+	}
+}
+
+func TestReconstructionStateTransitionRequiresSupersedesEvidence(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	for _, fact := range []core.Fact{
+		prefetchFact("fact_old_city_transition", "用户以前住在北京。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_new_city_transition", "用户现在住在上海。", ptrForPrefetch("ent_user")),
+	} {
+		insertPrefetchFact(t, ctx, db, fact)
+		addPrefetchEvidence(t, ctx, db, "link_"+fact.ID+"_evidence", fact.ID, "ep_visible")
+	}
+	addPrefetchFactLink(t, ctx, db, "link_city_transition_supersedes", "fact_new_city_transition", "SUPERSEDES", "fact_old_city_transition", 1.0)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	oldFact := mustPrefetchFact(t, ctx, repo, "fact_old_city_transition")
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility: MemoryAbilityDynamicState,
+		EvidenceNeed:  EvidenceNeedStateTransition,
+		Signals:       []QuerySignal{QuerySignalStateTransition},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: oldFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[oldFact.ID]; got != MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want historical_transition_memory", oldFact.ID, got)
+	}
+	item := requirePrefetchBlockItem(t, blocks, MemoryBlockTypeHistoricalTransitionMemory, oldFact.ID)
+	if item.HistoricalStatus != MemoryHistoricalStatusSuperseded {
+		t.Fatalf("historical_status = %q, want superseded", item.HistoricalStatus)
+	}
+}
+
+func TestReconstructionStateTransitionSignalRoutesCurrentFactToHistoricalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_current_transition_question", "用户现在住在上海。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_current_transition_question_evidence", fact.ID, "ep_visible")
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		EvidenceNeed: EvidenceNeedStateTransition,
+		Signals:      []QuerySignal{QuerySignalStateTransition},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got != MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want historical_transition_memory from state_transition signal", fact.ID, got)
+	}
+	requirePrefetchBlockItem(t, blocks, MemoryBlockTypeHistoricalTransitionMemory, fact.ID)
+}
+
+func TestReconstructionProvenanceSignalRoutesToProvenanceMemory(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_source_question", "用户提到自己喜欢手冲咖啡。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_source_question_evidence", fact.ID, "ep_visible")
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility: MemoryAbilityDirectFact,
+		EvidenceNeed:  EvidenceNeedProvenanceSource,
+		Signals:       []QuerySignal{QuerySignalProvenanceSource},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got != MemoryBlockTypeProvenanceMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want provenance_memory", fact.ID, got)
+	}
+	item := requirePrefetchBlockItem(t, blocks, MemoryBlockTypeProvenanceMemory, fact.ID)
+	if len(item.SourceRefs) != 1 {
+		t.Fatalf("source_refs = %#v, want one source ref", item.SourceRefs)
+	}
+}
+
+func TestReconstructionSourceEvidenceRoutesToProvenanceMemoryWithoutSignal(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_source_only", "用户喜欢浅烘咖啡。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_source_only_evidence", fact.ID, "ep_visible")
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got != MemoryBlockTypeProvenanceMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want provenance_memory from source evidence path", fact.ID, got)
+	}
+	requirePrefetchBlockItem(t, blocks, MemoryBlockTypeProvenanceMemory, fact.ID)
+}
+
+func TestReconstructionExperienceContextWinsOverSourceEvidenceFallback(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_workflow_source_only", "部署前需要先检查环境变量。", ptrForPrefetch("ent_user"))
+	fact.FactType = core.FactTypeTaskRelevantContext
+	insertPrefetchFact(t, ctx, db, fact)
+	addPrefetchEvidence(t, ctx, db, "link_workflow_source_only_evidence", fact.ID, "ep_visible")
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryDomain:  MemoryDomainWorkExperience,
+		MemoryAbility: MemoryAbilityWorkflow,
+		EvidenceNeed:  EvidenceNeedProcedureNote,
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got != MemoryBlockTypeExperienceContext {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want experience_context", fact.ID, got)
+	}
+	item := requirePrefetchBlockItem(t, blocks, MemoryBlockTypeExperienceContext, fact.ID)
+	if len(item.SourceRefs) != 1 {
+		t.Fatalf("source_refs = %#v, want source ref preserved in experience_context", item.SourceRefs)
+	}
+}
+
+func TestReconstructionCausalAbilityWithoutSignalDoesNotRouteToCausalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	for _, fact := range []core.Fact{
+		prefetchFact("fact_ability_only_effect", "用户因为早会安排而焦虑。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_ability_only_cause", "早会安排触发了用户焦虑。", ptrForPrefetch("ent_user")),
+	} {
+		insertPrefetchFact(t, ctx, db, fact)
+		if fact.ID == "fact_ability_only_cause" {
+			addPrefetchEvidence(t, ctx, db, "link_"+fact.ID+"_evidence", fact.ID, "ep_visible")
+		}
+	}
+	addPrefetchFactLink(t, ctx, db, "link_ability_only_cause", "fact_ability_only_effect", "CAUSED_BY", "fact_ability_only_cause", 1.0)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	effect := mustPrefetchFact(t, ctx, repo, "fact_ability_only_effect")
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility: MemoryAbilityCausalExplain,
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: effect, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[effect.ID]; got == MemoryBlockTypeRelevantCausalMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-causal without causal signal", effect.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without causal signal", blocks)
+	}
+}
+
+func TestReconstructionCausalHintWithoutSignalDoesNotRouteToCausalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	for _, fact := range []core.Fact{
+		prefetchFact("fact_causal_hint_effect", "用户因为早会安排而焦虑。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_causal_hint_cause", "早会安排触发了用户焦虑。", ptrForPrefetch("ent_user")),
+	} {
+		insertPrefetchFact(t, ctx, db, fact)
+		if fact.ID == "fact_causal_hint_cause" {
+			addPrefetchEvidence(t, ctx, db, "link_"+fact.ID+"_evidence", fact.ID, "ep_visible")
+		}
+	}
+	addPrefetchFactLink(t, ctx, db, "link_causal_hint_cause", "fact_causal_hint_effect", "CAUSED_BY", "fact_causal_hint_cause", 1.0)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	effect := mustPrefetchFact(t, ctx, repo, "fact_causal_hint_effect")
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility:     MemoryAbilityCausalExplain,
+		ContextBlockHints: []string{MemoryBlockTypeRelevantCausalMemory},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: effect, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[effect.ID]; got == MemoryBlockTypeRelevantCausalMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-causal without causal signal", effect.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without causal signal", blocks)
+	}
+}
+
+func TestReconstructionProvenanceHintAndAbilityWithoutEvidenceDoesNotRouteToProvenanceBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_provenance_hint_ability_only", "用户喜欢浅烘咖啡。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility:     MemoryAbilityProvenance,
+		ContextBlockHints: []string{MemoryBlockTypeProvenanceMemory},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeProvenanceMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-provenance without provenance signal/evidence or source refs", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without provenance signal/evidence or source refs", blocks)
+	}
+}
+
+func TestReconstructionHistoricalHintAndAbilityWithoutTransitionDoesNotRouteToHistoricalBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_historical_hint_current", "用户现在住在上海。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		TimeMode:          QueryTimeModeHistorical,
+		MemoryAbility:     MemoryAbilityHistorical,
+		ContextBlockHints: []string{MemoryBlockTypeHistoricalTransitionMemory},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeHistoricalTransitionMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-historical without state_transition signal/evidence or SUPERSEDES", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without state_transition signal/evidence or SUPERSEDES", blocks)
+	}
+}
+
+func TestReconstructionRelationshipAbilityAndFactTypeWithoutSignalDoesNotRouteToRelationshipBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_relationship_ability_only", "用户和 Agent 的信任感增强。", ptrForPrefetch("ent_user"))
+	fact.FactType = core.FactTypeRelationalState
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility: MemoryAbilityRelationshipArc,
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypeRelationshipArcMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-relationship without relationship signal/evidence", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without relationship signal/evidence", blocks)
+	}
+}
+
+func TestReconstructionNarrativeInsightCompletionRoutesToRelationshipBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_relationship_completion", "用户和 Agent 聊完以后感觉没那么孤独。", ptrForPrefetch("ent_user"))
+	fact.FactType = core.FactTypeRelationalState
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{
+		Fact:      storedFact,
+		Score:     1,
+		TokenCost: 1,
+		Breakdown: retrievalScoreBreakdown{CompletionSource: completionSourceNarrative},
+	}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got != MemoryBlockTypeRelationshipArcMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want relationship_arc_memory from narrative/insight completion", fact.ID, got)
+	}
+	requirePrefetchBlockItem(t, blocks, MemoryBlockTypeRelationshipArcMemory, fact.ID)
+}
+
+func TestReconstructionPremiseHintAndAbilityWithoutCounterexampleDoesNotRouteToPremiseBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	fact := prefetchFact("fact_premise_ability_only", "用户喜欢川菜。", ptrForPrefetch("ent_user"))
+	insertPrefetchFact(t, ctx, db, fact)
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	storedFact := mustPrefetchFact(t, ctx, repo, fact.ID)
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility:     MemoryAbilityPremiseCheck,
+		ContextBlockHints: []string{MemoryBlockTypePremiseCheckMemory},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{{Fact: storedFact, Score: 1, TokenCost: 1}})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if got := blockTypeByFactID[fact.ID]; got == MemoryBlockTypePremiseCheckMemory {
+		t.Fatalf("blockTypeByFactID[%s] = %q, want non-premise without premise_counterexample signal/evidence", fact.ID, got)
+	}
+	if len(blocks) != 1 || blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("blocks = %#v, want facts without premise_counterexample signal/evidence", blocks)
+	}
+}
+
+func TestReconstructionMultipleHintsSelectsOneSecondaryBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+
+	for _, fact := range []core.Fact{
+		prefetchFact("fact_multi_hint_one", "用户喜欢拿铁。", ptrForPrefetch("ent_user")),
+		prefetchFact("fact_multi_hint_two", "用户喜欢手冲。", ptrForPrefetch("ent_user")),
+	} {
+		insertPrefetchFact(t, ctx, db, fact)
+		addPrefetchEvidence(t, ctx, db, "link_"+fact.ID+"_evidence", fact.ID, "ep_visible")
+	}
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	first := mustPrefetchFact(t, ctx, repo, "fact_multi_hint_one")
+	second := mustPrefetchFact(t, ctx, repo, "fact_multi_hint_two")
+	blocks, blockTypeByFactID, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{
+		MemoryAbility: MemoryAbilityDirectFact,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+		ContextBlockHints: []string{
+			MemoryBlockTypeProvenanceMemory,
+			MemoryBlockTypeRelevantCausalMemory,
+			MemoryBlockTypePremiseCheckMemory,
+		},
+	}, RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ContextBudgetTokens:   10000,
+	}, []scoredFact{
+		{Fact: first, Score: 1, TokenCost: 1},
+		{Fact: second, Score: 0.9, TokenCost: 1},
+	})
+	if err != nil {
+		t.Fatalf("reconstructMemoryBlocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks = %#v, want one primary block from multiple hints", blocks)
+	}
+	if blocks[0].BlockType != MemoryBlockTypeFacts {
+		t.Fatalf("block type = %q, want deterministic direct fact fallback facts", blocks[0].BlockType)
+	}
+	for factID, blockType := range blockTypeByFactID {
+		if blockType != MemoryBlockTypeFacts {
+			t.Fatalf("blockTypeByFactID[%s] = %q, want facts", factID, blockType)
+		}
 	}
 }
 
@@ -146,7 +706,7 @@ func TestReconstructionPrefetchSelectedSupersedesRequiresAuthorizedSuperseder(t 
 	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
 	oldHidden := mustPrefetchFact(t, ctx, repo, "fact_old_hidden_superseder")
 	oldVisible := mustPrefetchFact(t, ctx, repo, "fact_old_visible_superseder")
-	blocks, _, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{MemoryAbility: MemoryAbilityHistorical}, RetrievalPolicy{
+	blocks, _, _, err := repo.reconstructMemoryBlocks(ctx, RetrievalRequest{PersonaID: "default"}, QueryAnalysis{EvidenceNeed: EvidenceNeedStateTransition}, RetrievalPolicy{
 		SensitivityPermission: string(core.SensitivityNormal),
 		ContextBudgetTokens:   10000,
 	}, []scoredFact{
@@ -196,4 +756,26 @@ func mustPrefetchFact(t *testing.T, ctx context.Context, repo *RetrievalReposito
 		t.Fatalf("get fact %s: %v", factID, err)
 	}
 	return fact
+}
+
+func requirePrefetchBlockItem(t *testing.T, blocks []MemoryBlock, blockType string, nodeID string) MemoryContextItem {
+	t.Helper()
+
+	for _, block := range blocks {
+		if block.BlockType != blockType {
+			continue
+		}
+		for _, item := range block.Items {
+			if item.NodeID == nodeID {
+				return item
+			}
+		}
+		t.Fatalf("item %q not found in block %q: %#v", nodeID, blockType, block.Items)
+	}
+	t.Fatalf("block %q not found in %#v", blockType, blocks)
+	return MemoryContextItem{}
+}
+
+func ptrForPrefetchTime(value time.Time) *time.Time {
+	return &value
 }

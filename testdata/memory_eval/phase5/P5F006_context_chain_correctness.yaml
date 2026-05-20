@@ -52,7 +52,7 @@ steps:
     action: retrieve
     retrieve:
       session_id: s1
-      query_text: 以前住在哪里
+      query_text: 以前住在上海，现在住在杭州有什么变化
       policy:
         allow_historical: true
         final_memory_count: 4

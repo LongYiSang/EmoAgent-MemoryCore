@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,15 +55,16 @@ type runState struct {
 }
 
 type stepResult struct {
-	Consolidation *memorycore.ConsolidationResult
-	Retrieval     *memorycore.MemoryContext
-	RerankRequest *memorycore.MirrorRerankRequest
-	Forget        *memorycore.ForgetResult
-	RetentionRun  *memorycore.RunRetentionResult
-	Compression   *memorycore.ApplyCompressionResult
-	RebuildSearch *memorycore.RebuildSearchDocumentsResult
-	MirrorRebuild *memorycore.RebuildMirrorResult
-	MirrorSync    *memorycore.RunMirrorSyncResult
+	Consolidation   *memorycore.ConsolidationResult
+	Retrieval       *memorycore.MemoryContext
+	ScoreBreakdowns []RetrievalScoreBreakdownReport
+	RerankRequest   *memorycore.MirrorRerankRequest
+	Forget          *memorycore.ForgetResult
+	RetentionRun    *memorycore.RunRetentionResult
+	Compression     *memorycore.ApplyCompressionResult
+	RebuildSearch   *memorycore.RebuildSearchDocumentsResult
+	MirrorRebuild   *memorycore.RebuildMirrorResult
+	MirrorSync      *memorycore.RunMirrorSyncResult
 }
 
 func NewRunner(opts RunnerOptions) *Runner {
@@ -241,6 +243,7 @@ func (s *runState) stepReport(step Step) StepReport {
 		out.QueryText = step.Retrieve.QueryText
 		out.FusionMode = step.Retrieve.FusionMode
 		out.Retrieval = result.Retrieval
+		out.ScoreBreakdowns = append([]RetrievalScoreBreakdownReport(nil), result.ScoreBreakdowns...)
 	}
 	return out
 }
@@ -370,6 +373,10 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		if err := s.prepareProfileMirror(ctx); err != nil {
 			return err
 		}
+		accessRowID, err := s.maxMemoryAccessEventRowID(ctx)
+		if err != nil {
+			return err
+		}
 		result, err := s.runRetrieve(ctx, step)
 		if err != nil {
 			return err
@@ -382,7 +389,11 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			captured := s.mirror.lastRerankRequest
 			rerankRequest = &captured
 		}
-		s.steps[step.ID] = stepResult{Retrieval: result, RerankRequest: rerankRequest}
+		scoreBreakdowns, err := s.memoryAccessScoreBreakdownsSince(ctx, accessRowID)
+		if err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{Retrieval: result, ScoreBreakdowns: scoreBreakdowns, RerankRequest: rerankRequest}
 	case "forget":
 		result, err := s.runForget(ctx, step)
 		if err != nil {
@@ -729,6 +740,56 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	return result, nil
 }
 
+func (s *runState) maxMemoryAccessEventRowID(ctx context.Context) (int64, error) {
+	var rowID sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM memory_access_events`).Scan(&rowID); err != nil {
+		return 0, fmt.Errorf("case %s step %s access event watermark: %w", s.caseID, s.stepID, err)
+	}
+	if !rowID.Valid {
+		return 0, nil
+	}
+	return rowID.Int64, nil
+}
+
+func (s *runState) memoryAccessScoreBreakdownsSince(ctx context.Context, afterRowID int64) ([]RetrievalScoreBreakdownReport, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT node_id,
+       access_type,
+       COALESCE(context_block_type, ''),
+       COALESCE(score_breakdown_json, '')
+FROM memory_access_events
+WHERE rowid > ?
+  AND persona_id = ?
+ORDER BY rowid`, afterRowID, s.persona)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s access event score breakdowns: %w", s.caseID, s.stepID, err)
+	}
+	defer rows.Close()
+	var out []RetrievalScoreBreakdownReport
+	for rows.Next() {
+		var item RetrievalScoreBreakdownReport
+		var rawBreakdown string
+		if err := rows.Scan(&item.NodeID, &item.AccessType, &item.ContextBlockType, &rawBreakdown); err != nil {
+			return nil, fmt.Errorf("case %s step %s access event score breakdown scan: %w", s.caseID, s.stepID, err)
+		}
+		if strings.TrimSpace(rawBreakdown) != "" {
+			var parsed struct {
+				CompletionSource string  `json:"completion_source"`
+				ReflectionBoost  float64 `json:"reflection_boost"`
+			}
+			if err := json.Unmarshal([]byte(rawBreakdown), &parsed); err == nil {
+				item.CompletionSource = parsed.CompletionSource
+				item.ReflectionBoost = parsed.ReflectionBoost
+			}
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("case %s step %s access event score breakdown rows: %w", s.caseID, s.stepID, err)
+	}
+	return out, nil
+}
+
 func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *SemanticStubSettings) (memorycore.Service, error) {
 	if s.semantic == nil {
 		return nil, fmt.Errorf("case %s step %s semantic_query_analysis_stub requires eval semantic sidecar", s.caseID, s.stepID)
@@ -789,7 +850,10 @@ func (s *runState) validateProfileRetrieval(result *memorycore.MemoryContext) er
 		ProfileSemanticParseOnly,
 		ProfileSemanticRewriteOnly,
 		ProfileSemanticFullCurrent,
-		ProfileSemanticFullSoftGated:
+		ProfileSemanticFullSoftGated,
+		ProfileRerankOff,
+		ProfileRerankSelective,
+		ProfileSoftRoutingEnabled:
 		return requireMirrorUsed(s.caseID, s.profile, result)
 	case ProfileMirrorRealGraph:
 		if err := requireMirrorUsed(s.caseID, s.profile, result); err != nil {

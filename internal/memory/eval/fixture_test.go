@@ -381,9 +381,10 @@ steps:
           path_link_types: [CAUSED_BY]
     retrieve:
       session_id: s1
-      query_text: no-sqlite-match
+      query_text: 早会
       policy:
         use_mirror: true
+        final_memory_count: 2
 assertions:
   - type: graph_activation_candidate
     step: retrieve

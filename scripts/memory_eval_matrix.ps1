@@ -31,7 +31,9 @@ param(
 
     [int]$QueryAnalysisSoftJoinTimeoutMS = 0,
 
-    [int]$QueryAnalysisMaxTokens = 512
+    [int]$QueryAnalysisMaxTokens = 512,
+
+    [switch]$ClassifyProfilesOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,8 +59,101 @@ function Stop-ProcessTree {
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
+function New-ProfileNameSet {
+    param([string[]]$Names)
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $Names) {
+        [void]$set.Add($name)
+    }
+    return ,$set
+}
+
+$MirrorSidecarProfiles = New-ProfileNameSet @(
+    "mirror_real_dense",
+    "mirror_real_graph",
+    "mirror_real_graph_rerank",
+    "mirror_real_rerank_no_graph",
+    "rule_only_raw",
+    "semantic_parse_only",
+    "semantic_rewrite_only",
+    "semantic_full_current",
+    "semantic_full_soft_gated",
+    "semantic_on_low_confidence",
+    "semantic_full",
+    "rerank_off",
+    "rerank_selective",
+    "soft_routing_enabled"
+)
+
+$QueryAnalysisProfiles = New-ProfileNameSet @(
+    "semantic_parse_only",
+    "semantic_rewrite_only",
+    "semantic_full_current",
+    "semantic_full_soft_gated",
+    "semantic_on_low_confidence",
+    "semantic_full",
+    "soft_routing_enabled"
+)
+
+$SoftQueryAnalysisProfiles = New-ProfileNameSet @(
+    "semantic_full_soft_gated",
+    "semantic_on_low_confidence",
+    "soft_routing_enabled"
+)
+
+$RerankProfiles = New-ProfileNameSet @(
+    "mirror_real_graph_rerank",
+    "mirror_real_rerank_no_graph",
+    "rerank_selective"
+)
+
+function Get-MemoryEvalProfileClassification {
+    param([string[]]$ProfileList)
+    $usesMirrorProfile = $false
+    $queryAnalysisProfileCount = 0
+    $softQueryAnalysisProfileCount = 0
+    $needsRerank = $false
+    foreach ($profile in $ProfileList) {
+        if ($MirrorSidecarProfiles.Contains($profile)) {
+            $usesMirrorProfile = $true
+        }
+        if ($QueryAnalysisProfiles.Contains($profile)) {
+            $queryAnalysisProfileCount++
+        }
+        if ($SoftQueryAnalysisProfiles.Contains($profile)) {
+            $softQueryAnalysisProfileCount++
+        }
+        if ($RerankProfiles.Contains($profile)) {
+            $needsRerank = $true
+        }
+    }
+    $semanticProfileDefaultMode = "rule_only"
+    if ($softQueryAnalysisProfileCount -gt 0) {
+        $semanticProfileDefaultMode = "semantic_on_low_confidence"
+    }
+    elseif ($queryAnalysisProfileCount -gt 0) {
+        $semanticProfileDefaultMode = "semantic_always"
+    }
+    return [pscustomobject]@{
+        UsesMirrorProfile             = $usesMirrorProfile
+        NeedsSidecar                  = $usesMirrorProfile
+        QueryAnalysisProfileCount     = $queryAnalysisProfileCount
+        SoftQueryAnalysisProfileCount = $softQueryAnalysisProfileCount
+        DefaultQueryAnalysisMode      = "rule_only"
+        SemanticProfileDefaultMode    = $semanticProfileDefaultMode
+        ProfileSpecificQueryAnalysis  = $queryAnalysisProfileCount -gt 0
+        NeedsRerank                   = $needsRerank
+    }
+}
+
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $sidecarDir = Join-Path $repoRoot "sidecar"
+$profileList = $Profiles.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$profileClassification = Get-MemoryEvalProfileClassification -ProfileList $profileList
+if ($ClassifyProfilesOnly) {
+    $profileClassification | ConvertTo-Json
+    return
+}
 if (-not $RunRoot) {
     $RunRoot = Join-Path $repoRoot ("artifacts\memory_eval\manual-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 }
@@ -79,15 +174,10 @@ if (-not $env:UV_CACHE_DIR) {
     $env:UV_CACHE_DIR = Join-Path $env:TEMP "memorycore-uv-cache-manual"
 }
 
-$profileList = $Profiles.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$semanticProfileCount = ($profileList | Where-Object { $_ -like "semantic_*" }).Count
-$usesMirrorProfile = ($profileList | Where-Object { $_ -like "mirror_real_*" -or $_ -eq "rule_only_raw" -or $_ -like "semantic_*" }).Count -gt 0
-$needsSidecar = $usesMirrorProfile
-if ($semanticProfileCount -gt 0 -and $QueryAnalysisMode -eq "rule_only") {
-    $QueryAnalysisMode = "semantic_always"
-}
-$queryAnalysisEnabled = $QueryAnalysisMode -ne "rule_only" -or $semanticProfileCount -gt 0
-$needsRerank = ($profileList | Where-Object { $_ -like "*rerank*" }).Count -gt 0
+$usesMirrorProfile = $profileClassification.UsesMirrorProfile
+$needsSidecar = $profileClassification.NeedsSidecar
+$queryAnalysisEnabled = $QueryAnalysisMode -ne "rule_only" -or $profileClassification.QueryAnalysisProfileCount -gt 0
+$needsRerank = $profileClassification.NeedsRerank
 if ($NoRerank -and $needsRerank) {
     throw "Profiles include rerank but -NoRerank was supplied. Remove rerank profiles or omit -NoRerank."
 }
@@ -115,6 +205,13 @@ if ($queryAnalysisEnabled) {
     $env:MEMORYCORE_QUERY_ANALYSIS_API_KEY_ENV = "MEMORYCORE_QUERY_ANALYSIS_API_KEY"
     $env:MEMORYCORE_QUERY_ANALYSIS_MODEL = $QueryAnalysisModel
     $env:MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS = [string][Math]::Max(1, [Math]::Ceiling($QueryAnalysisTimeoutMS / 1000.0))
+    $env:MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_MS = [string]$QueryAnalysisTimeoutMS
+    if ($QueryAnalysisSoftJoinTimeoutMS -gt 0) {
+        $env:MEMORYCORE_QUERY_ANALYSIS_SOFT_JOIN_TIMEOUT_MS = [string]$QueryAnalysisSoftJoinTimeoutMS
+    }
+    else {
+        Remove-Item Env:MEMORYCORE_QUERY_ANALYSIS_SOFT_JOIN_TIMEOUT_MS -ErrorAction SilentlyContinue
+    }
     $env:MEMORYCORE_QUERY_ANALYSIS_MAX_TOKENS = [string]$QueryAnalysisMaxTokens
 }
 
@@ -195,7 +292,7 @@ try {
     if ($needsSidecar) {
         $args += @("--sidecar-url", "http://127.0.0.1:$Port")
     }
-    if ($queryAnalysisEnabled) {
+    if ($QueryAnalysisMode -ne "rule_only") {
         $args += @("--query-analysis-mode", $QueryAnalysisMode, "--query-analysis-timeout-ms", $QueryAnalysisTimeoutMS)
         if ($QueryAnalysisSoftJoinTimeoutMS -gt 0) {
             $args += @("--query-analysis-soft-join-timeout-ms", $QueryAnalysisSoftJoinTimeoutMS)

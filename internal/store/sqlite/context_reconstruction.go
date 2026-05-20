@@ -28,15 +28,6 @@ func (r *RetrievalRepository) reconstructMemoryBlocks(ctx context.Context, req R
 	blockTypeByFactID := map[string]string{}
 	tokenEstimate := 0
 
-	for _, candidate := range selected {
-		blockType := contextBlockType(query, candidate.Fact)
-		if _, ok := blocksByType[blockType]; !ok {
-			blocksByType[blockType] = &MemoryBlock{BlockType: blockType}
-			blockOrder = append(blockOrder, blockType)
-		}
-		blockTypeByFactID[candidate.Fact.ID] = blockType
-	}
-
 	personaID := req.PersonaID
 	if personaID == "" {
 		personaID = selected[0].Fact.PersonaID
@@ -44,6 +35,15 @@ func (r *RetrievalRepository) reconstructMemoryBlocks(ctx context.Context, req R
 	pf, err := r.buildReconstructionPrefetch(ctx, personaID, selected, blockTypeByFactID, policy)
 	if err != nil {
 		return nil, nil, 0, err
+	}
+
+	for _, candidate := range selected {
+		blockType := primaryContextBlockForSelectedFact(query, candidate.Fact, policy, pf)
+		if _, ok := blocksByType[blockType]; !ok {
+			blocksByType[blockType] = &MemoryBlock{BlockType: blockType}
+			blockOrder = append(blockOrder, blockType)
+		}
+		blockTypeByFactID[candidate.Fact.ID] = blockType
 	}
 
 	for _, candidate := range selected {
@@ -62,49 +62,131 @@ func (r *RetrievalRepository) reconstructMemoryBlocks(ctx context.Context, req R
 }
 
 func contextBlockType(query QueryAnalysis, fact core.Fact) string {
+	return primaryContextBlockForSelectedFact(query, fact, RetrievalPolicy{}, reconstructionPrefetch{})
+}
+
+func primaryContextBlockForSelectedFact(query QueryAnalysis, fact core.Fact, policy RetrievalPolicy, pf reconstructionPrefetch) string {
 	switch {
-	case hasContextBlockHint(query, MemoryBlockTypeProvenanceMemory) ||
-		query.MemoryAbility == MemoryAbilityProvenance ||
-		hasQuerySignal(query, QuerySignalProvenance):
-		return MemoryBlockTypeProvenanceMemory
-	case hasContextBlockHint(query, MemoryBlockTypeRelevantCausalMemory) ||
-		query.MemoryAbility == MemoryAbilityCausalExplain ||
-		hasQuerySignal(query, QuerySignalCausal):
-		return MemoryBlockTypeRelevantCausalMemory
-	case hasContextBlockHint(query, MemoryBlockTypePremiseCheckMemory) ||
-		query.MemoryAbility == MemoryAbilityPremiseCheck ||
-		hasQuerySignal(query, QuerySignalPremiseCheck):
-		return MemoryBlockTypePremiseCheckMemory
-	case query.EvidenceNeed == EvidenceNeedStateTransition && factLikelyHistorical(fact):
-		return MemoryBlockTypeHistoricalTransitionMemory
-	case hasContextBlockHint(query, MemoryBlockTypeRelationshipArcMemory) ||
-		query.MemoryAbility == MemoryAbilityRelationshipArc ||
-		hasQuerySignal(query, QuerySignalRelationshipArc):
-		return MemoryBlockTypeRelationshipArcMemory
-	case hasContextBlockHint(query, MemoryBlockTypeHistoricalTransitionMemory) ||
-		query.MemoryAbility == MemoryAbilityHistorical ||
-		query.TimeMode == QueryTimeModeHistorical ||
-		factLikelyHistorical(fact):
-		return MemoryBlockTypeHistoricalTransitionMemory
-	case hasContextBlockHint(query, MemoryBlockTypeSupportiveMemory) ||
-		query.MemoryAbility == MemoryAbilitySupportive ||
-		query.MemoryAbility == MemoryAbilityBoundary ||
-		hasQuerySignal(query, QuerySignalForgetDelete):
+	case queryWantsSupportiveMemory(query):
 		return MemoryBlockTypeSupportiveMemory
+	case queryWantsExplicitProvenanceMemory(query):
+		return MemoryBlockTypeProvenanceMemory
+	case queryWantsHistoricalTransitionMemory(query, fact, policy, pf):
+		return MemoryBlockTypeHistoricalTransitionMemory
+	case queryWantsRelevantCausalMemory(query):
+		return MemoryBlockTypeRelevantCausalMemory
+	case queryWantsPremiseCheckMemory(query):
+		return MemoryBlockTypePremiseCheckMemory
+	case queryWantsRelationshipArcMemory(query, fact, pf):
+		return MemoryBlockTypeRelationshipArcMemory
 	case queryUsesExperienceContext(query, fact):
 		return MemoryBlockTypeExperienceContext
+	case queryHasSourceEvidencePath(query, fact, pf):
+		return MemoryBlockTypeProvenanceMemory
+	case !queryUsesDirectFactBlock(query):
+		if blockType := secondaryContextBlockHint(query, fact, policy, pf); blockType != "" {
+			return blockType
+		}
 	default:
 		return MemoryBlockTypeFacts
 	}
+	return MemoryBlockTypeFacts
 }
 
-func hasContextBlockHint(query QueryAnalysis, want string) bool {
-	for _, hint := range query.ContextBlockHints {
-		if strings.TrimSpace(hint) == want {
-			return true
-		}
+func queryWantsExplicitProvenanceMemory(query QueryAnalysis) bool {
+	return query.EvidenceNeed == EvidenceNeedProvenanceSource ||
+		hasQuerySignal(query, QuerySignalProvenanceSource) ||
+		hasQuerySignal(query, QuerySignalProvenance)
+}
+
+func queryHasSourceEvidencePath(query QueryAnalysis, fact core.Fact, pf reconstructionPrefetch) bool {
+	return !queryUsesDirectFactBlock(query) && len(pf.sourceRefsByFact[fact.ID]) > 0
+}
+
+func queryWantsHistoricalTransitionMemory(query QueryAnalysis, fact core.Fact, policy RetrievalPolicy, pf reconstructionPrefetch) bool {
+	if hasAuthorizedSupersedesEvidence(fact, policy, pf) {
+		return true
 	}
-	return false
+	if queryUsesDirectFactBlock(query) {
+		return false
+	}
+	if query.EvidenceNeed != EvidenceNeedStateTransition && !hasQuerySignal(query, QuerySignalStateTransition) {
+		return false
+	}
+	return true
+}
+
+func queryWantsRelevantCausalMemory(query QueryAnalysis) bool {
+	hasCausalSignal := hasQuerySignal(query, QuerySignalCausalChain) || hasQuerySignal(query, QuerySignalCausal)
+	return hasCausalSignal
+}
+
+func queryWantsPremiseCheckMemory(query QueryAnalysis) bool {
+	return query.EvidenceNeed == EvidenceNeedPremiseCounterexample ||
+		hasQuerySignal(query, QuerySignalPremiseCounterexample)
+}
+
+func queryWantsRelationshipArcMemory(query QueryAnalysis, fact core.Fact, pf reconstructionPrefetch) bool {
+	if query.EvidenceNeed == EvidenceNeedRelationshipTimeline || hasQuerySignal(query, QuerySignalRelationshipArc) {
+		return true
+	}
+	return pf.completionSourceByFactID[fact.ID] == completionSourceNarrative
+}
+
+func queryWantsSupportiveMemory(query QueryAnalysis) bool {
+	return query.MemoryAbility == MemoryAbilitySupportive ||
+		query.MemoryAbility == MemoryAbilityBoundary ||
+		hasQuerySignal(query, QuerySignalForgetDelete)
+}
+
+func queryUsesDirectFactBlock(query QueryAnalysis) bool {
+	return query.MemoryAbility == MemoryAbilityDirectFact ||
+		query.EvidenceNeed == EvidenceNeedExactObservation ||
+		hasQuerySignal(query, QuerySignalExactFact) ||
+		hasQuerySignal(query, QuerySignalPastEventDirectFact)
+}
+
+func secondaryContextBlockHint(query QueryAnalysis, fact core.Fact, policy RetrievalPolicy, pf reconstructionPrefetch) string {
+	for _, hint := range query.ContextBlockHints {
+		switch strings.TrimSpace(hint) {
+		case MemoryBlockTypeProvenanceMemory:
+			if queryWantsExplicitProvenanceMemory(query) || queryHasSourceEvidencePath(query, fact, pf) {
+				return MemoryBlockTypeProvenanceMemory
+			}
+		case MemoryBlockTypeHistoricalTransitionMemory:
+			if queryWantsHistoricalTransitionMemory(query, fact, policy, pf) {
+				return MemoryBlockTypeHistoricalTransitionMemory
+			}
+		case MemoryBlockTypeRelevantCausalMemory:
+			if queryWantsRelevantCausalMemory(query) {
+				return MemoryBlockTypeRelevantCausalMemory
+			}
+		case MemoryBlockTypePremiseCheckMemory:
+			if queryWantsPremiseCheckMemory(query) {
+				return MemoryBlockTypePremiseCheckMemory
+			}
+		case MemoryBlockTypeRelationshipArcMemory:
+			if queryWantsRelationshipArcMemory(query, fact, pf) {
+				return MemoryBlockTypeRelationshipArcMemory
+			}
+		case MemoryBlockTypeSupportiveMemory:
+			if queryWantsSupportiveMemory(query) {
+				return MemoryBlockTypeSupportiveMemory
+			}
+		case MemoryBlockTypeExperienceContext:
+			if queryUsesExperienceContext(query, fact) {
+				return MemoryBlockTypeExperienceContext
+			}
+		case MemoryBlockTypeFacts:
+			return MemoryBlockTypeFacts
+		}
+		break
+	}
+	return ""
+}
+
+func hasAuthorizedSupersedesEvidence(fact core.Fact, policy RetrievalPolicy, pf reconstructionPrefetch) bool {
+	return historicalStatusFromPrefetch(fact, policy, pf) == MemoryHistoricalStatusSuperseded
 }
 
 func queryUsesExperienceContext(query QueryAnalysis, fact core.Fact) bool {

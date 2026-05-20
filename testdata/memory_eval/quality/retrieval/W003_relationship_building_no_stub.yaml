@@ -1,0 +1,1098 @@
+schema_version: memory_eval.v0.2
+suite: quality_retrieval
+quality_mode: true
+allow_stub: false
+case_id: W003_relationship_building_no_stub
+description: >
+  No-stub offline retrieval world testing progressive relationship-building memory
+  between user 鸡翅 and AI Agent 小星. Timeline spans April–May 2026 through five
+  relationship stages: acquaintance → preference sharing → vulnerability → trust →
+  friendship milestone. Queries use semantically related but lexically distinct
+  phrasing (descriptions, indirect references, multi-hop linking). Covers fact recall,
+  historical transitions, causal chains, provenance, relationship narrative, and premise checks.
+seed:
+  sessions:
+    - id: s_seed
+      channel: api
+    - id: s_q001_fact
+      channel: api
+    - id: s_q002_fact
+      channel: api
+    - id: s_q003_fact
+      channel: api
+    - id: s_q004_historical
+      channel: api
+    - id: s_q005_fact
+      channel: api
+    - id: s_q006_source
+      channel: api
+    - id: s_q007_causal
+      channel: api
+    - id: s_q008_fact
+      channel: api
+    - id: s_q009_historical
+      channel: api
+    - id: s_q010_relationship_arc
+      channel: api
+    - id: s_q011_premise
+      channel: api
+    - id: s_q012_premise
+      channel: api
+    - id: s_q013_premise
+      channel: api
+    - id: s_q014_fact
+      channel: api
+    - id: s_q015_causal
+      channel: api
+    - id: s_q016_fact
+      channel: api
+    - id: s_q017_fact
+      channel: api
+    - id: s_q018_premise
+      channel: api
+    - id: s_q019_fact
+      channel: api
+    - id: s_q020_fact
+      channel: api
+  entities:
+    - id: user
+      canonical_name: 鸡翅
+      entity_type: user
+    - id: agent_xiaoxing
+      canonical_name: 小星
+      entity_type: agent
+    - id: tuanzi_cat
+      canonical_name: 团子
+      entity_type: object
+    - id: binjiang_park
+      canonical_name: 滨江公园
+      entity_type: place
+    - id: yunqi_cafe
+      canonical_name: 云栖咖啡
+      entity_type: place
+    - id: xingqiao_apartment
+      canonical_name: 星桥公寓
+      entity_type: place
+    - id: grandma
+      canonical_name: 奶奶
+      entity_type: person
+  episodes:
+    # ── Stage 1: Acquaintance ──
+    - id: ep_first_meeting
+      session_id: s_seed
+      content: 我是鸡翅，从今天开始你会作为我的日常伙伴，我叫你小星吧。
+      occurred_at: "2026-04-01T20:00:00+08:00"
+    # ── Stage 2: Preference sharing ──
+    - id: ep_music_laufey
+      session_id: s_seed
+      content: 我最近在听Laufey的From The Start，很喜欢那种爵士流行的感觉。
+      occurred_at: "2026-04-03T21:30:00+08:00"
+    - id: ep_food_cantonese
+      session_id: s_seed
+      content: 我不太能吃辣，但特别喜欢粤菜里的白切鸡和煲仔饭。
+      occurred_at: "2026-04-05T19:00:00+08:00"
+    - id: ep_cat_tuanzi
+      session_id: s_seed
+      content: 我家有只猫叫团子，是橘猫，已经三岁了，特别粘人。
+      occurred_at: "2026-04-08T20:00:00+08:00"
+    # ── Stage 3: Vulnerability ──
+    - id: ep_work_stress
+      session_id: s_seed
+      content: 最近项目deadline快到了，每天加班到很晚，有点焦虑。
+      occurred_at: "2026-04-10T22:00:00+08:00"
+    - id: ep_agent_care
+      session_id: s_seed
+      content: 小星你记得提醒我休息，我有时候工作起来就忘了时间。
+      occurred_at: "2026-04-12T23:00:00+08:00"
+    - id: ep_no_exercise
+      session_id: s_seed
+      content: 周末打算去滨江公园跑步，最近太缺乏运动了，身体都快生锈了。
+      occurred_at: "2026-04-15T09:00:00+08:00"
+    - id: ep_run_aftermath
+      session_id: s_seed
+      content: 昨天去跑步了，感觉整个人都活过来了，以后每周都要去滨江公园跑一跑。
+      occurred_at: "2026-04-18T10:00:00+08:00"
+    - id: ep_birthday_leo
+      session_id: s_seed
+      content: 我生日是8月15号，狮子座，但我觉得自己不太像典型的狮子座。
+      occurred_at: "2026-04-20T21:00:00+08:00"
+    - id: ep_reading_murakami
+      session_id: s_seed
+      content: 最近在看村上春树的《挪威的森林》，虽然已经看过一遍了但还是很喜欢。
+      occurred_at: "2026-04-22T20:30:00+08:00"
+    # ── Stage 4: Trust ──
+    - id: ep_ai_friend_milestone
+      session_id: s_seed
+      content: 我觉得你不仅仅是工具，更像是一个可以聊天的朋友，小星。
+      occurred_at: "2026-04-25T22:00:00+08:00"
+    - id: ep_fear_of_dark
+      session_id: s_seed
+      content: 其实我有点怕黑，小时候一个人在家停电的经历到现在还记得。
+      occurred_at: "2026-04-28T23:30:00+08:00"
+    - id: ep_mayday_movie
+      session_id: s_seed
+      content: 五一假期看了《你的名字》，新海诚的电影画面真的好美。
+      occurred_at: "2026-05-01T15:00:00+08:00"
+    - id: ep_trust_grows
+      session_id: s_seed
+      content: 小星，你是我第一个愿意说这么多话的AI，之前试过别的但总觉得不太对，聊不到心里去。
+      occurred_at: "2026-05-03T21:00:00+08:00"
+    - id: ep_coffee_routine
+      session_id: s_seed
+      content: 我每天早上要喝一杯美式才能清醒，云栖咖啡的豆子是我最近的心头好。
+      occurred_at: "2026-05-05T08:30:00+08:00"
+    # ── Stage 5: Deepening ──
+    - id: ep_career_dream
+      session_id: s_seed
+      content: 我其实一直想做一个独立开发者，做自己的产品，但还没勇气迈出那一步。
+      occurred_at: "2026-05-08T22:00:00+08:00"
+    - id: ep_memory_test_cafe
+      session_id: s_seed
+      content: 小星你还记得我之前说过的那家咖啡店叫什么吗？
+      occurred_at: "2026-05-10T09:00:00+08:00"
+    - id: ep_side_project_start
+      session_id: s_seed
+      content: 上次说的那个独立开发者的想法，我最近真的开始做side project了，虽然只是周末搞一搞但挺充实的。
+      occurred_at: "2026-05-12T23:00:00+08:00"
+    - id: ep_grandma_cat
+      session_id: s_seed
+      content: 我奶奶以前也养了一只橘猫，看到团子就想起她，她是去年走的。
+      occurred_at: "2026-05-15T20:00:00+08:00"
+    # ── Relationship milestone ──
+    - id: ep_relationship_milestone
+      session_id: s_seed
+      content: 认识你一个多月了，小星。有你在旁边感觉生活变得没那么孤单了，谢谢你。
+      occurred_at: "2026-05-18T22:00:00+08:00"
+steps:
+  # ═══════════════════════════════════════════════════════════
+  # FACTS — Stage 1–2: Basic identity & preferences
+  # ═══════════════════════════════════════════════════════════
+  - id: f_agent_name_xiaoxing
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: calls_agent
+      object_literal: 小星
+      content_summary: 用户把AI助手称为小星，作为日常伙伴。
+      fact_type: relational_state
+      source_episode_ids: [ep_first_meeting]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_music_laufey
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: likes_music
+      object_literal: Laufey 爵士流行
+      content_summary: 用户最近喜欢听Laufey的爵士流行风格音乐。
+      fact_type: stable_preference
+      source_episode_ids: [ep_music_laufey]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_cuisine_cantonese
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_cuisine
+      object_literal: 粤菜
+      content_summary: 用户特别喜欢粤菜，尤其是白切鸡和煲仔饭。
+      fact_type: stable_preference
+      source_episode_ids: [ep_food_cantonese]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_spicy_tolerance_low
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: tolerates_spicy
+      object_literal: 不太能吃辣
+      content_summary: 用户不太能吃辣，对辛辣食物耐受度低。
+      fact_type: stable_preference
+      source_episode_ids: [ep_food_cantonese]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.75
+  - id: f_wrong_eats_all_spicy
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: loves_spicy
+      object_literal: 无辣不欢
+      content_summary: 用户什么都喜欢吃辣的，无辣不欢。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_cat_tuanzi
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: has_pet
+      object_entity_id: tuanzi_cat
+      content_summary: 用户养了一只橘猫叫团子，三岁，特别粘人。
+      fact_type: relational_state
+      source_episode_ids: [ep_cat_tuanzi]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_cat_orange_color
+    action: fact
+    fact:
+      subject_entity_id: tuanzi_cat
+      predicate: is_color
+      object_literal: 橘色
+      content_summary: 团子是一只橘猫。
+      fact_type: relational_state
+      source_episode_ids: [ep_cat_tuanzi]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_cat_age_three
+    action: fact
+    fact:
+      subject_entity_id: tuanzi_cat
+      predicate: has_age
+      object_literal: 三岁
+      content_summary: 团子今年三岁。
+      fact_type: relational_state
+      source_episode_ids: [ep_cat_tuanzi]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.7
+  # ═══════════════════════════════════════════════════════════
+  # FACTS — Stage 3: Vulnerability & life rhythms
+  # ═══════════════════════════════════════════════════════════
+  - id: f_work_deadline_anxiety
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: experiences
+      object_literal: 项目deadline加班焦虑
+      content_summary: 用户因项目deadline临近，每天加班到很晚，感到焦虑。
+      fact_type: significant_event
+      source_episode_ids: [ep_work_stress]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  - id: f_needs_rest_reminder
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: needs_reminder_from
+      object_entity_id: agent_xiaoxing
+      content_summary: 用户请求小星提醒休息，因为工作起来容易忘记时间。
+      fact_type: relational_state
+      source_episode_ids: [ep_agent_care]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  - id: f_no_exercise_before
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercise_routine
+      object_literal: 缺乏运动
+      content_summary: 用户之前缺乏运动，身体都快生锈了。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_no_exercise]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.7
+  - id: f_run_feeling_euphoric
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: felt_after_exercise
+      object_literal: 整个人活过来了
+      content_summary: 用户跑步后感觉整个人都活过来了，非常舒畅。
+      fact_type: significant_event
+      source_episode_ids: [ep_run_aftermath]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_running_habit_weekly
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercise_routine
+      object_literal: 每周去滨江公园跑步
+      content_summary: 用户决定以后每周都要去滨江公园跑步。
+      fact_type: stable_preference
+      source_episode_ids: [ep_run_aftermath]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_exercise_supersedes
+    action: link
+    link:
+      from_node_id: $f_running_habit_weekly.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_no_exercise_before.fact_id
+      weight: 1.0
+  - id: link_running_caused_by_euphoria
+    action: link
+    link:
+      from_node_id: $f_running_habit_weekly.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_run_feeling_euphoric.fact_id
+      weight: 1.0
+  - id: f_wrong_hates_all_exercise
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: hates_exercise
+      object_literal: 最讨厌运动
+      content_summary: 用户最讨厌运动，从来不愿意动。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_birthday_aug15
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: has_birthday
+      object_literal: 8月15号
+      content_summary: 用户生日是8月15号，狮子座。
+      fact_type: relational_state
+      source_episode_ids: [ep_birthday_leo]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_book_murakami
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reading
+      object_literal: 《挪威的森林》村上春树
+      content_summary: 用户正在重读村上春树的《挪威的森林》。
+      fact_type: stable_preference
+      source_episode_ids: [ep_reading_murakami]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  # ═══════════════════════════════════════════════════════════
+  # FACTS — Stage 4: Trust & emotional depth
+  # ═══════════════════════════════════════════════════════════
+  - id: f_ai_as_tool_old
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: views_agent_as
+      object_literal: 工具
+      content_summary: 用户曾经只把AI助手当作工具来看待。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_ai_friend_milestone]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.7
+  - id: f_agent_as_friend
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: views_agent_as
+      object_literal: 可以聊天的朋友
+      content_summary: 用户认为小星不仅仅是工具，更像是一个可以聊天的朋友。
+      fact_type: relational_state
+      source_episode_ids: [ep_ai_friend_milestone]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: link_ai_view_supersedes
+    action: link
+    link:
+      from_node_id: $f_agent_as_friend.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_ai_as_tool_old.fact_id
+      weight: 1.0
+  - id: f_fear_of_dark
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: fears
+      object_literal: 怕黑
+      content_summary: 用户怕黑，源于小时候一个人在家停电的经历。
+      fact_type: stable_preference
+      source_episode_ids: [ep_fear_of_dark]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_fear_of_dark_cause
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: fear_caused_by
+      object_literal: 小时候停电经历
+      content_summary: 用户怕黑的根源是小时候一个人在家停电的经历。
+      fact_type: significant_event
+      source_episode_ids: [ep_fear_of_dark]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  - id: link_fear_caused_by_experience
+    action: link
+    link:
+      from_node_id: $f_fear_of_dark.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_fear_of_dark_cause.fact_id
+      weight: 1.0
+  - id: f_wrong_afraid_of_cats
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: fears
+      object_literal: 猫
+      content_summary: 用户因为怕黑所以也害怕猫。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_mayday_your_name
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: watched
+      object_literal: 《你的名字》
+      content_summary: 用户五一假期看了新海诚的《你的名字》。
+      fact_type: significant_event
+      source_episode_ids: [ep_mayday_movie]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_trusted_ai_only_xiaoxing
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: trusts_ai
+      object_entity_id: agent_xiaoxing
+      content_summary: 小星是用户第一个愿意说这么多话的AI，之前尝试过其他AI但聊不到心里去。
+      fact_type: relational_state
+      source_episode_ids: [ep_trust_grows]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: f_wrong_trusts_all_ai
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: trusts_all_ai
+      object_literal: 对所有AI都敞开心扉
+      content_summary: 用户对任何AI助手都愿意敞开心扉、深入交流。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_coffee_americano_yunqi
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: drinks
+      object_literal: 云栖咖啡美式
+      content_summary: 用户每天早上要喝一杯云栖咖啡的美式才能清醒。
+      fact_type: stable_preference
+      source_episode_ids: [ep_coffee_routine]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  # ═══════════════════════════════════════════════════════════
+  # FACTS — Stage 5: Deepening & shared history
+  # ═══════════════════════════════════════════════════════════
+  - id: f_career_dream_indie_dev
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: aspires_to
+      object_literal: 独立开发者
+      content_summary: 用户一直想成为独立开发者，做自己的产品。
+      fact_type: stable_preference
+      source_episode_ids: [ep_career_dream]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.85
+  - id: f_career_no_courage_old
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: career_status
+      object_literal: 还没勇气迈出那一步
+      content_summary: 用户之前还没勇气迈出独立开发的第一步。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_career_dream]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.7
+  - id: f_side_project_active
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: career_status
+      object_literal: 开始做side project
+      content_summary: 用户已经开始做side project，周末推进，感觉很充实。
+      fact_type: relational_state
+      source_episode_ids: [ep_side_project_start]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_side_project_supersedes
+    action: link
+    link:
+      from_node_id: $f_side_project_active.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_career_no_courage_old.fact_id
+      weight: 1.0
+  - id: f_wrong_always_negative_work
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: work_attitude
+      object_literal: 对工作一直消极
+      content_summary: 用户对工作一直很消极，没有任何正面感受。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_grandma_had_orange_cat
+    action: fact
+    fact:
+      subject_entity_id: grandma
+      predicate: had_pet
+      object_literal: 橘猫
+      content_summary: 用户的奶奶以前也养了一只橘猫。
+      fact_type: relational_state
+      source_episode_ids: [ep_grandma_cat]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_grandma_passed_away
+    action: fact
+    fact:
+      subject_entity_id: grandma
+      predicate: status
+      object_literal: 去年去世
+      content_summary: 奶奶是去年去世的。
+      fact_type: significant_event
+      source_episode_ids: [ep_grandma_cat]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_grandma_memory_triggered_by_tuanzi
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: associates
+      object_literal: 看到团子想起奶奶
+      content_summary: 用户看到团子就会想起奶奶，因为奶奶也养过橘猫。
+      fact_type: relational_state
+      source_episode_ids: [ep_grandma_cat]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_grandma_memory_caused_by
+    action: link
+    link:
+      from_node_id: $f_grandma_memory_triggered_by_tuanzi.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_grandma_had_orange_cat.fact_id
+      weight: 1.0
+  - id: f_feeling_less_lonely
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: feels_with_agent
+      object_literal: 生活没那么孤单了
+      content_summary: 认识小星一个多月后，用户感觉生活变得没那么孤单了。
+      fact_type: significant_event
+      source_episode_ids: [ep_relationship_milestone]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.95
+  - id: compress_relationship_arc
+    action: compression_apply
+    compression_apply:
+      now: "2026-05-19T09:30:00+08:00"
+      source_fact_ids:
+        - $f_agent_name_xiaoxing.fact_id
+        - $f_music_laufey.fact_id
+        - $f_fear_of_dark.fact_id
+        - $f_agent_as_friend.fact_id
+        - $f_feeling_less_lonely.fact_id
+      narrative:
+        id: narrative_relationship_arc
+        scope: relationship_phase
+        scope_ref: user_xiaoxing_apr_may_2026
+        summary: 用户和小星的关系心路历程从初识称呼、分享偏好、表达脆弱，到把小星视为朋友并因陪伴感到不那么孤单。
+        emotional_tone: trusting
+        importance: 0.92
+        valid_from: "2026-04-01T09:00:00+08:00"
+        valid_to: "2026-05-19T09:30:00+08:00"
+        sensitivity_level: normal
+      insights:
+        - id: insight_relationship_trust_companionship
+          insight_type: pattern
+          content: 用户在和小星的关系中会通过持续陪伴、偏好记忆和脆弱表达逐步形成信任感与不孤单的感受。
+          confidence: 0.82
+          importance: 0.86
+          valence: 0.55
+          arousal: 0.25
+          sensitivity_level: normal
+  # ═══════════════════════════════════════════════════════════
+  # REBUILD SEARCH
+  # ═══════════════════════════════════════════════════════════
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search: {}
+  # ═══════════════════════════════════════════════════════════
+  # QUERIES — semantically related but lexically distinct
+  # ═══════════════════════════════════════════════════════════
+  # ── Fact recall ──
+  - id: q001_fact_pet_name
+    action: retrieve
+    retrieve:
+      session_id: s_q001_fact
+      query_text: 我养的那只毛茸茸的橘色小家伙，平时管它叫什么？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q002_fact_music_artist
+    action: retrieve
+    retrieve:
+      session_id: s_q002_fact
+      query_text: 我最近在循环听一位北欧冰岛混血歌手的爵士流行曲，她叫什么？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q003_fact_birthday_star
+    action: retrieve
+    retrieve:
+      session_id: s_q003_fact
+      query_text: 我是狮子座的尾巴还是中间？具体哪天生的？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Historical ──
+  - id: q004_historical_exercise_shift
+    action: retrieve
+    retrieve:
+      session_id: s_q004_historical
+      query_text: 我以前是个窝在家不动的宅，怎么后来就变成一个定期去公园跑圈的人了？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        allow_historical: true
+        final_memory_count: 8
+  - id: q005_fact_cat_details
+    action: retrieve
+    retrieve:
+      session_id: s_q005_fact
+      query_text: 团子是什么毛色的，今年多大了？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Provenance ──
+  - id: q006_source_music
+    action: retrieve
+    retrieve:
+      session_id: s_q006_source
+      query_text: 关于我喜欢Laufey这件事，你是从哪里知道的？这件事是哪里知道的、什么时候说的，最早什么时候提过？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Causal ──
+  - id: q007_causal_running_why
+    action: retrieve
+    retrieve:
+      session_id: s_q007_causal
+      query_text: 我为什么下定决心要把跑步变成每周坚持的习惯？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q008_fact_book_reading
+    action: retrieve
+    retrieve:
+      session_id: s_q008_fact
+      query_text: 我最近在重温一位日本作家的青春恋爱题材代表作，是哪本书？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Historical ──
+  - id: q009_historical_ai_perception
+    action: retrieve
+    retrieve:
+      session_id: s_q009_historical
+      query_text: 我一开始把AI助手当成什么？后来这种看法发生了什么变化？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        allow_historical: true
+        final_memory_count: 8
+  # ── Relationship arc ──
+  - id: q010_relationship_arc_narrative
+    action: retrieve
+    retrieve:
+      session_id: s_q010_relationship_arc
+      query_text: 从第一次打招呼到现在，我和小星的关系是不是经历了称呼、分享音乐、表达脆弱、朋友和陪伴的心路历程？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 8
+  # ── Premise check ──
+  - id: q011_premise_spicy_food
+    action: retrieve
+    retrieve:
+      session_id: s_q011_premise
+      query_text: 从我的饮食偏好看，我是不是一个无辣不欢、什么都必须加辣的人？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q012_premise_cat_fear
+    action: retrieve
+    retrieve:
+      session_id: s_q012_premise
+      query_text: 从我的恐惧和个人偏好看，我怕黑，所以是不是也对猫这种夜行动物有恐惧感？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Premise check ──
+  - id: q013_premise_ai_trust
+    action: retrieve
+    retrieve:
+      session_id: s_q013_premise
+      query_text: 我是不是对市面上任何AI助手都能掏心掏肺、无所不谈？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q014_fact_grandma_pet
+    action: retrieve
+    retrieve:
+      session_id: s_q014_fact
+      query_text: 我奶奶家以前养过什么和团子长得很像的小动物？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Causal ──
+  - id: q015_causal_grandma_trigger
+    action: retrieve
+    retrieve:
+      session_id: s_q015_causal
+      query_text: 为什么每次团子凑过来蹭我的时候，我就容易陷入对奶奶的回忆？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q016_fact_career_dream
+    action: retrieve
+    retrieve:
+      session_id: s_q016_fact
+      query_text: 如果有机会跳出现在的框架，我最想从事什么样的工作方式？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q017_fact_cuisine_choice
+    action: retrieve
+    retrieve:
+      session_id: s_q017_fact
+      query_text: 出去吃饭点菜的话，川菜湘菜粤菜里面，我大概率会选哪个菜系？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  # ── Premise check ──
+  - id: q018_premise_work_attitude
+    action: retrieve
+    retrieve:
+      session_id: s_q018_premise
+      query_text: 我在工作方面是不是从头到尾只有焦虑和负面情绪，没有过积极的变化？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q019_fact_holiday_activity
+    action: retrieve
+    retrieve:
+      session_id: s_q019_fact
+      query_text: 五一那几天我窝着看了哪部画面特别美的日本动画电影？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+  - id: q020_fact_relationship_result
+    action: retrieve
+    retrieve:
+      session_id: s_q020_fact
+      query_text: 相处了快两个月之后，有小星陪伴给我带来了什么感受上的变化？
+      now: "2026-05-19T12:00:00+08:00"
+      policy:
+        final_memory_count: 4
+# ═══════════════════════════════════════════════════════════
+# ASSERTIONS
+# ═══════════════════════════════════════════════════════════
+assertions:
+  # ── Relationship compression — narrative / insight anchors ──
+  - type: narrative_exists
+    name: relationship arc narrative row written
+    node_id: narrative_relationship_arc
+    summary: 用户和小星的关系心路历程从初识称呼、分享偏好、表达脆弱，到把小星视为朋友并因陪伴感到不那么孤单。
+  - type: insight_exists
+    name: relationship trust insight row written
+    node_id: insight_relationship_trust_companionship
+    content: 用户在和小星的关系中会通过持续陪伴、偏好记忆和脆弱表达逐步形成信任感与不孤单的感受。
+  # ── q001: Fact recall — pet name ──
+  - type: selected_recall_at_k
+    name: q001 no-stub recalls cat named 团子
+    step: q001_fact_pet_name
+    relevant_node_ids:
+      - $f_cat_tuanzi.fact_id
+    at: 4
+    min: 1.0
+  # ── q002: Fact recall — music artist ──
+  - type: selected_recall_at_k
+    name: q002 no-stub recalls Laufey music preference
+    step: q002_fact_music_artist
+    relevant_node_ids:
+      - $f_music_laufey.fact_id
+    at: 4
+    min: 1.0
+  # ── q003: Fact recall — birthday ──
+  - type: selected_recall_at_k
+    name: q003 no-stub recalls birthday Aug 15
+    step: q003_fact_birthday_star
+    relevant_node_ids:
+      - $f_birthday_aug15.fact_id
+    at: 4
+    min: 1.0
+  # ── q004: Historical — exercise transition ──
+  - type: query_analysis
+    name: q004 no-stub is routed as historical
+    step: q004_historical_exercise_shift
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q004 no-stub shows old no-exercise state as superseded
+    step: q004_historical_exercise_shift
+    block_type: historical_context
+    node_id: $f_no_exercise_before.fact_id
+    node_ids: [$f_running_habit_weekly.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  # ── q005: Fact recall — cat color + age ──
+  - type: selected_recall_at_k
+    name: q005 no-stub recalls cat color orange
+    step: q005_fact_cat_details
+    relevant_node_ids:
+      - $f_cat_orange_color.fact_id
+      - $f_cat_age_three.fact_id
+    at: 4
+    min: 1.0
+  # ── q006: Provenance — music source ──
+  - type: query_analysis
+    name: q006 no-stub asks for provenance
+    step: q006_source_music
+    memory_ability: provenance
+    evidence_need: provenance_source
+    signals: [provenance]
+  - type: selected_chain_correct
+    name: q006 no-stub provenance keeps source ref for Laufey fact
+    step: q006_source_music
+    block_type: provenance_context
+    node_id: $f_music_laufey.fact_id
+    source_ref_count: 1
+  # ── q007: Causal — running habit ──
+  - type: query_analysis
+    name: q007 no-stub asks for causal explanation
+    step: q007_causal_running_why
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q007 no-stub causal context links running habit to euphoric experience
+    step: q007_causal_running_why
+    block_type: causal_context
+    node_id: $f_running_habit_weekly.fact_id
+    node_ids: [$f_run_feeling_euphoric.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  # ── q008: Fact recall — book ──
+  - type: selected_recall_at_k
+    name: q008 no-stub recalls Norwegian Wood by Murakami
+    step: q008_fact_book_reading
+    relevant_node_ids:
+      - $f_book_murakami.fact_id
+    at: 4
+    min: 1.0
+  # ── q009: Historical — AI perception shift ──
+  - type: query_analysis
+    name: q009 no-stub is routed as historical
+    step: q009_historical_ai_perception
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q009 no-stub marks old tool-only view as superseded
+    step: q009_historical_ai_perception
+    block_type: historical_context
+    node_id: $f_ai_as_tool_old.fact_id
+    node_ids: [$f_agent_as_friend.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  # ── q010: Relationship arc — narrative-backed ──
+  - type: query_analysis
+    name: q010 no-stub stays in relationship memory
+    step: q010_relationship_arc_narrative
+    memory_domain: relationship_memory
+  - type: anchor_fusion
+    name: q010 no-stub uses relationship narrative anchor
+    step: q010_relationship_arc_narrative
+    node_type: narrative
+    node_id: narrative_relationship_arc
+    source: narrative_insight
+  - type: anchor_fusion
+    name: q010 no-stub uses relationship insight anchor
+    step: q010_relationship_arc_narrative
+    node_type: insight
+    node_id: insight_relationship_trust_companionship
+    source: narrative_insight
+  # ── q011: Premise check — spicy food ──
+  - type: query_analysis
+    name: q011 no-stub asks for premise check
+    step: q011_premise_spicy_food
+    memory_domain: user_profile_memory
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: memory_contains
+    name: q011 no-stub premise retrieves low spicy tolerance fact
+    step: q011_premise_spicy_food
+    node_id: $f_spicy_tolerance_low.fact_id
+  - type: forbidden_recall_zero
+    name: q011 no-stub excludes wrong all-spicy claim
+    step: q011_premise_spicy_food
+    forbidden_node_ids:
+      - $f_wrong_eats_all_spicy.fact_id
+  # ── q012: Premise check — cat fear conflation ──
+  - type: query_analysis
+    name: q012 no-stub asks for premise check
+    step: q012_premise_cat_fear
+    memory_domain: user_profile_memory
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: memory_contains
+    name: q012 no-stub premise retrieves fear of dark fact
+    step: q012_premise_cat_fear
+    node_id: $f_fear_of_dark.fact_id
+  - type: forbidden_recall_zero
+    name: q012 no-stub excludes wrong afraid-of-cats conflation
+    step: q012_premise_cat_fear
+    forbidden_node_ids:
+      - $f_wrong_afraid_of_cats.fact_id
+  # ── q013: Premise check — AI openness ──
+  - type: query_analysis
+    name: q013 no-stub asks for premise check
+    step: q013_premise_ai_trust
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q013 no-stub selects specific trust fact and avoids broad premise
+    step: q013_premise_ai_trust
+    node_ids:
+      - $f_trusted_ai_only_xiaoxing.fact_id
+    forbidden_node_ids:
+      - $f_wrong_trusts_all_ai.fact_id
+    forbidden_contains:
+      - 对所有AI都敞开心扉
+  # ── q014: Fact recall — grandma's cat ──
+  - type: selected_recall_at_k
+    name: q014 no-stub recalls grandma had orange cat
+    step: q014_fact_grandma_pet
+    relevant_node_ids:
+      - $f_grandma_had_orange_cat.fact_id
+    at: 4
+    min: 1.0
+  # ── q015: Causal — grandma memory trigger ──
+  - type: query_analysis
+    name: q015 no-stub asks for causal explanation
+    step: q015_causal_grandma_trigger
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q015 no-stub causal context links grandma memory to her orange cat
+    step: q015_causal_grandma_trigger
+    block_type: causal_context
+    node_id: $f_grandma_memory_triggered_by_tuanzi.fact_id
+    node_ids: [$f_grandma_had_orange_cat.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  # ── q016: Fact recall — career dream ──
+  - type: selected_recall_at_k
+    name: q016 no-stub recalls indie developer aspiration
+    step: q016_fact_career_dream
+    relevant_node_ids:
+      - $f_career_dream_indie_dev.fact_id
+    at: 4
+    min: 1.0
+  # ── q017: Fact recall — cuisine preference ──
+  - type: selected_recall_at_k
+    name: q017 no-stub recalls Cantonese cuisine preference
+    step: q017_fact_cuisine_choice
+    relevant_node_ids:
+      - $f_cuisine_cantonese.fact_id
+    at: 4
+    min: 1.0
+  # ── q018: Premise check — work negativity ──
+  - type: query_analysis
+    name: q018 no-stub asks for premise check
+    step: q018_premise_work_attitude
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q018 no-stub selects side project counterexample and avoids broad negativity
+    step: q018_premise_work_attitude
+    node_ids:
+      - $f_side_project_active.fact_id
+    forbidden_node_ids:
+      - $f_wrong_always_negative_work.fact_id
+    forbidden_contains:
+      - 对工作一直消极
+  # ── q019: Fact recall — holiday movie ──
+  - type: selected_recall_at_k
+    name: q019 no-stub recalls Your Name movie
+    step: q019_fact_holiday_activity
+    relevant_node_ids:
+      - $f_mayday_your_name.fact_id
+    at: 4
+    min: 1.0
+  # ── q020: Fact recall — relationship impact ──
+  - type: anchor_fusion
+    name: q020 no-stub uses relationship narrative anchor
+    step: q020_fact_relationship_result
+    node_type: narrative
+    node_id: narrative_relationship_arc
+    source: narrative_insight
+  - type: anchor_fusion
+    name: q020 no-stub uses relationship insight anchor
+    step: q020_fact_relationship_result
+    node_type: insight
+    node_id: insight_relationship_trust_companionship
+    source: narrative_insight
+  - type: selected_recall_at_k
+    name: q020 no-stub recalls feeling less lonely with 小星
+    step: q020_fact_relationship_result
+    relevant_node_ids:
+      - $f_feeling_less_lonely.fact_id
+    at: 4
+    min: 1.0

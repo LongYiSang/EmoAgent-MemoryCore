@@ -21,14 +21,22 @@ const (
 	QueryTimeModeHistorical      QueryTimeMode = "historical"
 	QueryTimeModeBitemporalCheck QueryTimeMode = "bitemporal_check"
 
-	QuerySignalCausal          QuerySignal = "causal"
-	QuerySignalHistorical      QuerySignal = "historical"
-	QuerySignalProvenance      QuerySignal = "provenance"
-	QuerySignalSensitivity     QuerySignal = "sensitivity"
-	QuerySignalDebug           QuerySignal = "debug"
-	QuerySignalPremiseCheck    QuerySignal = "premise_check"
-	QuerySignalRelationshipArc QuerySignal = "relationship_arc"
-	QuerySignalForgetDelete    QuerySignal = "forget_delete"
+	QuerySignalCausal                QuerySignal = "causal"
+	QuerySignalHistorical            QuerySignal = "historical"
+	QuerySignalProvenance            QuerySignal = "provenance"
+	QuerySignalSensitivity           QuerySignal = "sensitivity"
+	QuerySignalDebug                 QuerySignal = "debug"
+	QuerySignalPremiseCheck          QuerySignal = "premise_check"
+	QuerySignalRelationshipArc       QuerySignal = "relationship_arc"
+	QuerySignalForgetDelete          QuerySignal = "forget_delete"
+	QuerySignalPastEventDirectFact   QuerySignal = "past_event_direct_fact"
+	QuerySignalStateTransition       QuerySignal = "state_transition"
+	QuerySignalProvenanceSource      QuerySignal = "provenance_source"
+	QuerySignalCausalChain           QuerySignal = "causal_chain"
+	QuerySignalPremiseCounterexample QuerySignal = "premise_counterexample"
+	QuerySignalEventBundle           QuerySignal = "event_bundle"
+	QuerySignalReflectionSummary     QuerySignal = "reflection_summary"
+	QuerySignalExactFact             QuerySignal = "exact_fact"
 
 	MemoryDomainRelationship          MemoryDomain = "relationship_memory"
 	MemoryDomainUserProfile           MemoryDomain = "user_profile_memory"
@@ -225,13 +233,16 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 }
 
 func queryTimeMode(normalized string) QueryTimeMode {
-	if hasHistoricalTransitionIntent(normalized) {
+	if hasStateTransitionIntent(normalized) {
+		return QueryTimeModeHistorical
+	}
+	if hasPastEventDirectFactIntent(normalized) {
 		return QueryTimeModeHistorical
 	}
 	if containsAny(normalized, "以前", "过去", "上次", "历史", "之前", "曾经", "从前", "prior", "previous", "last time", "historical", "history", "before") {
 		return QueryTimeModeHistorical
 	}
-	if containsAny(normalized, "一直", "是否一直", "是不是一直", "always") {
+	if hasUniversalPremiseIntent(normalized) {
 		return QueryTimeModeBitemporalCheck
 	}
 	return QueryTimeModeCurrent
@@ -239,16 +250,39 @@ func queryTimeMode(normalized string) QueryTimeMode {
 
 func querySignals(normalized string, timeMode QueryTimeMode) []QuerySignal {
 	var signals []QuerySignal
-	if containsAny(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause", "caused", "because") {
+	premiseCheckIntent := hasPremiseCheckIntent(normalized)
+	stateTransitionIntent := hasStateTransitionIntent(normalized)
+	if hasPastEventDirectFactIntent(normalized) && !stateTransitionIntent && !premiseCheckIntent {
+		signals = append(signals, QuerySignalPastEventDirectFact)
+		if hasEventBundleSlotLanguage(normalized) {
+			signals = append(signals, QuerySignalEventBundle)
+		}
+	}
+	if stateTransitionIntent {
+		signals = append(signals, QuerySignalStateTransition)
+	}
+	if hasProvenanceSourceIntent(normalized) {
+		signals = append(signals, QuerySignalProvenanceSource)
+	}
+	if hasReflectionSummaryIntent(normalized) {
+		signals = append(signals, QuerySignalReflectionSummary)
+	}
+	if premiseCheckIntent {
+		signals = append(signals, QuerySignalPremiseCounterexample)
+	}
+	if hasCausalExplainIntent(normalized) {
 		signals = append(signals, QuerySignalCausal)
+		if stateTransitionIntent {
+			signals = append(signals, QuerySignalCausalChain)
+		}
 	}
 	if timeMode == QueryTimeModeHistorical {
 		signals = append(signals, QuerySignalHistorical)
 	}
-	if containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance") {
+	if hasProvenanceSourceIntent(normalized) {
 		signals = append(signals, QuerySignalProvenance)
 	}
-	if containsAny(normalized, "是不是", "是否", "真的", "一直", "always") {
+	if premiseCheckIntent {
 		signals = append(signals, QuerySignalPremiseCheck)
 	}
 	if hasRelationshipArcIntent(normalized) {
@@ -263,17 +297,170 @@ func querySignals(normalized string, timeMode QueryTimeMode) []QuerySignal {
 	if containsAny(normalized, "debug", "调试", "diagnostic", "diagnostics", "诊断") {
 		signals = append(signals, QuerySignalDebug)
 	}
+	if len(signals) == 0 && strings.TrimSpace(normalized) != "" {
+		signals = append(signals, QuerySignalExactFact)
+	}
 	return signals
 }
 
 func hasHistoricalTransitionIntent(normalized string) bool {
-	if containsAny(normalized, "一开始", "后来", "以前", "曾经", "从前", "发生变化", "变成") {
+	return hasStateTransitionIntent(normalized)
+}
+
+func hasPastEventDirectFactIntent(normalized string) bool {
+	return containsAny(normalized, "上次", "那天", "五一", "有一次", "周末", "最近一次", "前几天")
+}
+
+func hasStateTransitionIntent(normalized string) bool {
+	if strings.Contains(normalized, "不再") && strings.Contains(normalized, "开始") {
 		return true
 	}
-	if containsAny(normalized, "变", "变化") && (strings.Contains(normalized, "从") || strings.Contains(normalized, "到")) {
+	if strings.Contains(normalized, "从") && (strings.Contains(normalized, "变成") || strings.Contains(normalized, "变为") || strings.Contains(normalized, "变得")) {
 		return true
 	}
-	return false
+	return hasOldStateMarker(normalized) && hasNewStateMarker(normalized)
+}
+
+func hasOldStateMarker(normalized string) bool {
+	return containsAny(normalized, "一开始", "之前", "以前", "曾经", "从前", "原来", "过去", "从来不", "以前从来", "起初")
+}
+
+func hasNewStateMarker(normalized string) bool {
+	return containsAny(normalized, "后来", "最近", "现在", "已经", "开始", "不再", "效果怎么样", "发生变化") ||
+		containsAny(normalized, "变成", "变为", "变得", "和好", "和解", "翻篇")
+}
+
+func hasProvenanceSourceIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"什么时候告诉我的",
+		"哪次告诉我的",
+		"什么时候说过",
+		"哪次说过",
+		"从哪里知道",
+		"哪里知道的",
+		"来源",
+		"证据",
+		"谁告诉我的",
+		"什么时候说的",
+		"最早什么时候",
+		"source",
+		"evidence",
+		"provenance",
+	)
+}
+
+func hasReflectionSummaryIntent(normalized string) bool {
+	if containsAny(normalized, "反思", "成长", "最近进步") {
+		return true
+	}
+	return containsAny(normalized, "这两个月", "最近") && containsAny(normalized, "变化", "进步")
+}
+
+func hasUniversalPremiseIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"是不是完全",
+		"是否完全",
+		"完全没有",
+		"没有任何",
+		"从来没",
+		"从来没有",
+		"从来不",
+		"一直都",
+		"一直没有",
+		"一直没",
+		"一直不",
+		"是否一直",
+		"是不是一直",
+		"所有",
+		"每个",
+		"任何",
+		"什么都",
+		"必须",
+		"从头到尾",
+		"总是",
+		"每次",
+		"永远",
+		"always",
+		"never",
+		"every time",
+	)
+}
+
+func hasPremiseCheckIntent(normalized string) bool {
+	return hasUniversalPremiseIntent(normalized) ||
+		hasConditionalPremiseCheckIntent(normalized) ||
+		hasPremiseChallengeEvidenceIntent(normalized)
+}
+
+func hasConditionalPremiseCheckIntent(normalized string) bool {
+	if !containsAny(normalized, "如果", "假如", "一旦", "if ") {
+		return false
+	}
+	return containsAny(
+		normalized,
+		"是否",
+		"是不是",
+		"会不会",
+		"能不能",
+		"可不可以",
+		"还能",
+		"还会不会",
+		"can ",
+		"will ",
+	)
+}
+
+func hasPremiseChallengeEvidenceIntent(normalized string) bool {
+	return containsAny(
+		normalized,
+		"有没有反例",
+		"有反例",
+		"反例",
+		"有没有例外",
+		"有例外",
+		"例外",
+		"推翻",
+		"打脸",
+		"还成立吗",
+		"仍然成立吗",
+		"counterexample",
+		"disprove",
+		"exception",
+	)
+}
+
+func hasEventBundleSlotLanguage(normalized string) bool {
+	slotCategories := 0
+	if containsAny(normalized, "跟谁", "和谁", "谁") {
+		slotCategories++
+	}
+	if containsAny(normalized, "多久", "多长时间", "排了多久") {
+		slotCategories++
+	}
+	if containsAny(normalized, "哪里", "哪儿") {
+		slotCategories++
+	}
+	if containsAny(normalized, "什么时候") {
+		slotCategories++
+	}
+	return slotCategories >= 2
+}
+
+func hasCausalExplainIntent(normalized string) bool {
+	return containsAny(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause", "caused", "because") &&
+		!hasDirectEventReasonSlotIntent(normalized)
+}
+
+func hasDirectEventReasonSlotIntent(normalized string) bool {
+	if !containsAny(normalized, "因为什么", "什么原因", "什么事情", "什么事", "什么由头", "什么名义", "what occasion", "what reason") {
+		return false
+	}
+	return containsAny(normalized,
+		"庆祝", "祝贺", "纪念", "请客", "请大家", "聚餐", "活动", "仪式", "安排",
+		"celebrate", "celebration", "occasion", "treat",
+	)
 }
 
 func queryMemoryDomain(normalized string) MemoryDomain {
@@ -291,24 +478,28 @@ func queryMemoryDomain(normalized string) MemoryDomain {
 
 func queryMemoryAbility(normalized string) MemoryAbility {
 	switch {
-	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
+	case hasProvenanceSourceIntent(normalized):
 		return MemoryAbilityProvenance
 	case hasRelationshipArcIntent(normalized):
 		return MemoryAbilityRelationshipArc
-	case containsAny(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause", "caused", "because"):
+	case hasStateTransitionIntent(normalized):
+		return MemoryAbilityHistorical
+	case hasPremiseCheckIntent(normalized):
+		return MemoryAbilityPremiseCheck
+	case hasPastEventDirectFactIntent(normalized):
+		return MemoryAbilityDirectFact
+	case hasCausalExplainIntent(normalized):
 		return MemoryAbilityCausalExplain
 	case containsAny(normalized, "忘掉", "删除", "删掉", "清除", "不要提", "别提", "不要再提", "边界", "不要提醒", "forget", "delete", "remove", "boundary"):
 		return MemoryAbilityBoundary
 	case containsAny(normalized, "支持", "安慰", "鼓励", "陪伴", "support", "supportive"):
 		return MemoryAbilitySupportive
-	case containsAny(normalized, "是不是", "是否", "真的", "一直", "always"):
-		return MemoryAbilityPremiseCheck
+	case hasReflectionSummaryIntent(normalized):
+		return MemoryAbilityHistorical
 	case containsAny(normalized, "坑", "踩坑", "失败", "报错", "错误", "故障", "gotcha", "pitfall", "failed", "failure", "error"):
 		return MemoryAbilityGotcha
 	case containsAny(normalized, "流程", "步骤", "怎么做", "操作步骤", "workflow", "procedure"):
 		return MemoryAbilityWorkflow
-	case queryTimeMode(normalized) == QueryTimeModeHistorical:
-		return MemoryAbilityHistorical
 	case hasDynamicStateIntent(normalized):
 		return MemoryAbilityDynamicState
 	case hasStaticStateIntent(normalized):
@@ -322,18 +513,20 @@ func queryMemoryAbility(normalized string) MemoryAbility {
 
 func queryEvidenceNeed(normalized string) EvidenceNeed {
 	switch {
-	case containsAny(normalized, "证据", "来源", "根据", "从哪里知道", "哪里知道的", "我什么时候说过", "哪次说过", "什么时候说过", "什么时候说的", "最早什么时候", "source", "evidence", "provenance"):
+	case hasProvenanceSourceIntent(normalized):
 		return EvidenceNeedProvenanceSource
 	case hasRelationshipArcIntent(normalized):
 		return EvidenceNeedRelationshipTimeline
-	case containsAny(normalized, "是不是", "是否", "真的", "一直", "always"):
+	case hasStateTransitionIntent(normalized):
+		return EvidenceNeedStateTransition
+	case hasPremiseCheckIntent(normalized):
 		return EvidenceNeedPremiseCounterexample
+	case hasPastEventDirectFactIntent(normalized) && !hasStateTransitionIntent(normalized):
+		return EvidenceNeedExactObservation
 	case containsAny(normalized, "坑", "踩坑", "失败", "报错", "错误", "故障", "gotcha", "pitfall", "failed", "failure", "error"):
 		return EvidenceNeedGotchaNote
 	case containsAny(normalized, "流程", "步骤", "怎么做", "操作步骤", "workflow", "procedure"):
 		return EvidenceNeedProcedureNote
-	case queryTimeMode(normalized) == QueryTimeModeHistorical:
-		return EvidenceNeedStateTransition
 	case hasDynamicStateIntent(normalized):
 		return EvidenceNeedStateTransition
 	default:
@@ -379,11 +572,17 @@ func ruleConfidence(normalized string, analysis QueryAnalysis) float64 {
 		return 0.78
 	case len(analysis.EntityMentions) > 0:
 		return 0.74
+	case onlyExactFactSignal(analysis.Signals):
+		return 0.42
 	case len(analysis.Signals) > 0:
 		return 0.68
 	default:
 		return 0.42
 	}
+}
+
+func onlyExactFactSignal(signals []QuerySignal) bool {
+	return len(signals) == 1 && signals[0] == QuerySignalExactFact
 }
 
 func ruleFieldConfidence(normalized string, analysis QueryAnalysis) QueryAnalysisConfidence {

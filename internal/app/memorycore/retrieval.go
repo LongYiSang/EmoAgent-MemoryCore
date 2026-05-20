@@ -12,6 +12,7 @@ import (
 
 const (
 	maxRerankQueryTextRune = 160
+	selectiveRerankTopN    = 12
 )
 
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
@@ -85,7 +86,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	rerankResults, rerankDiagnostics, err := s.rerankCandidates(ctx, sidecarCtx, personaID, prepared, safeRerankCandidates)
+	rerankResults, rerankDiagnostics, err := s.rerankCandidates(ctx, sidecarCtx, personaID, prepared, safeRerankCandidates, graphDiagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -440,9 +441,10 @@ func (s *service) graphActivationCandidates(ctx context.Context, sidecarCtx cont
 	return report.Mapped, diagnostics, nil
 }
 
-func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval, candidates []memsqlite.RerankCandidate) ([]memsqlite.RerankResultItem, *memsqlite.RerankDiagnostics, error) {
+func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Context, personaID string, prepared memsqlite.PreparedRetrieval, candidates []memsqlite.RerankCandidate, graphDiagnostics *memsqlite.GraphActivationDiagnostics) ([]memsqlite.RerankResultItem, *memsqlite.RerankDiagnostics, error) {
 	diagnostics := &memsqlite.RerankDiagnostics{
 		Status:             "disabled_by_config",
+		InputCount:         len(candidates),
 		SafeCandidateCount: len(candidates),
 	}
 	if !prepared.Policy.UseMirror {
@@ -457,6 +459,14 @@ func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Conte
 	if !ok || rerankAdapter == nil {
 		return nil, diagnostics, nil
 	}
+	if shouldSkipSelectiveRerank(prepared.Query, candidates, graphDiagnostics) {
+		diagnostics.Status = "skipped"
+		diagnostics.SkippedReason = "direct_raw_exact_margin_high"
+		s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
+		return nil, diagnostics, nil
+	}
+	candidates = capSelectiveRerankCandidates(candidates)
+	diagnostics.InputCount = len(candidates)
 	if s.sidecarBreaker != nil && !s.sidecarBreaker.allow(personaID, sidecarStageRerank) {
 		diagnostics.Status = "breaker_open"
 		diagnostics.Degraded = true
@@ -500,6 +510,100 @@ func (s *service) rerankCandidates(ctx context.Context, sidecarCtx context.Conte
 	diagnostics.ResultCount = len(result.Items)
 	s.recordSidecarStage(personaID, sidecarStageRerank, diagnostics.Status, diagnostics.FallbackReason)
 	return rerankItemsToStore(result.Items), diagnostics, nil
+}
+
+func shouldSkipSelectiveRerank(query memsqlite.QueryAnalysis, candidates []memsqlite.RerankCandidate, graphDiagnostics *memsqlite.GraphActivationDiagnostics) bool {
+	if !isDirectSelectiveRerankQuery(query) || queryRequiresLiveRerank(query) {
+		return false
+	}
+	if graphDiagnostics != nil && (graphDiagnostics.MappedCandidateCount > 0 || graphDiagnostics.SidecarCandidateCount > 0) {
+		return false
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	if hasRerankCandidateActivationOrSemanticNoise(candidates) {
+		return false
+	}
+	if query.Confidence > 0 && query.Confidence < 0.40 {
+		return false
+	}
+	top := candidates[0]
+	if top.CurrentScore < 0.45 || !hasRawExactOrLexicalRerankEvidence(top) {
+		return false
+	}
+	if len(candidates) > 1 && top.CurrentScore-candidates[1].CurrentScore < 0.15 {
+		return false
+	}
+	return true
+}
+
+func hasRerankCandidateActivationOrSemanticNoise(candidates []memsqlite.RerankCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.GraphEnergy > 0 {
+			return true
+		}
+		for source := range candidate.SourceScores {
+			if strings.HasPrefix(source, "semantic_") ||
+				source == "graph_activation" ||
+				source == "anchor_fusion" ||
+				source == "narrative_insight" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isDirectSelectiveRerankQuery(query memsqlite.QueryAnalysis) bool {
+	return query.MemoryAbility == memsqlite.MemoryAbilityDirectFact ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalPastEventDirectFact)
+}
+
+func queryRequiresLiveRerank(query memsqlite.QueryAnalysis) bool {
+	switch query.MemoryAbility {
+	case memsqlite.MemoryAbilityPremiseCheck, memsqlite.MemoryAbilityGotcha,
+		memsqlite.MemoryAbilityProvenance, memsqlite.MemoryAbilityCausalExplain,
+		memsqlite.MemoryAbilityRelationshipArc:
+		return true
+	}
+	for _, signal := range query.Signals {
+		switch signal {
+		case memsqlite.QuerySignalPremiseCounterexample, memsqlite.QuerySignalPremiseCheck,
+			memsqlite.QuerySignalProvenanceSource, memsqlite.QuerySignalProvenance,
+			memsqlite.QuerySignalCausalChain, memsqlite.QuerySignalCausal,
+			memsqlite.QuerySignalRelationshipArc, memsqlite.QuerySignalReflectionSummary:
+			return true
+		}
+	}
+	switch query.EvidenceNeed {
+	case memsqlite.EvidenceNeedPremiseCounterexample, memsqlite.EvidenceNeedProvenanceSource:
+		return true
+	}
+	return false
+}
+
+func hasRawExactOrLexicalRerankEvidence(candidate memsqlite.RerankCandidate) bool {
+	if candidate.SourceScores == nil {
+		return false
+	}
+	if candidate.SourceScores["lexical_coverage"] >= 0.75 ||
+		candidate.SourceScores["raw_exact"] > 0 ||
+		candidate.SourceScores["sqlite_fts"] > 0 ||
+		candidate.SourceScores["sqlite_sparse"] > 0 {
+		return true
+	}
+	if candidate.SourceScores["raw_query"] >= 0.85 || candidate.SourceScores["raw_dense"] >= 0.95 {
+		return true
+	}
+	return false
+}
+
+func capSelectiveRerankCandidates(candidates []memsqlite.RerankCandidate) []memsqlite.RerankCandidate {
+	if len(candidates) <= selectiveRerankTopN {
+		return candidates
+	}
+	return candidates[:selectiveRerankTopN]
 }
 
 func safeRerankQueryText(query memsqlite.QueryAnalysis) string {

@@ -386,6 +386,7 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 			out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
 		}
 		out.Signals = mergeQuerySignals(rule.Signals, analysis.Signals)
+		applyUnsupportedPremiseClamp(&out, rule)
 		applyHistoricalTransitionClamp(&out, rule)
 		out.EntityMentions = mergeSemanticEntityMentions(rule.EntityMentions, analysis.EntityMentions, hints, options.MinEntitySemanticConfidence)
 	}
@@ -696,6 +697,9 @@ func defaultQueryAnalysisAllowedEnums() QueryAnalysisAllowedEnums {
 			string(memsqlite.QuerySignalCausal), string(memsqlite.QuerySignalHistorical), string(memsqlite.QuerySignalProvenance),
 			string(memsqlite.QuerySignalSensitivity), string(memsqlite.QuerySignalDebug), string(memsqlite.QuerySignalPremiseCheck),
 			string(memsqlite.QuerySignalRelationshipArc), string(memsqlite.QuerySignalForgetDelete),
+			string(memsqlite.QuerySignalPastEventDirectFact), string(memsqlite.QuerySignalStateTransition), string(memsqlite.QuerySignalProvenanceSource),
+			string(memsqlite.QuerySignalCausalChain), string(memsqlite.QuerySignalPremiseCounterexample), string(memsqlite.QuerySignalEventBundle),
+			string(memsqlite.QuerySignalReflectionSummary), string(memsqlite.QuerySignalExactFact),
 		},
 		MemoryDomains: []string{string(memsqlite.MemoryDomainRelationship), string(memsqlite.MemoryDomainUserProfile), string(memsqlite.MemoryDomainWorkExperience), string(memsqlite.MemoryDomainEnvironmentExperience)},
 		MemoryAbilities: []string{
@@ -841,6 +845,46 @@ func applyHistoricalTransitionClamp(out *memsqlite.QueryAnalysis, rule memsqlite
 			out.MemoryAbility = memsqlite.MemoryAbilityHistorical
 		}
 	}
+}
+
+func applyUnsupportedPremiseClamp(out *memsqlite.QueryAnalysis, rule memsqlite.QueryAnalysis) {
+	if out == nil || ruleSupportsPremiseCheck(rule) {
+		return
+	}
+	if out.TimeMode == memsqlite.QueryTimeModeBitemporalCheck {
+		out.TimeMode = rule.TimeMode
+	}
+	if out.MemoryAbility == memsqlite.MemoryAbilityPremiseCheck {
+		out.MemoryAbility = rule.MemoryAbility
+	}
+	if out.EvidenceNeed == memsqlite.EvidenceNeedPremiseCounterexample {
+		out.EvidenceNeed = rule.EvidenceNeed
+	}
+	out.Signals = withoutPremiseSignals(out.Signals)
+}
+
+func ruleSupportsPremiseCheck(rule memsqlite.QueryAnalysis) bool {
+	return rule.TimeMode == memsqlite.QueryTimeModeBitemporalCheck ||
+		rule.MemoryAbility == memsqlite.MemoryAbilityPremiseCheck ||
+		rule.EvidenceNeed == memsqlite.EvidenceNeedPremiseCounterexample ||
+		hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalPremiseCheck) ||
+		hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalPremiseCounterexample)
+}
+
+func withoutPremiseSignals(signals []memsqlite.QuerySignal) []memsqlite.QuerySignal {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QuerySignal, 0, len(signals))
+	for _, signal := range signals {
+		switch signal {
+		case memsqlite.QuerySignalPremiseCheck, memsqlite.QuerySignalPremiseCounterexample:
+			continue
+		default:
+			out = append(out, signal)
+		}
+	}
+	return out
 }
 
 func hasHistoricalTransitionIntent(value string) bool {
@@ -992,15 +1036,21 @@ func sanitizedContextBlockHints(values []string) []string {
 
 func primaryContextBlockHint(query memsqlite.QueryAnalysis) []string {
 	switch {
-	case query.MemoryAbility == memsqlite.MemoryAbilityProvenance || query.EvidenceNeed == memsqlite.EvidenceNeedProvenanceSource:
+	case query.EvidenceNeed == memsqlite.EvidenceNeedProvenanceSource ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalProvenanceSource) ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalProvenance):
 		return []string{MemoryBlockTypeProvenanceMemory}
-	case query.MemoryAbility == memsqlite.MemoryAbilityCausalExplain:
+	case hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalCausal) ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalCausalChain):
 		return []string{MemoryBlockTypeRelevantCausalMemory}
-	case query.MemoryAbility == memsqlite.MemoryAbilityPremiseCheck || query.EvidenceNeed == memsqlite.EvidenceNeedPremiseCounterexample:
+	case query.EvidenceNeed == memsqlite.EvidenceNeedPremiseCounterexample ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalPremiseCounterexample):
 		return []string{MemoryBlockTypePremiseCheckMemory}
-	case query.MemoryAbility == memsqlite.MemoryAbilityRelationshipArc || query.EvidenceNeed == memsqlite.EvidenceNeedRelationshipTimeline:
+	case query.EvidenceNeed == memsqlite.EvidenceNeedRelationshipTimeline ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalRelationshipArc):
 		return []string{MemoryBlockTypeRelationshipArcMemory}
-	case query.MemoryAbility == memsqlite.MemoryAbilityHistorical || query.EvidenceNeed == memsqlite.EvidenceNeedStateTransition || query.TimeMode == memsqlite.QueryTimeModeHistorical:
+	case query.EvidenceNeed == memsqlite.EvidenceNeedStateTransition ||
+		hasStoreQuerySignal(query.Signals, memsqlite.QuerySignalStateTransition):
 		return []string{MemoryBlockTypeHistoricalTransitionMemory}
 	case query.MemoryAbility == memsqlite.MemoryAbilitySupportive:
 		return []string{MemoryBlockTypeSupportiveMemory}
@@ -1046,6 +1096,10 @@ func isValidQuerySignal(value string) bool {
 	switch memsqlite.QuerySignal(strings.TrimSpace(value)) {
 	case memsqlite.QuerySignalCausal, memsqlite.QuerySignalHistorical, memsqlite.QuerySignalProvenance, memsqlite.QuerySignalSensitivity,
 		memsqlite.QuerySignalDebug, memsqlite.QuerySignalPremiseCheck, memsqlite.QuerySignalRelationshipArc, memsqlite.QuerySignalForgetDelete:
+		return true
+	case memsqlite.QuerySignalPastEventDirectFact, memsqlite.QuerySignalStateTransition, memsqlite.QuerySignalProvenanceSource,
+		memsqlite.QuerySignalCausalChain, memsqlite.QuerySignalPremiseCounterexample, memsqlite.QuerySignalEventBundle,
+		memsqlite.QuerySignalReflectionSummary, memsqlite.QuerySignalExactFact:
 		return true
 	default:
 		return false

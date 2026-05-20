@@ -266,6 +266,87 @@ func TestMatrixRunnerDoesNotCacheQueryAnalysisSoftTimeoutAcrossMirrorProfiles(t 
 	}
 }
 
+func TestMatrixRunnerRerankProfilesKeepRuleOnlyQueryAnalysisWhenSemanticProfileIncluded(t *testing.T) {
+	fixture := minimalRetrievalFixture()
+	var semanticCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/query-analysis" {
+			t.Fatalf("unexpected semantic path %s", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode semantic request: %v", err)
+		}
+		semanticCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_query_analysis_result.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"provider":       "eval_real_semantic",
+			"analysis": map[string]any{
+				"time_mode":      "current",
+				"memory_domain":  "user_profile_memory",
+				"memory_ability": "direct_fact",
+				"evidence_need":  "exact_observation",
+				"confidence":     0.9,
+				"query_rewrites": []map[string]any{{
+					"text":    "语义 咖啡",
+					"purpose": "semantic_recall",
+					"weight":  0.8,
+				}},
+				"policy_hints": map[string]any{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	report := NewMatrixRunner(MatrixRunnerOptions{
+		TempDir:       t.TempDir(),
+		Profiles:      []Profile{ProfileRerankOff, ProfileRerankSelective, ProfileSemanticFullCurrent},
+		MirrorAdapter: newAdvancedMirrorAdapter(),
+		QueryAnalysis: memorycore.QueryAnalysisOptions{
+			Provider:   memorycore.QueryAnalysisProviderSidecar,
+			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+			SidecarURL: server.URL,
+		},
+		Strict: true,
+	}).Run(context.Background(), fixture)
+
+	if report.Failed() {
+		t.Fatalf("matrix report failed: %s", report.Error())
+	}
+	if semanticCalls.Load() != 1 {
+		t.Fatalf("semantic calls = %d, want only semantic_full_current to call once", semanticCalls.Load())
+	}
+	for _, profile := range report.Profiles[:2] {
+		analysis := firstRetrievalAnalysis(t, profile.Report)
+		if analysis.Source != memorycore.QueryAnalysisSourceRuleOnly {
+			t.Fatalf("%s query analysis source = %q, want rule_only", profile.Profile, analysis.Source)
+		}
+	}
+	semanticAnalysis := firstRetrievalAnalysis(t, report.Profiles[2].Report)
+	if semanticAnalysis.Source != memorycore.QueryAnalysisSourceMerged || len(semanticAnalysis.QueryRewrites) != 1 {
+		t.Fatalf("semantic profile query analysis = %#v, want merged semantic rewrite", semanticAnalysis)
+	}
+}
+
+func TestMatrixRunnerSemanticProfileOptionsUseEnvTimeoutsWithoutGlobalMode(t *testing.T) {
+	t.Setenv("MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_MS", "2500")
+	t.Setenv("MEMORYCORE_QUERY_ANALYSIS_SOFT_JOIN_TIMEOUT_MS", "1200")
+
+	runner := NewMatrixRunner(MatrixRunnerOptions{SidecarURL: "http://127.0.0.1:8765"})
+	options := runner.queryAnalysisForProfile(ProfileSemanticFullCurrent)
+
+	if options.Provider != memorycore.QueryAnalysisProviderSidecar ||
+		options.Mode != memorycore.QueryAnalysisModeSemanticAlways ||
+		options.SidecarURL != "http://127.0.0.1:8765" {
+		t.Fatalf("semantic profile query analysis options = %#v", options)
+	}
+	if options.Timeout != 2500*time.Millisecond || options.SoftJoinTimeout != 1200*time.Millisecond {
+		t.Fatalf("semantic profile timeouts = timeout:%s soft_join:%s", options.Timeout, options.SoftJoinTimeout)
+	}
+}
+
 func isSemanticTimeoutFallback(reason string) bool {
 	switch reason {
 	case "semantic_soft_timeout", "semantic_timeout":
@@ -511,6 +592,123 @@ func TestParseProfilesAcceptsSemanticABProfiles(t *testing.T) {
 		if !profiles[i].UsesMirror() {
 			t.Fatalf("profile %q should use mirror", profiles[i])
 		}
+	}
+}
+
+func TestParseProfilesAcceptsW004SoftRoutingProfiles(t *testing.T) {
+	profiles, err := ParseProfiles("semantic_on_low_confidence,semantic_full,rerank_off,rerank_selective,soft_routing_enabled")
+	if err != nil {
+		t.Fatalf("parse profiles: %v", err)
+	}
+	want := []Profile{
+		ProfileSemanticFullSoftGated,
+		ProfileSemanticFullCurrent,
+		ProfileRerankOff,
+		ProfileRerankSelective,
+		ProfileSoftRoutingEnabled,
+	}
+	if len(profiles) != len(want) {
+		t.Fatalf("profiles = %#v, want %#v", profiles, want)
+	}
+	for i := range want {
+		if profiles[i] != want[i] {
+			t.Fatalf("profiles[%d] = %q, want %q", i, profiles[i], want[i])
+		}
+	}
+}
+
+func TestRerankSelectiveRequiresLiveRerankProvider(t *testing.T) {
+	req := ProfileRerankSelective.Requirements()
+	if !req.RequiresSidecar || !req.RequiresEmbedding || !req.RequiresMirror {
+		t.Fatalf("rerank_selective requirements = %#v, want sidecar, embedding, and mirror", req)
+	}
+	if !req.RequiresRerankProvider {
+		t.Fatalf("rerank_selective requirements = %#v, want live rerank provider", req)
+	}
+}
+
+func TestMatrixMetricsCountW004SignalsAndCompletionSources(t *testing.T) {
+	report := Report{Steps: []StepReport{{
+		ID: "q1",
+		Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				Source: memorycore.QueryAnalysisSourceMerged,
+				Signals: []memorycore.QuerySignal{
+					memorycore.QuerySignalPastEventDirectFact,
+					memorycore.QuerySignalStateTransition,
+					memorycore.QuerySignalProvenanceSource,
+					memorycore.QuerySignalReflectionSummary,
+				},
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{SemanticLatencyMs: 10},
+			},
+			Rerank: &memorycore.RerankDiagnostics{Status: "skipped", SkippedReason: "direct_raw_exact_margin_high", InputCount: 3},
+		},
+		ScoreBreakdowns: []RetrievalScoreBreakdownReport{
+			{NodeID: "event", AccessType: "retrieved", CompletionSource: "event_bundle"},
+			{NodeID: "transition", AccessType: "retrieved", CompletionSource: "historical_transition"},
+			{NodeID: "source", AccessType: "retrieved", CompletionSource: "provenance_source"},
+			{NodeID: "counterexample", AccessType: "retrieved", CompletionSource: "premise_counterexample"},
+			{NodeID: "reflection", AccessType: "retrieved", ReflectionBoost: 0.24},
+		},
+	}, {
+		ID: "q2",
+		Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				Source:      memorycore.QueryAnalysisSourceRuleOnly,
+				Signals:     []memorycore.QuerySignal{memorycore.QuerySignalPastEventDirectFact},
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{SemanticStatus: "skipped", SemanticLatencyMs: 20},
+			},
+		},
+	}}}
+
+	metrics := ComputeProfileMatrixMetrics(nil, report, ProfileRerankSelective)
+
+	if metrics.PastEventDirectFactCount != 2 {
+		t.Fatalf("past_event_direct_fact_count = %d, want 2", metrics.PastEventDirectFactCount)
+	}
+	if metrics.HistoricalTransitionCount != 1 || metrics.ProvenanceSourceCount != 1 {
+		t.Fatalf("signal metrics = %#v, want historical/provenance counts", metrics)
+	}
+	if metrics.EventBundleCompletionCount != 1 ||
+		metrics.SupersedesCompletionCount != 1 ||
+		metrics.ProvenanceCompletionCount != 1 ||
+		metrics.CounterexampleExpansionCount != 1 ||
+		metrics.ReflectionSummaryBoostCount != 1 {
+		t.Fatalf("completion metrics = %#v, want all W004 completion/boost counts", metrics)
+	}
+	if metrics.RerankSkippedCount != 1 {
+		t.Fatalf("rerank_skipped_count = %d, want 1", metrics.RerankSkippedCount)
+	}
+	if metrics.LLMSavedCallCount != 1 {
+		t.Fatalf("llm_saved_call_count = %d, want rule-only/skipped semantic count", metrics.LLMSavedCallCount)
+	}
+	if metrics.AvgQueryAnalysisWaitMS != 15 {
+		t.Fatalf("avg_query_analysis_wait_ms = %d, want 15", metrics.AvgQueryAnalysisWaitMS)
+	}
+}
+
+func TestRuleOnlyRawRecordsNoSemanticCalls(t *testing.T) {
+	report := Report{Steps: []StepReport{{
+		Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{Source: memorycore.QueryAnalysisSourceRuleOnly},
+		},
+	}}}
+
+	metrics := ComputeProfileMatrixMetrics(nil, report, ProfileRuleOnlyRaw)
+
+	if metrics.QueryAnalysisUsedCount != 0 || metrics.QueryAnalysisFallbackCount != 0 {
+		t.Fatalf("semantic call metrics = used:%d fallback:%d, want no semantic calls", metrics.QueryAnalysisUsedCount, metrics.QueryAnalysisFallbackCount)
+	}
+	if metrics.RuleOnlyNoSemanticCallCount != 1 || metrics.LLMSavedCallCount != 1 {
+		t.Fatalf("rule-only metrics = %#v, want no-semantic and saved-call counts", metrics)
+	}
+}
+
+func TestRerankSelectiveSkippedRerankDoesNotFailStrictProfileMetrics(t *testing.T) {
+	metrics := MatrixMetrics{RerankSkippedCount: 1}
+
+	if reason := profileHardMetricFailureReason(ProfileRerankSelective, metrics); reason != "" {
+		t.Fatalf("strict failure reason = %q, want skipped selective rerank to pass", reason)
 	}
 }
 

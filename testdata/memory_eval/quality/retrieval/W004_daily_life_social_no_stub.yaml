@@ -1,0 +1,869 @@
+schema_version: memory_eval.v0.2
+suite: quality_retrieval
+quality_mode: true
+allow_stub: false
+case_id: W004_daily_life_social_no_stub
+description: >
+  No-stub offline retrieval world testing daily life routines and interpersonal
+  relationship memory for user 鸡翅. Timeline spans late May to late June 2026,
+  covering: shared meals with friends, gym routine, friend conflict and reconciliation,
+  family visit, cooking attempts, insomnia and recovery, old classmate reunion,
+  work stress, personal growth reflection, and future trip planning. Queries test
+  fact recall, historical transitions, causal chains, provenance, gotchas, and
+  premise checks — query keywords aligned with query_analysis.go trigger patterns.
+seed:
+  sessions:
+    - id: s_seed
+      channel: api
+    - id: s_q001_fact
+      channel: api
+    - id: s_q002_fact
+      channel: api
+    - id: s_q003_fact
+      channel: api
+    - id: s_q004_fact
+      channel: api
+    - id: s_q005_fact
+      channel: api
+    - id: s_q006_fact
+      channel: api
+    - id: s_q007_historical
+      channel: api
+    - id: s_q008_historical
+      channel: api
+    - id: s_q009_source
+      channel: api
+    - id: s_q010_causal
+      channel: api
+    - id: s_q011_causal
+      channel: api
+    - id: s_q012_gotcha
+      channel: api
+    - id: s_q013_gotcha
+      channel: api
+    - id: s_q014_premise
+      channel: api
+    - id: s_q015_premise
+      channel: api
+    - id: s_q016_fact
+      channel: api
+    - id: s_q017_fact
+      channel: api
+    - id: s_q018_fact
+      channel: api
+    - id: s_q019_fact
+      channel: api
+    - id: s_q020_fact
+      channel: api
+  entities:
+    - id: user
+      canonical_name: 鸡翅
+      entity_type: user
+    - id: friend_chen
+      canonical_name: 小陈
+      entity_type: person
+    - id: colleague_li
+      canonical_name: 小李
+      entity_type: person
+    - id: sister
+      canonical_name: 妹妹
+      entity_type: person
+    - id: old_classmate_zhang
+      canonical_name: 老张
+      entity_type: person
+    - id: hotpot_shujiuxiang
+      canonical_name: 蜀九香火锅
+      entity_type: place
+    - id: gym_limei
+      canonical_name: 力美健身房
+      entity_type: place
+    - id: sheshan
+      canonical_name: 佘山
+      entity_type: place
+    - id: zhoushan
+      canonical_name: 舟山
+      entity_type: place
+  episodes:
+    - id: ep_hotpot_plan
+      session_id: s_seed
+      content: 小陈约我周末去吃蜀九香火锅，说是新开的店口碑特别好，要早点去排队。
+      occurred_at: "2026-05-22T19:00:00+08:00"
+    - id: ep_hotpot_experience
+      session_id: s_seed
+      content: 昨天和小陈去吃了蜀九香，毛肚和鹅肠特别新鲜，就是排队等了一个半小时，吃完都十点多了。
+      occurred_at: "2026-05-25T22:00:00+08:00"
+    - id: ep_gym_start
+      session_id: s_seed
+      content: 最近在力美健身房办了卡，每周二周四下班后去练，已经坚持两周了，感觉状态在变好。
+      occurred_at: "2026-05-27T21:00:00+08:00"
+    - id: ep_conflict_li
+      session_id: s_seed
+      content: 跟同事小李在工作群里发生了争执，他说话太冲了没给我留面子，我一生气直接退了群。
+      occurred_at: "2026-05-29T16:00:00+08:00"
+    - id: ep_li_apology
+      session_id: s_seed
+      content: 小李私下找我道歉了，说他最近项目压力太大情绪没控制好，我也跟他直说了当时为什么生气，算是翻篇了。
+      occurred_at: "2026-05-31T20:00:00+08:00"
+    - id: ep_sister_visit
+      session_id: s_seed
+      content: 妹妹周末来上海看我了，带她去了外滩、南京路和城隍庙，她吃南翔小笼包的时候开心得像个小孩，好久没看她这么笑了。
+      occurred_at: "2026-06-02T21:00:00+08:00"
+    - id: ep_sore_legs
+      session_id: s_seed
+      content: 昨天练腿练太猛了，今天上下楼梯都像在受刑，小陈在食堂看到我走路笑我说像企鹅。
+      occurred_at: "2026-06-06T12:00:00+08:00"
+    - id: ep_cooking_attempt
+      session_id: s_seed
+      content: 今天自己在家试着做了糖醋排骨，虽然卖相不太行颜色有点深，但味道居然还不错，发了照片给小陈看。
+      occurred_at: "2026-06-08T19:00:00+08:00"
+    - id: ep_insomnia
+      session_id: s_seed
+      content: 最近睡眠很差，经常熬到凌晨两三点才睡着，白天整个人都是恍惚的，咖啡喝了三杯也没用。
+      occurred_at: "2026-06-10T23:00:00+08:00"
+    - id: ep_chen_advice
+      session_id: s_seed
+      content: 小陈建议我睡前放下手机，试试听白噪音或者下雨声，说他之前失眠也是这样慢慢调整过来的。
+      occurred_at: "2026-06-12T21:00:00+08:00"
+    - id: ep_sleep_improved
+      session_id: s_seed
+      content: 试了小陈说的白噪音方法，昨晚十一点就睡着了，一觉到天亮，今天感觉整个人都活过来了。
+      occurred_at: "2026-06-14T08:00:00+08:00"
+    - id: ep_old_classmate
+      session_id: s_seed
+      content: 大学同学老张突然联系我，说来上海出差想聚一聚，毕业之后快三年没见了，他在深圳做跨境电商创业。
+      occurred_at: "2026-06-16T18:00:00+08:00"
+    - id: ep_reunion_zhang
+      session_id: s_seed
+      content: 跟老张吃了顿饭，聊了好多大学时候的糗事，他在深圳做跨境电商挺不容易的，团队才五个人什么都要自己扛。
+      occurred_at: "2026-06-18T22:00:00+08:00"
+    - id: ep_work_overtime
+      session_id: s_seed
+      content: 最近项目赶进度连续加了四天班，每天都到十点多，感觉身体被掏空了，跟小李吐槽了一整个午休。
+      occurred_at: "2026-06-20T22:00:00+08:00"
+    - id: ep_weight_loss
+      session_id: s_seed
+      content: 今天称体重发现瘦了三公斤，小陈说我脸都小了一圈，健身房没白去，挺有成就感的。
+      occurred_at: "2026-06-22T20:00:00+08:00"
+    - id: ep_hiking_sheshan
+      session_id: s_seed
+      content: 周末一个人去佘山爬了山，在山顶吹着风发了很久的呆，最近加班和人际方面的压力好像都被吹散了。
+      occurred_at: "2026-06-24T16:00:00+08:00"
+    - id: ep_reflection
+      session_id: s_seed
+      content: 和小陈聊起最近的改变，发现这两个月变化挺大的，开始坚持运动了，也会主动处理跟朋友之间的矛盾了，不再像以前一样憋在心里。
+      occurred_at: "2026-06-26T21:00:00+08:00"
+    - id: ep_zhoushan_plan
+      session_id: s_seed
+      content: 和小陈、小李商量下个月一起去舟山玩，海岛上住两晚，民宿已经订好了，好久没有三个人一起出去旅游了。
+      occurred_at: "2026-06-28T20:00:00+08:00"
+    - id: ep_li_treat
+      session_id: s_seed
+      content: 今天小李主动请大家喝了奶茶，说是庆祝项目终于上线了，感觉那次吵架之后他也在慢慢调整自己。
+      occurred_at: "2026-06-30T15:00:00+08:00"
+steps:
+  # --- Shared meals & gym routine ---
+  - id: f_hotpot_with_chen
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: dined_with
+      object_entity_id: friend_chen
+      content_summary: 用户和小陈去吃了蜀九香火锅，毛肚鹅肠很新鲜。
+      fact_type: significant_event
+      source_episode_ids: [ep_hotpot_experience]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_hotpot_queue_long
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: experienced
+      object_literal: 蜀九香排队一个半小时
+      content_summary: 用户在蜀九香火锅排队等了一个半小时才吃上。
+      fact_type: significant_event
+      source_episode_ids: [ep_hotpot_experience]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.7
+  - id: f_gym_habit
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercises_at
+      object_entity_id: gym_limei
+      content_summary: 用户在力美健身房办了卡，每周二周四下班后去锻炼，已坚持两周。
+      fact_type: stable_preference
+      source_episode_ids: [ep_gym_start]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  # --- Conflict & reconciliation (historical transition) ---
+  - id: f_conflict_with_li_active
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: relationship_with
+      object_entity_id: colleague_li
+      content_summary: 用户和小李因工作群争执关系紧张，用户退群。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_conflict_li]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.75
+  - id: f_li_apologized
+    action: fact
+    fact:
+      subject_entity_id: colleague_li
+      predicate: apologized_to
+      object_entity_id: user
+      content_summary: 小李私下找用户道歉，承认是项目压力大没控制好情绪。
+      fact_type: significant_event
+      source_episode_ids: [ep_li_apology]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_reconciled_with_li
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: relationship_with
+      object_entity_id: colleague_li
+      content_summary: 用户和小李已经和解翻篇，互相理解了对方的感受。
+      fact_type: relational_state
+      source_episode_ids: [ep_li_apology]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_conflict_supersedes
+    action: link
+    link:
+      from_node_id: $f_reconciled_with_li.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_conflict_with_li_active.fact_id
+      weight: 1.0
+  - id: f_wrong_conflicts_with_all
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: relationship_with
+      object_literal: 所有朋友都闹过矛盾
+      content_summary: 用户跟身边所有朋友都闹过矛盾，人际关系很差。
+      fact_type: relational_state
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- Family visit & gym soreness ---
+  - id: f_sister_visit_shanghai
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: hosted
+      object_entity_id: sister
+      content_summary: 妹妹来上海，用户带她去了外滩、南京路和城隍庙，她吃南翔小笼包很开心。
+      fact_type: significant_event
+      source_episode_ids: [ep_sister_visit]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_sore_legs_penguin
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: experienced
+      object_literal: 练腿太猛走路像企鹅
+      content_summary: 用户练腿练太猛导致走路困难，被小陈笑像企鹅。
+      fact_type: significant_event
+      source_episode_ids: [ep_sore_legs]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.7
+  # --- Cooking & insomnia recovery (causal) ---
+  - id: f_cooking_tangcu_paigu
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: cooked
+      object_literal: 糖醋排骨
+      content_summary: 用户自己在家做了糖醋排骨，卖相不好但味道不错。
+      fact_type: significant_event
+      source_episode_ids: [ep_cooking_attempt]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.75
+  - id: f_insomnia_severe
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: experienced
+      object_literal: 失眠到凌晨两三点
+      content_summary: 用户最近严重失眠，经常凌晨两三点才睡着，白天精神恍惚。
+      fact_type: significant_event
+      source_episode_ids: [ep_insomnia]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  - id: f_chen_advice_white_noise
+    action: fact
+    fact:
+      subject_entity_id: friend_chen
+      predicate: suggested
+      object_literal: 睡前听白噪音助眠
+      content_summary: 小陈建议用户睡前放下手机听白噪音，说他之前失眠也是这样调整过来的。
+      fact_type: significant_event
+      source_episode_ids: [ep_chen_advice]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_sleep_improved
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: sleep_quality
+      object_literal: 十一点入睡 一觉到天亮
+      content_summary: 用户试了白噪音方法后睡眠大幅改善，十一点就睡着了一觉到天亮。
+      fact_type: significant_event
+      source_episode_ids: [ep_sleep_improved]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: link_sleep_caused_by_advice
+    action: link
+    link:
+      from_node_id: $f_sleep_improved.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_chen_advice_white_noise.fact_id
+      weight: 1.0
+  - id: f_wrong_insomnia_permanent
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: sleep_quality
+      object_literal: 长期失眠治不好
+      content_summary: 用户的失眠问题一直没好，各种方法都没用。
+      fact_type: relational_state
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- Old classmate & work stress ---
+  - id: f_old_classmate_zhang
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reunited_with
+      object_entity_id: old_classmate_zhang
+      content_summary: 大学同学老张从深圳来上海出差，毕业快三年没见，他在做跨境电商创业。
+      fact_type: significant_event
+      source_episode_ids: [ep_old_classmate, ep_reunion_zhang]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_work_overtime_exhausted
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: experienced
+      object_literal: 连续加班四天身体被掏空
+      content_summary: 用户因项目赶进度连续加了四天班到十点多，感觉身体被掏空。
+      fact_type: significant_event
+      source_episode_ids: [ep_work_overtime]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  # --- Progress & reflection (causal + historical) ---
+  - id: f_no_exercise_before
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercise_routine
+      object_literal: 不运动
+      content_summary: 用户之前没有运动习惯。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_gym_start]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.6
+  - id: f_weight_loss_3kg
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: achieved
+      object_literal: 瘦了三公斤
+      content_summary: 用户称体重发现瘦了三公斤，小陈说脸都小了一圈。
+      fact_type: significant_event
+      source_episode_ids: [ep_weight_loss]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: link_weight_caused_by_gym
+    action: link
+    link:
+      from_node_id: $f_weight_loss_3kg.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_gym_habit.fact_id
+      weight: 1.0
+  - id: link_gym_supersedes_no_exercise
+    action: link
+    link:
+      from_node_id: $f_gym_habit.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_no_exercise_before.fact_id
+      weight: 1.0
+  - id: f_hiking_sheshan
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: hiked
+      object_entity_id: sheshan
+      content_summary: 用户周末一个人去佘山爬山，在山顶吹风发呆。
+      fact_type: significant_event
+      source_episode_ids: [ep_hiking_sheshan]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_stress_relieved
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: felt
+      object_literal: 压力被吹散了
+      content_summary: 用户在佘山山顶感觉最近的压力都被吹散了。
+      fact_type: significant_event
+      source_episode_ids: [ep_hiking_sheshan]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.85
+  - id: link_stress_caused_by_hiking
+    action: link
+    link:
+      from_node_id: $f_stress_relieved.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_hiking_sheshan.fact_id
+      weight: 1.0
+  - id: f_wrong_never_exercises
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercise_routine
+      object_literal: 从来不运动
+      content_summary: 用户从来不运动，也不打算开始健身。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- Reflection & future plans ---
+  - id: f_self_reflection_growth
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: self_reflection
+      object_literal: 两个月变化很大
+      content_summary: 用户反思发现这两个月变化很大，开始坚持运动，也会主动处理朋友间的矛盾了。
+      fact_type: significant_event
+      source_episode_ids: [ep_reflection]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: f_zhoushan_trip_plan
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: planning_trip
+      object_entity_id: zhoushan
+      content_summary: 用户和小陈、小李计划下个月去舟山海岛玩，已经订好民宿。
+      fact_type: significant_event
+      source_episode_ids: [ep_zhoushan_plan]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_li_treat_milk_tea
+    action: fact
+    fact:
+      subject_entity_id: colleague_li
+      predicate: treated
+      object_literal: 请大家喝奶茶庆祝项目上线
+      content_summary: 小李主动请大家喝奶茶庆祝项目上线，吵架之后他也在调整自己。
+      fact_type: significant_event
+      source_episode_ids: [ep_li_treat]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.75
+  - id: f_wrong_li_never_changes
+    action: fact
+    fact:
+      subject_entity_id: colleague_li
+      predicate: personality
+      object_literal: 脾气暴躁不会改
+      content_summary: 小李脾气一直很暴躁，吵架之后也不会有任何改变。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- REBUILD SEARCH ---
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search: {}
+  # --- QUERIES ---
+  - id: q001_fact_hotpot
+    action: retrieve
+    retrieve:
+      session_id: s_q001_fact
+      query_text: 上次去蜀九香火锅，我跟谁去的，排了多久的队才吃上？
+      policy:
+        final_memory_count: 4
+  - id: q002_fact_gym
+    action: retrieve
+    retrieve:
+      session_id: s_q002_fact
+      query_text: 我最近办了哪家健身房的卡，每周哪几天去练？
+      policy:
+        final_memory_count: 4
+  - id: q003_fact_sister
+    action: retrieve
+    retrieve:
+      session_id: s_q003_fact
+      query_text: 妹妹来上海那天我带她逛了哪些地方，她最喜欢什么？
+      policy:
+        final_memory_count: 4
+  - id: q004_fact_cooking
+    action: retrieve
+    retrieve:
+      session_id: s_q004_fact
+      query_text: 我最近在家自己尝试做了什么菜，做出来味道怎么样？
+      policy:
+        final_memory_count: 4
+  - id: q005_fact_classmate
+    action: retrieve
+    retrieve:
+      session_id: s_q005_fact
+      query_text: 老张是从哪个城市过来的，他现在在做什么工作？
+      policy:
+        final_memory_count: 4
+  - id: q006_fact_trip
+    action: retrieve
+    retrieve:
+      session_id: s_q006_fact
+      query_text: 下个月我们几个打算去哪里玩，住宿安排好了吗？
+      policy:
+        final_memory_count: 4
+  - id: q007_historical_conflict
+    action: retrieve
+    retrieve:
+      session_id: s_q007_historical
+      query_text: 我跟小李之前闹了什么矛盾，后来是怎么和好的？
+      policy:
+        allow_historical: true
+        final_memory_count: 8
+  - id: q008_historical_exercise
+    action: retrieve
+    retrieve:
+      session_id: s_q008_historical
+      query_text: 我以前从来不运动，最近为什么开始健身了，效果怎么样？
+      policy:
+        allow_historical: true
+        final_memory_count: 8
+  - id: q009_source_advice
+    action: retrieve
+    retrieve:
+      session_id: s_q009_source
+      query_text: 小陈建议我睡前听白噪音这件事，是什么时候告诉我的？
+      policy:
+        final_memory_count: 4
+  - id: q010_causal_sleep
+    action: retrieve
+    retrieve:
+      session_id: s_q010_causal
+      query_text: 为什么我最近的睡眠质量突然变好了？
+      policy:
+        final_memory_count: 4
+  - id: q011_causal_stress
+    action: retrieve
+    retrieve:
+      session_id: s_q011_causal
+      query_text: 为什么最近加班和人际方面的压力感觉减轻了很多？
+      policy:
+        final_memory_count: 4
+  - id: q012_gotcha_all_friends
+    action: retrieve
+    retrieve:
+      session_id: s_q012_gotcha
+      query_text: 我的人际关系是不是很糟糕，跟身边每个朋友都闹过矛盾？
+      policy:
+        final_memory_count: 4
+  - id: q013_gotcha_li_never
+    action: retrieve
+    retrieve:
+      session_id: s_q013_gotcha
+      query_text: 小李上次跟我吵架之后是不是老样子，完全没有任何改变？
+      policy:
+        final_memory_count: 4
+  - id: q014_premise_no_cook
+    action: retrieve
+    retrieve:
+      session_id: s_q014_premise
+      query_text: 我是不是完全不会做饭，从来没自己下过厨房？
+      policy:
+        final_memory_count: 4
+  - id: q015_premise_insomnia_forever
+    action: retrieve
+    retrieve:
+      session_id: s_q015_premise
+      query_text: 我失眠的问题是不是一直没好，试了各种方法都没什么用？
+      policy:
+        final_memory_count: 4
+  - id: q016_fact_weight
+    action: retrieve
+    retrieve:
+      session_id: s_q016_fact
+      query_text: 我最近称体重瘦了多少，谁说我看起来脸都变小了？
+      policy:
+        final_memory_count: 4
+  - id: q017_fact_hiking
+    action: retrieve
+    retrieve:
+      session_id: s_q017_fact
+      query_text: 周末我一个人去爬了什么山，在山顶上做了什么？
+      policy:
+        final_memory_count: 4
+  - id: q018_fact_reflection
+    action: retrieve
+    retrieve:
+      session_id: s_q018_fact
+      query_text: 我最近跟小陈聊到自己这两个月的变化，觉得自己哪些方面进步了？
+      policy:
+        final_memory_count: 4
+  - id: q019_fact_sore
+    action: retrieve
+    retrieve:
+      session_id: s_q019_fact
+      query_text: 有一次练腿之后发生了什么搞笑的事，小陈怎么笑话我的？
+      policy:
+        final_memory_count: 4
+  - id: q020_fact_li_treat
+    action: retrieve
+    retrieve:
+      session_id: s_q020_fact
+      query_text: 小李最近请大家喝了什么，是因为什么事情庆祝？
+      policy:
+        final_memory_count: 4
+# --- ASSERTIONS ---
+assertions:
+  - type: selected_recall_at_k
+    name: q001 recalls hotpot with 小陈 and queue time
+    step: q001_fact_hotpot
+    relevant_node_ids:
+      - $f_hotpot_with_chen.fact_id
+      - $f_hotpot_queue_long.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q002 recalls gym at 力美 周二周四
+    step: q002_fact_gym
+    relevant_node_ids:
+      - $f_gym_habit.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q003 recalls sister visit places and food
+    step: q003_fact_sister
+    relevant_node_ids:
+      - $f_sister_visit_shanghai.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q004 recalls cooking 糖醋排骨
+    step: q004_fact_cooking
+    relevant_node_ids:
+      - $f_cooking_tangcu_paigu.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q005 recalls 老张 from 深圳 doing e-commerce
+    step: q005_fact_classmate
+    relevant_node_ids:
+      - $f_old_classmate_zhang.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q006 recalls 舟山 trip plan with friends
+    step: q006_fact_trip
+    relevant_node_ids:
+      - $f_zhoushan_trip_plan.fact_id
+    at: 4
+    min: 1.0
+  - type: query_analysis
+    name: q007 is routed as historical
+    step: q007_historical_conflict
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q007 marks old conflict state as superseded by reconciliation
+    step: q007_historical_conflict
+    block_type: historical_transition_memory
+    node_id: $f_conflict_with_li_active.fact_id
+    node_ids: [$f_reconciled_with_li.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  - type: query_analysis
+    name: q008 is routed as historical state transition
+    step: q008_historical_exercise
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q008 marks no-exercise as superseded by gym habit
+    step: q008_historical_exercise
+    block_type: historical_transition_memory
+    node_id: $f_no_exercise_before.fact_id
+    node_ids: [$f_gym_habit.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  - type: query_analysis
+    name: q009 asks for provenance
+    step: q009_source_advice
+    memory_ability: provenance
+    evidence_need: provenance_source
+  - type: selected_chain_correct
+    name: q009 provenance keeps source ref for 小陈白噪音 advice
+    step: q009_source_advice
+    block_type: provenance_memory
+    node_id: $f_chen_advice_white_noise.fact_id
+    source_ref_count: 1
+  - type: query_analysis
+    name: q010 asks for causal explanation
+    step: q010_causal_sleep
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q010 causal links sleep improvement to 白噪音 advice
+    step: q010_causal_sleep
+    block_type: relevant_causal_memory
+    node_id: $f_sleep_improved.fact_id
+    node_ids: [$f_chen_advice_white_noise.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: query_analysis
+    name: q011 asks for causal explanation
+    step: q011_causal_stress
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q011 causal links stress relief to hiking 佘山
+    step: q011_causal_stress
+    block_type: relevant_causal_memory
+    node_id: $f_stress_relieved.fact_id
+    node_ids: [$f_hiking_sheshan.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: query_analysis
+    name: q012 asks for premise counterexample
+    step: q012_gotcha_all_friends
+    memory_domain: relationship_memory
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: block_contains
+    name: q012 premise check retrieves reconciliation fact as counterexample
+    step: q012_gotcha_all_friends
+    block_type: premise_check_memory
+    node_id: $f_reconciled_with_li.fact_id
+  - type: forbidden_recall_zero
+    name: q012 excludes wrong conflicts-with-all claim
+    step: q012_gotcha_all_friends
+    forbidden_node_ids:
+      - $f_wrong_conflicts_with_all.fact_id
+  - type: query_analysis
+    name: q013 asks for premise counterexample
+    step: q013_gotcha_li_never
+    memory_domain: relationship_memory
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: block_contains
+    name: q013 premise check retrieves 小李 treat milk tea as counterexample
+    step: q013_gotcha_li_never
+    block_type: premise_check_memory
+    node_id: $f_li_treat_milk_tea.fact_id
+  - type: forbidden_recall_zero
+    name: q013 excludes wrong 小李-never-changes claim
+    step: q013_gotcha_li_never
+    forbidden_node_ids:
+      - $f_wrong_li_never_changes.fact_id
+  - type: query_analysis
+    name: q014 asks for premise check
+    step: q014_premise_no_cook
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q014 selects cooking counterexample and avoids broad premise
+    step: q014_premise_no_cook
+    node_ids:
+      - $f_cooking_tangcu_paigu.fact_id
+    forbidden_contains:
+      - 完全不会做饭
+  - type: query_analysis
+    name: q015 asks for premise check
+    step: q015_premise_insomnia_forever
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q015 selects sleep improvement counterexample and avoids broad premise
+    step: q015_premise_insomnia_forever
+    node_ids:
+      - $f_sleep_improved.fact_id
+    forbidden_node_ids:
+      - $f_wrong_insomnia_permanent.fact_id
+    forbidden_contains:
+      - 长期失眠治不好
+  - type: selected_recall_at_k
+    name: q016 recalls losing 3kg and 小陈 comment
+    step: q016_fact_weight
+    relevant_node_ids:
+      - $f_weight_loss_3kg.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q017 recalls hiking 佘山 and relaxing
+    step: q017_fact_hiking
+    relevant_node_ids:
+      - $f_hiking_sheshan.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q018 recalls two-month growth reflection
+    step: q018_fact_reflection
+    relevant_node_ids:
+      - $f_self_reflection_growth.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q019 recalls sore legs and 小陈 laughing
+    step: q019_fact_sore
+    relevant_node_ids:
+      - $f_sore_legs_penguin.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q020 recalls 小李 treating milk tea for project launch
+    step: q020_fact_li_treat
+    relevant_node_ids:
+      - $f_li_treat_milk_tea.fact_id
+    at: 4
+    min: 1.0

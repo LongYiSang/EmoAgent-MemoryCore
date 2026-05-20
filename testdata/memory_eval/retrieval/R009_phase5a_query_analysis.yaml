@@ -36,6 +36,8 @@ assertions:
     step: historical_provenance
     time_mode: historical
     signals:
+      - past_event_direct_fact
+      - provenance_source
       - historical
       - causal
       - provenance

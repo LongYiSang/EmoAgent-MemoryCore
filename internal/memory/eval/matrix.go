@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,17 @@ type MatrixMetrics struct {
 	CandidateQueryCount                 int                `json:"candidate_query_count"`
 	QueryTrimCount                      int                `json:"query_trim_count"`
 	RawExactSurvivalCount               int                `json:"raw_exact_survival_count"`
+	PastEventDirectFactCount            int                `json:"past_event_direct_fact_count"`
+	HistoricalTransitionCount           int                `json:"historical_transition_count"`
+	ProvenanceSourceCount               int                `json:"provenance_source_count"`
+	EventBundleCompletionCount          int                `json:"event_bundle_completion_count"`
+	SupersedesCompletionCount           int                `json:"supersedes_completion_count"`
+	ProvenanceCompletionCount           int                `json:"provenance_completion_count"`
+	CounterexampleExpansionCount        int                `json:"counterexample_expansion_count"`
+	ReflectionSummaryBoostCount         int                `json:"reflection_summary_boost_count"`
+	RerankSkippedCount                  int                `json:"rerank_skipped_count"`
+	LLMSavedCallCount                   int                `json:"llm_saved_call_count"`
+	AvgQueryAnalysisWaitMS              int64              `json:"avg_query_analysis_wait_ms"`
 	StubUsedCount                       int                `json:"stub_used_count"`
 	ForbiddenSelectedCount              int                `json:"forbidden_selected_count"`
 	P50LatencyMs                        int64              `json:"p50_latency_ms"`
@@ -136,6 +148,13 @@ func (r *MatrixRunner) ensureQueryAnalysisCache() {
 	switch r.opts.QueryAnalysis.Mode {
 	case memorycore.QueryAnalysisModeSemanticAlways, memorycore.QueryAnalysisModeSemanticOnLowConfidence, memorycore.QueryAnalysisModeSemanticRewriteOnly:
 		r.opts.QueryAnalysis.Cache = memorycore.NewQueryAnalysisCache()
+		return
+	}
+	for _, profile := range r.opts.Profiles {
+		if profile.UsesSemanticQueryAnalysis() {
+			r.opts.QueryAnalysis.Cache = memorycore.NewQueryAnalysisCache()
+			return
+		}
 	}
 }
 
@@ -208,7 +227,7 @@ func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.Query
 		return memorycore.QueryAnalysisOptions{}
 	}
 	switch profile {
-	case ProfileRuleOnlyRaw:
+	case ProfileRuleOnlyRaw, ProfileRerankOff, ProfileRerankSelective:
 		return memorycore.QueryAnalysisOptions{}
 	case ProfileSemanticParseOnly:
 		options := r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticAlways)
@@ -219,6 +238,8 @@ func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.Query
 	case ProfileSemanticFullCurrent:
 		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticAlways)
 	case ProfileSemanticFullSoftGated:
+		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticOnLowConfidence)
+	case ProfileSoftRoutingEnabled:
 		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticOnLowConfidence)
 	}
 	return r.opts.QueryAnalysis
@@ -233,13 +254,42 @@ func (r *MatrixRunner) semanticProfileQueryAnalysisOptions(mode memorycore.Query
 		options.SidecarURL = strings.TrimSpace(r.opts.SidecarURL)
 	}
 	if options.Timeout <= 0 {
+		options.Timeout = queryAnalysisTimeoutFromEnv()
+	}
+	if options.Timeout <= 0 {
 		options.Timeout = 1500 * time.Millisecond
+	}
+	if options.SoftJoinTimeout <= 0 {
+		options.SoftJoinTimeout = queryAnalysisSoftJoinTimeoutFromEnv()
 	}
 	options.Mode = mode
 	if options.Provider != memorycore.QueryAnalysisProviderSidecar || strings.TrimSpace(options.SidecarURL) == "" {
 		return memorycore.QueryAnalysisOptions{}
 	}
 	return options
+}
+
+func queryAnalysisTimeoutFromEnv() time.Duration {
+	if timeout := positiveDurationEnv("MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_MS", time.Millisecond); timeout > 0 {
+		return timeout
+	}
+	return positiveDurationEnv("MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS", time.Second)
+}
+
+func queryAnalysisSoftJoinTimeoutFromEnv() time.Duration {
+	return positiveDurationEnv("MEMORYCORE_QUERY_ANALYSIS_SOFT_JOIN_TIMEOUT_MS", time.Millisecond)
+}
+
+func positiveDurationEnv(name string, unit time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return time.Duration(parsed) * unit
 }
 
 func shouldUseMirrorArtifact(root string, adapter memorycore.MirrorAdapter) bool {
@@ -504,6 +554,8 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 	metrics := MatrixMetrics{}
 	requirements := profile.Requirements()
 	var queryAnalysisLatencies []int64
+	var queryAnalysisLatencySum int64
+	var queryAnalysisLatencyCount int64
 	if fixture != nil && fixture.UsesEvalStub() {
 		metrics.StubUsedCount = 1
 	}
@@ -542,6 +594,10 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 		}
 		if retrieval.QueryAnalysis != nil {
 			collectQueryAnalysisMetrics(retrieval.QueryAnalysis, &metrics, &queryAnalysisLatencies)
+			if retrieval.QueryAnalysis.Diagnostics != nil && retrieval.QueryAnalysis.Diagnostics.SemanticLatencyMs > 0 {
+				queryAnalysisLatencySum += retrieval.QueryAnalysis.Diagnostics.SemanticLatencyMs
+				queryAnalysisLatencyCount++
+			}
 		}
 		if retrieval.GraphActivation != nil {
 			if retrieval.GraphActivation.Status == "used" {
@@ -558,6 +614,8 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 		if retrieval.Rerank != nil {
 			if retrieval.Rerank.Status == "used" {
 				metrics.RerankLiveCallCount++
+			} else if retrieval.Rerank.Status == "skipped" {
+				metrics.RerankSkippedCount++
 			} else if requirements.RequiresRerankProvider && isFallbackStatus(retrieval.Rerank.Status) {
 				metrics.RerankRequiredButNotUsedCount++
 				metrics.FallbackCount++
@@ -567,9 +625,13 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			}
 			collectProviderFallbackMetrics(retrieval.Rerank.FallbackReason, &metrics)
 		}
+		collectScoreBreakdownMetrics(step.ScoreBreakdowns, &metrics)
 	}
 	metrics.QueryAnalysisLatencyP50 = percentileInt64(queryAnalysisLatencies, 50)
 	metrics.QueryAnalysisLatencyP95 = percentileInt64(queryAnalysisLatencies, 95)
+	if queryAnalysisLatencyCount > 0 {
+		metrics.AvgQueryAnalysisWaitMS = queryAnalysisLatencySum / queryAnalysisLatencyCount
+	}
 	return metrics
 }
 
@@ -584,7 +646,9 @@ func collectQueryAnalysisMetrics(analysis *memorycore.QueryAnalysis, metrics *Ma
 		metrics.QueryAnalysisFallbackCount++
 	case memorycore.QueryAnalysisSourceRuleOnly:
 		metrics.RuleOnlyNoSemanticCallCount++
+		metrics.LLMSavedCallCount++
 	}
+	collectQuerySignalMetrics(analysis.Signals, metrics)
 	if analysis.Diagnostics == nil {
 		return
 	}
@@ -612,6 +676,43 @@ func collectQueryAnalysisMetrics(analysis *memorycore.QueryAnalysis, metrics *Ma
 	metrics.EnglishRewriteCount += diagnostics.EnglishRewriteCount
 	metrics.DroppedRewriteCount += diagnostics.DroppedRewriteCount
 	metrics.SemanticDriftCount += diagnostics.SemanticDriftCount
+}
+
+func collectQuerySignalMetrics(signals []memorycore.QuerySignal, metrics *MatrixMetrics) {
+	if metrics == nil {
+		return
+	}
+	for _, signal := range signals {
+		switch signal {
+		case memorycore.QuerySignalPastEventDirectFact:
+			metrics.PastEventDirectFactCount++
+		case memorycore.QuerySignalStateTransition:
+			metrics.HistoricalTransitionCount++
+		case memorycore.QuerySignalProvenanceSource:
+			metrics.ProvenanceSourceCount++
+		}
+	}
+}
+
+func collectScoreBreakdownMetrics(values []RetrievalScoreBreakdownReport, metrics *MatrixMetrics) {
+	if metrics == nil {
+		return
+	}
+	for _, value := range values {
+		switch strings.TrimSpace(value.CompletionSource) {
+		case "event_bundle":
+			metrics.EventBundleCompletionCount++
+		case "historical_transition":
+			metrics.SupersedesCompletionCount++
+		case "provenance_source":
+			metrics.ProvenanceCompletionCount++
+		case "premise_counterexample":
+			metrics.CounterexampleExpansionCount++
+		}
+		if value.ReflectionBoost > 0 {
+			metrics.ReflectionSummaryBoostCount++
+		}
+	}
 }
 
 func collectProviderFallbackMetrics(reason string, metrics *MatrixMetrics) {
@@ -1011,6 +1112,17 @@ func FormatMatrixReport(report MatrixReport) string {
 		fmt.Fprintf(&b, "candidate_query_count: %d\n", profile.Metrics.CandidateQueryCount)
 		fmt.Fprintf(&b, "query_trim_count: %d\n", profile.Metrics.QueryTrimCount)
 		fmt.Fprintf(&b, "raw_exact_survival_count: %d\n", profile.Metrics.RawExactSurvivalCount)
+		fmt.Fprintf(&b, "past_event_direct_fact_count: %d\n", profile.Metrics.PastEventDirectFactCount)
+		fmt.Fprintf(&b, "historical_transition_count: %d\n", profile.Metrics.HistoricalTransitionCount)
+		fmt.Fprintf(&b, "provenance_source_count: %d\n", profile.Metrics.ProvenanceSourceCount)
+		fmt.Fprintf(&b, "event_bundle_completion_count: %d\n", profile.Metrics.EventBundleCompletionCount)
+		fmt.Fprintf(&b, "supersedes_completion_count: %d\n", profile.Metrics.SupersedesCompletionCount)
+		fmt.Fprintf(&b, "provenance_completion_count: %d\n", profile.Metrics.ProvenanceCompletionCount)
+		fmt.Fprintf(&b, "counterexample_expansion_count: %d\n", profile.Metrics.CounterexampleExpansionCount)
+		fmt.Fprintf(&b, "reflection_summary_boost_count: %d\n", profile.Metrics.ReflectionSummaryBoostCount)
+		fmt.Fprintf(&b, "rerank_skipped_count: %d\n", profile.Metrics.RerankSkippedCount)
+		fmt.Fprintf(&b, "llm_saved_call_count: %d\n", profile.Metrics.LLMSavedCallCount)
+		fmt.Fprintf(&b, "avg_query_analysis_wait_ms: %d\n", profile.Metrics.AvgQueryAnalysisWaitMS)
 		if len(profile.Metrics.CandidateRecallBySource) > 0 {
 			fmt.Fprintf(&b, "candidate_recall_by_source: %s\n", formatMetricFloatMap(profile.Metrics.CandidateRecallBySource))
 		}
@@ -1093,8 +1205,16 @@ func profileAdapter(profile Profile, adapter memorycore.MirrorAdapter) memorycor
 		ProfileSemanticParseOnly,
 		ProfileSemanticRewriteOnly,
 		ProfileSemanticFullCurrent,
-		ProfileSemanticFullSoftGated:
+		ProfileSemanticFullSoftGated,
+		ProfileRerankOff,
+		ProfileSoftRoutingEnabled:
 		return denseOnlyAdapter{base: adapter, namespace: namespace, candidates: candidates, configurator: configurator}
+	case ProfileRerankSelective:
+		base := denseOnlyAdapter{base: adapter, namespace: namespace, candidates: candidates, configurator: configurator}
+		if rerank == nil {
+			return base
+		}
+		return rerankNoGraphAdapter{denseOnlyAdapter: base, rerank: rerank}
 	case ProfileMirrorRealGraph:
 		return graphOnlyAdapter{denseOnlyAdapter: denseOnlyAdapter{base: adapter, namespace: namespace, candidates: candidates, configurator: configurator}, activation: activation}
 	case ProfileMirrorRealGraphRerank:
