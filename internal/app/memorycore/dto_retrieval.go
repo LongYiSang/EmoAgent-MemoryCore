@@ -219,6 +219,17 @@ type QueryAnchorProbe struct {
 	Top1Score              float64
 	Top2Score              float64
 	Top1Margin             float64
+	Breakdown              []QueryAnchorProbeBreakdown
+}
+
+type QueryAnchorProbeBreakdown struct {
+	Source      string
+	Confidence  float64
+	HitCount    int
+	TopScore    float64
+	SecondScore float64
+	Reason      string
+	Error       string
 }
 
 type QueryAnalysisDecision struct {

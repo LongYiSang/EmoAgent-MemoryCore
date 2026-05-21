@@ -321,7 +321,27 @@ func queryAnchorProbeFromStore(value memsqlite.QueryAnchorProbe) QueryAnchorProb
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		Breakdown:              queryAnchorProbeBreakdownFromStore(value.Breakdown),
 	}
+}
+
+func queryAnchorProbeBreakdownFromStore(values []memsqlite.QueryAnchorProbeBreakdown) []QueryAnchorProbeBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]QueryAnchorProbeBreakdown, 0, len(values))
+	for _, value := range values {
+		out = append(out, QueryAnchorProbeBreakdown{
+			Source:      value.Source,
+			Confidence:  value.Confidence,
+			HitCount:    value.HitCount,
+			TopScore:    value.TopScore,
+			SecondScore: value.SecondScore,
+			Reason:      value.Reason,
+			Error:       value.Error,
+		})
+	}
+	return out
 }
 
 func queryAnalysisDecisionFromStore(value memsqlite.QueryAnalysisDecision) QueryAnalysisDecision {

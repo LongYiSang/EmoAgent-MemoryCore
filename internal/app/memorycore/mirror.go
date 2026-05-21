@@ -682,7 +682,27 @@ func queryAnchorProbePublicToMirror(value QueryAnchorProbe) internalmirror.Query
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		Breakdown:              queryAnchorProbeBreakdownPublicToMirror(value.Breakdown),
 	}
+}
+
+func queryAnchorProbeBreakdownPublicToMirror(values []QueryAnchorProbeBreakdown) []internalmirror.QueryAnchorProbeBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnchorProbeBreakdown, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnchorProbeBreakdown{
+			Source:      value.Source,
+			Confidence:  value.Confidence,
+			HitCount:    value.HitCount,
+			TopScore:    value.TopScore,
+			SecondScore: value.SecondScore,
+			Reason:      value.Reason,
+			Error:       value.Error,
+		})
+	}
+	return out
 }
 
 func queryAnalysisDecisionPublicToMirror(value QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {

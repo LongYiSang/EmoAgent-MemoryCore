@@ -575,7 +575,8 @@ func isZeroQueryAnchorProbe(value QueryAnchorProbe) bool {
 		value.FallbackSearchHitCount == 0 &&
 		value.Top1Score == 0 &&
 		value.Top2Score == 0 &&
-		value.Top1Margin == 0
+		value.Top1Margin == 0 &&
+		len(value.Breakdown) == 0
 }
 
 func isZeroQueryAnalysisDecision(value QueryAnalysisDecision) bool {
@@ -1312,7 +1313,27 @@ func queryAnchorProbeToStore(value QueryAnchorProbe) memsqlite.QueryAnchorProbe 
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		Breakdown:              queryAnchorProbeBreakdownToStore(value.Breakdown),
 	}
+}
+
+func queryAnchorProbeBreakdownToStore(values []QueryAnchorProbeBreakdown) []memsqlite.QueryAnchorProbeBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QueryAnchorProbeBreakdown, 0, len(values))
+	for _, value := range values {
+		out = append(out, memsqlite.QueryAnchorProbeBreakdown{
+			Source:      value.Source,
+			Confidence:  value.Confidence,
+			HitCount:    value.HitCount,
+			TopScore:    value.TopScore,
+			SecondScore: value.SecondScore,
+			Reason:      value.Reason,
+			Error:       value.Error,
+		})
+	}
+	return out
 }
 
 func queryAnalysisDecisionToStore(value QueryAnalysisDecision) memsqlite.QueryAnalysisDecision {
@@ -1553,7 +1574,27 @@ func queryAnchorProbeToMirror(value memsqlite.QueryAnchorProbe) internalmirror.Q
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		Breakdown:              queryAnchorProbeBreakdownToMirror(value.Breakdown),
 	}
+}
+
+func queryAnchorProbeBreakdownToMirror(values []memsqlite.QueryAnchorProbeBreakdown) []internalmirror.QueryAnchorProbeBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnchorProbeBreakdown, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnchorProbeBreakdown{
+			Source:      value.Source,
+			Confidence:  value.Confidence,
+			HitCount:    value.HitCount,
+			TopScore:    value.TopScore,
+			SecondScore: value.SecondScore,
+			Reason:      value.Reason,
+			Error:       value.Error,
+		})
+	}
+	return out
 }
 
 func queryAnalysisDecisionToMirror(value memsqlite.QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {
@@ -1649,7 +1690,27 @@ func queryAnchorProbeFromMirror(value internalmirror.QueryAnchorProbe) QueryAnch
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		Breakdown:              queryAnchorProbeBreakdownFromMirror(value.Breakdown),
 	}
+}
+
+func queryAnchorProbeBreakdownFromMirror(values []internalmirror.QueryAnchorProbeBreakdown) []QueryAnchorProbeBreakdown {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]QueryAnchorProbeBreakdown, 0, len(values))
+	for _, value := range values {
+		out = append(out, QueryAnchorProbeBreakdown{
+			Source:      value.Source,
+			Confidence:  value.Confidence,
+			HitCount:    value.HitCount,
+			TopScore:    value.TopScore,
+			SecondScore: value.SecondScore,
+			Reason:      value.Reason,
+			Error:       value.Error,
+		})
+	}
+	return out
 }
 
 func queryAnalysisDecisionFromMirror(value internalmirror.QueryAnalysisDecision) QueryAnalysisDecision {

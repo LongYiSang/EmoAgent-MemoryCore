@@ -111,17 +111,28 @@ type QueryAnalysisScores struct {
 }
 
 type QueryAnchorProbe struct {
-	EntityExactConf        float64 `json:"entity_exact_conf,omitempty"`
-	EntityAmbiguity        float64 `json:"entity_ambiguity,omitempty"`
-	SparseProbeConf        float64 `json:"sparse_probe_conf,omitempty"`
-	PredicateProbeConf     float64 `json:"predicate_probe_conf,omitempty"`
-	RecentProbeConf        float64 `json:"recent_probe_conf,omitempty"`
-	PinnedCoreProbeConf    float64 `json:"pinned_core_probe_conf,omitempty"`
-	NarrativeProbeConf     float64 `json:"narrative_probe_conf,omitempty"`
-	FallbackSearchHitCount int     `json:"fallback_search_hit_count,omitempty"`
-	Top1Score              float64 `json:"top1_score,omitempty"`
-	Top2Score              float64 `json:"top2_score,omitempty"`
-	Top1Margin             float64 `json:"top1_margin,omitempty"`
+	EntityExactConf        float64                     `json:"entity_exact_conf,omitempty"`
+	EntityAmbiguity        float64                     `json:"entity_ambiguity,omitempty"`
+	SparseProbeConf        float64                     `json:"sparse_probe_conf,omitempty"`
+	PredicateProbeConf     float64                     `json:"predicate_probe_conf,omitempty"`
+	RecentProbeConf        float64                     `json:"recent_probe_conf,omitempty"`
+	PinnedCoreProbeConf    float64                     `json:"pinned_core_probe_conf,omitempty"`
+	NarrativeProbeConf     float64                     `json:"narrative_probe_conf,omitempty"`
+	FallbackSearchHitCount int                         `json:"fallback_search_hit_count,omitempty"`
+	Top1Score              float64                     `json:"top1_score,omitempty"`
+	Top2Score              float64                     `json:"top2_score,omitempty"`
+	Top1Margin             float64                     `json:"top1_margin,omitempty"`
+	Breakdown              []QueryAnchorProbeBreakdown `json:"breakdown,omitempty"`
+}
+
+type QueryAnchorProbeBreakdown struct {
+	Source      string  `json:"source,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	HitCount    int     `json:"hit_count,omitempty"`
+	TopScore    float64 `json:"top_score,omitempty"`
+	SecondScore float64 `json:"second_score,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
+	Error       string  `json:"error,omitempty"`
 }
 
 type QueryAnalysisDecision struct {

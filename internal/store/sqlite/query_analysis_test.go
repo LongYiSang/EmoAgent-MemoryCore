@@ -1,6 +1,14 @@
 package sqlite
 
-import "testing"
+import (
+	"context"
+	"database/sql"
+	"math"
+	"path/filepath"
+	"testing"
+
+	"github.com/longyisang/emoagent-memorycore/internal/core"
+)
 
 func TestQueryAnalysisTimeModeCurrentRules(t *testing.T) {
 	tests := []struct {
@@ -122,6 +130,14 @@ func TestQueryAnalysisSupportsPhase1DiagnosticsDTO(t *testing.T) {
 			Top1Score:              0.91,
 			Top2Score:              0.77,
 			Top1Margin:             0.14,
+			Breakdown: []QueryAnchorProbeBreakdown{{
+				Source:      "sparse_probe",
+				Confidence:  0.62,
+				HitCount:    4,
+				TopScore:    0.91,
+				SecondScore: 0.77,
+				Reason:      "sqlite search document match",
+			}},
 		},
 		Decision: QueryAnalysisDecision{
 			UseSemantic:      true,
@@ -154,6 +170,12 @@ func TestQueryAnalysisSupportsPhase1DiagnosticsDTO(t *testing.T) {
 				},
 				Probes: QueryAnchorProbe{
 					SparseProbeConf: 0.52,
+					Breakdown: []QueryAnchorProbeBreakdown{{
+						Source:     "sparse_probe",
+						Confidence: 0.52,
+						HitCount:   2,
+						Reason:     "semantic returned probe snapshot",
+					}},
 				},
 				Decision: QueryAnalysisDecision{
 					UseSemantic:  true,
@@ -173,13 +195,234 @@ func TestQueryAnalysisSupportsPhase1DiagnosticsDTO(t *testing.T) {
 
 	if analysis.Scores.RuleFit != 0.61 ||
 		analysis.Probes.Top1Margin != 0.14 ||
+		analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		!analysis.Decision.UseSemantic ||
 		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
 		analysis.Evidence[0].Detector != "rule_regex_v1" ||
 		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
 		analysis.Diagnostics.SemanticAnalysis.Decision.SemanticMode != "light" ||
+		analysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].Value != string(MemoryAbilityDirectFact) {
 		t.Fatalf("phase 1 DTO fields not retained: %#v", analysis)
+	}
+}
+
+func TestAnalyzeQueryPopulatesEntityAnchorProbeExactAliasAndAmbiguous(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	policy := RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true}
+
+	insertProbeEntity(t, ctx, db.SQLDB(), "ent_user", "Long")
+	insertProbeEntity(t, ctx, db.SQLDB(), "ent_lilei", "李雷")
+	insertProbeEntity(t, ctx, db.SQLDB(), "ent_other_lilei", "李雷2")
+	insertProbeAlias(t, ctx, db.SQLDB(), "alias_lilei_unique", "ent_lilei", "小雷")
+	insertProbeAlias(t, ctx, db.SQLDB(), "alias_lilei", "ent_lilei", "小李")
+	insertProbeAlias(t, ctx, db.SQLDB(), "alias_other_lilei", "ent_other_lilei", "小李")
+
+	t.Run("canonical exact", func(t *testing.T) {
+		got, err := repo.AnalyzeQuery(ctx, "default", "Long 喜欢咖啡吗", policy)
+		if err != nil {
+			t.Fatalf("analyze query: %v", err)
+		}
+		if got.Probes.EntityExactConf != 0.95 {
+			t.Fatalf("entity exact confidence = %v, want 0.95", got.Probes.EntityExactConf)
+		}
+		requireProbeBreakdown(t, got.Probes, "entity_exact", 0.95, "")
+	})
+
+	t.Run("alias", func(t *testing.T) {
+		got, err := repo.AnalyzeQuery(ctx, "default", "小雷最近怎么样", policy)
+		if err != nil {
+			t.Fatalf("analyze query: %v", err)
+		}
+		if got.Probes.EntityExactConf != 0.85 {
+			t.Fatalf("alias entity confidence = %v, want 0.85", got.Probes.EntityExactConf)
+		}
+		if got.Probes.EntityAmbiguity != 0 {
+			t.Fatalf("entity ambiguity = %v, want 0", got.Probes.EntityAmbiguity)
+		}
+		requireProbeBreakdown(t, got.Probes, "entity_exact", 0.85, "")
+	})
+
+	t.Run("alias ambiguous", func(t *testing.T) {
+		got, err := repo.AnalyzeQuery(ctx, "default", "小李最近怎么样", policy)
+		if err != nil {
+			t.Fatalf("analyze query: %v", err)
+		}
+		if got.Probes.EntityExactConf != 0.65 {
+			t.Fatalf("ambiguous entity confidence = %v, want 0.65", got.Probes.EntityExactConf)
+		}
+		if got.Probes.EntityAmbiguity <= 0.6 {
+			t.Fatalf("entity ambiguity = %v, want > 0.6", got.Probes.EntityAmbiguity)
+		}
+		requireProbeBreakdown(t, got.Probes, "entity_exact", 0.65, "")
+	})
+}
+
+func TestAnalyzeQueryPopulatesSparsePredicateAndSupportProbeBreakdown(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	policy := RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true}
+
+	insertProbeEntity(t, ctx, db.SQLDB(), "ent_user", "Long")
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:         "fact_coffee_strong_1",
+		predicate:  "likes",
+		object:     "coffee",
+		summary:    "user likes coffee morning ritual",
+		factType:   core.FactTypeStablePreference,
+		importance: 0.80,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:         "fact_coffee_strong_2",
+		predicate:  "likes",
+		object:     "coffee beans",
+		summary:    "coffee morning preference is stable",
+		factType:   core.FactTypeStablePreference,
+		importance: 0.75,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:         "fact_coffee_strong_3",
+		predicate:  "drinks",
+		object:     "coffee",
+		summary:    "coffee morning drink appears in notes",
+		factType:   core.FactTypeStablePreference,
+		importance: 0.70,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:         "fact_pinned_core",
+		predicate:  "prefers_name",
+		object:     "Long",
+		summary:    "user prefers the name Long",
+		factType:   core.FactTypeCoreIdentity,
+		importance: 0.95,
+		pinned:     true,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:         "fact_recent",
+		predicate:  "felt",
+		object:     "work resistance",
+		summary:    "recent work resistance felt heavy",
+		factType:   core.FactTypeTransientContext,
+		importance: 0.90,
+	})
+	insertProbeNarrativeDocument(t, ctx, db.SQLDB(), "narrative_work", "recent work resistance pattern")
+	rebuildProbeSearch(t, ctx, db.SQLDB())
+
+	strong, err := repo.AnalyzeQuery(ctx, "default", "coffee morning", policy)
+	if err != nil {
+		t.Fatalf("analyze strong sparse query: %v", err)
+	}
+	if strong.Probes.SparseProbeConf != 0.75 {
+		t.Fatalf("strong sparse confidence = %v, want 0.75", strong.Probes.SparseProbeConf)
+	}
+	if strong.Probes.FallbackSearchHitCount < 3 || strong.Probes.Top1Score < strong.Probes.Top2Score || strong.Probes.Top1Margin < 0 {
+		t.Fatalf("strong sparse probe = %#v, want stable hit count and top scores", strong.Probes)
+	}
+	requireProbeBreakdown(t, strong.Probes, "sparse_probe", 0.75, "")
+
+	weak, err := repo.AnalyzeQuery(ctx, "default", "beans", policy)
+	if err != nil {
+		t.Fatalf("analyze weak sparse query: %v", err)
+	}
+	if weak.Probes.SparseProbeConf != 0.40 {
+		t.Fatalf("weak sparse confidence = %v, want 0.40", weak.Probes.SparseProbeConf)
+	}
+
+	predicate, err := repo.AnalyzeQuery(ctx, "default", "我喜欢什么", policy)
+	if err != nil {
+		t.Fatalf("analyze predicate query: %v", err)
+	}
+	if predicate.Probes.PredicateProbeConf < 0.70 {
+		t.Fatalf("predicate confidence = %v, want >= 0.70", predicate.Probes.PredicateProbeConf)
+	}
+	requireProbeBreakdown(t, predicate.Probes, "predicate_probe", predicate.Probes.PredicateProbeConf, "")
+
+	support, err := repo.AnalyzeQuery(ctx, "default", "为什么最近 work resistance", policy)
+	if err != nil {
+		t.Fatalf("analyze support query: %v", err)
+	}
+	if support.Probes.RecentProbeConf == 0 || support.Probes.NarrativeProbeConf == 0 {
+		t.Fatalf("support probes = %#v, want recent and narrative confidence", support.Probes)
+	}
+	requireProbeBreakdown(t, support.Probes, "recent_probe", support.Probes.RecentProbeConf, "")
+	requireProbeBreakdown(t, support.Probes, "narrative_probe", support.Probes.NarrativeProbeConf, "")
+
+	pinned, err := repo.AnalyzeQuery(ctx, "default", "我的边界 Long", policy)
+	if err != nil {
+		t.Fatalf("analyze pinned query: %v", err)
+	}
+	if pinned.Probes.PinnedCoreProbeConf == 0 {
+		t.Fatalf("pinned core confidence = %v, want non-zero", pinned.Probes.PinnedCoreProbeConf)
+	}
+	requireProbeBreakdown(t, pinned.Probes, "pinned_core_probe", pinned.Probes.PinnedCoreProbeConf, "")
+}
+
+func TestComputeAnchorReadinessNoisyOrAndPenalties(t *testing.T) {
+	base := QueryAnchorProbe{
+		EntityExactConf:     0.50,
+		SparseProbeConf:     0.40,
+		PredicateProbeConf:  0.30,
+		RecentProbeConf:     0.20,
+		PinnedCoreProbeConf: 0.10,
+		NarrativeProbeConf:  0.05,
+	}
+	want := 1 - (1-0.50)*(1-0.40)*(1-0.30)*(1-0.20)*(1-0.10)*(1-0.05)
+	if got := ComputeAnchorReadiness(base); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("anchor readiness = %v, want noisy-or %v", got, want)
+	}
+
+	ambiguous := base
+	ambiguous.EntityAmbiguity = 0.75
+	if got := ComputeAnchorReadiness(ambiguous); math.Abs(got-(want*0.75)) > 1e-9 {
+		t.Fatalf("ambiguous anchor readiness = %v, want %v", got, want*0.75)
+	}
+
+	lowMargin := base
+	lowMargin.FallbackSearchHitCount = 6
+	lowMargin.Top1Score = 0.60
+	lowMargin.Top2Score = 0.56
+	lowMargin.Top1Margin = 0.04
+	if got := ComputeAnchorReadiness(lowMargin); math.Abs(got-(want*0.85)) > 1e-9 {
+		t.Fatalf("low-margin anchor readiness = %v, want %v", got, want*0.85)
+	}
+}
+
+func TestAnalyzeQueryProbeErrorFallsBackToRuleAnalysis(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	if _, err := db.SQLDB().ExecContext(ctx, `DROP TABLE memory_search_documents`); err != nil {
+		t.Fatalf("drop search documents: %v", err)
+	}
+
+	got, err := repo.AnalyzeQuery(ctx, "default", "咖啡", RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true})
+	if err != nil {
+		t.Fatalf("analyze query after probe error: %v", err)
+	}
+	if got.Raw != "咖啡" || got.MemoryAbility != MemoryAbilityDirectFact || got.Diagnostics == nil {
+		t.Fatalf("fallback analysis = %#v, want rule analysis with diagnostics", got)
+	}
+	if len(got.Probes.Breakdown) == 0 {
+		t.Fatalf("probe breakdown = %#v, want error entry", got.Probes.Breakdown)
+	}
+	hasError := false
+	for _, item := range got.Probes.Breakdown {
+		if item.Error != "" {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Fatalf("probe breakdown = %#v, want sanitized error", got.Probes.Breakdown)
+	}
+	if got.Scores.AnchorReadiness != 0 {
+		t.Fatalf("anchor readiness = %v, want 0 on probe failure", got.Scores.AnchorReadiness)
 	}
 }
 
@@ -774,14 +1017,18 @@ func TestComputeRuleFitPopulatesFeatureScoresAndClamps(t *testing.T) {
 		MemoryAbility: MemoryAbilityCausalExplain,
 		EvidenceNeed:  EvidenceNeedStateTransition,
 		Signals:       []QuerySignal{QuerySignalCausal, QuerySignalHistorical, QuerySignalStateTransition},
+		Probes: QueryAnchorProbe{
+			SparseProbeConf: 0.75,
+		},
 	}
 
 	got := ComputeRuleFit("为什么我后来不喝咖啡了", analysis, nil)
 	if got.RuleFit <= 0 || got.RuleFit > 1 {
 		t.Fatalf("rule fit = %v, want clamped unit score", got.RuleFit)
 	}
-	if got.ExpectedRetrievalConfidence != got.RuleFit {
-		t.Fatalf("expected retrieval confidence = %v, want rule fit %v in phase 2", got.ExpectedRetrievalConfidence, got.RuleFit)
+	wantExpected := clamp01(0.60*got.RuleFit + 0.40*got.AnchorReadiness - 0.10*got.SafetyRisk)
+	if got.AnchorReadiness != 0.75 || got.ExpectedRetrievalConfidence != wantExpected {
+		t.Fatalf("scores = %#v, want anchor readiness 0.75 and expected retrieval confidence %v", got, wantExpected)
 	}
 	if got.IntentEvidence == 0 ||
 		got.FieldConsistency == 0 ||
@@ -947,4 +1194,124 @@ func equalQuerySignals(a []QuerySignal, b []QuerySignal) bool {
 		}
 	}
 	return true
+}
+
+type probeFact struct {
+	id         string
+	predicate  string
+	object     string
+	summary    string
+	factType   core.FactType
+	importance float64
+	pinned     bool
+}
+
+func openQueryProbeDB(t *testing.T, ctx context.Context, enableFTS bool) *DB {
+	t.Helper()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "probe.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.MigrateWithOptions(ctx, MigrateOptions{EnableFTS: enableFTS}); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate db: %v", err)
+	}
+	if err := NewStore(db.SQLDB()).EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		_ = db.Close()
+		t.Fatalf("ensure persona: %v", err)
+	}
+	return db
+}
+
+func insertProbeEntity(t *testing.T, ctx context.Context, db *sql.DB, entityID string, canonical string) {
+	t.Helper()
+	if err := NewEntityRepository(db).Upsert(ctx, core.Entity{
+		ID:            entityID,
+		PersonaID:     "default",
+		CanonicalName: canonical,
+		EntityType:    core.EntityTypePerson,
+	}); err != nil {
+		t.Fatalf("insert entity %s: %v", entityID, err)
+	}
+}
+
+func insertProbeAlias(t *testing.T, ctx context.Context, db *sql.DB, aliasID string, entityID string, alias string) {
+	t.Helper()
+	if err := NewEntityRepository(db).AddAlias(ctx, core.EntityAlias{
+		ID:        aliasID,
+		PersonaID: "default",
+		EntityID:  entityID,
+		Alias:     alias,
+		AliasType: core.AliasTypeSurface,
+	}); err != nil {
+		t.Fatalf("insert alias %s: %v", aliasID, err)
+	}
+}
+
+func insertProbeFact(t *testing.T, ctx context.Context, db *sql.DB, value probeFact) {
+	t.Helper()
+	if value.factType == "" {
+		value.factType = core.FactTypeStablePreference
+	}
+	object := value.object
+	if err := NewFactRepository(db).Insert(ctx, core.Fact{
+		ID:                   value.id,
+		PersonaID:            "default",
+		SubjectEntityID:      probeStringPtr("ent_user"),
+		Predicate:            value.predicate,
+		ObjectLiteral:        &object,
+		ContentSummary:       value.summary,
+		FactType:             value.factType,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		Importance:           value.importance,
+		Pinned:               value.pinned,
+	}); err != nil {
+		t.Fatalf("insert fact %s: %v", value.id, err)
+	}
+}
+
+func insertProbeNarrativeDocument(t *testing.T, ctx context.Context, db *sql.DB, nodeID string, text string) {
+	t.Helper()
+	if err := NewSearchRepository(db).UpsertDocument(ctx, core.SearchDocument{
+		ID:               "search_" + nodeID,
+		PersonaID:        "default",
+		NodeType:         core.NodeTypeNarrative,
+		NodeID:           nodeID,
+		SearchText:       text,
+		SearchTier:       core.SearchTierHot,
+		VisibilityStatus: core.VisibilityVisible,
+		SensitivityLevel: core.SensitivityNormal,
+		LifecycleStatus:  core.LifecycleActive,
+		Searchable:       true,
+	}); err != nil {
+		t.Fatalf("insert narrative search document %s: %v", nodeID, err)
+	}
+}
+
+func rebuildProbeSearch(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if _, err := NewSearchRepository(db).RebuildSearchDocuments(ctx, "default"); err != nil {
+		t.Fatalf("rebuild search documents: %v", err)
+	}
+}
+
+func requireProbeBreakdown(t *testing.T, probe QueryAnchorProbe, source string, confidence float64, wantError string) {
+	t.Helper()
+	for _, item := range probe.Breakdown {
+		if item.Source != source {
+			continue
+		}
+		if item.Confidence != confidence {
+			t.Fatalf("probe breakdown %s confidence = %v, want %v in %#v", source, item.Confidence, confidence, probe.Breakdown)
+		}
+		if item.Error != wantError {
+			t.Fatalf("probe breakdown %s error = %q, want %q in %#v", source, item.Error, wantError, probe.Breakdown)
+		}
+		return
+	}
+	t.Fatalf("probe breakdown = %#v, missing source %s", probe.Breakdown, source)
+}
+
+func probeStringPtr(value string) *string {
+	return &value
 }

@@ -165,6 +165,17 @@ type QueryAnchorProbe struct {
 	Top1Score              float64
 	Top2Score              float64
 	Top1Margin             float64
+	Breakdown              []QueryAnchorProbeBreakdown
+}
+
+type QueryAnchorProbeBreakdown struct {
+	Source      string
+	Confidence  float64
+	HitCount    int
+	TopScore    float64
+	SecondScore float64
+	Reason      string
+	Error       string
 }
 
 type QueryAnalysisDecision struct {
@@ -281,6 +292,7 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 	}
 	analysis.EntityMentions = mentions
 	legacy := ruleConfidenceLegacy(normalized, analysis)
+	analysis.Probes = r.probeQueryAnchors(ctx, personaID, normalized, analysis, policy)
 	analysis.Scores = ComputeRuleFit(normalized, analysis, analysis.Evidence)
 	analysis.Confidence = analysis.Scores.ExpectedRetrievalConfidence
 	analysis.FieldConfidence = ComputeFieldConfidence(analysis, analysis.Scores)
@@ -293,6 +305,7 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	out.Terms = append([]string(nil), value.Terms...)
 	out.EntityMentions = append([]QueryEntityMention(nil), value.EntityMentions...)
 	out.Signals = append([]QuerySignal(nil), value.Signals...)
+	out.Probes = cloneQueryAnchorProbe(value.Probes)
 	out.Decision = cloneQueryAnalysisDecision(value.Decision)
 	out.Evidence = cloneQueryAnalysisEvidence(value.Evidence)
 	out.Alternatives = cloneQueryAnalysisAlternatives(value.Alternatives)
@@ -315,6 +328,7 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 	}
 	out := *value
 	out.Signals = append([]string(nil), value.Signals...)
+	out.Probes = cloneQueryAnchorProbe(value.Probes)
 	out.Decision = cloneQueryAnalysisDecision(value.Decision)
 	out.Evidence = cloneQueryAnalysisEvidence(value.Evidence)
 	out.Alternatives = cloneQueryAnalysisAlternatives(value.Alternatives)
@@ -323,6 +337,12 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
+}
+
+func cloneQueryAnchorProbe(value QueryAnchorProbe) QueryAnchorProbe {
+	out := value
+	out.Breakdown = append([]QueryAnchorProbeBreakdown(nil), value.Breakdown...)
+	return out
 }
 
 func cloneQueryAnalysisDecision(value QueryAnalysisDecision) QueryAnalysisDecision {
@@ -729,6 +749,342 @@ func querySignalsToStrings(values []QuerySignal) []string {
 	return out
 }
 
+func (r *RetrievalRepository) probeQueryAnchors(ctx context.Context, personaID string, normalized string, analysis QueryAnalysis, policy RetrievalPolicy) QueryAnchorProbe {
+	var probe QueryAnchorProbe
+	probeEntityAnchors(&probe, analysis.EntityMentions)
+
+	if err := r.probeSparseAnchors(ctx, personaID, analysis, policy, &probe); err != nil {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("sparse_probe", 0, 0, 0, 0, "", err))
+	}
+	if err := r.probePredicateAnchors(ctx, personaID, normalized, analysis, policy, &probe); err != nil {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("predicate_probe", 0, 0, 0, 0, "", err))
+	}
+	if err := r.probeRecentAnchors(ctx, personaID, analysis, policy, &probe); err != nil {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("recent_probe", 0, 0, 0, 0, "", err))
+	}
+	if err := r.probePinnedCoreAnchors(ctx, personaID, analysis, policy, &probe); err != nil {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("pinned_core_probe", 0, 0, 0, 0, "", err))
+	}
+	if err := r.probeNarrativeAnchors(ctx, personaID, analysis, policy, &probe); err != nil {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("narrative_probe", 0, 0, 0, 0, "", err))
+	}
+	return probe
+}
+
+func probeEntityAnchors(probe *QueryAnchorProbe, mentions []QueryEntityMention) {
+	if len(mentions) == 0 {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("entity_exact", 0, 0, 0, 0, "no entity mention", nil))
+		return
+	}
+	best := 0.0
+	seen := map[string]struct{}{}
+	hasAlias := false
+	for _, mention := range mentions {
+		if mention.EntityID != "" {
+			seen[mention.EntityID] = struct{}{}
+		}
+		switch mention.MatchKind {
+		case QueryEntityMentionKindCanonical:
+			best = maxFloat(best, 0.95)
+		case QueryEntityMentionKindAlias:
+			best = maxFloat(best, 0.85)
+			hasAlias = true
+		default:
+			best = maxFloat(best, 0.65)
+		}
+	}
+	reason := "canonical entity match"
+	if hasAlias {
+		reason = "entity alias match"
+	}
+	if len(seen) > 1 {
+		probe.EntityAmbiguity = 0.75
+		best = minScore(best, 0.65)
+		reason = "ambiguous entity match"
+	}
+	probe.EntityExactConf = clamp01(best)
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("entity_exact", probe.EntityExactConf, len(mentions), probe.EntityExactConf, 0, reason, nil))
+}
+
+func (r *RetrievalRepository) probeSparseAnchors(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
+	docs, err := r.search.SearchDocumentsForAnalyzedRetrieval(ctx, personaID, analysis, policy.UseFTS, 8, policy)
+	if err != nil {
+		return err
+	}
+	scores := make([]float64, 0, len(docs))
+	for _, doc := range docs {
+		score := textMatchScore(analysis, doc.SearchText)
+		if score <= 0 {
+			score = 0.20
+		}
+		scores = append(scores, clamp01(score))
+	}
+	sort.Sort(sort.Reverse(sort.Float64Slice(scores)))
+	top1, top2 := topProbeScores(scores)
+	probe.FallbackSearchHitCount = len(docs)
+	probe.Top1Score = top1
+	probe.Top2Score = top2
+	probe.Top1Margin = clamp01(top1 - top2)
+	switch {
+	case len(docs) >= 3 && top1 >= 0.60:
+		probe.SparseProbeConf = 0.75
+	case len(docs) > 0:
+		probe.SparseProbeConf = 0.40
+	default:
+		probe.SparseProbeConf = 0
+	}
+	reason := "no sparse search hit"
+	if probe.SparseProbeConf >= 0.75 {
+		reason = "strong sqlite search document match"
+	} else if probe.SparseProbeConf > 0 {
+		reason = "weak sqlite search document match"
+	}
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("sparse_probe", probe.SparseProbeConf, len(docs), top1, top2, reason, nil))
+	return nil
+}
+
+func (r *RetrievalRepository) probePredicateAnchors(ctx context.Context, personaID string, normalized string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
+	predicates := predicateProbePredicates(normalized)
+	if len(predicates) > 0 {
+		count, top, err := r.countFactsForPredicates(ctx, personaID, predicates, policy)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			probe.PredicateProbeConf = clamp01(0.70 + 0.20*top)
+			probe.Breakdown = append(probe.Breakdown, probeBreakdown("predicate_probe", probe.PredicateProbeConf, count, top, 0, "explicit predicate match", nil))
+			return nil
+		}
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("predicate_probe", 0, 0, 0, 0, "explicit predicate not found", nil))
+		return nil
+	}
+	count, top, err := r.countFactsForGenericTerms(ctx, personaID, analysis, policy)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		probe.PredicateProbeConf = clamp01(0.20 + minScore(0.15, 0.05*float64(count)))
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("predicate_probe", probe.PredicateProbeConf, count, top, 0, "generic predicate/object weak match", nil))
+		return nil
+	}
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("predicate_probe", 0, 0, 0, 0, "no predicate/object match", nil))
+	return nil
+}
+
+func (r *RetrievalRepository) probeRecentAnchors(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
+	if !queryAllowsRecentImportantAnchors(analysis) {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("recent_probe", 0, 0, 0, 0, "query mode does not use recent anchors", nil))
+		return nil
+	}
+	count, top, err := r.countFactsByQuery(ctx, personaID, policy, `
+SELECT COUNT(*), COALESCE(MAX(importance), 0)
+FROM facts
+WHERE persona_id = ?
+  AND importance >= 0.7
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND lifecycle_status IN ('active', 'dormant', 'consolidated')
+  AND (validity_status != 'invalidated' OR ? = 1)
+  AND (lifecycle_status != 'archived' OR ? = 1)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)`)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		probe.RecentProbeConf = clamp01(0.25 + 0.25*top)
+	}
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("recent_probe", probe.RecentProbeConf, count, top, 0, "recent important fact probe", nil))
+	return nil
+}
+
+func (r *RetrievalRepository) probePinnedCoreAnchors(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
+	if !queryAllowsPinnedCoreAnchors(analysis) {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("pinned_core_probe", 0, 0, 0, 0, "query mode does not use pinned/core anchors", nil))
+		return nil
+	}
+	count, top, err := r.countFactsByQuery(ctx, personaID, policy, `
+SELECT COUNT(*), COALESCE(MAX(importance), 0)
+FROM facts
+WHERE persona_id = ?
+  AND pinned = 1
+  AND fact_type IN ('core_identity', 'commitment', 'stable_preference', 'relational_state')
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND (validity_status != 'invalidated' OR ? = 1)
+  AND (lifecycle_status != 'archived' OR ? = 1)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)`)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		probe.PinnedCoreProbeConf = clamp01(0.35 + 0.25*top)
+	}
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("pinned_core_probe", probe.PinnedCoreProbeConf, count, top, 0, "pinned/core fact probe", nil))
+	return nil
+}
+
+func (r *RetrievalRepository) probeNarrativeAnchors(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
+	if !queryAllowsNarrativeInsightAnchors(analysis) {
+		probe.Breakdown = append(probe.Breakdown, probeBreakdown("narrative_probe", 0, 0, 0, 0, "query mode does not use narrative anchors", nil))
+		return nil
+	}
+	docs, err := r.listNarrativeInsightSearchDocuments(ctx, personaID, 8)
+	if err != nil {
+		return err
+	}
+	var scores []float64
+	for _, doc := range docs {
+		if !searchDocumentAuthorityAllows(doc, policy) {
+			continue
+		}
+		score := textMatchScore(analysis, doc.SearchText)
+		if score <= 0 {
+			continue
+		}
+		scores = append(scores, score)
+	}
+	sort.Sort(sort.Reverse(sort.Float64Slice(scores)))
+	top1, top2 := topProbeScores(scores)
+	if len(scores) > 0 {
+		probe.NarrativeProbeConf = clamp01(0.20 + 0.25*top1)
+	}
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("narrative_probe", probe.NarrativeProbeConf, len(scores), top1, top2, "narrative/insight weak hit probe", nil))
+	return nil
+}
+
+func (r *RetrievalRepository) countFactsForPredicates(ctx context.Context, personaID string, predicates []string, policy RetrievalPolicy) (int, float64, error) {
+	predicates = uniqueOrderedStrings(predicates)
+	if len(predicates) == 0 {
+		return 0, 0, nil
+	}
+	placeholders := make([]string, len(predicates))
+	args := make([]any, 0, 1+len(predicates)+3)
+	args = append(args, personaID)
+	for i, predicate := range predicates {
+		placeholders[i] = "?"
+		args = append(args, predicate)
+	}
+	args = append(args,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+	)
+	query := `
+SELECT COUNT(*), COALESCE(MAX(importance), 0)
+FROM facts
+WHERE persona_id = ?
+  AND predicate IN (` + strings.Join(placeholders, ", ") + `)
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND (validity_status != 'invalidated' OR ? = 1)
+  AND (lifecycle_status != 'archived' OR ? = 1)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)`
+	var count int
+	var top float64
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count, &top)
+	return count, clamp01(top), err
+}
+
+func (r *RetrievalRepository) countFactsForGenericTerms(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy) (int, float64, error) {
+	terms := discriminatingSlotTerms(analysis)
+	if len(terms) == 0 {
+		return 0, 0, nil
+	}
+	if len(terms) > 4 {
+		terms = terms[:4]
+	}
+	clauses := make([]string, 0, len(terms))
+	args := []any{personaID}
+	for _, term := range terms {
+		like := "%" + term + "%"
+		clauses = append(clauses, "(predicate LIKE ? OR COALESCE(object_literal, '') LIKE ? OR content_summary LIKE ?)")
+		args = append(args, like, like, like)
+	}
+	args = append(args,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+	)
+	query := `
+SELECT COUNT(*), COALESCE(MAX(importance), 0)
+FROM facts
+WHERE persona_id = ?
+  AND (` + strings.Join(clauses, " OR ") + `)
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND (validity_status != 'invalidated' OR ? = 1)
+  AND (lifecycle_status != 'archived' OR ? = 1)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)`
+	var count int
+	var top float64
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count, &top)
+	return count, clamp01(top), err
+}
+
+func (r *RetrievalRepository) countFactsByQuery(ctx context.Context, personaID string, policy RetrievalPolicy, query string) (int, float64, error) {
+	var count int
+	var top float64
+	err := r.db.QueryRowContext(ctx, query,
+		personaID,
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowHistorical),
+		boolInt(policy.AllowDeepArchive),
+	).Scan(&count, &top)
+	return count, clamp01(top), err
+}
+
+func predicateProbePredicates(normalized string) []string {
+	switch {
+	case containsAny(normalized, "不喜欢", "讨厌", "dislike", "dislikes", "hate"):
+		return []string{"dislikes"}
+	case containsAny(normalized, "喜欢", "偏好", "爱好", "like", "likes", "preference", "prefer"):
+		return []string{"likes", "prefers"}
+	case containsAny(normalized, "住在哪里", "住在", "哪个城市", "城市", "live", "lives", "city"):
+		return []string{"lives_in"}
+	case containsAny(normalized, "名字", "昵称", "叫我", "称呼", "name"):
+		return []string{"prefers_name"}
+	default:
+		return nil
+	}
+}
+
+func topProbeScores(scores []float64) (float64, float64) {
+	if len(scores) == 0 {
+		return 0, 0
+	}
+	top1 := clamp01(scores[0])
+	if len(scores) == 1 {
+		return top1, 0
+	}
+	return top1, clamp01(scores[1])
+}
+
+func probeBreakdown(source string, confidence float64, hitCount int, topScore float64, secondScore float64, reason string, err error) QueryAnchorProbeBreakdown {
+	item := QueryAnchorProbeBreakdown{
+		Source:      source,
+		Confidence:  clamp01(confidence),
+		HitCount:    hitCount,
+		TopScore:    clamp01(topScore),
+		SecondScore: clamp01(secondScore),
+		Reason:      strings.TrimSpace(reason),
+	}
+	if err != nil {
+		item.Error = sanitizeProbeError(err)
+	}
+	return item
+}
+
+func sanitizeProbeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if len(msg) > 160 {
+		msg = msg[:160]
+	}
+	return msg
+}
+
 func onlyExactFactSignal(signals []QuerySignal) bool {
 	return len(signals) == 1 && signals[0] == QuerySignalExactFact
 }
@@ -771,8 +1127,35 @@ func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 			0.08*s.MultiIntentConflictPenalty -
 			0.06*s.SensitivityPenalty,
 	)
-	s.ExpectedRetrievalConfidence = s.RuleFit
+	s.AnchorReadiness = ComputeAnchorReadiness(analysis.Probes)
+	s.ExpectedRetrievalConfidence = clamp01(0.60*s.RuleFit + 0.40*s.AnchorReadiness - 0.10*s.SafetyRisk)
 	return s
+}
+
+func ComputeAnchorReadiness(probe QueryAnchorProbe) float64 {
+	readiness := noisyOr(
+		probe.EntityExactConf,
+		probe.SparseProbeConf,
+		probe.PredicateProbeConf,
+		probe.RecentProbeConf,
+		probe.PinnedCoreProbeConf,
+		probe.NarrativeProbeConf,
+	)
+	if probe.EntityAmbiguity > 0.6 {
+		readiness *= 0.75
+	}
+	if probe.Top1Margin < 0.08 && probe.FallbackSearchHitCount > 5 {
+		readiness *= 0.85
+	}
+	return clamp01(readiness)
+}
+
+func noisyOr(values ...float64) float64 {
+	miss := 1.0
+	for _, value := range values {
+		miss *= 1.0 - clamp01(value)
+	}
+	return clamp01(1.0 - miss)
 }
 
 func ComputeFieldConfidence(_ QueryAnalysis, s QueryAnalysisScores) QueryAnalysisConfidence {

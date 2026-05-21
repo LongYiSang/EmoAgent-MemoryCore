@@ -114,6 +114,7 @@ type (
 	QueryAnalysisConfidence             = appcore.QueryAnalysisConfidence
 	QueryAnalysisScores                 = appcore.QueryAnalysisScores
 	QueryAnchorProbe                    = appcore.QueryAnchorProbe
+	QueryAnchorProbeBreakdown           = appcore.QueryAnchorProbeBreakdown
 	QueryAnalysisDecision               = appcore.QueryAnalysisDecision
 	QueryAnalysisEvidence               = appcore.QueryAnalysisEvidence
 	QueryAnalysisAlternative            = appcore.QueryAnalysisAlternative

@@ -39,6 +39,14 @@ func TestQueryAnalysisPhase1PublicAliasesCompile(t *testing.T) {
 			Top1Score:              0.91,
 			Top2Score:              0.77,
 			Top1Margin:             0.14,
+			Breakdown: []memorycore.QueryAnchorProbeBreakdown{{
+				Source:      "sparse_probe",
+				Confidence:  0.62,
+				HitCount:    4,
+				TopScore:    0.91,
+				SecondScore: 0.77,
+				Reason:      "sqlite search document match",
+			}},
 		},
 		Decision: memorycore.QueryAnalysisDecision{
 			UseSemantic:      true,
@@ -66,8 +74,16 @@ func TestQueryAnalysisPhase1PublicAliasesCompile(t *testing.T) {
 		}},
 		Diagnostics: &memorycore.QueryAnalysisDiagnostics{
 			SemanticAnalysis: &memorycore.SemanticQueryAnalysisDiagnostics{
-				Scores:       memorycore.QueryAnalysisScores{SemanticNeed: 0.77},
-				Probes:       memorycore.QueryAnchorProbe{SparseProbeConf: 0.52},
+				Scores: memorycore.QueryAnalysisScores{SemanticNeed: 0.77},
+				Probes: memorycore.QueryAnchorProbe{
+					SparseProbeConf: 0.52,
+					Breakdown: []memorycore.QueryAnchorProbeBreakdown{{
+						Source:     "sparse_probe",
+						Confidence: 0.52,
+						HitCount:   2,
+						Reason:     "semantic returned probe snapshot",
+					}},
+				},
 				Decision:     memorycore.QueryAnalysisDecision{UseSemantic: true, SemanticMode: "light", ReasonCodes: []string{"semantic_need_high"}},
 				Evidence:     []memorycore.QueryAnalysisEvidence{{Field: "evidence_need", Signal: "why"}},
 				Alternatives: []memorycore.QueryAnalysisAlternative{{Field: "memory_ability", Value: string(memorycore.MemoryAbilityDirectFact), Confidence: 0.22}},
@@ -77,9 +93,11 @@ func TestQueryAnalysisPhase1PublicAliasesCompile(t *testing.T) {
 
 	if analysis.Scores.RuleFit != 0.61 ||
 		analysis.Probes.Top1Margin != 0.14 ||
+		analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
 		analysis.Evidence[0].Detector != "rule_regex_v1" ||
 		analysis.Alternatives[0].Value != string(memorycore.QueryTimeModeHistorical) ||
+		analysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Diagnostics.SemanticAnalysis.Decision.SemanticMode != "light" {
 		t.Fatalf("phase 1 public aliases not retained: %#v", analysis)
 	}

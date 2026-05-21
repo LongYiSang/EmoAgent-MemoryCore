@@ -163,6 +163,14 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 			Top1Score:              0.91,
 			Top2Score:              0.77,
 			Top1Margin:             0.14,
+			Breakdown: []memsqlite.QueryAnchorProbeBreakdown{{
+				Source:      "sparse_probe",
+				Confidence:  0.62,
+				HitCount:    4,
+				TopScore:    0.91,
+				SecondScore: 0.77,
+				Reason:      "sqlite search document match",
+			}},
 		},
 		Decision: memsqlite.QueryAnalysisDecision{
 			UseSemantic:      true,
@@ -191,7 +199,15 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
 			SemanticAnalysis: &memsqlite.SemanticQueryAnalysisDiagnostics{
 				Scores: memsqlite.QueryAnalysisScores{SemanticNeed: 0.77},
-				Probes: memsqlite.QueryAnchorProbe{SparseProbeConf: 0.52},
+				Probes: memsqlite.QueryAnchorProbe{
+					SparseProbeConf: 0.52,
+					Breakdown: []memsqlite.QueryAnchorProbeBreakdown{{
+						Source:     "sparse_probe",
+						Confidence: 0.52,
+						HitCount:   2,
+						Reason:     "semantic returned probe snapshot",
+					}},
+				},
 				Decision: memsqlite.QueryAnalysisDecision{
 					UseSemantic:  true,
 					SemanticMode: "light",
@@ -214,24 +230,30 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 	}
 	if analysis.Scores.RuleFit != 0.61 ||
 		analysis.Probes.Top1Margin != 0.14 ||
+		analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
 		analysis.Evidence[0].MatchText != "为什么" ||
 		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
 		analysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] != "semantic_need_high" ||
+		analysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] != "fallback" {
 		t.Fatalf("phase 1 fields = %#v", analysis)
 	}
 
+	storeAnalysis.Probes.Breakdown[0].Source = "mutated"
 	storeAnalysis.Decision.ReasonCodes[0] = "mutated"
 	storeAnalysis.Evidence[0].MatchText = "mutated"
 	storeAnalysis.Alternatives[0].ReasonCodes[0] = "mutated"
+	storeAnalysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source = "mutated"
 	storeAnalysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] = "mutated"
 	storeAnalysis.Diagnostics.SemanticAnalysis.Evidence[0].Field = "mutated"
 	storeAnalysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] = "mutated"
 
-	if analysis.Decision.ReasonCodes[0] != "causal_intent" ||
+	if analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
+		analysis.Decision.ReasonCodes[0] != "causal_intent" ||
 		analysis.Evidence[0].MatchText != "为什么" ||
 		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
+		analysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] != "semantic_need_high" ||
 		analysis.Diagnostics.SemanticAnalysis.Evidence[0].Field != "evidence_need" ||
 		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] != "fallback" {
