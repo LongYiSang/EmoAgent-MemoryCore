@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 func TestEvalFixtures(t *testing.T) {
@@ -91,6 +93,58 @@ func TestQualityRetrievalFixturesDeclareQualityMetadata(t *testing.T) {
 				t.Fatalf("allow_stub = true, want false")
 			}
 		})
+	}
+}
+
+func TestPhase8QueryAnalysisFixturesRunWithShadowAdaptive(t *testing.T) {
+	paths := discoverSuiteFixtures(t, "query_analysis")
+	wantCaseIDs := map[string]struct{}{
+		"direct_fact_entity_exact":             {},
+		"direct_fact_generic_weak_anchor":      {},
+		"causal_recent_weak_anchor":            {},
+		"historical_current_ambiguous":         {},
+		"provenance_question":                  {},
+		"premise_check":                        {},
+		"relationship_arc":                     {},
+		"forget_target_ambiguous":              {},
+		"sensitive_recall_should_not_semantic": {},
+		"no_memory_chat":                       {},
+	}
+	if len(paths) != len(wantCaseIDs) {
+		t.Fatalf("query_analysis fixture count = %d, want %d", len(paths), len(wantCaseIDs))
+	}
+	ctx := context.Background()
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			fixture, err := LoadFixtureFile(path)
+			if err != nil {
+				t.Fatalf("load fixture: %v", err)
+			}
+			if _, ok := wantCaseIDs[fixture.CaseID]; !ok {
+				t.Fatalf("unexpected case_id %q from %s", fixture.CaseID, path)
+			}
+			seen[fixture.CaseID] = struct{}{}
+			if err := fixture.ValidateStubPolicy(FixtureStubPolicyForbid); err != nil {
+				t.Fatal(err)
+			}
+			report := NewRunner(RunnerOptions{
+				TempDir: t.TempDir(),
+				QueryAnalysis: memorycore.QueryAnalysisOptions{
+					Mode: memorycore.QueryAnalysisModeShadowAdaptive,
+				},
+			}).Run(ctx, fixture)
+			logEvalDebug(t, report)
+			if report.Failed() {
+				t.Fatal(report.Error())
+			}
+		})
+	}
+	for caseID := range wantCaseIDs {
+		if _, ok := seen[caseID]; !ok {
+			t.Fatalf("missing query_analysis fixture case_id %q", caseID)
+		}
 	}
 }
 

@@ -55,6 +55,7 @@ type ProfileMatrixReport struct {
 
 type MatrixMetrics struct {
 	RequiredHitRate                     float64            `json:"required_hit_rate"`
+	CandidateRecallAt20                 float64            `json:"candidate_recall_at_20"`
 	CandidateRecallAt80                 float64            `json:"candidate_recall_at_80"`
 	SelectedRecallAt8                   float64            `json:"selected_recall_at_8"`
 	PrecisionAt8                        float64            `json:"precision_at_8"`
@@ -87,6 +88,24 @@ type MatrixMetrics struct {
 	ProviderBudgetExhaustedCount        int                `json:"provider_budget_exhausted_count"`
 	QueryAnalysisLatencyP50             int64              `json:"query_analysis_latency_p50"`
 	QueryAnalysisLatencyP95             int64              `json:"query_analysis_latency_p95"`
+	SemanticLatencyP95                  int64              `json:"semantic_latency_p95"`
+	FieldAccuracyTimeMode               float64            `json:"field_accuracy_time_mode"`
+	FieldAccuracyMemoryAbility          float64            `json:"field_accuracy_memory_ability"`
+	FieldAccuracyMemoryDomain           float64            `json:"field_accuracy_memory_domain"`
+	FieldAccuracyEvidenceNeed           float64            `json:"field_accuracy_evidence_need"`
+	SemanticTriggerPrecision            float64            `json:"semantic_trigger_precision"`
+	SemanticTriggerRecall               float64            `json:"semantic_trigger_recall"`
+	FalseSkipSemanticRate               float64            `json:"false_skip_semantic_rate"`
+	UnnecessarySemanticCallRate         float64            `json:"unnecessary_semantic_call_rate"`
+	SemanticModeAccuracy                float64            `json:"semantic_mode_accuracy"`
+	ForgetRouteAccuracy                 float64            `json:"forget_route_accuracy"`
+	TemporalCorrectnessHardFailures     int                `json:"temporal_correctness_hard_failures"`
+	SemanticCallsPer1000Queries         float64            `json:"semantic_calls_per_1000_queries"`
+	SemanticCostPer1000Queries          float64            `json:"semantic_cost_per_1000_queries"`
+	RetrievalLatencyP95                 int64              `json:"retrieval_latency_p95"`
+	PostEvalCorrectiveActionRate        float64            `json:"post_eval_corrective_action_rate"`
+	RedundancyRate                      float64            `json:"redundancy_rate"`
+	RestraintViolationRate              float64            `json:"restraint_violation_rate"`
 	EnglishRewriteCount                 int                `json:"english_rewrite_count"`
 	DroppedRewriteCount                 int                `json:"dropped_rewrite_count"`
 	SemanticRewriteDenseCount           int                `json:"semantic_rewrite_dense_count"`
@@ -224,6 +243,9 @@ func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile
 
 func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.QueryAnalysisOptions {
 	if !profile.UsesMirror() {
+		if localQueryAnalysisMode(r.opts.QueryAnalysis.Mode) {
+			return r.opts.QueryAnalysis
+		}
 		return memorycore.QueryAnalysisOptions{}
 	}
 	switch profile {
@@ -243,6 +265,15 @@ func (r *MatrixRunner) queryAnalysisForProfile(profile Profile) memorycore.Query
 		return r.semanticProfileQueryAnalysisOptions(memorycore.QueryAnalysisModeSemanticOnLowConfidence)
 	}
 	return r.opts.QueryAnalysis
+}
+
+func localQueryAnalysisMode(mode memorycore.QueryAnalysisMode) bool {
+	switch mode {
+	case memorycore.QueryAnalysisModeLegacyOnly, memorycore.QueryAnalysisModeShadowAdaptive:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *MatrixRunner) semanticProfileQueryAnalysisOptions(mode memorycore.QueryAnalysisMode) memorycore.QueryAnalysisOptions {
@@ -535,6 +566,9 @@ func profileHardMetricFailureReason(profile Profile, metrics MatrixMetrics) stri
 	if metrics.ForbiddenSelectedCount > 0 {
 		add("forbidden_selected_count", metrics.ForbiddenSelectedCount)
 	}
+	if metrics.TemporalCorrectnessHardFailures > 0 {
+		add("temporal_correctness_hard_failures", metrics.TemporalCorrectnessHardFailures)
+	}
 	if profile.Requirements().RequiresMirror && metrics.FallbackCount > 0 {
 		add("fallback_count", metrics.FallbackCount)
 	}
@@ -556,6 +590,8 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 	var queryAnalysisLatencies []int64
 	var queryAnalysisLatencySum int64
 	var queryAnalysisLatencyCount int64
+	var retrievalCount int
+	var correctiveActionCount int
 	if fixture != nil && fixture.UsesEvalStub() {
 		metrics.StubUsedCount = 1
 	}
@@ -565,6 +601,7 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 		if retrieval == nil {
 			continue
 		}
+		retrievalCount++
 		if retrieval.Mirror != nil {
 			metrics.EmbeddingCacheHits += retrieval.Mirror.EmbeddingCacheHits
 			metrics.EmbeddingCacheMisses += retrieval.Mirror.EmbeddingCacheMisses
@@ -599,6 +636,12 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 				queryAnalysisLatencyCount++
 			}
 		}
+		if retrieval.RetrievalConfidence != nil && retrieval.RetrievalConfidence.HardFailureReason == memorycore.RetrievalHardFailureTemporalInconsistency {
+			metrics.TemporalCorrectnessHardFailures++
+		}
+		if retrieval.RetrievalConfidence != nil && retrieval.RetrievalConfidence.CorrectiveAction != "" {
+			correctiveActionCount++
+		}
 		if retrieval.GraphActivation != nil {
 			if retrieval.GraphActivation.Status == "used" {
 				metrics.GraphActivationUsedCount++
@@ -629,8 +672,15 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 	}
 	metrics.QueryAnalysisLatencyP50 = percentileInt64(queryAnalysisLatencies, 50)
 	metrics.QueryAnalysisLatencyP95 = percentileInt64(queryAnalysisLatencies, 95)
+	metrics.SemanticLatencyP95 = metrics.QueryAnalysisLatencyP95
+	metrics.RetrievalLatencyP95 = metrics.P95LatencyMs
 	if queryAnalysisLatencyCount > 0 {
 		metrics.AvgQueryAnalysisWaitMS = queryAnalysisLatencySum / queryAnalysisLatencyCount
+	}
+	if retrievalCount > 0 {
+		semanticCalls := metrics.QueryAnalysisUsedCount + metrics.QueryAnalysisFallbackCount
+		metrics.SemanticCallsPer1000Queries = float64(semanticCalls) * 1000 / float64(retrievalCount)
+		metrics.PostEvalCorrectiveActionRate = float64(correctiveActionCount) / float64(retrievalCount)
 	}
 	return metrics
 }
@@ -781,8 +831,13 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 	for _, step := range report.Steps {
 		resultByStep[step.ID] = step.Retrieval
 	}
-	var recallSum, candidateRecallSum, precisionSum, selectedPrecisionSum, mrrSum, ndcgSum, contextPrecisionSum float64
+	var recallSum, candidateRecall20Sum, candidateRecall80Sum, precisionSum, selectedPrecisionSum, mrrSum, ndcgSum, contextPrecisionSum float64
 	var recallCount, candidateRecallCount, precisionCount, selectedPrecisionCount, chainCount, chainPass, forbiddenAssertions int
+	var timeModeCount, timeModeCorrect, memoryAbilityCount, memoryAbilityCorrect int
+	var memoryDomainCount, memoryDomainCorrect, evidenceNeedCount, evidenceNeedCorrect int
+	var semanticTP, semanticFP, semanticTN, semanticFN int
+	var semanticModeCount, semanticModeCorrect int
+	var forgetRouteCount, forgetRouteCorrect int
 	candidateRecallBySource := map[string]float64{}
 	selectedRecallBySource := map[string]float64{}
 	recallCountBySource := map[string]int{}
@@ -796,13 +851,65 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 			recall := recallAtK(selected, relevant, assertion.At)
 			recallSum += recall
 			recallCount++
-			candidateRecallSum += recallAtK(candidates, relevant, 80)
+			candidateRecall20Sum += recallAtK(candidates, relevant, 20)
+			candidateRecall80Sum += recallAtK(candidates, relevant, 80)
 			candidateRecallCount++
 			selectedPrecisionSum += precisionAtK(selected, relevant, assertion.At)
 			selectedPrecisionCount++
 			mrrSum += meanReciprocalRank(selected, relevant, assertion.At)
 			ndcgSum += ndcgAtK(selected, relevant, assertion.At)
 			addSourceLevelRecall(candidateRecallBySource, selectedRecallBySource, recallCountBySource, retrieval, selected, relevant, assertion.At)
+		case "query_analysis":
+			analysis := queryAnalysisForMetrics(retrieval)
+			if assertion.TimeMode != "" {
+				timeModeCount++
+				if analysis != nil && string(analysis.TimeMode) == assertion.TimeMode {
+					timeModeCorrect++
+				}
+			}
+			if assertion.MemoryAbility != "" {
+				memoryAbilityCount++
+				if analysis != nil && string(analysis.MemoryAbility) == assertion.MemoryAbility {
+					memoryAbilityCorrect++
+				}
+			}
+			if assertion.MemoryDomain != "" {
+				memoryDomainCount++
+				if analysis != nil && string(analysis.MemoryDomain) == assertion.MemoryDomain {
+					memoryDomainCorrect++
+				}
+			}
+			if assertion.EvidenceNeed != "" {
+				evidenceNeedCount++
+				if analysis != nil && string(analysis.EvidenceNeed) == assertion.EvidenceNeed {
+					evidenceNeedCorrect++
+				}
+			}
+			if assertion.ShouldUseSemantic != nil {
+				actualUse := effectiveQueryAnalysisDecision(analysis).UseSemantic
+				switch {
+				case *assertion.ShouldUseSemantic && actualUse:
+					semanticTP++
+				case *assertion.ShouldUseSemantic && !actualUse:
+					semanticFN++
+				case !*assertion.ShouldUseSemantic && actualUse:
+					semanticFP++
+				default:
+					semanticTN++
+				}
+			}
+			if assertion.SemanticMode != "" {
+				semanticModeCount++
+				if effectiveQueryAnalysisDecision(analysis).SemanticMode == assertion.SemanticMode {
+					semanticModeCorrect++
+				}
+			}
+			if assertionExpectsForgetRoute(assertion) {
+				forgetRouteCount++
+				if analysisHasForgetRoute(analysis) {
+					forgetRouteCorrect++
+				}
+			}
 		case "context_precision_at_k":
 			selected := flattenSelectedNodeIDs(retrieval)
 			relevant := cleanAssertionRefs(assertion.RelevantNodeIDs)
@@ -828,7 +935,8 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 		metrics.NDCGAt8 = ndcgSum / float64(recallCount)
 	}
 	if candidateRecallCount > 0 {
-		metrics.CandidateRecallAt80 = candidateRecallSum / float64(candidateRecallCount)
+		metrics.CandidateRecallAt20 = candidateRecall20Sum / float64(candidateRecallCount)
+		metrics.CandidateRecallAt80 = candidateRecall80Sum / float64(candidateRecallCount)
 	}
 	if precisionCount > 0 {
 		metrics.PrecisionAt8 = precisionSum / float64(precisionCount)
@@ -843,8 +951,64 @@ func metricsFromAssertions(fixture *Fixture, report Report, metrics *MatrixMetri
 		metrics.ForbiddenRecallRate = 1
 		metrics.AuthorityFilterViolationCount = metrics.ForbiddenSelectedCount
 	}
+	if timeModeCount > 0 {
+		metrics.FieldAccuracyTimeMode = float64(timeModeCorrect) / float64(timeModeCount)
+	}
+	if memoryAbilityCount > 0 {
+		metrics.FieldAccuracyMemoryAbility = float64(memoryAbilityCorrect) / float64(memoryAbilityCount)
+	}
+	if memoryDomainCount > 0 {
+		metrics.FieldAccuracyMemoryDomain = float64(memoryDomainCorrect) / float64(memoryDomainCount)
+	}
+	if evidenceNeedCount > 0 {
+		metrics.FieldAccuracyEvidenceNeed = float64(evidenceNeedCorrect) / float64(evidenceNeedCount)
+	}
+	metrics.SemanticTriggerPrecision = ratioOrDefault(semanticTP, semanticTP+semanticFP, 1)
+	metrics.SemanticTriggerRecall = ratioOrDefault(semanticTP, semanticTP+semanticFN, 1)
+	metrics.FalseSkipSemanticRate = ratioOrDefault(semanticFN, semanticTP+semanticFN, 0)
+	metrics.UnnecessarySemanticCallRate = ratioOrDefault(semanticFP, semanticFP+semanticTN, 0)
+	metrics.SemanticModeAccuracy = ratioOrDefault(semanticModeCorrect, semanticModeCount, 1)
+	if forgetRouteCount > 0 {
+		metrics.ForgetRouteAccuracy = float64(forgetRouteCorrect) / float64(forgetRouteCount)
+	}
 	metrics.CandidateRecallBySource = averageRecallMap(candidateRecallBySource, recallCountBySource)
 	metrics.SelectedRecallBySource = averageRecallMap(selectedRecallBySource, recallCountBySource)
+}
+
+func queryAnalysisForMetrics(retrieval *memorycore.MemoryContext) *memorycore.QueryAnalysis {
+	if retrieval == nil {
+		return nil
+	}
+	return retrieval.QueryAnalysis
+}
+
+func assertionExpectsForgetRoute(assertion Assertion) bool {
+	if assertion.RetrievalMode == "target_resolver" || assertion.SemanticMode == "target_resolver" || assertion.MemoryAbility == string(memorycore.MemoryAbilityBoundary) {
+		return true
+	}
+	for _, signal := range assertion.Signals {
+		if signal == string(memorycore.QuerySignalForgetDelete) {
+			return true
+		}
+	}
+	return false
+}
+
+func analysisHasForgetRoute(analysis *memorycore.QueryAnalysis) bool {
+	if analysis == nil {
+		return false
+	}
+	decision := effectiveQueryAnalysisDecision(analysis)
+	return analysis.MemoryAbility == memorycore.MemoryAbilityBoundary ||
+		decision.RetrievalMode == "target_resolver" ||
+		decision.SemanticMode == "target_resolver"
+}
+
+func ratioOrDefault(numerator int, denominator int, fallback float64) float64 {
+	if denominator <= 0 {
+		return fallback
+	}
+	return float64(numerator) / float64(denominator)
 }
 
 func addSourceLevelRecall(candidateSums map[string]float64, selectedSums map[string]float64, counts map[string]int, retrieval *memorycore.MemoryContext, selected []string, relevant []string, at int) {
@@ -1089,9 +1253,32 @@ func FormatMatrixReport(report MatrixReport) string {
 			fmt.Fprintf(&b, "error: %s\n", profile.Error)
 		}
 		fmt.Fprintf(&b, "capability: %s\n", profile.Capability.Status)
+		fmt.Fprintf(&b, "field_accuracy_time_mode: %.3f\n", profile.Metrics.FieldAccuracyTimeMode)
+		fmt.Fprintf(&b, "field_accuracy_memory_ability: %.3f\n", profile.Metrics.FieldAccuracyMemoryAbility)
+		fmt.Fprintf(&b, "field_accuracy_memory_domain: %.3f\n", profile.Metrics.FieldAccuracyMemoryDomain)
+		fmt.Fprintf(&b, "field_accuracy_evidence_need: %.3f\n", profile.Metrics.FieldAccuracyEvidenceNeed)
+		fmt.Fprintf(&b, "semantic_trigger_precision: %.3f\n", profile.Metrics.SemanticTriggerPrecision)
+		fmt.Fprintf(&b, "semantic_trigger_recall: %.3f\n", profile.Metrics.SemanticTriggerRecall)
+		fmt.Fprintf(&b, "false_skip_semantic_rate: %.3f\n", profile.Metrics.FalseSkipSemanticRate)
+		fmt.Fprintf(&b, "unnecessary_semantic_call_rate: %.3f\n", profile.Metrics.UnnecessarySemanticCallRate)
+		fmt.Fprintf(&b, "semantic_mode_accuracy: %.3f\n", profile.Metrics.SemanticModeAccuracy)
+		fmt.Fprintf(&b, "forget_route_accuracy: %.3f\n", profile.Metrics.ForgetRouteAccuracy)
+		fmt.Fprintf(&b, "candidate_recall@20: %.3f\n", profile.Metrics.CandidateRecallAt20)
+		fmt.Fprintf(&b, "candidate_recall@80: %.3f\n", profile.Metrics.CandidateRecallAt80)
+		fmt.Fprintf(&b, "selected_recall@8: %.3f\n", profile.Metrics.SelectedRecallAt8)
 		fmt.Fprintf(&b, "selected_recall_at_8: %.3f\n", profile.Metrics.SelectedRecallAt8)
+		fmt.Fprintf(&b, "precision@8: %.3f\n", profile.Metrics.PrecisionAt8)
 		fmt.Fprintf(&b, "precision_at_8: %.3f\n", profile.Metrics.PrecisionAt8)
+		fmt.Fprintf(&b, "required_hit_rate: %.3f\n", profile.Metrics.RequiredHitRate)
+		fmt.Fprintf(&b, "causal_chain_coverage: %.3f\n", profile.Metrics.CausalChainCoverage)
 		fmt.Fprintf(&b, "forbidden_recall_rate: %.3f\n", profile.Metrics.ForbiddenRecallRate)
+		fmt.Fprintf(&b, "temporal_correctness_hard_failures: %d\n", profile.Metrics.TemporalCorrectnessHardFailures)
+		fmt.Fprintf(&b, "redundancy_rate: %.3f\n", profile.Metrics.RedundancyRate)
+		fmt.Fprintf(&b, "restraint_violation_rate: %.3f\n", profile.Metrics.RestraintViolationRate)
+		fmt.Fprintf(&b, "semantic_calls_per_1000_queries: %.3f\n", profile.Metrics.SemanticCallsPer1000Queries)
+		fmt.Fprintf(&b, "semantic_cost_per_1000_queries: %.3f\n", profile.Metrics.SemanticCostPer1000Queries)
+		fmt.Fprintf(&b, "retrieval_latency_p95: %d\n", profile.Metrics.RetrievalLatencyP95)
+		fmt.Fprintf(&b, "post_eval_corrective_action_rate: %.3f\n", profile.Metrics.PostEvalCorrectiveActionRate)
 		fmt.Fprintf(&b, "fallback_count: %d\n", profile.Metrics.FallbackCount)
 		fmt.Fprintf(&b, "query_analysis_used_count: %d\n", profile.Metrics.QueryAnalysisUsedCount)
 		fmt.Fprintf(&b, "query_analysis_fallback_count: %d\n", profile.Metrics.QueryAnalysisFallbackCount)
@@ -1106,6 +1293,7 @@ func FormatMatrixReport(report MatrixReport) string {
 		fmt.Fprintf(&b, "provider_budget_exhausted_count: %d\n", profile.Metrics.ProviderBudgetExhaustedCount)
 		fmt.Fprintf(&b, "query_analysis_latency_p50: %d\n", profile.Metrics.QueryAnalysisLatencyP50)
 		fmt.Fprintf(&b, "query_analysis_latency_p95: %d\n", profile.Metrics.QueryAnalysisLatencyP95)
+		fmt.Fprintf(&b, "semantic_latency_p95: %d\n", profile.Metrics.SemanticLatencyP95)
 		fmt.Fprintf(&b, "english_rewrite_count: %d\n", profile.Metrics.EnglishRewriteCount)
 		fmt.Fprintf(&b, "dropped_rewrite_count: %d\n", profile.Metrics.DroppedRewriteCount)
 		fmt.Fprintf(&b, "semantic_rewrite_dense_count: %d\n", profile.Metrics.SemanticRewriteDenseCount)

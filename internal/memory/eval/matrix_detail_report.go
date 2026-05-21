@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -24,6 +25,7 @@ func FormatMatrixDetailReport(fixture *Fixture, report MatrixReport) string {
 	catalog := newQualityNodeCatalog(fixture)
 	expectedByStep := qualityAssertionsByStep(fixture, Report{})
 	writeMatrixFailureIndex(&b, fixture, report.Profiles)
+	writeMatrixStageFailures(&b, fixture, report.Profiles)
 	for _, step := range fixture.Steps {
 		if step.Action != "retrieve" || step.Retrieve == nil {
 			continue
@@ -45,6 +47,111 @@ func FormatMatrixDetailReport(fixture *Fixture, report MatrixReport) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+type matrixStageFailure struct {
+	caseID     string
+	questionID string
+	profile    Profile
+	stage      string
+	name       string
+	expected   string
+	actual     string
+}
+
+func writeMatrixStageFailures(b *strings.Builder, fixture *Fixture, profiles []ProfileMatrixReport) {
+	failures := matrixStageFailures(fixture, profiles)
+	if len(failures) == 0 {
+		return
+	}
+	b.WriteString("\nstage_failures:\n")
+	b.WriteString("| case_id | question_id | profile | stage | assertion | expected | actual |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
+	for _, failure := range failures {
+		fmt.Fprintf(
+			b,
+			"| %s | %s | %s | %s | %s | %s | %s |\n",
+			escapeMatrixCell(failure.caseID),
+			escapeMatrixCell(failure.questionID),
+			failure.profile,
+			escapeMatrixCell(failure.stage),
+			escapeMatrixCell(failure.name),
+			escapeMatrixCell(failure.expected),
+			escapeMatrixCell(failure.actual),
+		)
+	}
+}
+
+func matrixStageFailures(fixture *Fixture, profiles []ProfileMatrixReport) []matrixStageFailure {
+	if fixture == nil {
+		return nil
+	}
+	var out []matrixStageFailure
+	for _, profile := range profiles {
+		for index, result := range profile.Report.Results {
+			if result.Err == nil {
+				continue
+			}
+			assertion := Assertion{Type: result.Type, Name: result.Name}
+			if index < len(fixture.Assertions) {
+				assertion = fixture.Assertions[index]
+			}
+			name := assertion.Name
+			if name == "" {
+				name = result.Name
+			}
+			if name == "" {
+				name = assertion.Type
+			}
+			expected, actual := assertionFailureExpectedActual(result.Err)
+			out = append(out, matrixStageFailure{
+				caseID:     fixture.CaseID,
+				questionID: assertion.Step,
+				profile:    profile.Profile,
+				stage:      assertionStage(assertion.Type),
+				name:       name,
+				expected:   expected,
+				actual:     actual,
+			})
+		}
+	}
+	return out
+}
+
+func assertionFailureExpectedActual(err error) (string, string) {
+	var failure AssertionFailure
+	if errors.As(err, &failure) {
+		return failure.Expected, failure.Actual
+	}
+	if err == nil {
+		return "", ""
+	}
+	return "pass", err.Error()
+}
+
+func assertionStage(assertionType string) string {
+	switch assertionType {
+	case "query_analysis":
+		return "query_analysis"
+	case "mirror_candidate", "graph_activation_candidate", "anchor_fusion":
+		return "candidate_retrieval"
+	case "forbidden_recall_zero", "rerank_input":
+		return "authority_filtering"
+	case "selected_chain_correct", "block_contains", "block_not_contains", "unsupported_premise_not_asserted":
+		return "context_reconstruction"
+	case "observed_confidence":
+		return "observed_confidence"
+	case "rerank_status", "selected_recall_at_k", "context_precision_at_k", "memory_contains", "memory_not_contains", "suppression_event", "ablation_improves":
+		return "ranking_mmr_selection"
+	default:
+		return "candidate_retrieval"
+	}
+}
+
+func escapeMatrixCell(value string) string {
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "|", "\\|")
+	return value
 }
 
 func writeMatrixProfileSummary(b *strings.Builder, profiles []ProfileMatrixReport) {

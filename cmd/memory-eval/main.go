@@ -231,7 +231,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.StringVar(&opts.embeddingCacheMode, "embedding-cache-mode", opts.embeddingCacheMode, "embedding cache mode: off, read_write, read_only, or refresh")
 	fs.StringVar(&opts.reuseMirror, "reuse-mirror", opts.reuseMirror, "mirror reuse mode: auto or never")
 	fs.StringVar(&opts.reportDir, "report-dir", "", "optional directory for matrix report.json and report.md")
-	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, or semantic_on_low_confidence")
+	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only, legacy_only, shadow_adaptive, adaptive, adaptive_safe, or adaptive_full")
 	fs.IntVar(&queryAnalysisTimeoutMS, "query-analysis-timeout-ms", 1500, "query analysis sidecar timeout in milliseconds")
 	fs.IntVar(&queryAnalysisSoftJoinTimeoutMS, "query-analysis-soft-join-timeout-ms", 0, "semantic query-analysis wait budget before raw-only completion in milliseconds; 0 uses query-analysis-timeout-ms")
 	if err := fs.Parse(args); err != nil {
@@ -251,7 +251,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		fmt.Fprintln(stderr, err)
 		return options{}, false
 	}
-	if queryAnalysisRequested(queryAnalysisMode) && !hasMirrorProfile(profiles) {
+	if queryAnalysisRequiresSidecar(queryAnalysisMode) && !hasMirrorProfile(profiles) {
 		fmt.Fprintln(stderr, "query-analysis-mode requires at least one mirror/semantic profile")
 		return options{}, false
 	}
@@ -266,14 +266,30 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	opts.embeddingCacheMode = memoryeval.NormalizeEmbeddingCacheMode(opts.embeddingCacheMode)
 	opts.queryAnalysis = queryAnalysis
 	if strings.TrimSpace(opts.root) == "" {
-		opts.root = filepath.Join(repoRoot, "testdata", "memory_eval", "quality", opts.suite)
+		opts.root = defaultSuiteRoot(repoRoot, opts.suite)
 	}
 	return opts, true
+}
+
+func defaultSuiteRoot(repoRoot string, suite string) string {
+	if strings.TrimSpace(suite) == "query_analysis" {
+		return filepath.Join(repoRoot, "testdata", "memory_eval", "query_analysis")
+	}
+	return filepath.Join(repoRoot, "testdata", "memory_eval", "quality", suite)
 }
 
 func queryAnalysisRequested(mode string) bool {
 	mode = strings.TrimSpace(mode)
 	return mode != "" && mode != "rule_only"
+}
+
+func queryAnalysisRequiresSidecar(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only", "adaptive", "adaptive_safe", "adaptive_full":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasMirrorProfile(profiles []memoryeval.Profile) bool {
@@ -293,9 +309,11 @@ func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, so
 	switch mode {
 	case "rule_only":
 		return memorycore.QueryAnalysisOptions{}, nil
-	case "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only":
+	case "legacy_only", "shadow_adaptive":
+		return memorycore.QueryAnalysisOptions{Mode: memorycore.QueryAnalysisMode(mode)}, nil
+	case "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only", "adaptive", "adaptive_safe", "adaptive_full":
 	default:
-		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-mode must be one of rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only")
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-mode must be one of rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only, legacy_only, shadow_adaptive, adaptive, adaptive_safe, adaptive_full")
 	}
 	if strings.TrimSpace(sidecarURL) == "" {
 		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("--sidecar-url is required when --query-analysis-mode is not rule_only")

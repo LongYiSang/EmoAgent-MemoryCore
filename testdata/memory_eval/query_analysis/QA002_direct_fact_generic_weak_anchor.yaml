@@ -1,0 +1,32 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: direct_fact_generic_weak_anchor
+description: Generic preference question has weak anchors and should be marked as semantic-worthy by adaptive diagnostics.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我喜欢什么？
+      policy:
+        final_memory_count: 3
+assertions:
+  - type: query_analysis
+    name: generic direct fact is weakly anchored
+    step: retrieve
+    time_mode: current
+    memory_ability: direct_fact
+    should_use_semantic: true
+    semantic_mode: semantic_light
+    max_anchor_readiness: 0.45
+    min_semantic_need: 0.45
+    required_reason_codes: [rule_fit_low]
+  - type: forbidden_recall_zero
+    name: no forbidden recall in empty generic case
+    step: retrieve
+    forbidden_node_ids: [f_missing_forbidden]

@@ -142,13 +142,15 @@ func TestQueryAnalysisSemanticOnLowConfidenceLegacyDiagnostics(t *testing.T) {
 
 func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 	tests := []struct {
-		name         string
-		mode         QueryAnalysisMode
-		rule         memsqlite.QueryAnalysis
-		wantSemantic bool
-		wantMode     string
-		wantReason   string
-		wantSource   memsqlite.QueryAnalysisSource
+		name          string
+		mode          QueryAnalysisMode
+		rule          memsqlite.QueryAnalysis
+		wantSemantic  bool
+		wantMode      string
+		wantRetrieval string
+		wantReason    string
+		wantReasons   []string
+		wantSource    memsqlite.QueryAnalysisSource
 	}{
 		{
 			name: "adaptive safe skips when rule and anchors are strong",
@@ -273,6 +275,46 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
 		},
 		{
+			name: "sensitivity signal disables semantic before low rule fit",
+			mode: QueryAnalysisModeAdaptiveFull,
+			rule: func() memsqlite.QueryAnalysis {
+				rule := adaptiveRuleAnalysis("我的敏感体检结果是什么？", memsqlite.QueryAnalysisScores{
+					RuleFit:         0.42,
+					AnchorReadiness: 0.12,
+					SemanticNeed:    0.48,
+					Complexity:      0.42,
+					SafetyRisk:      0.30,
+				})
+				rule.Signals = []memsqlite.QuerySignal{memsqlite.QuerySignalSensitivity}
+				return rule
+			}(),
+			wantSemantic: false,
+			wantMode:     "none",
+			wantReason:   "safety_policy_first",
+			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
+		},
+		{
+			name: "causal weak anchor routes graph contextual decompose",
+			mode: QueryAnalysisModeAdaptiveFull,
+			rule: func() memsqlite.QueryAnalysis {
+				rule := adaptiveRuleAnalysis("我为什么最近这么抗拒上班？", memsqlite.QueryAnalysisScores{
+					RuleFit:         0.64,
+					AnchorReadiness: 0.42,
+					SemanticNeed:    0.60,
+					Complexity:      0.57,
+				})
+				rule.MemoryAbility = memsqlite.MemoryAbilityCausalExplain
+				rule.Signals = []memsqlite.QuerySignal{memsqlite.QuerySignalCausal}
+				return rule
+			}(),
+			wantSemantic:  true,
+			wantMode:      "semantic_decompose",
+			wantRetrieval: "graph_contextual",
+			wantReason:    "semantic_need_high",
+			wantReasons:   []string{"causal_intent", "weak_anchor", "semantic_need_high"},
+			wantSource:    memsqlite.QueryAnalysisSourceMerged,
+		},
+		{
 			name: "shadow adaptive records adaptive decision but executes legacy",
 			mode: QueryAnalysisModeShadowAdaptive,
 			rule: adaptiveRuleAnalysis("我为什么最近这么抗拒上班？", memsqlite.QueryAnalysisScores{
@@ -331,8 +373,16 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			if got.Diagnostics.AdaptiveDecision.SemanticMode != tt.wantMode {
 				t.Fatalf("adaptive mode = %q, want %q; diagnostics=%#v", got.Diagnostics.AdaptiveDecision.SemanticMode, tt.wantMode, got.Diagnostics)
 			}
+			if tt.wantRetrieval != "" && got.Diagnostics.AdaptiveDecision.RetrievalMode != tt.wantRetrieval {
+				t.Fatalf("adaptive retrieval mode = %q, want %q; diagnostics=%#v", got.Diagnostics.AdaptiveDecision.RetrievalMode, tt.wantRetrieval, got.Diagnostics)
+			}
 			if !containsString(got.Diagnostics.AdaptiveDecision.ReasonCodes, tt.wantReason) {
 				t.Fatalf("adaptive reasons = %#v, want %q", got.Diagnostics.AdaptiveDecision.ReasonCodes, tt.wantReason)
+			}
+			for _, want := range tt.wantReasons {
+				if !containsString(got.Diagnostics.AdaptiveDecision.ReasonCodes, want) {
+					t.Fatalf("adaptive reasons = %#v, want %q", got.Diagnostics.AdaptiveDecision.ReasonCodes, want)
+				}
 			}
 		})
 	}

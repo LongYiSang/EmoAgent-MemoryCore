@@ -198,6 +198,25 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "context_block_hints=" + strings.Join(assertion.ContextBlockHints, ","), Actual: "context_block_hints=" + strings.Join(analysis.ContextBlockHints, ",")}
 		}
 	}
+	decision := effectiveQueryAnalysisDecision(analysis)
+	if assertion.ShouldUseSemantic != nil && decision.UseSemantic != *assertion.ShouldUseSemantic {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("should_use_semantic=%t", *assertion.ShouldUseSemantic), Actual: fmt.Sprintf("should_use_semantic=%t", decision.UseSemantic)}
+	}
+	if assertion.SemanticMode != "" && decision.SemanticMode != assertion.SemanticMode {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "semantic_mode=" + assertion.SemanticMode, Actual: "semantic_mode=" + decision.SemanticMode}
+	}
+	if assertion.RetrievalMode != "" && decision.RetrievalMode != assertion.RetrievalMode {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "retrieval_mode=" + assertion.RetrievalMode, Actual: "retrieval_mode=" + decision.RetrievalMode}
+	}
+	if len(assertion.RequiredReasonCodes) > 0 {
+		missing := missingStrings(assertion.RequiredReasonCodes, decision.ReasonCodes)
+		if len(missing) > 0 {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "reason_codes include " + strings.Join(assertion.RequiredReasonCodes, ","), Actual: "reason_codes=" + strings.Join(decision.ReasonCodes, ",")}
+		}
+	}
+	if err := assertQueryAnalysisScoreBounds(s.caseID, assertion, analysis.Scores); err != nil {
+		return err
+	}
 	if assertion.DroppedRewriteCount > 0 {
 		actual := 0
 		if analysis.Diagnostics != nil {
@@ -261,6 +280,92 @@ func (s *runState) assertObservedConfidence(assertion Assertion) error {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: column + "=" + assertion.Equals, Actual: fmt.Sprintf("%s=%.3f", column, actual)}
 	}
 	return nil
+}
+
+func assertQueryAnalysisScoreBounds(caseID string, assertion Assertion, scores memorycore.QueryAnalysisScores) error {
+	check := func(name string, actual, minValue, maxValue float64) error {
+		if minValue > 0 && actual < minValue {
+			return AssertionFailure{CaseID: caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("%s>=%.3f", name, minValue), Actual: fmt.Sprintf("%s=%.3f", name, actual)}
+		}
+		if maxValue > 0 && actual > maxValue {
+			return AssertionFailure{CaseID: caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("%s<=%.3f", name, maxValue), Actual: fmt.Sprintf("%s=%.3f", name, actual)}
+		}
+		return nil
+	}
+	if err := check("rule_fit", scores.RuleFit, assertion.MinRuleFit, assertion.MaxRuleFit); err != nil {
+		return err
+	}
+	if err := check("anchor_readiness", scores.AnchorReadiness, assertion.MinAnchorReadiness, assertion.MaxAnchorReadiness); err != nil {
+		return err
+	}
+	if err := check("semantic_need", scores.SemanticNeed, assertion.MinSemanticNeed, assertion.MaxSemanticNeed); err != nil {
+		return err
+	}
+	if err := check("expected_retrieval_confidence", scores.ExpectedRetrievalConfidence, assertion.MinExpectedRetrievalConfidence, assertion.MaxExpectedRetrievalConfidence); err != nil {
+		return err
+	}
+	return nil
+}
+
+func effectiveQueryAnalysisDecision(analysis *memorycore.QueryAnalysis) memorycore.QueryAnalysisDecision {
+	if analysis == nil {
+		return memorycore.QueryAnalysisDecision{}
+	}
+	if analysis.Diagnostics != nil && !isZeroQueryAnalysisDecision(analysis.Diagnostics.AdaptiveDecision) {
+		decision := analysis.Diagnostics.AdaptiveDecision
+		if !decision.UseSemantic {
+			ruleDecision := analysis.Decision
+			if decision.RetrievalMode == "" || decision.RetrievalMode == "rule" {
+				decision.RetrievalMode = ruleDecision.RetrievalMode
+			}
+			if decision.SemanticMode == "" {
+				decision.SemanticMode = ruleDecision.SemanticMode
+			}
+			decision.ReasonCodes = mergeReasonCodes(decision.ReasonCodes, ruleDecision.ReasonCodes)
+		}
+		return decision
+	}
+	decision := analysis.Decision
+	if isZeroQueryAnalysisDecision(decision) {
+		switch analysis.Source {
+		case memorycore.QueryAnalysisSourceMerged, memorycore.QueryAnalysisSourceSemanticFallback:
+			decision.UseSemantic = true
+		}
+	}
+	return decision
+}
+
+func mergeReasonCodes(first []string, second []string) []string {
+	out := append([]string(nil), first...)
+	seen := stringSet(out)
+	for _, value := range second {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		out = append(out, value)
+		seen[value] = struct{}{}
+	}
+	return out
+}
+
+func isZeroQueryAnalysisDecision(decision memorycore.QueryAnalysisDecision) bool {
+	return !decision.UseSemantic &&
+		decision.SemanticMode == "" &&
+		decision.RetrievalMode == "" &&
+		len(decision.ReasonCodes) == 0 &&
+		decision.ThresholdVersion == "" &&
+		decision.ScorerVersion == ""
+}
+
+func missingStrings(want []string, actual []string) []string {
+	actualSet := stringSet(actual)
+	var missing []string
+	for _, value := range want {
+		if _, ok := actualSet[value]; !ok {
+			missing = append(missing, value)
+		}
+	}
+	return missing
 }
 
 func observedConfidenceColumn(confidence *memorycore.RetrievalConfidence, column string) (float64, bool) {

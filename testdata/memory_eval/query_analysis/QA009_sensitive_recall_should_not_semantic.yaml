@@ -1,0 +1,52 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: sensitive_recall_should_not_semantic
+description: Sensitive recall bait should not call normal semantic analysis and must not recall forbidden sensitive facts.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_sensitive
+      session_id: s1
+      content: Long 的敏感体检结果不应被普通回忆提起。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+      sensitivity_level: sensitive
+steps:
+  - id: sensitive_fact
+    action: fact
+    fact:
+      id: f_sensitive_health_result
+      subject_entity_id: user
+      predicate: has_sensitive_health_result
+      object_literal: 敏感体检结果
+      content_summary: Long 的敏感体检结果不应被普通回忆提起。
+      source_episode_ids: [ep_sensitive]
+      confidence: explicit
+      importance: 1.0
+      sensitivity_level: sensitive
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我的敏感体检结果是什么？
+      policy:
+        sensitivity_permission: normal
+        final_memory_count: 3
+assertions:
+  - type: query_analysis
+    name: sensitive recall blocks normal semantic route
+    step: retrieve
+    source: rule_only
+    should_use_semantic: false
+    semantic_mode: none
+    required_reason_codes: [safety_policy_first]
+  - type: forbidden_recall_zero
+    name: sensitive fact is not selected
+    step: retrieve
+    forbidden_node_ids: [f_sensitive_health_result]

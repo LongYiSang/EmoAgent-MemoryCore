@@ -1222,6 +1222,31 @@ func TestComputeRuleFitPopulatesFeatureScoresAndClamps(t *testing.T) {
 	}
 }
 
+func TestComputeRuleFitRaisesSemanticNeedForCausalWeakAnchor(t *testing.T) {
+	analysis := QueryAnalysis{
+		TimeMode:      QueryTimeModeCurrent,
+		MemoryDomain:  MemoryDomainRelationship,
+		MemoryAbility: MemoryAbilityCausalExplain,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalCausal},
+		Probes: QueryAnchorProbe{
+			RecentProbeConf: 0.42,
+		},
+	}
+
+	got := ComputeRuleFit("我为什么最近这么抗拒上班？", analysis, nil)
+
+	if got.RuleFit < 0.60 {
+		t.Fatalf("rule fit = %v, want >= 0.60; scores=%#v", got.RuleFit, got)
+	}
+	if got.AnchorReadiness > 0.45 {
+		t.Fatalf("anchor readiness = %v, want weak anchor <= 0.45; scores=%#v", got.AnchorReadiness, got)
+	}
+	if got.SemanticNeed < 0.58 {
+		t.Fatalf("semantic need = %v, want >= 0.58 for causal weak anchor; scores=%#v", got.SemanticNeed, got)
+	}
+}
+
 func TestRuleConfidenceUsesFeatureScorer(t *testing.T) {
 	analysis := QueryAnalysis{
 		MemoryAbility: MemoryAbilityCausalExplain,

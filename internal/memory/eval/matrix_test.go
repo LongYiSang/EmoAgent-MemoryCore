@@ -1144,6 +1144,86 @@ func TestComputeMatrixMetricsIncludesSourceLevelRecall(t *testing.T) {
 	}
 }
 
+func TestComputeMatrixMetricsIncludesPhase8QueryAnalysisCalibration(t *testing.T) {
+	trueValue := true
+	falseValue := false
+	fixture := &Fixture{
+		Assertions: []Assertion{
+			{Type: "query_analysis", Step: "q1", TimeMode: "current", MemoryAbility: "direct_fact", MemoryDomain: "user_profile_memory", EvidenceNeed: "exact_observation", ShouldUseSemantic: &falseValue},
+			{Type: "query_analysis", Step: "q2", TimeMode: "current", MemoryAbility: "causal_explain", MemoryDomain: "relationship_memory", EvidenceNeed: "exact_observation", ShouldUseSemantic: &trueValue, SemanticMode: "semantic_light"},
+			{Type: "query_analysis", Step: "q3", MemoryAbility: "boundary", ShouldUseSemantic: &falseValue, SemanticMode: "target_resolver", RetrievalMode: "target_resolver"},
+			{Type: "selected_recall_at_k", Step: "q1", RelevantNodeIDs: []string{"f1"}, At: 8},
+			{Type: "forbidden_recall_zero", Step: "q2", ForbiddenNodeIDs: []string{"forbidden"}},
+		},
+	}
+	report := Report{Steps: []StepReport{
+		{ID: "q1", Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				TimeMode:      memorycore.QueryTimeModeCurrent,
+				MemoryAbility: memorycore.MemoryAbilityDirectFact,
+				MemoryDomain:  memorycore.MemoryDomainUserProfile,
+				EvidenceNeed:  memorycore.EvidenceNeedExactObservation,
+				Source:        memorycore.QueryAnalysisSourceRuleOnly,
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+					AdaptiveDecision: memorycore.QueryAnalysisDecision{UseSemantic: false, SemanticMode: "none", RetrievalMode: "rule"},
+				},
+			},
+			Blocks: []memorycore.MemoryBlock{{Items: []memorycore.MemoryContextItem{{NodeID: "f1"}}}},
+			Mirror: &memorycore.MirrorRetrievalDiagnostics{Candidates: []memorycore.MirrorCandidateDiagnostics{
+				{SQLiteFactID: "f1"},
+			}},
+		}},
+		{ID: "q2", Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				TimeMode:      memorycore.QueryTimeModeCurrent,
+				MemoryAbility: memorycore.MemoryAbilityDirectFact,
+				MemoryDomain:  memorycore.MemoryDomainRelationship,
+				EvidenceNeed:  memorycore.EvidenceNeedExactObservation,
+				Source:        memorycore.QueryAnalysisSourceRuleOnly,
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+					AdaptiveDecision: memorycore.QueryAnalysisDecision{UseSemantic: false, SemanticMode: "none", RetrievalMode: "rule"},
+				},
+			},
+			RetrievalConfidence: &memorycore.RetrievalConfidence{HardFailureReason: memorycore.RetrievalHardFailureTemporalInconsistency},
+		}},
+		{ID: "q3", Retrieval: &memorycore.MemoryContext{
+			QueryAnalysis: &memorycore.QueryAnalysis{
+				MemoryAbility: memorycore.MemoryAbilityBoundary,
+				Source:        memorycore.QueryAnalysisSourceRuleOnly,
+				Diagnostics: &memorycore.QueryAnalysisDiagnostics{
+					AdaptiveDecision: memorycore.QueryAnalysisDecision{UseSemantic: false, SemanticMode: "target_resolver", RetrievalMode: "target_resolver"},
+				},
+			},
+		}},
+	}}
+
+	metrics := ComputeMatrixMetrics(fixture, report)
+	if metrics.FieldAccuracyTimeMode != 1 || metrics.FieldAccuracyMemoryAbility != float64(2)/float64(3) {
+		t.Fatalf("field accuracy time=%.3f ability=%.3f, want 1.000/0.667", metrics.FieldAccuracyTimeMode, metrics.FieldAccuracyMemoryAbility)
+	}
+	if metrics.FieldAccuracyMemoryDomain != 1 || metrics.FieldAccuracyEvidenceNeed != 1 {
+		t.Fatalf("field accuracy domain=%.3f evidence=%.3f, want 1.000/1.000", metrics.FieldAccuracyMemoryDomain, metrics.FieldAccuracyEvidenceNeed)
+	}
+	if metrics.SemanticTriggerRecall != 0 || metrics.FalseSkipSemanticRate != 1 {
+		t.Fatalf("semantic recall=%.3f false skip=%.3f, want 0/1", metrics.SemanticTriggerRecall, metrics.FalseSkipSemanticRate)
+	}
+	if metrics.SemanticTriggerPrecision != 1 || metrics.UnnecessarySemanticCallRate != 0 {
+		t.Fatalf("semantic precision=%.3f unnecessary=%.3f, want 1/0", metrics.SemanticTriggerPrecision, metrics.UnnecessarySemanticCallRate)
+	}
+	if metrics.SemanticModeAccuracy != float64(1)/float64(2) {
+		t.Fatalf("semantic mode accuracy = %.3f, want 0.500", metrics.SemanticModeAccuracy)
+	}
+	if metrics.ForgetRouteAccuracy != 1 {
+		t.Fatalf("forget route accuracy = %.3f, want 1", metrics.ForgetRouteAccuracy)
+	}
+	if metrics.CandidateRecallAt20 != 1 {
+		t.Fatalf("candidate recall@20 = %.3f, want 1", metrics.CandidateRecallAt20)
+	}
+	if metrics.TemporalCorrectnessHardFailures != 1 {
+		t.Fatalf("temporal hard failures = %d, want 1", metrics.TemporalCorrectnessHardFailures)
+	}
+}
+
 func TestFormatMatrixReportIncludesQueryAnalysisMetrics(t *testing.T) {
 	out := FormatMatrixReport(MatrixReport{
 		CaseID: "query_analysis_metrics_case",
@@ -1189,6 +1269,118 @@ func TestFormatMatrixReportIncludesQueryAnalysisMetrics(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("report =\n%s\nwant %q", out, want)
+		}
+	}
+}
+
+func TestFormatMatrixReportIncludesPhase8MetricNames(t *testing.T) {
+	out := FormatMatrixReport(MatrixReport{
+		CaseID: "phase8_metrics_case",
+		Profiles: []ProfileMatrixReport{{
+			Profile: ProfileSQLiteGo,
+			Status:  ProfileStatusPass,
+			Metrics: MatrixMetrics{
+				FieldAccuracyTimeMode:           1,
+				FieldAccuracyMemoryAbility:      0.9,
+				FieldAccuracyMemoryDomain:       0.85,
+				FieldAccuracyEvidenceNeed:       0.75,
+				SemanticTriggerPrecision:        0.8,
+				SemanticTriggerRecall:           0.7,
+				FalseSkipSemanticRate:           0.1,
+				UnnecessarySemanticCallRate:     0.2,
+				SemanticModeAccuracy:            0.6,
+				ForgetRouteAccuracy:             1,
+				CandidateRecallAt20:             0.6,
+				CandidateRecallAt80:             0.65,
+				SelectedRecallAt8:               0.5,
+				PrecisionAt8:                    0.4,
+				RequiredHitRate:                 0.3,
+				CausalChainCoverage:             0.2,
+				ForbiddenRecallRate:             0,
+				TemporalCorrectnessHardFailures: 0,
+				SemanticCallsPer1000Queries:     25,
+				RetrievalLatencyP95:             12,
+				PostEvalCorrectiveActionRate:    0.05,
+				SemanticLatencyP95:              34,
+			},
+		}},
+	})
+	for _, want := range []string{
+		"field_accuracy_time_mode: 1.000",
+		"field_accuracy_memory_ability: 0.900",
+		"field_accuracy_memory_domain: 0.850",
+		"field_accuracy_evidence_need: 0.750",
+		"semantic_trigger_precision: 0.800",
+		"semantic_trigger_recall: 0.700",
+		"false_skip_semantic_rate: 0.100",
+		"unnecessary_semantic_call_rate: 0.200",
+		"semantic_mode_accuracy: 0.600",
+		"forget_route_accuracy: 1.000",
+		"candidate_recall@20: 0.600",
+		"candidate_recall@80: 0.650",
+		"selected_recall@8: 0.500",
+		"precision@8: 0.400",
+		"required_hit_rate: 0.300",
+		"causal_chain_coverage: 0.200",
+		"forbidden_recall_rate: 0.000",
+		"temporal_correctness_hard_failures: 0",
+		"semantic_calls_per_1000_queries: 25.000",
+		"semantic_cost_per_1000_queries: 0.000",
+		"retrieval_latency_p95: 12",
+		"post_eval_corrective_action_rate: 0.050",
+		"semantic_latency_p95: 34",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report =\n%s\nwant %q", out, want)
+		}
+	}
+}
+
+func TestFormatMatrixDetailReportIncludesStageAwareFailures(t *testing.T) {
+	fixture := &Fixture{
+		CaseID: "stage_case",
+		Steps: []Step{{
+			ID: "q1", Action: "retrieve", Retrieve: &RetrieveStep{QueryText: "我住在哪里？"},
+		}},
+		Assertions: []Assertion{{
+			Type:     "query_analysis",
+			Name:     "time mode",
+			Step:     "q1",
+			TimeMode: "historical",
+		}, {
+			Type:             "forbidden_recall_zero",
+			Name:             "forbidden stays out",
+			Step:             "q1",
+			ForbiddenNodeIDs: []string{"f_secret"},
+		}},
+	}
+	report := MatrixReport{
+		CaseID: fixture.CaseID,
+		Profiles: []ProfileMatrixReport{{
+			Profile: ProfileSQLiteGo,
+			Status:  ProfileStatusFail,
+			Report: Report{
+				CaseID: fixture.CaseID,
+				Results: []AssertionResult{{
+					Name: "time mode",
+					Type: "query_analysis",
+					Err:  AssertionFailure{CaseID: fixture.CaseID, Assertion: "query_analysis", Expected: "time_mode=historical", Actual: "time_mode=current"},
+				}, {
+					Name: "forbidden stays out",
+					Type: "forbidden_recall_zero",
+					Err:  AssertionFailure{CaseID: fixture.CaseID, Assertion: "forbidden_recall_zero", Expected: "absent", Actual: "f_secret"},
+				}},
+			},
+		}},
+	}
+	out := FormatMatrixDetailReport(fixture, report)
+	for _, want := range []string{
+		"stage_failures:",
+		"| stage_case | q1 | sqlite_go | query_analysis | time mode | time_mode=historical | time_mode=current |",
+		"| stage_case | q1 | sqlite_go | authority_filtering | forbidden stays out | absent | f_secret |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("detail report =\n%s\nwant %q", out, want)
 		}
 	}
 }

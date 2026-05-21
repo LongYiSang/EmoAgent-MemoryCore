@@ -1,0 +1,82 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: causal_recent_weak_anchor
+description: Recent causal question should route to graph-contextual retrieval and expose semantic decomposition need when anchors are weak.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_meeting
+      session_id: s1
+      content: 最近 8 点早会让 Long 很抗拒上班。
+      occurred_at: "2026-04-27T08:00:00+08:00"
+    - id: ep_team_change
+      session_id: s1
+      content: Long 因为早会压力开始考虑换组。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: meeting_pain
+    action: fact
+    fact:
+      id: f_8am_meeting_pain
+      subject_entity_id: user
+      predicate: dislikes
+      object_literal: 8 点早会
+      content_summary: 最近 8 点早会让 Long 抗拒上班。
+      source_episode_ids: [ep_meeting]
+      confidence: explicit
+      importance: 0.8
+  - id: considering_team_change
+    action: fact
+    fact:
+      id: f_considering_team_change
+      subject_entity_id: user
+      predicate: is_considering
+      object_literal: 换组
+      content_summary: Long 因为早会压力开始考虑换组。
+      source_episode_ids: [ep_team_change]
+      confidence: explicit
+      importance: 0.7
+  - id: link_cause
+    action: link
+    link:
+      from_node_id: f_considering_team_change
+      link_type: CAUSED_BY
+      to_node_id: f_8am_meeting_pain
+      weight: 0.9
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我为什么最近这么抗拒上班？
+      policy:
+        final_memory_count: 1
+assertions:
+  - type: query_analysis
+    name: causal weak anchor asks for decomposition
+    step: retrieve
+    time_mode: current
+    memory_ability: causal_explain
+    should_use_semantic: true
+    semantic_mode: semantic_decompose
+    retrieval_mode: graph_contextual
+    min_rule_fit: 0.60
+    max_anchor_readiness: 0.45
+    min_semantic_need: 0.58
+    required_reason_codes: [causal_intent, weak_anchor, semantic_need_high]
+  - type: selected_chain_correct
+    name: selected causal fact keeps source cause
+    step: retrieve
+    block_type: causal_context
+    node_id: f_8am_meeting_pain
+    node_ids: [f_considering_team_change]
+    link_type: CAUSED_BY
+    direction: inbound
+    historical_status: current
+    related_historical_status: current

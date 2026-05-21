@@ -1,0 +1,67 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: premise_check
+description: Premise-check question should route to premise counterexample retrieval instead of plain direct fact recall.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_remote_good
+      session_id: s1
+      content: Long 有一段时间很享受远程工作。
+      occurred_at: "2026-04-25T09:00:00+08:00"
+    - id: ep_meeting_bad
+      session_id: s1
+      content: Long 讨厌 8 点早会。
+      occurred_at: "2026-04-26T09:00:00+08:00"
+steps:
+  - id: remote_good
+    action: fact
+    fact:
+      id: f_enjoyed_remote_work
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 远程工作
+      content_summary: Long 有一段时间很享受远程工作。
+      source_episode_ids: [ep_remote_good]
+      confidence: explicit
+      importance: 0.8
+  - id: meeting_bad
+    action: fact
+    fact:
+      id: f_dislikes_8am_meetings
+      subject_entity_id: user
+      predicate: dislikes
+      object_literal: 8 点早会
+      content_summary: Long 讨厌 8 点早会。
+      source_episode_ids: [ep_meeting_bad]
+      confidence: explicit
+      importance: 0.8
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我是不是一直都讨厌上班？有没有反例？
+      policy:
+        final_memory_count: 2
+assertions:
+  - type: query_analysis
+    name: premise check route is explicit
+    step: retrieve
+    time_mode: bitemporal_check
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+    should_use_semantic: false
+    retrieval_mode: premise_check
+    required_reason_codes: [premise_check_intent]
+  - type: unsupported_premise_not_asserted
+    name: counterexample is selected
+    step: retrieve
+    node_ids: [f_enjoyed_remote_work]
+    forbidden_contains: [一直都讨厌]

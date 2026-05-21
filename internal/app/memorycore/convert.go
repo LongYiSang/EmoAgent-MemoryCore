@@ -438,6 +438,7 @@ func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics
 		Scores:                  queryAnalysisScoresFromStore(value.Scores),
 		FieldConfidence:         queryAnalysisConfidenceFromStore(value.FieldConfidence),
 		RuleDecision:            queryAnalysisDecisionFromStore(value.RuleDecision),
+		AdaptiveDecision:        queryAnalysisDecisionFromStore(value.AdaptiveDecision),
 		RuleEvidence:            queryAnalysisEvidenceFromStore(value.RuleEvidence),
 		RuleAlternatives:        queryAnalysisAlternativesFromStore(value.RuleAlternatives),
 		SemanticStatus:          value.SemanticStatus,

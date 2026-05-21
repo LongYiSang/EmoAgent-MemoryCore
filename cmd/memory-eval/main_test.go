@@ -39,6 +39,37 @@ func TestRunMatrixSQLiteProfile(t *testing.T) {
 			t.Fatalf("stdout =\n%s\nwant %q", stdout.String(), want)
 		}
 	}
+	for _, want := range []string{
+		"field_accuracy_time_mode:",
+		"field_accuracy_memory_ability:",
+		"field_accuracy_memory_domain:",
+		"field_accuracy_evidence_need:",
+		"semantic_trigger_precision:",
+		"semantic_trigger_recall:",
+		"false_skip_semantic_rate:",
+		"unnecessary_semantic_call_rate:",
+		"semantic_mode_accuracy:",
+		"forget_route_accuracy:",
+		"candidate_recall@20:",
+		"candidate_recall@80:",
+		"selected_recall@8:",
+		"precision@8:",
+		"required_hit_rate:",
+		"forbidden_recall_rate:",
+		"causal_chain_coverage:",
+		"temporal_correctness_hard_failures:",
+		"redundancy_rate:",
+		"restraint_violation_rate:",
+		"semantic_calls_per_1000_queries:",
+		"semantic_cost_per_1000_queries:",
+		"semantic_latency_p95:",
+		"retrieval_latency_p95:",
+		"post_eval_corrective_action_rate:",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout =\n%s\nwant Phase 8 metric %q", stdout.String(), want)
+		}
+	}
 }
 
 func TestRunMatrixWritesDetailReport(t *testing.T) {
@@ -266,6 +297,46 @@ func TestParseOptionsAcceptsSemanticRewriteOnlyMode(t *testing.T) {
 	}
 	if opts.queryAnalysis.Mode != "semantic_rewrite_only" {
 		t.Fatalf("query analysis options = %#v", opts.queryAnalysis)
+	}
+}
+
+func TestParseOptionsAcceptsShadowAdaptiveForSQLiteProfileWithoutSidecar(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+		"--query-analysis-mode", "shadow_adaptive",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.queryAnalysis.Mode != "shadow_adaptive" {
+		t.Fatalf("query analysis mode = %q, want shadow_adaptive", opts.queryAnalysis.Mode)
+	}
+	if opts.queryAnalysis.Provider != "" || opts.queryAnalysis.SidecarURL != "" {
+		t.Fatalf("shadow adaptive query analysis options = %#v, want no sidecar provider", opts.queryAnalysis)
+	}
+}
+
+func TestParseOptionsDefaultsQueryAnalysisSuiteRoot(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--mode", "matrix",
+		"--suite", "query_analysis",
+		"--profiles", "sqlite_go",
+		"--query-analysis-mode", "shadow_adaptive",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	wantSuffix := filepath.Join("testdata", "memory_eval", "query_analysis")
+	if !strings.HasSuffix(filepath.Clean(opts.root), wantSuffix) {
+		t.Fatalf("root = %q, want suffix %q", opts.root, wantSuffix)
+	}
+	if strings.Contains(filepath.Clean(opts.root), filepath.Join("quality", "query_analysis")) {
+		t.Fatalf("root = %q, should not point at quality/query_analysis", opts.root)
 	}
 }
 

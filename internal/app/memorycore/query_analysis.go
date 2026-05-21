@@ -398,6 +398,19 @@ func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) b
 	}
 }
 
+func (p queryAnalysisPipeline) annotateRetrievalRuleDecision(rule memsqlite.QueryAnalysis) memsqlite.QueryAnalysis {
+	options := normalizeQueryAnalysisOptions(p.options)
+	legacyDecision := p.shouldUseLegacySemantic(rule)
+	var adaptiveDecision memsqlite.QueryAnalysisDecision
+	if isAdaptiveQueryAnalysisMode(options.Mode) {
+		adaptiveDecision = DecideSemanticRoute(rule, options)
+	}
+	if !legacyDecision && isZeroStoreQueryAnalysisDecision(adaptiveDecision) {
+		return rule
+	}
+	return annotateSemanticDecisions(rule, legacyDecision, adaptiveDecision, options.MinConfidenceToOverride)
+}
+
 func isAdaptiveQueryAnalysisMode(mode QueryAnalysisMode) bool {
 	switch mode {
 	case QueryAnalysisModeShadowAdaptive, QueryAnalysisModeAdaptive, QueryAnalysisModeAdaptiveSafe, QueryAnalysisModeAdaptiveFull:
@@ -427,30 +440,32 @@ func DecideSemanticRoute(rule memsqlite.QueryAnalysis, options QueryAnalysisOpti
 		return decision
 	}
 	scores := rule.Scores
-	if validUnitScore(scores.SafetyRisk) && scores.SafetyRisk >= options.HighSafetyRiskThreshold {
+	if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalSensitivity) ||
+		(validUnitScore(scores.SafetyRisk) && scores.SafetyRisk >= options.HighSafetyRiskThreshold) {
 		decision.ReasonCodes = []string{"safety_policy_first"}
 		return decision
 	}
 	if validUnitScore(scores.SemanticNeed) && scores.SemanticNeed >= options.SemanticNeedThreshold {
-		return semanticRouteDecisionByComplexity(decision, scores, options, "semantic_need_high")
+		return semanticRouteDecisionByComplexity(rule, decision, scores, options, "semantic_need_high")
 	}
 	if scores.RuleFit < options.MinRuleFit {
-		decision.UseSemantic = true
-		decision.SemanticMode = "semantic_light"
-		decision.RetrievalMode = "semantic"
-		decision.ReasonCodes = []string{"rule_fit_low"}
-		return decision
+		return semanticRouteDecisionByComplexity(rule, decision, scores, options, "rule_fit_low")
 	}
 	if scores.AnchorReadiness < options.MinAnchorReadiness && scores.Complexity >= options.MinComplexityForSemantic {
-		return semanticRouteDecisionByComplexity(decision, scores, options, "anchor_readiness_low")
+		return semanticRouteDecisionByComplexity(rule, decision, scores, options, "anchor_readiness_low")
 	}
 	return decision
 }
 
-func semanticRouteDecisionByComplexity(decision memsqlite.QueryAnalysisDecision, scores memsqlite.QueryAnalysisScores, options QueryAnalysisOptions, reason string) memsqlite.QueryAnalysisDecision {
+func semanticRouteDecisionByComplexity(rule memsqlite.QueryAnalysis, decision memsqlite.QueryAnalysisDecision, scores memsqlite.QueryAnalysisScores, options QueryAnalysisOptions, reason string) memsqlite.QueryAnalysisDecision {
 	decision.UseSemantic = true
 	decision.RetrievalMode = "semantic"
-	decision.ReasonCodes = []string{reason}
+	decision.ReasonCodes = adaptiveSemanticReasonCodes(rule, scores, options, reason)
+	if rule.MemoryAbility == memsqlite.MemoryAbilityCausalExplain && scores.AnchorReadiness <= options.MinAnchorReadiness {
+		decision.SemanticMode = "semantic_decompose"
+		decision.RetrievalMode = "graph_contextual"
+		return decision
+	}
 	if scores.Complexity >= options.DecomposeSemanticComplexity {
 		decision.SemanticMode = "semantic_decompose"
 		return decision
@@ -461,6 +476,29 @@ func semanticRouteDecisionByComplexity(decision memsqlite.QueryAnalysisDecision,
 	}
 	decision.SemanticMode = "semantic_light"
 	return decision
+}
+
+func adaptiveSemanticReasonCodes(rule memsqlite.QueryAnalysis, scores memsqlite.QueryAnalysisScores, options QueryAnalysisOptions, reason string) []string {
+	reasons := make([]string, 0, 4)
+	if rule.MemoryAbility == memsqlite.MemoryAbilityCausalExplain {
+		reasons = append(reasons, "causal_intent")
+	}
+	if scores.AnchorReadiness <= options.MinAnchorReadiness {
+		reasons = append(reasons, "weak_anchor")
+	}
+	if reason != "" {
+		reasons = append(reasons, reason)
+	}
+	out := reasons[:0]
+	seen := make(map[string]struct{}, len(reasons))
+	for _, value := range reasons {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func validUnitScore(value float64) bool {

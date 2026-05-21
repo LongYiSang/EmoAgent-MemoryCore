@@ -349,7 +349,11 @@ func (s *service) analyzeRetrievalQuery(ctx context.Context, req QueryAnalysisRe
 
 func (s *service) analyzeRetrievalRuleQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error) {
 	if s.queryPipeline.rule != nil {
-		return s.queryPipeline.AnalyzeRuleQuery(ctx, req)
+		rule, err := s.queryPipeline.AnalyzeRuleQuery(ctx, req)
+		if err != nil {
+			return memsqlite.QueryAnalysis{}, err
+		}
+		return s.queryPipeline.annotateRetrievalRuleDecision(rule), nil
 	}
 	return s.analyzeRetrievalQuery(ctx, req)
 }

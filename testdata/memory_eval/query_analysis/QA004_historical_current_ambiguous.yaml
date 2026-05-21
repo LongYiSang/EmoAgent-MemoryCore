@@ -1,0 +1,86 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: historical_current_ambiguous
+description: Current and historical location wording should not create temporal hard failures.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_old_city
+      session_id: s1
+      content: Long 以前住在杭州。
+      occurred_at: "2025-04-28T09:00:00+08:00"
+    - id: ep_new_city
+      session_id: s1
+      content: Long 现在住在上海。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: old_city
+    action: fact
+    fact:
+      id: f_lived_hangzhou
+      subject_entity_id: user
+      predicate: lives_in
+      object_literal: 杭州
+      content_summary: Long 以前住在杭州。
+      source_episode_ids: [ep_old_city]
+      valid_to: "2026-01-01T00:00:00+08:00"
+      confidence: explicit
+      importance: 0.7
+  - id: new_city
+    action: fact
+    fact:
+      id: f_lives_shanghai
+      subject_entity_id: user
+      predicate: lives_in
+      object_literal: 上海
+      content_summary: Long 现在住在上海。
+      source_episode_ids: [ep_new_city]
+      valid_from: "2026-01-01T00:00:00+08:00"
+      confidence: explicit
+      importance: 0.9
+  - id: link_supersedes
+    action: link
+    link:
+      from_node_id: f_lives_shanghai
+      link_type: SUPERSEDES
+      to_node_id: f_lived_hangzhou
+      weight: 1.0
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我以前住在哪里，现在呢？
+      policy:
+        allow_historical: true
+        final_memory_count: 2
+assertions:
+  - type: query_analysis
+    name: historical current ambiguity is recognized
+    step: retrieve
+    time_mode: historical
+    memory_ability: historical
+    should_use_semantic: false
+    retrieval_mode: historical
+    required_reason_codes: [historical_intent]
+  - type: selected_chain_correct
+    name: current fact carries historical superseded state
+    step: retrieve
+    block_type: historical_context
+    node_id: f_lives_shanghai
+    node_ids: [f_lived_hangzhou]
+    link_type: SUPERSEDES
+    direction: outbound
+    historical_status: current
+    related_historical_status: superseded
+  - type: observed_confidence
+    name: temporal confidence has no hard failure
+    step: retrieve
+    column: temporal_consistency
+    min: 1.0

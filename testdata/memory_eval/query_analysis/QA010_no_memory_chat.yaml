@@ -1,0 +1,24 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: no_memory_chat
+description: Empty/no-memory chat should not trigger semantic routing or retrieve memory.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: ""
+      policy:
+        final_memory_count: 3
+assertions:
+  - type: query_analysis
+    name: empty chat has no semantic route
+    step: retrieve
+    should_use_semantic: false
+    max_rule_fit: 0.01
+    max_semantic_need: 0.01

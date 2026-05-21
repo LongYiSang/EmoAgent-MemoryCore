@@ -1,0 +1,90 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: relationship_arc
+description: Relationship arc question should choose relationship timeline retrieval.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: xiaoli
+      canonical_name: 小李
+      entity_type: person
+      aliases:
+        - id: alias_xiaoli
+          alias: 小李
+          alias_type: nickname
+          confidence: 0.95
+  episodes:
+    - id: ep_old
+      session_id: s1
+      content: Long 和小李一开始只是普通同事。
+      occurred_at: "2026-04-20T09:00:00+08:00"
+    - id: ep_new
+      session_id: s1
+      content: Long 后来开始信任小李。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: coworker
+    action: fact
+    fact:
+      id: f_xiaoli_coworker
+      subject_entity_id: user
+      predicate: relationship_with
+      object_entity_id: xiaoli
+      content_summary: Long 和小李一开始只是普通同事。
+      fact_type: relational_state
+      source_episode_ids: [ep_old]
+      confidence: explicit
+      importance: 0.7
+  - id: trust
+    action: fact
+    fact:
+      id: f_xiaoli_trust
+      subject_entity_id: user
+      predicate: relationship_with
+      object_entity_id: xiaoli
+      content_summary: Long 后来开始信任小李。
+      fact_type: relational_state
+      source_episode_ids: [ep_new]
+      confidence: explicit
+      importance: 0.9
+  - id: link_supersedes
+    action: link
+    link:
+      from_node_id: f_xiaoli_trust
+      link_type: SUPERSEDES
+      to_node_id: f_xiaoli_coworker
+      weight: 0.9
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 我和小李的关系变化是什么？
+      policy:
+        allow_historical: true
+        final_memory_count: 2
+assertions:
+  - type: query_analysis
+    name: relationship arc route is explicit
+    step: retrieve
+    memory_domain: relationship_memory
+    memory_ability: relationship_arc
+    evidence_need: relationship_timeline
+    should_use_semantic: false
+    retrieval_mode: graph_contextual
+    required_reason_codes: [relationship_arc_intent, entity_resolved]
+  - type: selected_chain_correct
+    name: relationship timeline keeps earlier state
+    step: retrieve
+    block_type: historical_context
+    node_id: f_xiaoli_coworker
+    node_ids: [f_xiaoli_trust]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current

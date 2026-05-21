@@ -1,0 +1,52 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: provenance_question
+description: Provenance question should route to provenance retrieval and keep source evidence.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep_coffee_source
+      session_id: s1
+      content: Long 在聊天中说自己喜欢手冲咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: coffee_fact
+    action: fact
+    fact:
+      id: f_likes_coffee_source
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 手冲咖啡
+      content_summary: Long 喜欢手冲咖啡。
+      source_episode_ids: [ep_coffee_source]
+      confidence: explicit
+      importance: 0.8
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 你从哪里知道我喜欢手冲咖啡？
+      policy:
+        final_memory_count: 2
+assertions:
+  - type: query_analysis
+    name: provenance question chooses provenance route
+    step: retrieve
+    memory_ability: provenance
+    evidence_need: provenance_source
+    should_use_semantic: false
+    retrieval_mode: provenance
+    required_reason_codes: [provenance_intent]
+  - type: selected_chain_correct
+    name: provenance context includes source reference
+    step: retrieve
+    block_type: provenance_context
+    node_id: f_likes_coffee_source
+    source_ref_count: 1

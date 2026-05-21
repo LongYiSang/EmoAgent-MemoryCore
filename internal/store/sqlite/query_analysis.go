@@ -1527,6 +1527,9 @@ func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 			0.25*s.Complexity +
 			0.15*s.Ambiguity,
 	)
+	if analysis.MemoryAbility == MemoryAbilityCausalExplain && s.AnchorReadiness < 0.50 {
+		s.SemanticNeed = maxFloat(s.SemanticNeed, 0.60)
+	}
 	s.ExpectedRetrievalConfidence = clamp01(0.60*s.RuleFit + 0.40*s.AnchorReadiness - 0.10*s.SafetyRisk)
 	return s
 }

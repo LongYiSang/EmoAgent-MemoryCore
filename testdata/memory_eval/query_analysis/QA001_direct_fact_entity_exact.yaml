@@ -1,0 +1,58 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: direct_fact_entity_exact
+description: Strong entity and exact fact anchor should stay on the rule path and recall the exact fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+      aliases:
+        - id: alias_long
+          alias: Long
+          alias_type: nickname
+          confidence: 0.95
+  episodes:
+    - id: ep_coffee
+      session_id: s1
+      content: Long 说自己喜欢手冲咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: coffee_fact
+    action: fact
+    fact:
+      id: f_likes_pourover
+      subject_entity_id: user
+      predicate: likes
+      object_literal: 手冲咖啡
+      content_summary: Long 喜欢手冲咖啡。
+      source_episode_ids: [ep_coffee]
+      confidence: explicit
+      importance: 0.8
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: Long 喜欢手冲咖啡吗？
+      policy:
+        final_memory_count: 3
+assertions:
+  - type: query_analysis
+    name: direct fact keeps semantic disabled
+    step: retrieve
+    time_mode: current
+    memory_ability: direct_fact
+    should_use_semantic: false
+    retrieval_mode: exact
+    min_anchor_readiness: 0.40
+    required_reason_codes: [direct_fact_intent, entity_resolved]
+  - type: selected_recall_at_k
+    name: exact fact is selected
+    step: retrieve
+    relevant_node_ids: [f_likes_pourover]
+    at: 8
+    min: 1.0

@@ -110,6 +110,48 @@ assertions:
 	}
 }
 
+func TestLoadFixtureBytesAcceptsPhase8QueryAnalysisAssertionFields(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: PHASE8_QUERY_ANALYSIS_ASSERTION_FIELDS
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      query_text: 我为什么最近这么抗拒上班？
+assertions:
+  - type: query_analysis
+    step: retrieve
+    memory_ability: causal_explain
+    should_use_semantic: true
+    semantic_mode: semantic_decompose
+    retrieval_mode: semantic
+    min_rule_fit: 0.60
+    max_anchor_readiness: 0.45
+    min_semantic_need: 0.58
+    max_expected_retrieval_confidence: 0.70
+    required_reason_codes:
+      - semantic_need_high
+      - weak_anchor
+`))
+	if err != nil {
+		t.Fatalf("LoadFixtureBytes err = %v, want nil", err)
+	}
+	assertion := fixture.Assertions[0]
+	if assertion.ShouldUseSemantic == nil || !*assertion.ShouldUseSemantic {
+		t.Fatalf("should_use_semantic = %#v, want true pointer", assertion.ShouldUseSemantic)
+	}
+	if assertion.SemanticMode != "semantic_decompose" || assertion.RetrievalMode != "semantic" {
+		t.Fatalf("semantic/retrieval mode = %q/%q", assertion.SemanticMode, assertion.RetrievalMode)
+	}
+	if assertion.MinRuleFit != 0.60 || assertion.MaxAnchorReadiness != 0.45 ||
+		assertion.MinSemanticNeed != 0.58 || assertion.MaxExpectedRetrievalConfidence != 0.70 {
+		t.Fatalf("score bounds = %#v", assertion)
+	}
+	if got := assertion.RequiredReasonCodes; len(got) != 2 || got[0] != "semantic_need_high" || got[1] != "weak_anchor" {
+		t.Fatalf("required reason codes = %#v", got)
+	}
+}
+
 func TestPhase5FMetricMath(t *testing.T) {
 	selected := []string{"a", "b", "c"}
 	relevant := []string{"a", "c", "d"}

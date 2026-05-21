@@ -222,6 +222,12 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 			Detector:    "rule_regex_v1",
 		}},
 		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+			AdaptiveDecision: memsqlite.QueryAnalysisDecision{
+				UseSemantic:   true,
+				SemanticMode:  "semantic_light",
+				RetrievalMode: "semantic",
+				ReasonCodes:   []string{"rule_fit_low"},
+			},
 			SemanticAnalysis: &memsqlite.SemanticQueryAnalysisDiagnostics{
 				Scores: memsqlite.QueryAnalysisScores{SemanticNeed: 0.77},
 				Probes: memsqlite.QueryAnchorProbe{
@@ -257,6 +263,7 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 		analysis.Probes.Top1Margin != 0.14 ||
 		analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
+		analysis.Diagnostics.AdaptiveDecision.ReasonCodes[0] != "rule_fit_low" ||
 		analysis.Evidence[0].MatchText != "为什么" ||
 		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
 		analysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] != "semantic_need_high" ||
@@ -267,6 +274,7 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 
 	storeAnalysis.Probes.Breakdown[0].Source = "mutated"
 	storeAnalysis.Decision.ReasonCodes[0] = "mutated"
+	storeAnalysis.Diagnostics.AdaptiveDecision.ReasonCodes[0] = "mutated"
 	storeAnalysis.Evidence[0].MatchText = "mutated"
 	storeAnalysis.Alternatives[0].ReasonCodes[0] = "mutated"
 	storeAnalysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source = "mutated"
@@ -276,6 +284,7 @@ func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T
 
 	if analysis.Probes.Breakdown[0].Source != "sparse_probe" ||
 		analysis.Decision.ReasonCodes[0] != "causal_intent" ||
+		analysis.Diagnostics.AdaptiveDecision.ReasonCodes[0] != "rule_fit_low" ||
 		analysis.Evidence[0].MatchText != "为什么" ||
 		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
 		analysis.Diagnostics.SemanticAnalysis.Probes.Breakdown[0].Source != "sparse_probe" ||
