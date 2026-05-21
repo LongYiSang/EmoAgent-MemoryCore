@@ -55,11 +55,18 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 			Weight:  0.7,
 		}},
 		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
-			SemanticStatus:        "ok",
-			RewriteCount:          1,
-			DroppedRewriteCount:   1,
-			DroppedRewriteReasons: []string{"rewrite_language_mismatch"},
-			EnglishRewriteCount:   2,
+			SemanticStatus:          "ok",
+			RewriteCount:            1,
+			DroppedRewriteCount:     1,
+			DroppedRewriteReasons:   []string{"rewrite_language_mismatch"},
+			EnglishRewriteCount:     2,
+			ScorerVersion:           "rule_confidence_legacy.v0",
+			RuleConfidenceLegacy:    0.42,
+			RuleConfidenceReason:    "exact_fact_only",
+			SemanticDecisionLegacy:  true,
+			MinConfidenceToOverride: 0.72,
+			Signals:                 []string{string(memsqlite.QuerySignalExactFact)},
+			EntityMentionCount:      1,
 		},
 	})
 	if analysis == nil || analysis.Diagnostics == nil {
@@ -73,6 +80,17 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 	}
 	if len(analysis.Diagnostics.DroppedRewriteReasons) != 1 || analysis.Diagnostics.DroppedRewriteReasons[0] != "rewrite_language_mismatch" {
 		t.Fatalf("dropped rewrite reasons = %#v, want rewrite_language_mismatch", analysis.Diagnostics.DroppedRewriteReasons)
+	}
+	if analysis.Diagnostics.ScorerVersion != "rule_confidence_legacy.v0" ||
+		analysis.Diagnostics.RuleConfidenceLegacy != 0.42 ||
+		analysis.Diagnostics.RuleConfidenceReason != "exact_fact_only" ||
+		!analysis.Diagnostics.SemanticDecisionLegacy ||
+		analysis.Diagnostics.MinConfidenceToOverride != 0.72 ||
+		analysis.Diagnostics.EntityMentionCount != 1 {
+		t.Fatalf("legacy diagnostics = %#v, want mapped legacy fields", analysis.Diagnostics)
+	}
+	if len(analysis.Diagnostics.Signals) != 1 || analysis.Diagnostics.Signals[0] != string(memsqlite.QuerySignalExactFact) {
+		t.Fatalf("diagnostic signals = %#v, want exact_fact", analysis.Diagnostics.Signals)
 	}
 
 	raw, err := json.Marshal(analysis)

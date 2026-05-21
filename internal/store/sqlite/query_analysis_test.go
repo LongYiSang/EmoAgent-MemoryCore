@@ -474,6 +474,87 @@ func TestQueryAnalysisExactFactSignalDoesNotRaisePlainDirectFactConfidence(t *te
 	}
 }
 
+func TestRuleConfidenceLegacySnapshots(t *testing.T) {
+	tests := []struct {
+		name       string
+		normalized string
+		analysis   QueryAnalysis
+		wantScore  float64
+		wantReason string
+	}{
+		{
+			name:       "empty query",
+			normalized: "",
+			analysis:   QueryAnalysis{},
+			wantScore:  0,
+			wantReason: "empty_query",
+		},
+		{
+			name:       "non direct ability",
+			normalized: "为什么我后来不喝咖啡了",
+			analysis: QueryAnalysis{
+				MemoryAbility: MemoryAbilityCausalExplain,
+			},
+			wantScore:  0.78,
+			wantReason: "non_direct_memory_ability",
+		},
+		{
+			name:       "entity mention",
+			normalized: "longyi 喜欢咖啡吗",
+			analysis: QueryAnalysis{
+				MemoryAbility:  MemoryAbilityDirectFact,
+				EntityMentions: []QueryEntityMention{{EntityID: "ent_user", MatchText: "longyi"}},
+			},
+			wantScore:  0.74,
+			wantReason: "entity_mention",
+		},
+		{
+			name:       "exact fact only",
+			normalized: "咖啡",
+			analysis: QueryAnalysis{
+				MemoryAbility: MemoryAbilityDirectFact,
+				Signals:       []QuerySignal{QuerySignalExactFact},
+			},
+			wantScore:  0.42,
+			wantReason: "exact_fact_only",
+		},
+		{
+			name:       "signal only",
+			normalized: "什么时候说过咖啡",
+			analysis: QueryAnalysis{
+				MemoryAbility: MemoryAbilityDirectFact,
+				Signals:       []QuerySignal{QuerySignalProvenanceSource},
+			},
+			wantScore:  0.68,
+			wantReason: "query_signal",
+		},
+		{
+			name:       "default direct fact",
+			normalized: "咖啡",
+			analysis: QueryAnalysis{
+				MemoryAbility: MemoryAbilityDirectFact,
+			},
+			wantScore:  0.42,
+			wantReason: "default_direct_fact",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ruleConfidenceLegacy(tt.normalized, tt.analysis)
+			if got.Score != tt.wantScore {
+				t.Fatalf("score = %v, want %v", got.Score, tt.wantScore)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if legacy := ruleConfidence(tt.normalized, tt.analysis); legacy != got.Score {
+				t.Fatalf("ruleConfidence = %v, legacy helper score = %v", legacy, got.Score)
+			}
+		})
+	}
+}
+
 func TestQueryAnalysisW004SoftRoutingClasses(t *testing.T) {
 	tests := []struct {
 		name          string

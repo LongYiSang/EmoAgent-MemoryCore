@@ -74,6 +74,8 @@ const (
 	QueryAnalysisSourceSemanticFallback QueryAnalysisSource = "semantic_failed_rule_fallback"
 )
 
+const ruleConfidenceLegacyScorerVersion = "rule_confidence_legacy.v0"
+
 type QueryAnalysis struct {
 	Raw               string
 	Normalized        string
@@ -135,19 +137,26 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	SemanticStatus        string
-	SemanticProvider      string
-	SemanticModel         string
-	PromptVersion         string
-	SemanticLatencyMs     int64
-	FallbackReason        string
-	RewriteCount          int
-	SemanticAnchorCount   int
-	DroppedRewriteCount   int
-	DroppedRewriteReasons []string
-	EnglishRewriteCount   int
-	SemanticDriftCount    int
-	SemanticAnalysis      *SemanticQueryAnalysisDiagnostics
+	ScorerVersion           string
+	RuleConfidenceLegacy    float64
+	RuleConfidenceReason    string
+	SemanticDecisionLegacy  bool
+	MinConfidenceToOverride float64
+	Signals                 []string
+	EntityMentionCount      int
+	SemanticStatus          string
+	SemanticProvider        string
+	SemanticModel           string
+	PromptVersion           string
+	SemanticLatencyMs       int64
+	FallbackReason          string
+	RewriteCount            int
+	SemanticAnchorCount     int
+	DroppedRewriteCount     int
+	DroppedRewriteReasons   []string
+	EnglishRewriteCount     int
+	SemanticDriftCount      int
+	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics
 }
 
 type SemanticQueryAnalysisDiagnostics struct {
@@ -199,6 +208,7 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 	analysis.EntityMentions = mentions
 	analysis.Confidence = ruleConfidence(normalized, analysis)
 	analysis.FieldConfidence = ruleFieldConfidence(normalized, analysis)
+	analysis.Diagnostics = legacyQueryAnalysisDiagnostics(normalized, analysis)
 	return analysis, nil
 }
 
@@ -212,6 +222,7 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
+		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		diagnostics.SemanticAnalysis = cloneSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
@@ -565,20 +576,51 @@ func hasRelationshipArcIntent(normalized string) bool {
 }
 
 func ruleConfidence(normalized string, analysis QueryAnalysis) float64 {
+	return ruleConfidenceLegacy(normalized, analysis).Score
+}
+
+type ruleConfidenceLegacyResult struct {
+	Score  float64
+	Reason string
+}
+
+func ruleConfidenceLegacy(normalized string, analysis QueryAnalysis) ruleConfidenceLegacyResult {
 	switch {
 	case normalized == "":
-		return 0
+		return ruleConfidenceLegacyResult{Score: 0, Reason: "empty_query"}
 	case analysis.MemoryAbility != MemoryAbilityDirectFact:
-		return 0.78
+		return ruleConfidenceLegacyResult{Score: 0.78, Reason: "non_direct_memory_ability"}
 	case len(analysis.EntityMentions) > 0:
-		return 0.74
+		return ruleConfidenceLegacyResult{Score: 0.74, Reason: "entity_mention"}
 	case onlyExactFactSignal(analysis.Signals):
-		return 0.42
+		return ruleConfidenceLegacyResult{Score: 0.42, Reason: "exact_fact_only"}
 	case len(analysis.Signals) > 0:
-		return 0.68
+		return ruleConfidenceLegacyResult{Score: 0.68, Reason: "query_signal"}
 	default:
-		return 0.42
+		return ruleConfidenceLegacyResult{Score: 0.42, Reason: "default_direct_fact"}
 	}
+}
+
+func legacyQueryAnalysisDiagnostics(normalized string, analysis QueryAnalysis) *QueryAnalysisDiagnostics {
+	legacy := ruleConfidenceLegacy(normalized, analysis)
+	return &QueryAnalysisDiagnostics{
+		ScorerVersion:        ruleConfidenceLegacyScorerVersion,
+		RuleConfidenceLegacy: legacy.Score,
+		RuleConfidenceReason: legacy.Reason,
+		Signals:              querySignalsToStrings(analysis.Signals),
+		EntityMentionCount:   len(analysis.EntityMentions),
+	}
+}
+
+func querySignalsToStrings(values []QuerySignal) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	return out
 }
 
 func onlyExactFactSignal(signals []QuerySignal) bool {

@@ -44,6 +44,140 @@ func TestQueryAnalysisRuleOnlyDefaultDoesNotCallSemantic(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSemanticOnLowConfidenceLegacyDiagnostics(t *testing.T) {
+	semantic := &SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			Confidence: 0.95,
+			FieldConfidence: QueryAnalysisConfidence{
+				Overall: 0.95,
+			},
+		},
+	}
+
+	tests := []struct {
+		name         string
+		rule         memsqlite.QueryAnalysis
+		wantSemantic bool
+	}{
+		{
+			name: "low confidence triggers semantic",
+			rule: memsqlite.QueryAnalysis{
+				Raw:           "咖啡",
+				Normalized:    "咖啡",
+				Terms:         []string{"咖啡"},
+				TimeMode:      memsqlite.QueryTimeModeCurrent,
+				MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+				MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+				EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+				Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+				Confidence:    0.42,
+				Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalExactFact},
+				Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+					RuleConfidenceLegacy: 0.42,
+					RuleConfidenceReason: "exact_fact_only",
+					Signals:              []string{string(memsqlite.QuerySignalExactFact)},
+					EntityMentionCount:   0,
+				},
+			},
+			wantSemantic: true,
+		},
+		{
+			name: "high confidence skips semantic",
+			rule: memsqlite.QueryAnalysis{
+				Raw:           "LongYi 喜欢咖啡吗",
+				Normalized:    "longyi 喜欢咖啡吗",
+				Terms:         []string{"longyi", "喜欢咖啡吗"},
+				TimeMode:      memsqlite.QueryTimeModeCurrent,
+				MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+				MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+				EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+				Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+				Confidence:    0.74,
+				EntityMentions: []memsqlite.QueryEntityMention{{
+					EntityID:  "ent_user",
+					MatchText: "LongYi",
+				}},
+				Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+					RuleConfidenceLegacy: 0.74,
+					RuleConfidenceReason: "entity_mention",
+					EntityMentionCount:   1,
+				},
+			},
+			wantSemantic: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline := newQueryAnalysisPipeline(
+				staticRuleQueryAnalyzer{analysis: tt.rule},
+				staticSemanticQueryAnalyzer{result: semantic},
+				QueryAnalysisOptions{Provider: QueryAnalysisProviderSidecar, Mode: QueryAnalysisModeSemanticOnLowConfidence, MinConfidenceToOverride: 0.72},
+			)
+
+			got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{
+				PersonaID: "default",
+				QueryText: tt.rule.Raw,
+				Now:       fixedQueryAnalysisNow(),
+			})
+			if err != nil {
+				t.Fatalf("analyze query: %v", err)
+			}
+			if got.Diagnostics == nil {
+				t.Fatal("diagnostics is nil")
+			}
+			if got.Diagnostics.SemanticDecisionLegacy != tt.wantSemantic {
+				t.Fatalf("semantic decision = %v, want %v", got.Diagnostics.SemanticDecisionLegacy, tt.wantSemantic)
+			}
+			if got.Diagnostics.MinConfidenceToOverride != 0.72 {
+				t.Fatalf("min confidence = %v, want 0.72", got.Diagnostics.MinConfidenceToOverride)
+			}
+			if got.Diagnostics.RuleConfidenceReason == "" {
+				t.Fatalf("legacy reason is empty: %#v", got.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestQueryAnalysisRuleOnlyKeepsLegacyDiagnosticsVisible(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		Terms:         []string{"咖啡"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+		Confidence:    0.42,
+		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+			RuleConfidenceLegacy: 0.42,
+			RuleConfidenceReason: "default_direct_fact",
+			EntityMentionCount:   0,
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, panicSemanticQueryAnalyzer{}, QueryAnalysisOptions{})
+
+	got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{
+		PersonaID: "default",
+		QueryText: "咖啡",
+		Now:       fixedQueryAnalysisNow(),
+	})
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if got.Source != memsqlite.QueryAnalysisSourceRuleOnly {
+		t.Fatalf("source = %q, want rule_only", got.Source)
+	}
+	if got.Diagnostics == nil || got.Diagnostics.RuleConfidenceReason != "default_direct_fact" {
+		t.Fatalf("diagnostics = %#v, want visible legacy reason", got.Diagnostics)
+	}
+	if got.Diagnostics.SemanticDecisionLegacy {
+		t.Fatalf("semantic decision = true, want false in rule-only mode")
+	}
+}
+
 func TestQueryAnalysisSemanticMergeClampsUntrustedFields(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "Long 证据",

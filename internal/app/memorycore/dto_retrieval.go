@@ -192,19 +192,26 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	SemanticStatus        string
-	SemanticProvider      string
-	SemanticModel         string
-	PromptVersion         string
-	SemanticLatencyMs     int64
-	FallbackReason        string
-	RewriteCount          int
-	SemanticAnchorCount   int
-	DroppedRewriteCount   int
-	DroppedRewriteReasons []string
-	EnglishRewriteCount   int
-	SemanticDriftCount    int
-	SemanticAnalysis      *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
+	ScorerVersion           string
+	RuleConfidenceLegacy    float64
+	RuleConfidenceReason    string
+	SemanticDecisionLegacy  bool
+	MinConfidenceToOverride float64
+	Signals                 []string
+	EntityMentionCount      int
+	SemanticStatus          string
+	SemanticProvider        string
+	SemanticModel           string
+	PromptVersion           string
+	SemanticLatencyMs       int64
+	FallbackReason          string
+	RewriteCount            int
+	SemanticAnchorCount     int
+	DroppedRewriteCount     int
+	DroppedRewriteReasons   []string
+	EnglishRewriteCount     int
+	SemanticDriftCount      int
+	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
 }
 
 type SemanticQueryAnalysisDiagnostics struct {

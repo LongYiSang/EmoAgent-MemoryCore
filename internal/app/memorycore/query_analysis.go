@@ -249,7 +249,10 @@ func (p queryAnalysisPipeline) AnalyzeRuleQuery(ctx context.Context, req QueryAn
 }
 
 func (p queryAnalysisPipeline) AnalyzeSemanticForRule(ctx context.Context, req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) memsqlite.QueryAnalysis {
-	if !p.shouldUseSemantic(rule) {
+	options := normalizeQueryAnalysisOptions(p.options)
+	useSemantic := p.shouldUseSemantic(rule)
+	rule = annotateLegacySemanticDecision(rule, useSemantic, options.MinConfidenceToOverride)
+	if !useSemantic {
 		return rule
 	}
 	if p.semantic == nil {
@@ -357,6 +360,7 @@ func semanticRuleFallback(rule memsqlite.QueryAnalysis, fallbackReason string, s
 		FallbackReason:    sanitizeSemanticFallbackReason(fallbackReason, "semantic_sidecar_error"),
 		SemanticAnalysis:  semanticAnalysisDiagnosticsFromSemantic(semantic.Analysis),
 	}
+	copyLegacyQueryAnalysisDiagnostics(out.Diagnostics, rule.Diagnostics)
 	return out
 }
 
@@ -416,7 +420,31 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 		SemanticDriftCount:    semanticControlDriftCount(rule, out),
 		SemanticAnalysis:      semanticAnalysisDiagnosticsFromSemantic(analysis),
 	}
+	copyLegacyQueryAnalysisDiagnostics(out.Diagnostics, rule.Diagnostics)
 	return out
+}
+
+func annotateLegacySemanticDecision(rule memsqlite.QueryAnalysis, decision bool, minConfidence float64) memsqlite.QueryAnalysis {
+	out := cloneStoreQueryAnalysis(rule)
+	if out.Diagnostics == nil {
+		out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{}
+	}
+	out.Diagnostics.SemanticDecisionLegacy = decision
+	out.Diagnostics.MinConfidenceToOverride = minConfidence
+	return out
+}
+
+func copyLegacyQueryAnalysisDiagnostics(dst *memsqlite.QueryAnalysisDiagnostics, src *memsqlite.QueryAnalysisDiagnostics) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.ScorerVersion = src.ScorerVersion
+	dst.RuleConfidenceLegacy = src.RuleConfidenceLegacy
+	dst.RuleConfidenceReason = src.RuleConfidenceReason
+	dst.SemanticDecisionLegacy = src.SemanticDecisionLegacy
+	dst.MinConfidenceToOverride = src.MinConfidenceToOverride
+	dst.Signals = append([]string(nil), src.Signals...)
+	dst.EntityMentionCount = src.EntityMentionCount
 }
 
 func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsqlite.SemanticQueryAnalysisDiagnostics {
@@ -1355,6 +1383,7 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
+		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		diagnostics.SemanticAnalysis = cloneStoreSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
