@@ -224,6 +224,9 @@ type QueryAnalysisDiagnostics struct {
 	EntityMentionCount      int
 	Scores                  QueryAnalysisScores
 	FieldConfidence         QueryAnalysisConfidence
+	RuleDecision            QueryAnalysisDecision
+	RuleEvidence            []QueryAnalysisEvidence
+	RuleAlternatives        []QueryAnalysisAlternative
 	SemanticStatus          string
 	SemanticProvider        string
 	SemanticModel           string
@@ -292,10 +295,13 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 	}
 	analysis.EntityMentions = mentions
 	legacy := ruleConfidenceLegacy(normalized, analysis)
+	analysis.Evidence = ruleQueryAnalysisEvidence(normalized, analysis)
 	analysis.Probes = r.probeQueryAnchors(ctx, personaID, normalized, analysis, policy)
 	analysis.Scores = ComputeRuleFit(normalized, analysis, analysis.Evidence)
 	analysis.Confidence = analysis.Scores.ExpectedRetrievalConfidence
 	analysis.FieldConfidence = ComputeFieldConfidence(analysis, analysis.Scores)
+	analysis.Alternatives = ruleQueryAnalysisAlternatives(normalized, analysis)
+	analysis.Decision = ruleQueryAnalysisDecision(analysis, analysis.Scores)
 	analysis.Diagnostics = ruleQueryAnalysisDiagnostics(normalized, analysis, legacy, analysis.Scores, analysis.FieldConfidence)
 	return analysis, nil
 }
@@ -315,6 +321,9 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
+		diagnostics.RuleDecision = cloneQueryAnalysisDecision(value.Diagnostics.RuleDecision)
+		diagnostics.RuleEvidence = cloneQueryAnalysisEvidence(value.Diagnostics.RuleEvidence)
+		diagnostics.RuleAlternatives = cloneQueryAnalysisAlternatives(value.Diagnostics.RuleAlternatives)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		diagnostics.SemanticAnalysis = cloneSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
@@ -735,7 +744,259 @@ func ruleQueryAnalysisDiagnostics(normalized string, analysis QueryAnalysis, leg
 		EntityMentionCount:   len(analysis.EntityMentions),
 		Scores:               scores,
 		FieldConfidence:      fieldConfidence,
+		RuleDecision:         cloneQueryAnalysisDecision(analysis.Decision),
+		RuleEvidence:         cloneQueryAnalysisEvidence(analysis.Evidence),
+		RuleAlternatives:     cloneQueryAnalysisAlternatives(analysis.Alternatives),
 	}
+}
+
+func ruleQueryAnalysisEvidence(normalized string, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	if strings.TrimSpace(normalized) == "" {
+		return nil
+	}
+	var evidence []QueryAnalysisEvidence
+	evidence = appendRuleTimeEvidence(evidence, normalized, analysis)
+	evidence = appendRuleAbilityEvidence(evidence, normalized, analysis)
+	evidence = appendRuleDomainEvidence(evidence, normalized, analysis)
+	evidence = appendRuleEvidenceNeedEvidence(evidence, normalized, analysis)
+	evidence = appendRuleEntityEvidence(evidence, analysis)
+	return evidence
+}
+
+func appendRuleTimeEvidence(out []QueryAnalysisEvidence, normalized string, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	switch analysis.TimeMode {
+	case QueryTimeModeHistorical:
+		if match := firstContained(normalized, "以前", "过去", "上次", "历史", "之前", "曾经", "从前", "later", "previous", "before"); match != "" {
+			return appendRuleEvidence(out, "time_mode", "historical_time_marker", match, 0.86)
+		}
+		if hasStateTransitionIntent(normalized) {
+			return appendRuleEvidence(out, "time_mode", "state_transition_time", firstContained(normalized, "一开始", "之前", "后来", "最近", "现在", "开始", "不再", "变成", "变为", "变得"), 0.90)
+		}
+	case QueryTimeModeBitemporalCheck:
+		return appendRuleEvidence(out, "time_mode", "bitemporal_quantifier", firstContained(normalized, "一直", "从来", "所有", "每个", "永远", "always", "never"), 0.84)
+	case QueryTimeModeCurrent:
+		if match := firstContained(normalized, "最近状态", "当前状态", "最新状态", "最近", "现在", "当前", "latest", "current"); match != "" {
+			return appendRuleEvidence(out, "time_mode", "current_or_recent_marker", match, 0.72)
+		}
+	}
+	return appendRuleEvidence(out, "time_mode", "default_current_time", "", 0.46)
+}
+
+func appendRuleAbilityEvidence(out []QueryAnalysisEvidence, normalized string, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	switch analysis.MemoryAbility {
+	case MemoryAbilityCausalExplain:
+		return appendRuleEvidence(out, "memory_ability", "causal_intent", firstContained(normalized, "为什么", "原因", "导致", "怎么会", "为何", "why", "cause"), 0.90)
+	case MemoryAbilityHistorical:
+		return appendRuleEvidence(out, "memory_ability", "historical_or_transition_intent", firstContained(normalized, "以前", "之前", "后来", "过去", "曾经", "变化", "变成", "变为"), 0.88)
+	case MemoryAbilityProvenance:
+		return appendRuleEvidence(out, "memory_ability", "provenance_source_intent", firstContained(normalized, "什么时候说过", "从哪里知道", "哪里知道的", "来源", "证据", "source", "evidence"), 0.90)
+	case MemoryAbilityPremiseCheck:
+		return appendRuleEvidence(out, "memory_ability", "premise_check_intent", firstContained(normalized, "是不是", "是否", "有没有反例", "反例", "例外", "always", "never"), 0.90)
+	case MemoryAbilityRelationshipArc:
+		return appendRuleEvidence(out, "memory_ability", "relationship_arc_intent", firstContained(normalized, "关系变化", "关系轨迹", "关系时间线", "relationship arc", "relationship timeline"), 0.90)
+	case MemoryAbilityBoundary:
+		return appendRuleEvidence(out, "memory_ability", "boundary_or_forget_intent", firstContained(normalized, "忘掉", "删除", "删掉", "清除", "不要再提", "边界", "forget", "delete", "remove"), 0.86)
+	case MemoryAbilityWorkflow:
+		return appendRuleEvidence(out, "memory_ability", "workflow_intent", firstContained(normalized, "流程", "步骤", "怎么做", "操作步骤", "workflow", "procedure"), 0.82)
+	case MemoryAbilityGotcha:
+		return appendRuleEvidence(out, "memory_ability", "gotcha_intent", firstContained(normalized, "坑", "踩坑", "失败", "报错", "错误", "gotcha", "pitfall", "error"), 0.82)
+	case MemoryAbilityDynamicState:
+		return appendRuleEvidence(out, "memory_ability", "dynamic_state_intent", firstContained(normalized, "最近状态", "当前状态", "最新状态", "进度", "进展", "变化", "changed"), 0.82)
+	case MemoryAbilityStaticState:
+		return appendRuleEvidence(out, "memory_ability", "static_state_intent", firstContained(normalized, "身份", "偏好", "默认配置", "住址", "profile", "preference", "address"), 0.82)
+	case MemoryAbilityDirectFact:
+		if len(analysis.Signals) == 1 && analysis.Signals[0] == QuerySignalExactFact {
+			return appendRuleEvidence(out, "memory_ability", "direct_fact_fallback", "", 0.42)
+		}
+		return appendRuleEvidence(out, "memory_ability", "direct_fact_signal", firstContained(normalized, "上次", "那天", "最近一次", "喜欢", "住在"), 0.62)
+	default:
+		return appendRuleEvidence(out, "memory_ability", "unknown_ability_fallback", "", 0.35)
+	}
+}
+
+func appendRuleDomainEvidence(out []QueryAnalysisEvidence, normalized string, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	switch analysis.MemoryDomain {
+	case MemoryDomainUserProfile:
+		return appendRuleEvidence(out, "memory_domain", "profile_domain_keyword", firstContained(normalized, "我是谁", "身份", "名字", "昵称", "偏好", "喜欢", "讨厌", "住在", "profile", "preference", "identity"), 0.84)
+	case MemoryDomainWorkExperience:
+		return appendRuleEvidence(out, "memory_domain", "work_domain_keyword", firstContained(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch"), 0.82)
+	case MemoryDomainEnvironmentExperience:
+		return appendRuleEvidence(out, "memory_domain", "environment_domain_keyword", firstContained(normalized, "环境", "路径", "依赖", "python", "uv", "windows", "powershell", "权限", "toolchain", "runtime", "缓存", "cache"), 0.84)
+	case MemoryDomainRelationship:
+		if match := firstContained(normalized, "关系", "朋友", "同事", "家人", "小李", "relationship", "friend"); match != "" {
+			return appendRuleEvidence(out, "memory_domain", "relationship_domain_keyword", match, 0.78)
+		}
+		return appendRuleEvidence(out, "memory_domain", "default_relationship_domain", "", 0.44)
+	default:
+		return appendRuleEvidence(out, "memory_domain", "domain_fallback", "", 0.35)
+	}
+}
+
+func appendRuleEvidenceNeedEvidence(out []QueryAnalysisEvidence, normalized string, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	switch analysis.EvidenceNeed {
+	case EvidenceNeedStateTransition:
+		return appendRuleEvidence(out, "evidence_need", "state_transition_evidence_need", firstContained(normalized, "最近状态", "当前状态", "后来", "变化", "变成", "变为", "changed"), 0.86)
+	case EvidenceNeedProcedureNote:
+		return appendRuleEvidence(out, "evidence_need", "procedure_evidence_need", firstContained(normalized, "流程", "步骤", "怎么做", "workflow", "procedure"), 0.82)
+	case EvidenceNeedGotchaNote:
+		return appendRuleEvidence(out, "evidence_need", "gotcha_evidence_need", firstContained(normalized, "坑", "踩坑", "失败", "报错", "错误", "gotcha", "error"), 0.82)
+	case EvidenceNeedPremiseCounterexample:
+		return appendRuleEvidence(out, "evidence_need", "counterexample_evidence_need", firstContained(normalized, "反例", "例外", "是不是", "是否", "always", "never"), 0.86)
+	case EvidenceNeedProvenanceSource:
+		return appendRuleEvidence(out, "evidence_need", "provenance_evidence_need", firstContained(normalized, "什么时候说过", "从哪里知道", "来源", "证据", "source", "evidence"), 0.86)
+	case EvidenceNeedRelationshipTimeline:
+		return appendRuleEvidence(out, "evidence_need", "relationship_timeline_evidence_need", firstContained(normalized, "关系变化", "关系轨迹", "关系时间线", "relationship timeline"), 0.86)
+	case EvidenceNeedExactObservation:
+		return appendRuleEvidence(out, "evidence_need", "exact_observation_default", firstContained(normalized, "上次", "那天", "喜欢", "住在哪里", "哪个城市"), 0.48)
+	default:
+		return appendRuleEvidence(out, "evidence_need", "evidence_need_fallback", "", 0.35)
+	}
+}
+
+func appendRuleEntityEvidence(out []QueryAnalysisEvidence, analysis QueryAnalysis) []QueryAnalysisEvidence {
+	if len(analysis.EntityMentions) == 0 {
+		return appendRuleEvidence(out, "entity_resolution", "no_entity_mention", "", 0.20)
+	}
+	for _, mention := range analysis.EntityMentions {
+		weight := 0.68
+		if mention.MatchKind == QueryEntityMentionKindCanonical {
+			weight = 0.88
+		} else if mention.MatchKind == QueryEntityMentionKindAlias {
+			weight = 0.78
+		}
+		out = appendRuleEvidence(out, "entity_resolution", string(mention.MatchKind), mention.MatchText, weight)
+	}
+	return out
+}
+
+func appendRuleEvidence(out []QueryAnalysisEvidence, field string, signal string, matchText string, weight float64) []QueryAnalysisEvidence {
+	return append(out, QueryAnalysisEvidence{
+		Field:     field,
+		Signal:    signal,
+		MatchText: matchText,
+		SpanStart: -1,
+		SpanEnd:   -1,
+		Weight:    clamp01(weight),
+		Detector:  ruleFeatureScorerVersion,
+	})
+}
+
+func ruleQueryAnalysisDecision(analysis QueryAnalysis, scores QueryAnalysisScores) QueryAnalysisDecision {
+	reasonCodes := ruleDecisionReasonCodes(analysis, scores)
+	return QueryAnalysisDecision{
+		UseSemantic:      false,
+		SemanticMode:     "none",
+		RetrievalMode:    ruleRetrievalMode(analysis),
+		ReasonCodes:      reasonCodes,
+		ThresholdVersion: "rule_path_explanation.v1",
+		ScorerVersion:    ruleFeatureScorerVersion,
+	}
+}
+
+func ruleRetrievalMode(analysis QueryAnalysis) string {
+	switch analysis.MemoryAbility {
+	case MemoryAbilityBoundary:
+		return "target_resolver"
+	case MemoryAbilityCausalExplain, MemoryAbilityRelationshipArc:
+		return "graph_contextual"
+	case MemoryAbilityHistorical, MemoryAbilityDynamicState:
+		return "historical"
+	case MemoryAbilityProvenance:
+		return "provenance"
+	case MemoryAbilityPremiseCheck:
+		return "premise_check"
+	case MemoryAbilityDirectFact:
+		if len(analysis.EntityMentions) > 0 || analysis.Probes.PredicateProbeConf >= 0.60 {
+			return "exact"
+		}
+		return "hybrid"
+	default:
+		return "hybrid"
+	}
+}
+
+func ruleDecisionReasonCodes(analysis QueryAnalysis, scores QueryAnalysisScores) []string {
+	reasons := make([]string, 0, 6)
+	switch analysis.MemoryAbility {
+	case MemoryAbilityCausalExplain:
+		reasons = append(reasons, "causal_intent")
+	case MemoryAbilityHistorical:
+		reasons = append(reasons, "historical_intent")
+	case MemoryAbilityProvenance:
+		reasons = append(reasons, "provenance_intent")
+	case MemoryAbilityPremiseCheck:
+		reasons = append(reasons, "premise_check_intent")
+	case MemoryAbilityRelationshipArc:
+		reasons = append(reasons, "relationship_arc_intent")
+	case MemoryAbilityBoundary:
+		reasons = append(reasons, "boundary_or_forget_intent")
+	case MemoryAbilityDirectFact:
+		reasons = append(reasons, "direct_fact_intent")
+	}
+	if len(analysis.EntityMentions) > 0 {
+		reasons = append(reasons, "entity_resolved")
+	}
+	if scores.AnchorReadiness < 0.45 {
+		reasons = append(reasons, "weak_anchor")
+	} else {
+		reasons = append(reasons, "anchor_ready")
+	}
+	if scores.DefaultFallbackPenalty >= 0.60 {
+		reasons = append(reasons, "default_fallback")
+	}
+	if scores.Ambiguity >= 0.50 {
+		reasons = append(reasons, "ambiguous_reference")
+	}
+	if scores.SafetyRisk >= 0.50 {
+		reasons = append(reasons, "safety_risk")
+	}
+	return uniqueOrderedStrings(reasons)
+}
+
+func ruleQueryAnalysisAlternatives(normalized string, analysis QueryAnalysis) []QueryAnalysisAlternative {
+	var out []QueryAnalysisAlternative
+	if analysis.MemoryAbility == MemoryAbilityDirectFact && containsAny(normalized, "这件事", "这个", "那个", "这次", "那次", "后来", "之前") {
+		out = append(out, QueryAnalysisAlternative{
+			Field:       "memory_ability",
+			Value:       string(MemoryAbilityHistorical),
+			Confidence:  0.55,
+			ReasonCodes: []string{"ambiguous_reference", "temporal_marker"},
+			Detector:    ruleFeatureScorerVersion,
+		})
+		out = append(out, QueryAnalysisAlternative{
+			Field:       "time_mode",
+			Value:       string(QueryTimeModeHistorical),
+			Confidence:  0.50,
+			ReasonCodes: []string{"ambiguous_reference", "temporal_marker"},
+			Detector:    ruleFeatureScorerVersion,
+		})
+	}
+	if analysis.MemoryDomain == MemoryDomainRelationship && containsAny(normalized, "上班", "工作") && !containsAny(normalized, "关系", "朋友", "家人") {
+		out = append(out, QueryAnalysisAlternative{
+			Field:       "memory_domain",
+			Value:       string(MemoryDomainWorkExperience),
+			Confidence:  0.50,
+			ReasonCodes: []string{"weak_work_domain_signal"},
+			Detector:    ruleFeatureScorerVersion,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func firstContained(value string, needles ...string) string {
+	for _, needle := range needles {
+		if strings.TrimSpace(needle) == "" {
+			continue
+		}
+		lower := strings.ToLower(needle)
+		if strings.Contains(value, lower) {
+			return lower
+		}
+	}
+	return ""
 }
 
 func querySignalsToStrings(values []QuerySignal) []string {

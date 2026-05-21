@@ -261,6 +261,64 @@ func TestAnalyzeQueryPopulatesEntityAnchorProbeExactAliasAndAmbiguous(t *testing
 	})
 }
 
+func TestAnalyzeQueryPopulatesRuleExplanationArtifacts(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	policy := RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true}
+
+	got, err := repo.AnalyzeQuery(ctx, "default", "为什么最近状态抗拒上班", policy)
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if got.Decision.RetrievalMode != "graph_contextual" {
+		t.Fatalf("retrieval mode = %q, want graph_contextual", got.Decision.RetrievalMode)
+	}
+	if got.Decision.UseSemantic {
+		t.Fatalf("rule decision use semantic = true, want false until adaptive routing phase")
+	}
+	if !containsString(got.Decision.ReasonCodes, "causal_intent") ||
+		!containsString(got.Decision.ReasonCodes, "weak_anchor") {
+		t.Fatalf("decision reason codes = %#v, want causal_intent and weak_anchor", got.Decision.ReasonCodes)
+	}
+	if !hasEvidenceForField(got.Evidence, "memory_ability") ||
+		!hasEvidenceForField(got.Evidence, "time_mode") ||
+		!hasEvidenceForField(got.Evidence, "memory_domain") ||
+		!hasEvidenceForField(got.Evidence, "evidence_need") {
+		t.Fatalf("rule evidence = %#v, want field evidence for rule scores", got.Evidence)
+	}
+	if got.Diagnostics == nil {
+		t.Fatal("diagnostics = nil")
+	}
+	if got.Diagnostics.RuleDecision.RetrievalMode != got.Decision.RetrievalMode ||
+		len(got.Diagnostics.RuleEvidence) != len(got.Evidence) {
+		t.Fatalf("diagnostics = %#v, want rule decision/evidence snapshot", got.Diagnostics)
+	}
+}
+
+func TestAnalyzeQueryPopulatesRuleAlternativesForAmbiguousDirectFact(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	policy := RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true}
+
+	got, err := repo.AnalyzeQuery(ctx, "default", "这件事后来怎么样了", policy)
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if len(got.Alternatives) == 0 {
+		t.Fatalf("alternatives = nil, want ambiguity alternatives")
+	}
+	if !hasAlternative(got.Alternatives, "memory_ability", string(MemoryAbilityHistorical)) {
+		t.Fatalf("alternatives = %#v, want historical memory ability alternative", got.Alternatives)
+	}
+	if got.Diagnostics == nil || !hasAlternative(got.Diagnostics.RuleAlternatives, "memory_ability", string(MemoryAbilityHistorical)) {
+		t.Fatalf("diagnostics alternatives = %#v, want rule alternatives snapshot", got.Diagnostics)
+	}
+}
+
 func TestAnalyzeQueryPopulatesSparsePredicateAndSupportProbeBreakdown(t *testing.T) {
 	ctx := context.Background()
 	db := openQueryProbeDB(t, ctx, true)
@@ -1310,6 +1368,33 @@ func requireProbeBreakdown(t *testing.T, probe QueryAnchorProbe, source string, 
 		return
 	}
 	t.Fatalf("probe breakdown = %#v, missing source %s", probe.Breakdown, source)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEvidenceForField(values []QueryAnalysisEvidence, field string) bool {
+	for _, value := range values {
+		if value.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAlternative(values []QueryAnalysisAlternative, field string, value string) bool {
+	for _, item := range values {
+		if item.Field == field && item.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 func probeStringPtr(value string) *string {

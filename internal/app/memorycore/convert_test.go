@@ -76,6 +76,25 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 				Overall:       0.61,
 				MemoryAbility: 0.42,
 			},
+			RuleDecision: memsqlite.QueryAnalysisDecision{
+				RetrievalMode: "provenance",
+				ReasonCodes:   []string{"provenance_intent"},
+				ScorerVersion: "query_analysis_rule_feature_scorer.v1",
+			},
+			RuleEvidence: []memsqlite.QueryAnalysisEvidence{{
+				Field:     "memory_ability",
+				Signal:    "provenance_source",
+				MatchText: "从哪里知道",
+				Weight:    0.9,
+				Detector:  "rule_feature_scorer.v1",
+			}},
+			RuleAlternatives: []memsqlite.QueryAnalysisAlternative{{
+				Field:       "time_mode",
+				Value:       string(memsqlite.QueryTimeModeHistorical),
+				Confidence:  0.41,
+				ReasonCodes: []string{"ambiguous_reference"},
+				Detector:    "rule_feature_scorer.v1",
+			}},
 		},
 	})
 	if analysis == nil || analysis.Diagnostics == nil {
@@ -104,6 +123,12 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 		analysis.Diagnostics.FieldConfidence.Overall != 0.61 ||
 		analysis.Diagnostics.FieldConfidence.MemoryAbility != 0.42 {
 		t.Fatalf("diagnostic scores = %#v field confidence = %#v, want mapped phase 2 scores", analysis.Diagnostics.Scores, analysis.Diagnostics.FieldConfidence)
+	}
+	if analysis.Diagnostics.RuleDecision.RetrievalMode != "provenance" ||
+		analysis.Diagnostics.RuleDecision.ReasonCodes[0] != "provenance_intent" ||
+		analysis.Diagnostics.RuleEvidence[0].MatchText != "从哪里知道" ||
+		analysis.Diagnostics.RuleAlternatives[0].ReasonCodes[0] != "ambiguous_reference" {
+		t.Fatalf("rule diagnostics = decision:%#v evidence:%#v alternatives:%#v, want mapped rule explanation", analysis.Diagnostics.RuleDecision, analysis.Diagnostics.RuleEvidence, analysis.Diagnostics.RuleAlternatives)
 	}
 	if len(analysis.Diagnostics.Signals) != 1 || analysis.Diagnostics.Signals[0] != string(memsqlite.QuerySignalExactFact) {
 		t.Fatalf("diagnostic signals = %#v, want exact_fact", analysis.Diagnostics.Signals)

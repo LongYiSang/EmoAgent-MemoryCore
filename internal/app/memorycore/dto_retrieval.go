@@ -278,6 +278,9 @@ type QueryAnalysisDiagnostics struct {
 	EntityMentionCount      int
 	Scores                  QueryAnalysisScores
 	FieldConfidence         QueryAnalysisConfidence
+	RuleDecision            QueryAnalysisDecision
+	RuleEvidence            []QueryAnalysisEvidence
+	RuleAlternatives        []QueryAnalysisAlternative
 	SemanticStatus          string
 	SemanticProvider        string
 	SemanticModel           string

@@ -457,6 +457,9 @@ func copyLegacyQueryAnalysisDiagnostics(dst *memsqlite.QueryAnalysisDiagnostics,
 	dst.EntityMentionCount = src.EntityMentionCount
 	dst.Scores = src.Scores
 	dst.FieldConfidence = src.FieldConfidence
+	dst.RuleDecision = cloneStoreQueryAnalysisDecision(src.RuleDecision)
+	dst.RuleEvidence = append([]memsqlite.QueryAnalysisEvidence(nil), src.RuleEvidence...)
+	dst.RuleAlternatives = cloneStoreQueryAnalysisAlternatives(src.RuleAlternatives)
 }
 
 func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsqlite.SemanticQueryAnalysisDiagnostics {
@@ -1796,6 +1799,9 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
+		diagnostics.RuleDecision = cloneStoreQueryAnalysisDecision(value.Diagnostics.RuleDecision)
+		diagnostics.RuleEvidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Diagnostics.RuleEvidence...)
+		diagnostics.RuleAlternatives = cloneStoreQueryAnalysisAlternatives(value.Diagnostics.RuleAlternatives)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
 		diagnostics.SemanticAnalysis = cloneStoreSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
