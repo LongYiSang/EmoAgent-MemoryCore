@@ -105,3 +105,131 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 		t.Fatalf("json = %s, want public drop reason", jsonText)
 	}
 }
+
+func TestQueryAnalysisPhase1DiagnosticsMapToPublicDTOWithDeepCopies(t *testing.T) {
+	storeAnalysis := &memsqlite.QueryAnalysis{
+		Raw:           "为什么最近抗拒上班",
+		Normalized:    "为什么最近抗拒上班",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainWorkExperience,
+		MemoryAbility: memsqlite.MemoryAbilityCausalExplain,
+		EvidenceNeed:  memsqlite.EvidenceNeedStateTransition,
+		Source:        memsqlite.QueryAnalysisSourceMerged,
+		Confidence:    0.66,
+		Scores: memsqlite.QueryAnalysisScores{
+			RuleFit:                     0.61,
+			AnchorReadiness:             0.42,
+			ExpectedRetrievalConfidence: 0.55,
+			SemanticNeed:                0.73,
+			Complexity:                  0.64,
+			Ambiguity:                   0.31,
+			Specificity:                 0.82,
+			SafetyRisk:                  0.12,
+			IntentEvidence:              0.79,
+			TimeEvidence:                0.58,
+			DomainEvidence:              0.67,
+			EvidenceNeedEvidence:        0.69,
+			EntityResolution:            0.44,
+			FieldConsistency:            0.71,
+			DefaultFallbackPenalty:      0.13,
+			MultiIntentConflictPenalty:  0.08,
+			SensitivityPenalty:          0.03,
+		},
+		Probes: memsqlite.QueryAnchorProbe{
+			EntityExactConf:        0.85,
+			EntityAmbiguity:        0.20,
+			SparseProbeConf:        0.62,
+			PredicateProbeConf:     0.58,
+			RecentProbeConf:        0.34,
+			PinnedCoreProbeConf:    0.27,
+			NarrativeProbeConf:     0.39,
+			FallbackSearchHitCount: 4,
+			Top1Score:              0.91,
+			Top2Score:              0.77,
+			Top1Margin:             0.14,
+		},
+		Decision: memsqlite.QueryAnalysisDecision{
+			UseSemantic:      true,
+			SemanticMode:     "decompose",
+			RetrievalMode:    "graph_contextual",
+			ReasonCodes:      []string{"causal_intent", "weak_anchor"},
+			ThresholdVersion: "semantic_router_v1",
+			ScorerVersion:    "query_analysis_scorer_v1",
+		},
+		Evidence: []memsqlite.QueryAnalysisEvidence{{
+			Field:     "memory_ability",
+			Signal:    "causal_word",
+			MatchText: "为什么",
+			SpanStart: 0,
+			SpanEnd:   6,
+			Weight:    0.38,
+			Detector:  "rule_regex_v1",
+		}},
+		Alternatives: []memsqlite.QueryAnalysisAlternative{{
+			Field:       "time_mode",
+			Value:       string(memsqlite.QueryTimeModeHistorical),
+			Confidence:  0.41,
+			ReasonCodes: []string{"historical_phrase"},
+			Detector:    "rule_regex_v1",
+		}},
+		Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+			SemanticAnalysis: &memsqlite.SemanticQueryAnalysisDiagnostics{
+				Scores: memsqlite.QueryAnalysisScores{SemanticNeed: 0.77},
+				Probes: memsqlite.QueryAnchorProbe{SparseProbeConf: 0.52},
+				Decision: memsqlite.QueryAnalysisDecision{
+					UseSemantic:  true,
+					SemanticMode: "light",
+					ReasonCodes:  []string{"semantic_need_high"},
+				},
+				Evidence: []memsqlite.QueryAnalysisEvidence{{Field: "evidence_need", Signal: "why"}},
+				Alternatives: []memsqlite.QueryAnalysisAlternative{{
+					Field:       "memory_ability",
+					Value:       string(memsqlite.MemoryAbilityDirectFact),
+					Confidence:  0.22,
+					ReasonCodes: []string{"fallback"},
+				}},
+			},
+		},
+	}
+
+	analysis := queryAnalysisFromStore(storeAnalysis)
+	if analysis == nil {
+		t.Fatal("analysis = nil")
+	}
+	if analysis.Scores.RuleFit != 0.61 ||
+		analysis.Probes.Top1Margin != 0.14 ||
+		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
+		analysis.Evidence[0].MatchText != "为什么" ||
+		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
+		analysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] != "semantic_need_high" ||
+		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] != "fallback" {
+		t.Fatalf("phase 1 fields = %#v", analysis)
+	}
+
+	storeAnalysis.Decision.ReasonCodes[0] = "mutated"
+	storeAnalysis.Evidence[0].MatchText = "mutated"
+	storeAnalysis.Alternatives[0].ReasonCodes[0] = "mutated"
+	storeAnalysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] = "mutated"
+	storeAnalysis.Diagnostics.SemanticAnalysis.Evidence[0].Field = "mutated"
+	storeAnalysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] = "mutated"
+
+	if analysis.Decision.ReasonCodes[0] != "causal_intent" ||
+		analysis.Evidence[0].MatchText != "为什么" ||
+		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
+		analysis.Diagnostics.SemanticAnalysis.Decision.ReasonCodes[0] != "semantic_need_high" ||
+		analysis.Diagnostics.SemanticAnalysis.Evidence[0].Field != "evidence_need" ||
+		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].ReasonCodes[0] != "fallback" {
+		t.Fatalf("phase 1 conversion was not deep-copied: %#v", analysis)
+	}
+
+	raw, err := json.Marshal(analysis)
+	if err != nil {
+		t.Fatalf("marshal query analysis: %v", err)
+	}
+	jsonText := string(raw)
+	for _, want := range []string{"Scores", "Probes", "Decision", "Evidence", "Alternatives", "semantic_analysis"} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json = %s, want %s", jsonText, want)
+		}
+	}
+}

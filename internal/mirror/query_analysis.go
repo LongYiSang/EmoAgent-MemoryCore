@@ -35,22 +35,27 @@ type QueryAnalysisRequest struct {
 }
 
 type QueryAnalysis struct {
-	Raw               string                  `json:"raw,omitempty"`
-	Normalized        string                  `json:"normalized,omitempty"`
-	Terms             []string                `json:"terms,omitempty"`
-	EntityMentions    []QueryEntityMention    `json:"entity_mentions,omitempty"`
-	TimeMode          string                  `json:"time_mode,omitempty"`
-	Signals           []string                `json:"signals,omitempty"`
-	MemoryDomain      string                  `json:"memory_domain,omitempty"`
-	MemoryAbility     string                  `json:"memory_ability,omitempty"`
-	EvidenceNeed      string                  `json:"evidence_need,omitempty"`
-	Source            string                  `json:"source,omitempty"`
-	Confidence        float64                 `json:"confidence,omitempty"`
-	FieldConfidence   QueryAnalysisConfidence `json:"field_confidence,omitempty"`
-	QueryRewrites     []QueryRewrite          `json:"query_rewrites,omitempty"`
-	SemanticAnchors   []SemanticAnchor        `json:"semantic_anchors,omitempty"`
-	ContextBlockHints []string                `json:"context_block_hints,omitempty"`
-	PolicyHints       QueryPolicyHints        `json:"policy_hints,omitempty"`
+	Raw               string                     `json:"raw,omitempty"`
+	Normalized        string                     `json:"normalized,omitempty"`
+	Terms             []string                   `json:"terms,omitempty"`
+	EntityMentions    []QueryEntityMention       `json:"entity_mentions,omitempty"`
+	TimeMode          string                     `json:"time_mode,omitempty"`
+	Signals           []string                   `json:"signals,omitempty"`
+	MemoryDomain      string                     `json:"memory_domain,omitempty"`
+	MemoryAbility     string                     `json:"memory_ability,omitempty"`
+	EvidenceNeed      string                     `json:"evidence_need,omitempty"`
+	Source            string                     `json:"source,omitempty"`
+	Confidence        float64                    `json:"confidence,omitempty"`
+	FieldConfidence   QueryAnalysisConfidence    `json:"field_confidence,omitempty"`
+	Scores            QueryAnalysisScores        `json:"scores,omitempty"`
+	Probes            QueryAnchorProbe           `json:"probes,omitempty"`
+	Decision          QueryAnalysisDecision      `json:"decision,omitempty"`
+	Evidence          []QueryAnalysisEvidence    `json:"evidence,omitempty"`
+	Alternatives      []QueryAnalysisAlternative `json:"alternatives,omitempty"`
+	QueryRewrites     []QueryRewrite             `json:"query_rewrites,omitempty"`
+	SemanticAnchors   []SemanticAnchor           `json:"semantic_anchors,omitempty"`
+	ContextBlockHints []string                   `json:"context_block_hints,omitempty"`
+	PolicyHints       QueryPolicyHints           `json:"policy_hints,omitempty"`
 }
 
 type QueryEntityMention struct {
@@ -83,6 +88,67 @@ type QueryAnalysisConfidence struct {
 	MemoryDomain     float64 `json:"memory_domain,omitempty"`
 	EvidenceNeed     float64 `json:"evidence_need,omitempty"`
 	EntityResolution float64 `json:"entity_resolution,omitempty"`
+}
+
+type QueryAnalysisScores struct {
+	RuleFit                     float64 `json:"rule_fit,omitempty"`
+	AnchorReadiness             float64 `json:"anchor_readiness,omitempty"`
+	ExpectedRetrievalConfidence float64 `json:"expected_retrieval_confidence,omitempty"`
+	SemanticNeed                float64 `json:"semantic_need,omitempty"`
+	Complexity                  float64 `json:"complexity,omitempty"`
+	Ambiguity                   float64 `json:"ambiguity,omitempty"`
+	Specificity                 float64 `json:"specificity,omitempty"`
+	SafetyRisk                  float64 `json:"safety_risk,omitempty"`
+	IntentEvidence              float64 `json:"intent_evidence,omitempty"`
+	TimeEvidence                float64 `json:"time_evidence,omitempty"`
+	DomainEvidence              float64 `json:"domain_evidence,omitempty"`
+	EvidenceNeedEvidence        float64 `json:"evidence_need_evidence,omitempty"`
+	EntityResolution            float64 `json:"entity_resolution,omitempty"`
+	FieldConsistency            float64 `json:"field_consistency,omitempty"`
+	DefaultFallbackPenalty      float64 `json:"default_fallback_penalty,omitempty"`
+	MultiIntentConflictPenalty  float64 `json:"multi_intent_conflict_penalty,omitempty"`
+	SensitivityPenalty          float64 `json:"sensitivity_penalty,omitempty"`
+}
+
+type QueryAnchorProbe struct {
+	EntityExactConf        float64 `json:"entity_exact_conf,omitempty"`
+	EntityAmbiguity        float64 `json:"entity_ambiguity,omitempty"`
+	SparseProbeConf        float64 `json:"sparse_probe_conf,omitempty"`
+	PredicateProbeConf     float64 `json:"predicate_probe_conf,omitempty"`
+	RecentProbeConf        float64 `json:"recent_probe_conf,omitempty"`
+	PinnedCoreProbeConf    float64 `json:"pinned_core_probe_conf,omitempty"`
+	NarrativeProbeConf     float64 `json:"narrative_probe_conf,omitempty"`
+	FallbackSearchHitCount int     `json:"fallback_search_hit_count,omitempty"`
+	Top1Score              float64 `json:"top1_score,omitempty"`
+	Top2Score              float64 `json:"top2_score,omitempty"`
+	Top1Margin             float64 `json:"top1_margin,omitempty"`
+}
+
+type QueryAnalysisDecision struct {
+	UseSemantic      bool     `json:"use_semantic,omitempty"`
+	SemanticMode     string   `json:"semantic_mode,omitempty"`
+	RetrievalMode    string   `json:"retrieval_mode,omitempty"`
+	ReasonCodes      []string `json:"reason_codes,omitempty"`
+	ThresholdVersion string   `json:"threshold_version,omitempty"`
+	ScorerVersion    string   `json:"scorer_version,omitempty"`
+}
+
+type QueryAnalysisEvidence struct {
+	Field     string  `json:"field,omitempty"`
+	Signal    string  `json:"signal,omitempty"`
+	MatchText string  `json:"match_text,omitempty"`
+	SpanStart int     `json:"span_start,omitempty"`
+	SpanEnd   int     `json:"span_end,omitempty"`
+	Weight    float64 `json:"weight,omitempty"`
+	Detector  string  `json:"detector,omitempty"`
+}
+
+type QueryAnalysisAlternative struct {
+	Field       string   `json:"field,omitempty"`
+	Value       string   `json:"value,omitempty"`
+	Confidence  float64  `json:"confidence,omitempty"`
+	ReasonCodes []string `json:"reason_codes,omitempty"`
+	Detector    string   `json:"detector,omitempty"`
 }
 
 type QueryPolicyHints struct {

@@ -185,6 +185,11 @@ type SemanticQueryAnalysis struct {
 	EvidenceNeed      string
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
+	Scores            QueryAnalysisScores
+	Probes            QueryAnchorProbe
+	Decision          QueryAnalysisDecision
+	Evidence          []QueryAnalysisEvidence
+	Alternatives      []QueryAnalysisAlternative
 	EntityMentions    []SemanticQueryEntityMention
 	QueryRewrites     []QueryRewrite
 	SemanticAnchors   []SemanticAnchor
@@ -404,6 +409,7 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 	if !controlLocked {
 		out.PolicyHints = queryPolicyHintsToStore(analysis.PolicyHints)
 	}
+	mergeSemanticQueryAnalysisPhase1DTO(&out, analysis)
 	out.Source = memsqlite.QueryAnalysisSourceMerged
 	out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{
 		SemanticStatus:        defaultString(semantic.Status, "ok"),
@@ -459,6 +465,11 @@ func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsq
 		EvidenceNeed:      strings.TrimSpace(value.EvidenceNeed),
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidenceToStore(value.FieldConfidence),
+		Scores:            queryAnalysisScoresToStore(value.Scores),
+		Probes:            queryAnchorProbeToStore(value.Probes),
+		Decision:          queryAnalysisDecisionToStore(value.Decision),
+		Evidence:          queryAnalysisEvidenceToStore(value.Evidence),
+		Alternatives:      queryAnalysisAlternativesToStore(value.Alternatives),
 		QueryRewrites:     queryRewritesToStoreDiagnostics(value.QueryRewrites),
 		SemanticAnchors:   semanticAnchorsToStoreDiagnostics(value.SemanticAnchors),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
@@ -484,7 +495,12 @@ func isEmptySemanticQueryAnalysis(value SemanticQueryAnalysis) bool {
 		strings.TrimSpace(value.EvidenceNeed) != "" ||
 		value.Confidence != 0 ||
 		!isZeroQueryAnalysisConfidence(value.FieldConfidence) ||
+		!isZeroQueryAnalysisScores(value.Scores) ||
+		!isZeroQueryAnchorProbe(value.Probes) ||
+		!isZeroQueryAnalysisDecision(value.Decision) ||
 		len(value.Signals) > 0 ||
+		len(value.Evidence) > 0 ||
+		len(value.Alternatives) > 0 ||
 		len(value.EntityMentions) > 0 ||
 		len(value.QueryRewrites) > 0 ||
 		len(value.SemanticAnchors) > 0 ||
@@ -502,6 +518,67 @@ func isZeroQueryAnalysisConfidence(value QueryAnalysisConfidence) bool {
 		value.MemoryDomain == 0 &&
 		value.EvidenceNeed == 0 &&
 		value.EntityResolution == 0
+}
+
+func mergeSemanticQueryAnalysisPhase1DTO(out *memsqlite.QueryAnalysis, analysis SemanticQueryAnalysis) {
+	if !isZeroQueryAnalysisScores(analysis.Scores) {
+		out.Scores = queryAnalysisScoresToStore(analysis.Scores)
+	}
+	if !isZeroQueryAnchorProbe(analysis.Probes) {
+		out.Probes = queryAnchorProbeToStore(analysis.Probes)
+	}
+	if !isZeroQueryAnalysisDecision(analysis.Decision) {
+		out.Decision = queryAnalysisDecisionToStore(analysis.Decision)
+	}
+	if len(analysis.Evidence) > 0 {
+		out.Evidence = queryAnalysisEvidenceToStore(analysis.Evidence)
+	}
+	if len(analysis.Alternatives) > 0 {
+		out.Alternatives = queryAnalysisAlternativesToStore(analysis.Alternatives)
+	}
+}
+
+func isZeroQueryAnalysisScores(value QueryAnalysisScores) bool {
+	return value.RuleFit == 0 &&
+		value.AnchorReadiness == 0 &&
+		value.ExpectedRetrievalConfidence == 0 &&
+		value.SemanticNeed == 0 &&
+		value.Complexity == 0 &&
+		value.Ambiguity == 0 &&
+		value.Specificity == 0 &&
+		value.SafetyRisk == 0 &&
+		value.IntentEvidence == 0 &&
+		value.TimeEvidence == 0 &&
+		value.DomainEvidence == 0 &&
+		value.EvidenceNeedEvidence == 0 &&
+		value.EntityResolution == 0 &&
+		value.FieldConsistency == 0 &&
+		value.DefaultFallbackPenalty == 0 &&
+		value.MultiIntentConflictPenalty == 0 &&
+		value.SensitivityPenalty == 0
+}
+
+func isZeroQueryAnchorProbe(value QueryAnchorProbe) bool {
+	return value.EntityExactConf == 0 &&
+		value.EntityAmbiguity == 0 &&
+		value.SparseProbeConf == 0 &&
+		value.PredicateProbeConf == 0 &&
+		value.RecentProbeConf == 0 &&
+		value.PinnedCoreProbeConf == 0 &&
+		value.NarrativeProbeConf == 0 &&
+		value.FallbackSearchHitCount == 0 &&
+		value.Top1Score == 0 &&
+		value.Top2Score == 0 &&
+		value.Top1Margin == 0
+}
+
+func isZeroQueryAnalysisDecision(value QueryAnalysisDecision) bool {
+	return !value.UseSemantic &&
+		strings.TrimSpace(value.SemanticMode) == "" &&
+		strings.TrimSpace(value.RetrievalMode) == "" &&
+		len(value.ReasonCodes) == 0 &&
+		strings.TrimSpace(value.ThresholdVersion) == "" &&
+		strings.TrimSpace(value.ScorerVersion) == ""
 }
 
 func isZeroQueryPolicyHints(value QueryPolicyHints) bool {
@@ -1194,6 +1271,91 @@ func queryAnalysisConfidenceToStore(value QueryAnalysisConfidence) memsqlite.Que
 	}
 }
 
+func queryAnalysisScoresToStore(value QueryAnalysisScores) memsqlite.QueryAnalysisScores {
+	return memsqlite.QueryAnalysisScores{
+		RuleFit:                     value.RuleFit,
+		AnchorReadiness:             value.AnchorReadiness,
+		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
+		SemanticNeed:                value.SemanticNeed,
+		Complexity:                  value.Complexity,
+		Ambiguity:                   value.Ambiguity,
+		Specificity:                 value.Specificity,
+		SafetyRisk:                  value.SafetyRisk,
+		IntentEvidence:              value.IntentEvidence,
+		TimeEvidence:                value.TimeEvidence,
+		DomainEvidence:              value.DomainEvidence,
+		EvidenceNeedEvidence:        value.EvidenceNeedEvidence,
+		EntityResolution:            value.EntityResolution,
+		FieldConsistency:            value.FieldConsistency,
+		DefaultFallbackPenalty:      value.DefaultFallbackPenalty,
+		MultiIntentConflictPenalty:  value.MultiIntentConflictPenalty,
+		SensitivityPenalty:          value.SensitivityPenalty,
+	}
+}
+
+func queryAnchorProbeToStore(value QueryAnchorProbe) memsqlite.QueryAnchorProbe {
+	return memsqlite.QueryAnchorProbe{
+		EntityExactConf:        value.EntityExactConf,
+		EntityAmbiguity:        value.EntityAmbiguity,
+		SparseProbeConf:        value.SparseProbeConf,
+		PredicateProbeConf:     value.PredicateProbeConf,
+		RecentProbeConf:        value.RecentProbeConf,
+		PinnedCoreProbeConf:    value.PinnedCoreProbeConf,
+		NarrativeProbeConf:     value.NarrativeProbeConf,
+		FallbackSearchHitCount: value.FallbackSearchHitCount,
+		Top1Score:              value.Top1Score,
+		Top2Score:              value.Top2Score,
+		Top1Margin:             value.Top1Margin,
+	}
+}
+
+func queryAnalysisDecisionToStore(value QueryAnalysisDecision) memsqlite.QueryAnalysisDecision {
+	return memsqlite.QueryAnalysisDecision{
+		UseSemantic:      value.UseSemantic,
+		SemanticMode:     value.SemanticMode,
+		RetrievalMode:    value.RetrievalMode,
+		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion: value.ThresholdVersion,
+		ScorerVersion:    value.ScorerVersion,
+	}
+}
+
+func queryAnalysisEvidenceToStore(values []QueryAnalysisEvidence) []memsqlite.QueryAnalysisEvidence {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QueryAnalysisEvidence, 0, len(values))
+	for _, value := range values {
+		out = append(out, memsqlite.QueryAnalysisEvidence{
+			Field:     value.Field,
+			Signal:    value.Signal,
+			MatchText: value.MatchText,
+			SpanStart: value.SpanStart,
+			SpanEnd:   value.SpanEnd,
+			Weight:    value.Weight,
+			Detector:  value.Detector,
+		})
+	}
+	return out
+}
+
+func queryAnalysisAlternativesToStore(values []QueryAnalysisAlternative) []memsqlite.QueryAnalysisAlternative {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		out = append(out, memsqlite.QueryAnalysisAlternative{
+			Field:       value.Field,
+			Value:       value.Value,
+			Confidence:  value.Confidence,
+			ReasonCodes: append([]string(nil), value.ReasonCodes...),
+			Detector:    value.Detector,
+		})
+	}
+	return out
+}
+
 func queryPolicyHintsToStore(value QueryPolicyHints) memsqlite.QueryPolicyHints {
 	return memsqlite.QueryPolicyHints{
 		PreferEvidencedByLinks: value.PreferEvidencedByLinks,
@@ -1217,6 +1379,11 @@ func queryAnalysisToMirror(value memsqlite.QueryAnalysis) internalmirror.QueryAn
 		Source:            string(value.Source),
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidenceToMirror(value.FieldConfidence),
+		Scores:            queryAnalysisScoresToMirror(value.Scores),
+		Probes:            queryAnchorProbeToMirror(value.Probes),
+		Decision:          queryAnalysisDecisionToMirror(value.Decision),
+		Evidence:          queryAnalysisEvidenceToMirror(value.Evidence),
+		Alternatives:      queryAnalysisAlternativesToMirror(value.Alternatives),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
 		PolicyHints:       queryPolicyHintsToMirror(value.PolicyHints),
 	}
@@ -1272,6 +1439,11 @@ func semanticQueryAnalysisFromMirror(value internalmirror.QueryAnalysis) Semanti
 		EvidenceNeed:      value.EvidenceNeed,
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidenceFromMirror(value.FieldConfidence),
+		Scores:            queryAnalysisScoresFromMirror(value.Scores),
+		Probes:            queryAnchorProbeFromMirror(value.Probes),
+		Decision:          queryAnalysisDecisionFromMirror(value.Decision),
+		Evidence:          queryAnalysisEvidenceFromMirror(value.Evidence),
+		Alternatives:      queryAnalysisAlternativesFromMirror(value.Alternatives),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
 		PolicyHints:       queryPolicyHintsFromMirror(value.PolicyHints),
 	}
@@ -1340,6 +1512,91 @@ func queryAnalysisConfidenceToMirror(value memsqlite.QueryAnalysisConfidence) in
 	}
 }
 
+func queryAnalysisScoresToMirror(value memsqlite.QueryAnalysisScores) internalmirror.QueryAnalysisScores {
+	return internalmirror.QueryAnalysisScores{
+		RuleFit:                     value.RuleFit,
+		AnchorReadiness:             value.AnchorReadiness,
+		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
+		SemanticNeed:                value.SemanticNeed,
+		Complexity:                  value.Complexity,
+		Ambiguity:                   value.Ambiguity,
+		Specificity:                 value.Specificity,
+		SafetyRisk:                  value.SafetyRisk,
+		IntentEvidence:              value.IntentEvidence,
+		TimeEvidence:                value.TimeEvidence,
+		DomainEvidence:              value.DomainEvidence,
+		EvidenceNeedEvidence:        value.EvidenceNeedEvidence,
+		EntityResolution:            value.EntityResolution,
+		FieldConsistency:            value.FieldConsistency,
+		DefaultFallbackPenalty:      value.DefaultFallbackPenalty,
+		MultiIntentConflictPenalty:  value.MultiIntentConflictPenalty,
+		SensitivityPenalty:          value.SensitivityPenalty,
+	}
+}
+
+func queryAnchorProbeToMirror(value memsqlite.QueryAnchorProbe) internalmirror.QueryAnchorProbe {
+	return internalmirror.QueryAnchorProbe{
+		EntityExactConf:        value.EntityExactConf,
+		EntityAmbiguity:        value.EntityAmbiguity,
+		SparseProbeConf:        value.SparseProbeConf,
+		PredicateProbeConf:     value.PredicateProbeConf,
+		RecentProbeConf:        value.RecentProbeConf,
+		PinnedCoreProbeConf:    value.PinnedCoreProbeConf,
+		NarrativeProbeConf:     value.NarrativeProbeConf,
+		FallbackSearchHitCount: value.FallbackSearchHitCount,
+		Top1Score:              value.Top1Score,
+		Top2Score:              value.Top2Score,
+		Top1Margin:             value.Top1Margin,
+	}
+}
+
+func queryAnalysisDecisionToMirror(value memsqlite.QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {
+	return internalmirror.QueryAnalysisDecision{
+		UseSemantic:      value.UseSemantic,
+		SemanticMode:     value.SemanticMode,
+		RetrievalMode:    value.RetrievalMode,
+		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion: value.ThresholdVersion,
+		ScorerVersion:    value.ScorerVersion,
+	}
+}
+
+func queryAnalysisEvidenceToMirror(values []memsqlite.QueryAnalysisEvidence) []internalmirror.QueryAnalysisEvidence {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnalysisEvidence, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnalysisEvidence{
+			Field:     value.Field,
+			Signal:    value.Signal,
+			MatchText: value.MatchText,
+			SpanStart: value.SpanStart,
+			SpanEnd:   value.SpanEnd,
+			Weight:    value.Weight,
+			Detector:  value.Detector,
+		})
+	}
+	return out
+}
+
+func queryAnalysisAlternativesToMirror(values []memsqlite.QueryAnalysisAlternative) []internalmirror.QueryAnalysisAlternative {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnalysisAlternative{
+			Field:       value.Field,
+			Value:       value.Value,
+			Confidence:  value.Confidence,
+			ReasonCodes: append([]string(nil), value.ReasonCodes...),
+			Detector:    value.Detector,
+		})
+	}
+	return out
+}
+
 func queryAnalysisConfidenceFromMirror(value internalmirror.QueryAnalysisConfidence) QueryAnalysisConfidence {
 	return QueryAnalysisConfidence{
 		Overall:          value.Overall,
@@ -1349,6 +1606,91 @@ func queryAnalysisConfidenceFromMirror(value internalmirror.QueryAnalysisConfide
 		EvidenceNeed:     value.EvidenceNeed,
 		EntityResolution: value.EntityResolution,
 	}
+}
+
+func queryAnalysisScoresFromMirror(value internalmirror.QueryAnalysisScores) QueryAnalysisScores {
+	return QueryAnalysisScores{
+		RuleFit:                     value.RuleFit,
+		AnchorReadiness:             value.AnchorReadiness,
+		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
+		SemanticNeed:                value.SemanticNeed,
+		Complexity:                  value.Complexity,
+		Ambiguity:                   value.Ambiguity,
+		Specificity:                 value.Specificity,
+		SafetyRisk:                  value.SafetyRisk,
+		IntentEvidence:              value.IntentEvidence,
+		TimeEvidence:                value.TimeEvidence,
+		DomainEvidence:              value.DomainEvidence,
+		EvidenceNeedEvidence:        value.EvidenceNeedEvidence,
+		EntityResolution:            value.EntityResolution,
+		FieldConsistency:            value.FieldConsistency,
+		DefaultFallbackPenalty:      value.DefaultFallbackPenalty,
+		MultiIntentConflictPenalty:  value.MultiIntentConflictPenalty,
+		SensitivityPenalty:          value.SensitivityPenalty,
+	}
+}
+
+func queryAnchorProbeFromMirror(value internalmirror.QueryAnchorProbe) QueryAnchorProbe {
+	return QueryAnchorProbe{
+		EntityExactConf:        value.EntityExactConf,
+		EntityAmbiguity:        value.EntityAmbiguity,
+		SparseProbeConf:        value.SparseProbeConf,
+		PredicateProbeConf:     value.PredicateProbeConf,
+		RecentProbeConf:        value.RecentProbeConf,
+		PinnedCoreProbeConf:    value.PinnedCoreProbeConf,
+		NarrativeProbeConf:     value.NarrativeProbeConf,
+		FallbackSearchHitCount: value.FallbackSearchHitCount,
+		Top1Score:              value.Top1Score,
+		Top2Score:              value.Top2Score,
+		Top1Margin:             value.Top1Margin,
+	}
+}
+
+func queryAnalysisDecisionFromMirror(value internalmirror.QueryAnalysisDecision) QueryAnalysisDecision {
+	return QueryAnalysisDecision{
+		UseSemantic:      value.UseSemantic,
+		SemanticMode:     value.SemanticMode,
+		RetrievalMode:    value.RetrievalMode,
+		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion: value.ThresholdVersion,
+		ScorerVersion:    value.ScorerVersion,
+	}
+}
+
+func queryAnalysisEvidenceFromMirror(values []internalmirror.QueryAnalysisEvidence) []QueryAnalysisEvidence {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]QueryAnalysisEvidence, 0, len(values))
+	for _, value := range values {
+		out = append(out, QueryAnalysisEvidence{
+			Field:     value.Field,
+			Signal:    value.Signal,
+			MatchText: value.MatchText,
+			SpanStart: value.SpanStart,
+			SpanEnd:   value.SpanEnd,
+			Weight:    value.Weight,
+			Detector:  value.Detector,
+		})
+	}
+	return out
+}
+
+func queryAnalysisAlternativesFromMirror(values []internalmirror.QueryAnalysisAlternative) []QueryAnalysisAlternative {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		out = append(out, QueryAnalysisAlternative{
+			Field:       value.Field,
+			Value:       value.Value,
+			Confidence:  value.Confidence,
+			ReasonCodes: append([]string(nil), value.ReasonCodes...),
+			Detector:    value.Detector,
+		})
+	}
+	return out
 }
 
 func queryPolicyHintsToMirror(value memsqlite.QueryPolicyHints) internalmirror.QueryPolicyHints {
@@ -1378,6 +1720,9 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	out.Terms = append([]string(nil), value.Terms...)
 	out.EntityMentions = append([]memsqlite.QueryEntityMention(nil), value.EntityMentions...)
 	out.Signals = append([]memsqlite.QuerySignal(nil), value.Signals...)
+	out.Decision = cloneStoreQueryAnalysisDecision(value.Decision)
+	out.Evidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Evidence...)
+	out.Alternatives = cloneStoreQueryAnalysisAlternatives(value.Alternatives)
 	out.QueryRewrites = append([]memsqlite.QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]memsqlite.SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
@@ -1397,11 +1742,33 @@ func cloneStoreSemanticQueryAnalysisDiagnostics(value *memsqlite.SemanticQueryAn
 	}
 	out := *value
 	out.Signals = append([]string(nil), value.Signals...)
+	out.Decision = cloneStoreQueryAnalysisDecision(value.Decision)
+	out.Evidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Evidence...)
+	out.Alternatives = cloneStoreQueryAnalysisAlternatives(value.Alternatives)
 	out.EntityMentions = append([]memsqlite.SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
 	out.QueryRewrites = append([]memsqlite.QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]memsqlite.SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
+}
+
+func cloneStoreQueryAnalysisDecision(value memsqlite.QueryAnalysisDecision) memsqlite.QueryAnalysisDecision {
+	out := value
+	out.ReasonCodes = append([]string(nil), value.ReasonCodes...)
+	return out
+}
+
+func cloneStoreQueryAnalysisAlternatives(values []memsqlite.QueryAnalysisAlternative) []memsqlite.QueryAnalysisAlternative {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		item := value
+		item.ReasonCodes = append([]string(nil), value.ReasonCodes...)
+		out = append(out, item)
+	}
+	return out
 }
 
 func retrievalPolicyToStore(policy RetrievalPolicy) memsqlite.RetrievalPolicy {

@@ -597,6 +597,11 @@ func queryAnalysisPublicToMirror(value QueryAnalysis) internalmirror.QueryAnalys
 		Source:            string(value.Source),
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidencePublicToMirror(value.FieldConfidence),
+		Scores:            queryAnalysisScoresPublicToMirror(value.Scores),
+		Probes:            queryAnchorProbePublicToMirror(value.Probes),
+		Decision:          queryAnalysisDecisionPublicToMirror(value.Decision),
+		Evidence:          queryAnalysisEvidencePublicToMirror(value.Evidence),
+		Alternatives:      queryAnalysisAlternativesPublicToMirror(value.Alternatives),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
 		PolicyHints:       queryPolicyHintsPublicToMirror(value.PolicyHints),
 	}
@@ -640,6 +645,91 @@ func queryAnalysisConfidencePublicToMirror(value QueryAnalysisConfidence) intern
 		EvidenceNeed:     value.EvidenceNeed,
 		EntityResolution: value.EntityResolution,
 	}
+}
+
+func queryAnalysisScoresPublicToMirror(value QueryAnalysisScores) internalmirror.QueryAnalysisScores {
+	return internalmirror.QueryAnalysisScores{
+		RuleFit:                     value.RuleFit,
+		AnchorReadiness:             value.AnchorReadiness,
+		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
+		SemanticNeed:                value.SemanticNeed,
+		Complexity:                  value.Complexity,
+		Ambiguity:                   value.Ambiguity,
+		Specificity:                 value.Specificity,
+		SafetyRisk:                  value.SafetyRisk,
+		IntentEvidence:              value.IntentEvidence,
+		TimeEvidence:                value.TimeEvidence,
+		DomainEvidence:              value.DomainEvidence,
+		EvidenceNeedEvidence:        value.EvidenceNeedEvidence,
+		EntityResolution:            value.EntityResolution,
+		FieldConsistency:            value.FieldConsistency,
+		DefaultFallbackPenalty:      value.DefaultFallbackPenalty,
+		MultiIntentConflictPenalty:  value.MultiIntentConflictPenalty,
+		SensitivityPenalty:          value.SensitivityPenalty,
+	}
+}
+
+func queryAnchorProbePublicToMirror(value QueryAnchorProbe) internalmirror.QueryAnchorProbe {
+	return internalmirror.QueryAnchorProbe{
+		EntityExactConf:        value.EntityExactConf,
+		EntityAmbiguity:        value.EntityAmbiguity,
+		SparseProbeConf:        value.SparseProbeConf,
+		PredicateProbeConf:     value.PredicateProbeConf,
+		RecentProbeConf:        value.RecentProbeConf,
+		PinnedCoreProbeConf:    value.PinnedCoreProbeConf,
+		NarrativeProbeConf:     value.NarrativeProbeConf,
+		FallbackSearchHitCount: value.FallbackSearchHitCount,
+		Top1Score:              value.Top1Score,
+		Top2Score:              value.Top2Score,
+		Top1Margin:             value.Top1Margin,
+	}
+}
+
+func queryAnalysisDecisionPublicToMirror(value QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {
+	return internalmirror.QueryAnalysisDecision{
+		UseSemantic:      value.UseSemantic,
+		SemanticMode:     value.SemanticMode,
+		RetrievalMode:    value.RetrievalMode,
+		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion: value.ThresholdVersion,
+		ScorerVersion:    value.ScorerVersion,
+	}
+}
+
+func queryAnalysisEvidencePublicToMirror(values []QueryAnalysisEvidence) []internalmirror.QueryAnalysisEvidence {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnalysisEvidence, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnalysisEvidence{
+			Field:     value.Field,
+			Signal:    value.Signal,
+			MatchText: value.MatchText,
+			SpanStart: value.SpanStart,
+			SpanEnd:   value.SpanEnd,
+			Weight:    value.Weight,
+			Detector:  value.Detector,
+		})
+	}
+	return out
+}
+
+func queryAnalysisAlternativesPublicToMirror(values []QueryAnalysisAlternative) []internalmirror.QueryAnalysisAlternative {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]internalmirror.QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		out = append(out, internalmirror.QueryAnalysisAlternative{
+			Field:       value.Field,
+			Value:       value.Value,
+			Confidence:  value.Confidence,
+			ReasonCodes: append([]string(nil), value.ReasonCodes...),
+			Detector:    value.Detector,
+		})
+	}
+	return out
 }
 
 func queryPolicyHintsPublicToMirror(value QueryPolicyHints) internalmirror.QueryPolicyHints {

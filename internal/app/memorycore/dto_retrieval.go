@@ -144,9 +144,14 @@ type QueryAnalysis struct {
 	Source            QueryAnalysisSource
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
-	QueryRewrites     []QueryRewrite   `json:",omitempty"`
-	SemanticAnchors   []SemanticAnchor `json:",omitempty"`
-	ContextBlockHints []string         `json:",omitempty"`
+	Scores            QueryAnalysisScores
+	Probes            QueryAnchorProbe
+	Decision          QueryAnalysisDecision
+	Evidence          []QueryAnalysisEvidence    `json:",omitempty"`
+	Alternatives      []QueryAnalysisAlternative `json:",omitempty"`
+	QueryRewrites     []QueryRewrite             `json:",omitempty"`
+	SemanticAnchors   []SemanticAnchor           `json:",omitempty"`
+	ContextBlockHints []string                   `json:",omitempty"`
 	PolicyHints       QueryPolicyHints
 	Diagnostics       *QueryAnalysisDiagnostics `json:",omitempty"`
 }
@@ -180,6 +185,67 @@ type QueryAnalysisConfidence struct {
 	MemoryDomain     float64
 	EvidenceNeed     float64
 	EntityResolution float64
+}
+
+type QueryAnalysisScores struct {
+	RuleFit                     float64
+	AnchorReadiness             float64
+	ExpectedRetrievalConfidence float64
+	SemanticNeed                float64
+	Complexity                  float64
+	Ambiguity                   float64
+	Specificity                 float64
+	SafetyRisk                  float64
+	IntentEvidence              float64
+	TimeEvidence                float64
+	DomainEvidence              float64
+	EvidenceNeedEvidence        float64
+	EntityResolution            float64
+	FieldConsistency            float64
+	DefaultFallbackPenalty      float64
+	MultiIntentConflictPenalty  float64
+	SensitivityPenalty          float64
+}
+
+type QueryAnchorProbe struct {
+	EntityExactConf        float64
+	EntityAmbiguity        float64
+	SparseProbeConf        float64
+	PredicateProbeConf     float64
+	RecentProbeConf        float64
+	PinnedCoreProbeConf    float64
+	NarrativeProbeConf     float64
+	FallbackSearchHitCount int
+	Top1Score              float64
+	Top2Score              float64
+	Top1Margin             float64
+}
+
+type QueryAnalysisDecision struct {
+	UseSemantic      bool
+	SemanticMode     string
+	RetrievalMode    string
+	ReasonCodes      []string
+	ThresholdVersion string
+	ScorerVersion    string
+}
+
+type QueryAnalysisEvidence struct {
+	Field     string
+	Signal    string
+	MatchText string
+	SpanStart int
+	SpanEnd   int
+	Weight    float64
+	Detector  string
+}
+
+type QueryAnalysisAlternative struct {
+	Field       string
+	Value       string
+	Confidence  float64
+	ReasonCodes []string
+	Detector    string
 }
 
 type QueryPolicyHints struct {
@@ -222,6 +288,11 @@ type SemanticQueryAnalysisDiagnostics struct {
 	EvidenceNeed      string                                  `json:"evidence_need,omitempty"`
 	Confidence        float64                                 `json:"confidence,omitempty"`
 	FieldConfidence   QueryAnalysisConfidence                 `json:"field_confidence,omitempty"`
+	Scores            QueryAnalysisScores                     `json:"scores,omitempty"`
+	Probes            QueryAnchorProbe                        `json:"probes,omitempty"`
+	Decision          QueryAnalysisDecision                   `json:"decision,omitempty"`
+	Evidence          []QueryAnalysisEvidence                 `json:"evidence,omitempty"`
+	Alternatives      []QueryAnalysisAlternative              `json:"alternatives,omitempty"`
 	EntityMentions    []SemanticQueryEntityMentionDiagnostics `json:"entity_mentions,omitempty"`
 	QueryRewrites     []QueryRewrite                          `json:"query_rewrites,omitempty"`
 	SemanticAnchors   []SemanticAnchor                        `json:"semantic_anchors,omitempty"`

@@ -112,6 +112,11 @@ type (
 	QueryAnalysis                       = appcore.QueryAnalysis
 	QueryAnalysisCache                  = appcore.QueryAnalysisCache
 	QueryAnalysisConfidence             = appcore.QueryAnalysisConfidence
+	QueryAnalysisScores                 = appcore.QueryAnalysisScores
+	QueryAnchorProbe                    = appcore.QueryAnchorProbe
+	QueryAnalysisDecision               = appcore.QueryAnalysisDecision
+	QueryAnalysisEvidence               = appcore.QueryAnalysisEvidence
+	QueryAnalysisAlternative            = appcore.QueryAnalysisAlternative
 	QueryAnalysisDiagnostics            = appcore.QueryAnalysisDiagnostics
 	QueryAnalysisMode                   = appcore.QueryAnalysisMode
 	QueryAnalysisOptions                = appcore.QueryAnalysisOptions
@@ -122,6 +127,7 @@ type (
 	QueryPolicyHints                    = appcore.QueryPolicyHints
 	QueryRewrite                        = appcore.QueryRewrite
 	SemanticAnchor                      = appcore.SemanticAnchor
+	SemanticQueryAnalysisDiagnostics    = appcore.SemanticQueryAnalysisDiagnostics
 	QuerySignal                         = appcore.QuerySignal
 	QueryTimeMode                       = appcore.QueryTimeMode
 	RebuildMirrorRequest                = appcore.RebuildMirrorRequest
@@ -149,6 +155,8 @@ type (
 	Session                             = appcore.Session
 	StartSessionRequest                 = appcore.StartSessionRequest
 )
+
+type SemanticQueryEntityMentionDiagnostics = appcore.SemanticQueryEntityMentionDiagnostics
 
 const (
 	AliasTypeAbbreviation                     = appcore.AliasTypeAbbreviation

@@ -88,6 +88,101 @@ func TestQueryAnalysisSupportsSemanticFields(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSupportsPhase1DiagnosticsDTO(t *testing.T) {
+	analysis := QueryAnalysis{
+		Confidence: 0.66,
+		Scores: QueryAnalysisScores{
+			RuleFit:                     0.61,
+			AnchorReadiness:             0.42,
+			ExpectedRetrievalConfidence: 0.55,
+			SemanticNeed:                0.73,
+			Complexity:                  0.64,
+			Ambiguity:                   0.31,
+			Specificity:                 0.82,
+			SafetyRisk:                  0.12,
+			IntentEvidence:              0.79,
+			TimeEvidence:                0.58,
+			DomainEvidence:              0.67,
+			EvidenceNeedEvidence:        0.69,
+			EntityResolution:            0.44,
+			FieldConsistency:            0.71,
+			DefaultFallbackPenalty:      0.13,
+			MultiIntentConflictPenalty:  0.08,
+			SensitivityPenalty:          0.03,
+		},
+		Probes: QueryAnchorProbe{
+			EntityExactConf:        0.85,
+			EntityAmbiguity:        0.20,
+			SparseProbeConf:        0.62,
+			PredicateProbeConf:     0.58,
+			RecentProbeConf:        0.34,
+			PinnedCoreProbeConf:    0.27,
+			NarrativeProbeConf:     0.39,
+			FallbackSearchHitCount: 4,
+			Top1Score:              0.91,
+			Top2Score:              0.77,
+			Top1Margin:             0.14,
+		},
+		Decision: QueryAnalysisDecision{
+			UseSemantic:      true,
+			SemanticMode:     "decompose",
+			RetrievalMode:    "graph_contextual",
+			ReasonCodes:      []string{"causal_intent", "weak_anchor"},
+			ThresholdVersion: "semantic_router_v1",
+			ScorerVersion:    "query_analysis_scorer_v1",
+		},
+		Evidence: []QueryAnalysisEvidence{{
+			Field:     "memory_ability",
+			Signal:    "causal_word",
+			MatchText: "为什么",
+			SpanStart: 0,
+			SpanEnd:   6,
+			Weight:    0.38,
+			Detector:  "rule_regex_v1",
+		}},
+		Alternatives: []QueryAnalysisAlternative{{
+			Field:       "time_mode",
+			Value:       string(QueryTimeModeHistorical),
+			Confidence:  0.41,
+			ReasonCodes: []string{"historical_phrase"},
+			Detector:    "rule_regex_v1",
+		}},
+		Diagnostics: &QueryAnalysisDiagnostics{
+			SemanticAnalysis: &SemanticQueryAnalysisDiagnostics{
+				Scores: QueryAnalysisScores{
+					SemanticNeed: 0.77,
+				},
+				Probes: QueryAnchorProbe{
+					SparseProbeConf: 0.52,
+				},
+				Decision: QueryAnalysisDecision{
+					UseSemantic:  true,
+					SemanticMode: "light",
+					ReasonCodes:  []string{"semantic_need_high"},
+				},
+				Evidence: []QueryAnalysisEvidence{{Field: "evidence_need", Signal: "why"}},
+				Alternatives: []QueryAnalysisAlternative{{
+					Field:       "memory_ability",
+					Value:       string(MemoryAbilityDirectFact),
+					Confidence:  0.22,
+					ReasonCodes: []string{"fallback"},
+				}},
+			},
+		},
+	}
+
+	if analysis.Scores.RuleFit != 0.61 ||
+		analysis.Probes.Top1Margin != 0.14 ||
+		!analysis.Decision.UseSemantic ||
+		analysis.Decision.ReasonCodes[1] != "weak_anchor" ||
+		analysis.Evidence[0].Detector != "rule_regex_v1" ||
+		analysis.Alternatives[0].ReasonCodes[0] != "historical_phrase" ||
+		analysis.Diagnostics.SemanticAnalysis.Decision.SemanticMode != "light" ||
+		analysis.Diagnostics.SemanticAnalysis.Alternatives[0].Value != string(MemoryAbilityDirectFact) {
+		t.Fatalf("phase 1 DTO fields not retained: %#v", analysis)
+	}
+}
+
 func TestQueryAnalysisRelationshipAndForgetRules(t *testing.T) {
 	tests := []struct {
 		name         string

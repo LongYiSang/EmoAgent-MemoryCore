@@ -89,6 +89,11 @@ type QueryAnalysis struct {
 	Source            QueryAnalysisSource
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
+	Scores            QueryAnalysisScores
+	Probes            QueryAnchorProbe
+	Decision          QueryAnalysisDecision
+	Evidence          []QueryAnalysisEvidence
+	Alternatives      []QueryAnalysisAlternative
 	QueryRewrites     []QueryRewrite
 	SemanticAnchors   []SemanticAnchor
 	ContextBlockHints []string
@@ -125,6 +130,67 @@ type QueryAnalysisConfidence struct {
 	MemoryDomain     float64
 	EvidenceNeed     float64
 	EntityResolution float64
+}
+
+type QueryAnalysisScores struct {
+	RuleFit                     float64
+	AnchorReadiness             float64
+	ExpectedRetrievalConfidence float64
+	SemanticNeed                float64
+	Complexity                  float64
+	Ambiguity                   float64
+	Specificity                 float64
+	SafetyRisk                  float64
+	IntentEvidence              float64
+	TimeEvidence                float64
+	DomainEvidence              float64
+	EvidenceNeedEvidence        float64
+	EntityResolution            float64
+	FieldConsistency            float64
+	DefaultFallbackPenalty      float64
+	MultiIntentConflictPenalty  float64
+	SensitivityPenalty          float64
+}
+
+type QueryAnchorProbe struct {
+	EntityExactConf        float64
+	EntityAmbiguity        float64
+	SparseProbeConf        float64
+	PredicateProbeConf     float64
+	RecentProbeConf        float64
+	PinnedCoreProbeConf    float64
+	NarrativeProbeConf     float64
+	FallbackSearchHitCount int
+	Top1Score              float64
+	Top2Score              float64
+	Top1Margin             float64
+}
+
+type QueryAnalysisDecision struct {
+	UseSemantic      bool
+	SemanticMode     string
+	RetrievalMode    string
+	ReasonCodes      []string
+	ThresholdVersion string
+	ScorerVersion    string
+}
+
+type QueryAnalysisEvidence struct {
+	Field     string
+	Signal    string
+	MatchText string
+	SpanStart int
+	SpanEnd   int
+	Weight    float64
+	Detector  string
+}
+
+type QueryAnalysisAlternative struct {
+	Field       string
+	Value       string
+	Confidence  float64
+	ReasonCodes []string
+	Detector    string
 }
 
 type QueryPolicyHints struct {
@@ -167,6 +233,11 @@ type SemanticQueryAnalysisDiagnostics struct {
 	EvidenceNeed      string
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
+	Scores            QueryAnalysisScores
+	Probes            QueryAnchorProbe
+	Decision          QueryAnalysisDecision
+	Evidence          []QueryAnalysisEvidence
+	Alternatives      []QueryAnalysisAlternative
 	EntityMentions    []SemanticQueryEntityMentionDiagnostics
 	QueryRewrites     []QueryRewrite
 	SemanticAnchors   []SemanticAnchor
@@ -207,6 +278,7 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 	}
 	analysis.EntityMentions = mentions
 	analysis.Confidence = ruleConfidence(normalized, analysis)
+	analysis.Scores = legacyQueryAnalysisScores(analysis.Confidence)
 	analysis.FieldConfidence = ruleFieldConfidence(normalized, analysis)
 	analysis.Diagnostics = legacyQueryAnalysisDiagnostics(normalized, analysis)
 	return analysis, nil
@@ -217,6 +289,9 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	out.Terms = append([]string(nil), value.Terms...)
 	out.EntityMentions = append([]QueryEntityMention(nil), value.EntityMentions...)
 	out.Signals = append([]QuerySignal(nil), value.Signals...)
+	out.Decision = cloneQueryAnalysisDecision(value.Decision)
+	out.Evidence = cloneQueryAnalysisEvidence(value.Evidence)
+	out.Alternatives = cloneQueryAnalysisAlternatives(value.Alternatives)
 	out.QueryRewrites = append([]QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
@@ -236,11 +311,44 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 	}
 	out := *value
 	out.Signals = append([]string(nil), value.Signals...)
+	out.Decision = cloneQueryAnalysisDecision(value.Decision)
+	out.Evidence = cloneQueryAnalysisEvidence(value.Evidence)
+	out.Alternatives = cloneQueryAnalysisAlternatives(value.Alternatives)
 	out.EntityMentions = append([]SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
 	out.QueryRewrites = append([]QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
+}
+
+func legacyQueryAnalysisScores(confidence float64) QueryAnalysisScores {
+	return QueryAnalysisScores{
+		RuleFit:                     confidence,
+		ExpectedRetrievalConfidence: confidence,
+	}
+}
+
+func cloneQueryAnalysisDecision(value QueryAnalysisDecision) QueryAnalysisDecision {
+	out := value
+	out.ReasonCodes = append([]string(nil), value.ReasonCodes...)
+	return out
+}
+
+func cloneQueryAnalysisEvidence(values []QueryAnalysisEvidence) []QueryAnalysisEvidence {
+	return append([]QueryAnalysisEvidence(nil), values...)
+}
+
+func cloneQueryAnalysisAlternatives(values []QueryAnalysisAlternative) []QueryAnalysisAlternative {
+	out := make([]QueryAnalysisAlternative, 0, len(values))
+	for _, value := range values {
+		item := value
+		item.ReasonCodes = append([]string(nil), value.ReasonCodes...)
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func queryTimeMode(normalized string) QueryTimeMode {
