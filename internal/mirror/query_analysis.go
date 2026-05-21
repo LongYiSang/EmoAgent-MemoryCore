@@ -138,6 +138,7 @@ type QueryAnchorProbe struct {
 
 type QueryAnchorProbeBreakdown struct {
 	Source      string  `json:"source,omitempty"`
+	Status      string  `json:"status,omitempty"`
 	Confidence  float64 `json:"confidence,omitempty"`
 	HitCount    int     `json:"hit_count,omitempty"`
 	TopScore    float64 `json:"top_score,omitempty"`

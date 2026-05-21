@@ -22,17 +22,26 @@ query_analysis:
   mode: "rule_only"
   sidecar_url: "http://127.0.0.1:8765"
   timeout_ms: 1500
-  min_confidence_to_override: 0.72
-  min_entity_semantic_confidence: 0.70
-  min_rule_fit: 0.66
-  min_anchor_readiness: 0.45
-  semantic_need: 0.58
-  min_complexity_for_semantic: 0.50
-  full_semantic_complexity: 0.72
-  decompose_complexity: 0.80
-  min_semantic_field_confidence: 0.70
-  min_override_margin: 0.08
-  high_safety_risk: 0.80
+  scorer_version: "query_analysis_scorer_v1"
+  router_version: "semantic_router_v1"
+  thresholds:
+    min_rule_fit: 0.66
+    min_anchor_readiness: 0.45
+    semantic_need: 0.58
+    min_complexity_for_semantic: 0.50
+    full_semantic_complexity: 0.72
+    decompose_complexity: 0.80
+    min_semantic_field_confidence: 0.70
+    min_override_margin: 0.08
+    high_safety_risk: 0.80
+  budget:
+    max_semantic_calls_per_session: 8
+    max_semantic_calls_per_1000_queries: 250
+    max_semantic_latency_ms: 1500
+  diagnostics:
+    include_score_breakdown: true
+    include_reason_codes: true
+    sample_rate: 1.0
   max_query_rewrites: 5
   max_semantic_anchors: 8
   semantic_total_energy_cap: 5.0

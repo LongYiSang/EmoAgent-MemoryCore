@@ -36,29 +36,38 @@ const (
 )
 
 type QueryAnalysisOptions struct {
-	Provider                    QueryAnalysisProvider
-	Mode                        QueryAnalysisMode
-	SidecarURL                  string
-	Timeout                     time.Duration
-	SoftJoinTimeout             time.Duration
-	Cache                       *QueryAnalysisCache
-	MinConfidenceToOverride     float64
-	MinEntitySemanticConfidence float64
-	MinRuleFit                  float64
-	MinAnchorReadiness          float64
-	SemanticNeedThreshold       float64
-	MinComplexityForSemantic    float64
-	FullSemanticComplexity      float64
-	DecomposeSemanticComplexity float64
-	MinSemanticFieldConfidence  float64
-	MinOverrideMargin           float64
-	HighSafetyRiskThreshold     float64
-	MaxQueryRewrites            int
-	MaxSemanticAnchors          int
-	SemanticTotalEnergyCap      float64
-	MaxGeneratedDenseWeightSum  float64
-	IncludeRationaleSummary     bool
-	DisableGeneratedDense       bool
+	Provider                         QueryAnalysisProvider
+	Mode                             QueryAnalysisMode
+	SidecarURL                       string
+	Timeout                          time.Duration
+	SoftJoinTimeout                  time.Duration
+	Cache                            *QueryAnalysisCache
+	ScorerVersion                    string
+	RouterVersion                    string
+	MinConfidenceToOverride          float64
+	MinEntitySemanticConfidence      float64
+	MinRuleFit                       float64
+	MinAnchorReadiness               float64
+	SemanticNeedThreshold            float64
+	MinComplexityForSemantic         float64
+	FullSemanticComplexity           float64
+	DecomposeSemanticComplexity      float64
+	MinSemanticFieldConfidence       float64
+	MinOverrideMargin                float64
+	HighSafetyRiskThreshold          float64
+	MaxSemanticCallsPerSession       int
+	MaxSemanticCallsPer1000Queries   int
+	MaxSemanticLatency               time.Duration
+	DiagnosticsConfigured            bool
+	DiagnosticsIncludeScoreBreakdown bool
+	DiagnosticsIncludeReasonCodes    bool
+	DiagnosticsSampleRate            float64
+	MaxQueryRewrites                 int
+	MaxSemanticAnchors               int
+	SemanticTotalEnergyCap           float64
+	MaxGeneratedDenseWeightSum       float64
+	IncludeRationaleSummary          bool
+	DisableGeneratedDense            bool
 }
 
 type SidecarBreakerMode string

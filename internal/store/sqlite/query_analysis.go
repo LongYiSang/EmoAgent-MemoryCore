@@ -172,6 +172,7 @@ type QueryAnchorProbe struct {
 
 type QueryAnchorProbeBreakdown struct {
 	Source      string
+	Status      string
 	Confidence  float64
 	HitCount    int
 	TopScore    float64
@@ -1455,6 +1456,7 @@ func topProbeScores(scores []float64) (float64, float64) {
 func probeBreakdown(source string, confidence float64, hitCount int, topScore float64, secondScore float64, reason string, err error) QueryAnchorProbeBreakdown {
 	item := QueryAnchorProbeBreakdown{
 		Source:      source,
+		Status:      "ok",
 		Confidence:  clamp01(confidence),
 		HitCount:    hitCount,
 		TopScore:    clamp01(topScore),
@@ -1462,6 +1464,7 @@ func probeBreakdown(source string, confidence float64, hitCount int, topScore fl
 		Reason:      strings.TrimSpace(reason),
 	}
 	if err != nil {
+		item.Status = "unknown"
 		item.Error = sanitizeProbeError(err)
 	}
 	return item

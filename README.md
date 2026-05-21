@@ -189,7 +189,9 @@ go run ./cmd/memoryctl config-docs --format markdown
 
 `enabled` 是嵌入方开关；`memoryctl --config` 执行显式命令时不会因为 `enabled: false` 被拦截。显式 CLI flags 会覆盖配置文件中的对应字段，并在 stderr 输出 warning。
 
-`query_analysis` 默认 `provider: none` / `mode: rule_only`，即只使用 Go 规则分析。启用 sidecar provider 时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic 失败不会阻断 retrieval。
+`query_analysis` 默认 `provider: none` / `mode: rule_only`，即只使用 Go 规则分析。启用 sidecar provider 时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic timeout、budget exhausted、degraded 或非法响应都会回退到 rule-only，不阻断 retrieval。
+
+Phase 9 后的灰度模式是 `legacy_only`、`shadow_adaptive`、`adaptive_safe`、`adaptive_full`。旧的 `semantic_on_low_confidence` / `min_confidence_to_override` 仍可加载用于兼容，但新配置应把 adaptive 路由阈值放到 `query_analysis.thresholds.*`，把调用上限放到 `query_analysis.budget.*`，并用 `query_analysis.diagnostics.*` 控制 score breakdown / reason codes 的输出采样。不要在同一份配置里混用旧的 flat adaptive 阈值和新的 `thresholds`，加载器会报迁移错误以避免静默优先级。
 
 ### 检索质量评测
 

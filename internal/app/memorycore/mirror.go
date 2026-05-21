@@ -694,6 +694,7 @@ func queryAnchorProbeBreakdownPublicToMirror(values []QueryAnchorProbeBreakdown)
 	for _, value := range values {
 		out = append(out, internalmirror.QueryAnchorProbeBreakdown{
 			Source:      value.Source,
+			Status:      value.Status,
 			Confidence:  value.Confidence,
 			HitCount:    value.HitCount,
 			TopScore:    value.TopScore,

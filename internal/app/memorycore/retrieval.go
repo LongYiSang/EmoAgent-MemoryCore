@@ -118,6 +118,9 @@ func (s *service) correctiveSemanticLight(ctx context.Context, req QueryAnalysis
 		rule.Source == memsqlite.QueryAnalysisSourceSemanticFallback {
 		return memsqlite.QueryAnalysis{}, false, false
 	}
+	if !s.queryPipeline.consumeSemanticBudget(req.SessionID) {
+		return memsqlite.QueryAnalysis{}, true, false
+	}
 	semanticReq := s.queryPipeline.semanticRequestForRule(req, rule, memsqlite.RetrievalCorrectiveActionSemanticLight)
 	stageCtx := ctx
 	cancel := func() {}

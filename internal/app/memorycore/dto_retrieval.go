@@ -246,6 +246,7 @@ type QueryAnchorProbe struct {
 
 type QueryAnchorProbeBreakdown struct {
 	Source      string
+	Status      string
 	Confidence  float64
 	HitCount    int
 	TopScore    float64

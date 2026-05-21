@@ -586,6 +586,9 @@ func TestAnalyzeQueryProbeErrorFallsBackToRuleAnalysis(t *testing.T) {
 	hasError := false
 	for _, item := range got.Probes.Breakdown {
 		if item.Error != "" {
+			if item.Status != "unknown" {
+				t.Fatalf("probe breakdown status = %q, want unknown for error item %#v", item.Status, item)
+			}
 			hasError = true
 			break
 		}

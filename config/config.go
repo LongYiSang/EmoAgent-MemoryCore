@@ -42,12 +42,34 @@ type RetrievalConfig struct {
 }
 
 type QueryAnalysisConfig struct {
-	Provider                    string  `yaml:"provider" json:"provider"`
-	Mode                        string  `yaml:"mode" json:"mode"`
-	SidecarURL                  string  `yaml:"sidecar_url" json:"sidecar_url"`
-	TimeoutMS                   int     `yaml:"timeout_ms" json:"timeout_ms"`
-	MinConfidenceToOverride     float64 `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
-	MinEntitySemanticConfidence float64 `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	Provider                    string                         `yaml:"provider" json:"provider"`
+	Mode                        string                         `yaml:"mode" json:"mode"`
+	SidecarURL                  string                         `yaml:"sidecar_url" json:"sidecar_url"`
+	TimeoutMS                   int                            `yaml:"timeout_ms" json:"timeout_ms"`
+	ScorerVersion               string                         `yaml:"scorer_version" json:"scorer_version"`
+	RouterVersion               string                         `yaml:"router_version" json:"router_version"`
+	Thresholds                  QueryAnalysisThresholdsConfig  `yaml:"thresholds" json:"thresholds"`
+	Budget                      QueryAnalysisBudgetConfig      `yaml:"budget" json:"budget"`
+	Diagnostics                 QueryAnalysisDiagnosticsConfig `yaml:"diagnostics" json:"diagnostics"`
+	MinConfidenceToOverride     float64                        `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
+	MinEntitySemanticConfidence float64                        `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	MinRuleFit                  float64                        `yaml:"min_rule_fit" json:"min_rule_fit"`
+	MinAnchorReadiness          float64                        `yaml:"min_anchor_readiness" json:"min_anchor_readiness"`
+	SemanticNeedThreshold       float64                        `yaml:"semantic_need" json:"semantic_need"`
+	MinComplexityForSemantic    float64                        `yaml:"min_complexity_for_semantic" json:"min_complexity_for_semantic"`
+	FullSemanticComplexity      float64                        `yaml:"full_semantic_complexity" json:"full_semantic_complexity"`
+	DecomposeSemanticComplexity float64                        `yaml:"decompose_complexity" json:"decompose_complexity"`
+	MinSemanticFieldConfidence  float64                        `yaml:"min_semantic_field_confidence" json:"min_semantic_field_confidence"`
+	MinOverrideMargin           float64                        `yaml:"min_override_margin" json:"min_override_margin"`
+	HighSafetyRiskThreshold     float64                        `yaml:"high_safety_risk" json:"high_safety_risk"`
+	MaxQueryRewrites            int                            `yaml:"max_query_rewrites" json:"max_query_rewrites"`
+	MaxSemanticAnchors          int                            `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
+	SemanticTotalEnergyCap      float64                        `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
+	MaxGeneratedDenseWeightSum  float64                        `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
+	IncludeRationaleSummary     bool                           `yaml:"include_rationale_summary" json:"include_rationale_summary"`
+}
+
+type QueryAnalysisThresholdsConfig struct {
 	MinRuleFit                  float64 `yaml:"min_rule_fit" json:"min_rule_fit"`
 	MinAnchorReadiness          float64 `yaml:"min_anchor_readiness" json:"min_anchor_readiness"`
 	SemanticNeedThreshold       float64 `yaml:"semantic_need" json:"semantic_need"`
@@ -57,11 +79,18 @@ type QueryAnalysisConfig struct {
 	MinSemanticFieldConfidence  float64 `yaml:"min_semantic_field_confidence" json:"min_semantic_field_confidence"`
 	MinOverrideMargin           float64 `yaml:"min_override_margin" json:"min_override_margin"`
 	HighSafetyRiskThreshold     float64 `yaml:"high_safety_risk" json:"high_safety_risk"`
-	MaxQueryRewrites            int     `yaml:"max_query_rewrites" json:"max_query_rewrites"`
-	MaxSemanticAnchors          int     `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
-	SemanticTotalEnergyCap      float64 `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
-	MaxGeneratedDenseWeightSum  float64 `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
-	IncludeRationaleSummary     bool    `yaml:"include_rationale_summary" json:"include_rationale_summary"`
+}
+
+type QueryAnalysisBudgetConfig struct {
+	MaxSemanticCallsPerSession     int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
+	MaxSemanticCallsPer1000Queries int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
+	MaxSemanticLatencyMS           int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
+}
+
+type QueryAnalysisDiagnosticsConfig struct {
+	IncludeScoreBreakdown bool    `yaml:"include_score_breakdown" json:"include_score_breakdown"`
+	IncludeReasonCodes    bool    `yaml:"include_reason_codes" json:"include_reason_codes"`
+	SampleRate            float64 `yaml:"sample_rate" json:"sample_rate"`
 }
 
 type SidecarConfig struct {
@@ -115,10 +144,33 @@ func Default() Config {
 			SensitivityPermission: memorycore.SensitivityNormal,
 		},
 		QueryAnalysis: QueryAnalysisConfig{
-			Provider:                    "none",
-			Mode:                        "rule_only",
-			SidecarURL:                  "http://127.0.0.1:8765",
-			TimeoutMS:                   1500,
+			Provider:      "none",
+			Mode:          "rule_only",
+			SidecarURL:    "http://127.0.0.1:8765",
+			TimeoutMS:     1500,
+			ScorerVersion: "query_analysis_scorer_v1",
+			RouterVersion: "semantic_router_v1",
+			Thresholds: QueryAnalysisThresholdsConfig{
+				MinRuleFit:                  0.66,
+				MinAnchorReadiness:          0.45,
+				SemanticNeedThreshold:       0.58,
+				MinComplexityForSemantic:    0.50,
+				FullSemanticComplexity:      0.72,
+				DecomposeSemanticComplexity: 0.80,
+				MinSemanticFieldConfidence:  0.70,
+				MinOverrideMargin:           0.08,
+				HighSafetyRiskThreshold:     0.80,
+			},
+			Budget: QueryAnalysisBudgetConfig{
+				MaxSemanticCallsPerSession:     8,
+				MaxSemanticCallsPer1000Queries: 250,
+				MaxSemanticLatencyMS:           1500,
+			},
+			Diagnostics: QueryAnalysisDiagnosticsConfig{
+				IncludeScoreBreakdown: true,
+				IncludeReasonCodes:    true,
+				SampleRate:            1.0,
+			},
 			MinConfidenceToOverride:     0.72,
 			MinEntitySemanticConfidence: 0.70,
 			MinRuleFit:                  0.66,
@@ -194,6 +246,12 @@ func (c *Config) ApplyDefaults() {
 	if c.QueryAnalysis.TimeoutMS == 0 {
 		c.QueryAnalysis.TimeoutMS = defaults.QueryAnalysis.TimeoutMS
 	}
+	if strings.TrimSpace(c.QueryAnalysis.ScorerVersion) == "" {
+		c.QueryAnalysis.ScorerVersion = defaults.QueryAnalysis.ScorerVersion
+	}
+	if strings.TrimSpace(c.QueryAnalysis.RouterVersion) == "" {
+		c.QueryAnalysis.RouterVersion = defaults.QueryAnalysis.RouterVersion
+	}
 	if c.QueryAnalysis.MinConfidenceToOverride == 0 {
 		c.QueryAnalysis.MinConfidenceToOverride = defaults.QueryAnalysis.MinConfidenceToOverride
 	}
@@ -238,6 +296,15 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.QueryAnalysis.MaxGeneratedDenseWeightSum == 0 {
 		c.QueryAnalysis.MaxGeneratedDenseWeightSum = defaults.QueryAnalysis.MaxGeneratedDenseWeightSum
+	}
+	applyQueryAnalysisThresholdDefaults(&c.QueryAnalysis.Thresholds, defaults.QueryAnalysis.Thresholds)
+	applyQueryAnalysisBudgetDefaults(&c.QueryAnalysis.Budget, defaults.QueryAnalysis.Budget)
+	if c.QueryAnalysis.Diagnostics.SampleRate == 0 &&
+		!c.QueryAnalysis.Diagnostics.IncludeScoreBreakdown &&
+		!c.QueryAnalysis.Diagnostics.IncludeReasonCodes {
+		c.QueryAnalysis.Diagnostics = defaults.QueryAnalysis.Diagnostics
+	} else if c.QueryAnalysis.Diagnostics.SampleRate == 0 {
+		c.QueryAnalysis.Diagnostics.SampleRate = defaults.QueryAnalysis.Diagnostics.SampleRate
 	}
 	if strings.TrimSpace(c.Sidecar.Adapter) == "" {
 		c.Sidecar.Adapter = defaults.Sidecar.Adapter
@@ -309,11 +376,20 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("query_analysis.mode must be one of rule_only|semantic_always|semantic_on_low_confidence|semantic_rewrite_only|legacy_only|shadow_adaptive|adaptive|adaptive_safe|adaptive_full")
 	}
-	if c.QueryAnalysis.Provider == "none" && c.QueryAnalysis.Mode != "rule_only" && c.QueryAnalysis.Mode != "legacy_only" {
-		return fmt.Errorf("query_analysis.mode must be rule_only when query_analysis.provider=none")
+	if c.QueryAnalysis.Provider == "none" &&
+		c.QueryAnalysis.Mode != "rule_only" &&
+		c.QueryAnalysis.Mode != "legacy_only" &&
+		c.QueryAnalysis.Mode != "shadow_adaptive" {
+		return fmt.Errorf("query_analysis.mode must be rule_only, legacy_only, or shadow_adaptive when query_analysis.provider=none")
 	}
 	if c.QueryAnalysis.TimeoutMS <= 0 {
 		return fmt.Errorf("query_analysis.timeout_ms must be > 0")
+	}
+	if strings.TrimSpace(c.QueryAnalysis.ScorerVersion) == "" {
+		return fmt.Errorf("query_analysis.scorer_version is required")
+	}
+	if strings.TrimSpace(c.QueryAnalysis.RouterVersion) == "" {
+		return fmt.Errorf("query_analysis.router_version is required")
 	}
 	if c.QueryAnalysis.MinConfidenceToOverride <= 0 || c.QueryAnalysis.MinConfidenceToOverride > 1 {
 		return fmt.Errorf("query_analysis.min_confidence_to_override must be within (0, 1]")
@@ -347,6 +423,15 @@ func (c Config) Validate() error {
 	}
 	if err := validateUnitInterval("query_analysis.high_safety_risk", c.QueryAnalysis.HighSafetyRiskThreshold); err != nil {
 		return err
+	}
+	if err := validateQueryAnalysisThresholds(c.QueryAnalysis.Thresholds); err != nil {
+		return err
+	}
+	if err := validateQueryAnalysisBudget(c.QueryAnalysis.Budget); err != nil {
+		return err
+	}
+	if c.QueryAnalysis.Diagnostics.SampleRate < 0 || c.QueryAnalysis.Diagnostics.SampleRate > 1 {
+		return fmt.Errorf("query_analysis.diagnostics.sample_rate must be within [0, 1]")
 	}
 	if c.QueryAnalysis.MaxQueryRewrites <= 0 {
 		return fmt.Errorf("query_analysis.max_query_rewrites must be > 0")
@@ -444,6 +529,53 @@ func validateUnitInterval(name string, value float64) error {
 	return nil
 }
 
+func validateQueryAnalysisThresholds(thresholds QueryAnalysisThresholdsConfig) error {
+	if err := validateUnitInterval("query_analysis.thresholds.min_rule_fit", thresholds.MinRuleFit); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.min_anchor_readiness", thresholds.MinAnchorReadiness); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.semantic_need", thresholds.SemanticNeedThreshold); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.min_complexity_for_semantic", thresholds.MinComplexityForSemantic); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.full_semantic_complexity", thresholds.FullSemanticComplexity); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.decompose_complexity", thresholds.DecomposeSemanticComplexity); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.min_semantic_field_confidence", thresholds.MinSemanticFieldConfidence); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.min_override_margin", thresholds.MinOverrideMargin); err != nil {
+		return err
+	}
+	if err := validateUnitInterval("query_analysis.thresholds.high_safety_risk", thresholds.HighSafetyRiskThreshold); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateQueryAnalysisBudget(budget QueryAnalysisBudgetConfig) error {
+	if budget.MaxSemanticCallsPerSession <= 0 {
+		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_session must be > 0")
+	}
+	if budget.MaxSemanticCallsPer1000Queries <= 0 {
+		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_1000_queries must be > 0")
+	}
+	if budget.MaxSemanticCallsPer1000Queries > 1000 {
+		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_1000_queries must be <= 1000")
+	}
+	if budget.MaxSemanticLatencyMS <= 0 {
+		return fmt.Errorf("query_analysis.budget.max_semantic_latency_ms must be > 0")
+	}
+	return nil
+}
+
 func (c Config) ValidateRuntime(opts RuntimeValidationOptions) error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -470,26 +602,35 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		EnableFTS:     c.Core.EnableFTS,
 		MirrorAdapter: adapter,
 		QueryAnalysis: memorycore.QueryAnalysisOptions{
-			Provider:                    memorycore.QueryAnalysisProvider(c.QueryAnalysis.Provider),
-			Mode:                        memorycore.QueryAnalysisMode(c.QueryAnalysis.Mode),
-			SidecarURL:                  c.QueryAnalysis.SidecarURL,
-			Timeout:                     time.Duration(c.QueryAnalysis.TimeoutMS) * time.Millisecond,
-			MinConfidenceToOverride:     c.QueryAnalysis.MinConfidenceToOverride,
-			MinEntitySemanticConfidence: c.QueryAnalysis.MinEntitySemanticConfidence,
-			MinRuleFit:                  c.QueryAnalysis.MinRuleFit,
-			MinAnchorReadiness:          c.QueryAnalysis.MinAnchorReadiness,
-			SemanticNeedThreshold:       c.QueryAnalysis.SemanticNeedThreshold,
-			MinComplexityForSemantic:    c.QueryAnalysis.MinComplexityForSemantic,
-			FullSemanticComplexity:      c.QueryAnalysis.FullSemanticComplexity,
-			DecomposeSemanticComplexity: c.QueryAnalysis.DecomposeSemanticComplexity,
-			MinSemanticFieldConfidence:  c.QueryAnalysis.MinSemanticFieldConfidence,
-			MinOverrideMargin:           c.QueryAnalysis.MinOverrideMargin,
-			HighSafetyRiskThreshold:     c.QueryAnalysis.HighSafetyRiskThreshold,
-			MaxQueryRewrites:            c.QueryAnalysis.MaxQueryRewrites,
-			MaxSemanticAnchors:          c.QueryAnalysis.MaxSemanticAnchors,
-			SemanticTotalEnergyCap:      c.QueryAnalysis.SemanticTotalEnergyCap,
-			MaxGeneratedDenseWeightSum:  c.QueryAnalysis.MaxGeneratedDenseWeightSum,
-			IncludeRationaleSummary:     c.QueryAnalysis.IncludeRationaleSummary,
+			Provider:                         memorycore.QueryAnalysisProvider(c.QueryAnalysis.Provider),
+			Mode:                             memorycore.QueryAnalysisMode(c.QueryAnalysis.Mode),
+			SidecarURL:                       c.QueryAnalysis.SidecarURL,
+			Timeout:                          time.Duration(c.QueryAnalysis.TimeoutMS) * time.Millisecond,
+			ScorerVersion:                    c.QueryAnalysis.ScorerVersion,
+			RouterVersion:                    c.QueryAnalysis.RouterVersion,
+			MinConfidenceToOverride:          c.QueryAnalysis.MinConfidenceToOverride,
+			MinEntitySemanticConfidence:      c.QueryAnalysis.MinEntitySemanticConfidence,
+			MinRuleFit:                       c.QueryAnalysis.Thresholds.MinRuleFit,
+			MinAnchorReadiness:               c.QueryAnalysis.Thresholds.MinAnchorReadiness,
+			SemanticNeedThreshold:            c.QueryAnalysis.Thresholds.SemanticNeedThreshold,
+			MinComplexityForSemantic:         c.QueryAnalysis.Thresholds.MinComplexityForSemantic,
+			FullSemanticComplexity:           c.QueryAnalysis.Thresholds.FullSemanticComplexity,
+			DecomposeSemanticComplexity:      c.QueryAnalysis.Thresholds.DecomposeSemanticComplexity,
+			MinSemanticFieldConfidence:       c.QueryAnalysis.Thresholds.MinSemanticFieldConfidence,
+			MinOverrideMargin:                c.QueryAnalysis.Thresholds.MinOverrideMargin,
+			HighSafetyRiskThreshold:          c.QueryAnalysis.Thresholds.HighSafetyRiskThreshold,
+			MaxSemanticCallsPerSession:       c.QueryAnalysis.Budget.MaxSemanticCallsPerSession,
+			MaxSemanticCallsPer1000Queries:   c.QueryAnalysis.Budget.MaxSemanticCallsPer1000Queries,
+			MaxSemanticLatency:               time.Duration(c.QueryAnalysis.Budget.MaxSemanticLatencyMS) * time.Millisecond,
+			DiagnosticsConfigured:            true,
+			DiagnosticsIncludeScoreBreakdown: c.QueryAnalysis.Diagnostics.IncludeScoreBreakdown,
+			DiagnosticsIncludeReasonCodes:    c.QueryAnalysis.Diagnostics.IncludeReasonCodes,
+			DiagnosticsSampleRate:            c.QueryAnalysis.Diagnostics.SampleRate,
+			MaxQueryRewrites:                 c.QueryAnalysis.MaxQueryRewrites,
+			MaxSemanticAnchors:               c.QueryAnalysis.MaxSemanticAnchors,
+			SemanticTotalEnergyCap:           c.QueryAnalysis.SemanticTotalEnergyCap,
+			MaxGeneratedDenseWeightSum:       c.QueryAnalysis.MaxGeneratedDenseWeightSum,
+			IncludeRationaleSummary:          c.QueryAnalysis.IncludeRationaleSummary,
 		},
 		SidecarResilience: memorycore.SidecarResilienceOptions{
 			Timeouts: memorycore.SidecarStageTimeouts{
@@ -558,6 +699,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	if err := value.Decode(&patch); err != nil {
 		return err
 	}
+	if err := validateConfigPatchMigration(patch); err != nil {
+		return err
+	}
 	cfg := Default()
 	applyConfigPatch(&cfg, patch)
 	*c = cfg
@@ -569,6 +713,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&patch); err != nil {
+		return err
+	}
+	if err := validateConfigPatchMigration(patch); err != nil {
 		return err
 	}
 	cfg := Default()
@@ -606,12 +753,34 @@ type retrievalPatch struct {
 }
 
 type queryAnalysisPatch struct {
-	Provider                    *string  `yaml:"provider" json:"provider"`
-	Mode                        *string  `yaml:"mode" json:"mode"`
-	SidecarURL                  *string  `yaml:"sidecar_url" json:"sidecar_url"`
-	TimeoutMS                   *int     `yaml:"timeout_ms" json:"timeout_ms"`
-	MinConfidenceToOverride     *float64 `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
-	MinEntitySemanticConfidence *float64 `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	Provider                    *string                        `yaml:"provider" json:"provider"`
+	Mode                        *string                        `yaml:"mode" json:"mode"`
+	SidecarURL                  *string                        `yaml:"sidecar_url" json:"sidecar_url"`
+	TimeoutMS                   *int                           `yaml:"timeout_ms" json:"timeout_ms"`
+	ScorerVersion               *string                        `yaml:"scorer_version" json:"scorer_version"`
+	RouterVersion               *string                        `yaml:"router_version" json:"router_version"`
+	Thresholds                  *queryAnalysisThresholdsPatch  `yaml:"thresholds" json:"thresholds"`
+	Budget                      *queryAnalysisBudgetPatch      `yaml:"budget" json:"budget"`
+	Diagnostics                 *queryAnalysisDiagnosticsPatch `yaml:"diagnostics" json:"diagnostics"`
+	MinConfidenceToOverride     *float64                       `yaml:"min_confidence_to_override" json:"min_confidence_to_override"`
+	MinEntitySemanticConfidence *float64                       `yaml:"min_entity_semantic_confidence" json:"min_entity_semantic_confidence"`
+	MinRuleFit                  *float64                       `yaml:"min_rule_fit" json:"min_rule_fit"`
+	MinAnchorReadiness          *float64                       `yaml:"min_anchor_readiness" json:"min_anchor_readiness"`
+	SemanticNeedThreshold       *float64                       `yaml:"semantic_need" json:"semantic_need"`
+	MinComplexityForSemantic    *float64                       `yaml:"min_complexity_for_semantic" json:"min_complexity_for_semantic"`
+	FullSemanticComplexity      *float64                       `yaml:"full_semantic_complexity" json:"full_semantic_complexity"`
+	DecomposeSemanticComplexity *float64                       `yaml:"decompose_complexity" json:"decompose_complexity"`
+	MinSemanticFieldConfidence  *float64                       `yaml:"min_semantic_field_confidence" json:"min_semantic_field_confidence"`
+	MinOverrideMargin           *float64                       `yaml:"min_override_margin" json:"min_override_margin"`
+	HighSafetyRiskThreshold     *float64                       `yaml:"high_safety_risk" json:"high_safety_risk"`
+	MaxQueryRewrites            *int                           `yaml:"max_query_rewrites" json:"max_query_rewrites"`
+	MaxSemanticAnchors          *int                           `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
+	SemanticTotalEnergyCap      *float64                       `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
+	MaxGeneratedDenseWeightSum  *float64                       `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
+	IncludeRationaleSummary     *bool                          `yaml:"include_rationale_summary" json:"include_rationale_summary"`
+}
+
+type queryAnalysisThresholdsPatch struct {
 	MinRuleFit                  *float64 `yaml:"min_rule_fit" json:"min_rule_fit"`
 	MinAnchorReadiness          *float64 `yaml:"min_anchor_readiness" json:"min_anchor_readiness"`
 	SemanticNeedThreshold       *float64 `yaml:"semantic_need" json:"semantic_need"`
@@ -621,11 +790,41 @@ type queryAnalysisPatch struct {
 	MinSemanticFieldConfidence  *float64 `yaml:"min_semantic_field_confidence" json:"min_semantic_field_confidence"`
 	MinOverrideMargin           *float64 `yaml:"min_override_margin" json:"min_override_margin"`
 	HighSafetyRiskThreshold     *float64 `yaml:"high_safety_risk" json:"high_safety_risk"`
-	MaxQueryRewrites            *int     `yaml:"max_query_rewrites" json:"max_query_rewrites"`
-	MaxSemanticAnchors          *int     `yaml:"max_semantic_anchors" json:"max_semantic_anchors"`
-	SemanticTotalEnergyCap      *float64 `yaml:"semantic_total_energy_cap" json:"semantic_total_energy_cap"`
-	MaxGeneratedDenseWeightSum  *float64 `yaml:"max_generated_dense_weight_sum" json:"max_generated_dense_weight_sum"`
-	IncludeRationaleSummary     *bool    `yaml:"include_rationale_summary" json:"include_rationale_summary"`
+}
+
+type queryAnalysisBudgetPatch struct {
+	MaxSemanticCallsPerSession     *int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
+	MaxSemanticCallsPer1000Queries *int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
+	MaxSemanticLatencyMS           *int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
+}
+
+type queryAnalysisDiagnosticsPatch struct {
+	IncludeScoreBreakdown *bool    `yaml:"include_score_breakdown" json:"include_score_breakdown"`
+	IncludeReasonCodes    *bool    `yaml:"include_reason_codes" json:"include_reason_codes"`
+	SampleRate            *float64 `yaml:"sample_rate" json:"sample_rate"`
+}
+
+func validateConfigPatchMigration(patch configPatch) error {
+	if patch.QueryAnalysis == nil {
+		return nil
+	}
+	query := *patch.QueryAnalysis
+	if query.Thresholds != nil && query.hasLegacyThresholdPatch() {
+		return fmt.Errorf("query_analysis.thresholds cannot be mixed with legacy query_analysis flat threshold fields; move legacy fields under query_analysis.thresholds")
+	}
+	return nil
+}
+
+func (p queryAnalysisPatch) hasLegacyThresholdPatch() bool {
+	return p.MinRuleFit != nil ||
+		p.MinAnchorReadiness != nil ||
+		p.SemanticNeedThreshold != nil ||
+		p.MinComplexityForSemantic != nil ||
+		p.FullSemanticComplexity != nil ||
+		p.DecomposeSemanticComplexity != nil ||
+		p.MinSemanticFieldConfidence != nil ||
+		p.MinOverrideMargin != nil ||
+		p.HighSafetyRiskThreshold != nil
 }
 
 type sidecarPatch struct {
@@ -694,12 +893,82 @@ func applyQueryAnalysisPatch(cfg *QueryAnalysisConfig, patch queryAnalysisPatch)
 	if patch.TimeoutMS != nil {
 		cfg.TimeoutMS = *patch.TimeoutMS
 	}
+	if patch.ScorerVersion != nil {
+		cfg.ScorerVersion = *patch.ScorerVersion
+	}
+	if patch.RouterVersion != nil {
+		cfg.RouterVersion = *patch.RouterVersion
+	}
+	if patch.Thresholds != nil {
+		applyQueryAnalysisThresholdsPatch(&cfg.Thresholds, *patch.Thresholds)
+		syncQueryAnalysisFlatThresholdsFromNested(cfg)
+	}
+	if patch.Budget != nil {
+		applyQueryAnalysisBudgetPatch(&cfg.Budget, *patch.Budget)
+	}
+	if patch.Diagnostics != nil {
+		applyQueryAnalysisDiagnosticsPatch(&cfg.Diagnostics, *patch.Diagnostics)
+	}
 	if patch.MinConfidenceToOverride != nil {
 		cfg.MinConfidenceToOverride = *patch.MinConfidenceToOverride
 	}
 	if patch.MinEntitySemanticConfidence != nil {
 		cfg.MinEntitySemanticConfidence = *patch.MinEntitySemanticConfidence
 	}
+	if patch.MinRuleFit != nil {
+		cfg.MinRuleFit = *patch.MinRuleFit
+		cfg.Thresholds.MinRuleFit = *patch.MinRuleFit
+	}
+	if patch.MinAnchorReadiness != nil {
+		cfg.MinAnchorReadiness = *patch.MinAnchorReadiness
+		cfg.Thresholds.MinAnchorReadiness = *patch.MinAnchorReadiness
+	}
+	if patch.SemanticNeedThreshold != nil {
+		cfg.SemanticNeedThreshold = *patch.SemanticNeedThreshold
+		cfg.Thresholds.SemanticNeedThreshold = *patch.SemanticNeedThreshold
+	}
+	if patch.MinComplexityForSemantic != nil {
+		cfg.MinComplexityForSemantic = *patch.MinComplexityForSemantic
+		cfg.Thresholds.MinComplexityForSemantic = *patch.MinComplexityForSemantic
+	}
+	if patch.FullSemanticComplexity != nil {
+		cfg.FullSemanticComplexity = *patch.FullSemanticComplexity
+		cfg.Thresholds.FullSemanticComplexity = *patch.FullSemanticComplexity
+	}
+	if patch.DecomposeSemanticComplexity != nil {
+		cfg.DecomposeSemanticComplexity = *patch.DecomposeSemanticComplexity
+		cfg.Thresholds.DecomposeSemanticComplexity = *patch.DecomposeSemanticComplexity
+	}
+	if patch.MinSemanticFieldConfidence != nil {
+		cfg.MinSemanticFieldConfidence = *patch.MinSemanticFieldConfidence
+		cfg.Thresholds.MinSemanticFieldConfidence = *patch.MinSemanticFieldConfidence
+	}
+	if patch.MinOverrideMargin != nil {
+		cfg.MinOverrideMargin = *patch.MinOverrideMargin
+		cfg.Thresholds.MinOverrideMargin = *patch.MinOverrideMargin
+	}
+	if patch.HighSafetyRiskThreshold != nil {
+		cfg.HighSafetyRiskThreshold = *patch.HighSafetyRiskThreshold
+		cfg.Thresholds.HighSafetyRiskThreshold = *patch.HighSafetyRiskThreshold
+	}
+	if patch.MaxQueryRewrites != nil {
+		cfg.MaxQueryRewrites = *patch.MaxQueryRewrites
+	}
+	if patch.MaxSemanticAnchors != nil {
+		cfg.MaxSemanticAnchors = *patch.MaxSemanticAnchors
+	}
+	if patch.SemanticTotalEnergyCap != nil {
+		cfg.SemanticTotalEnergyCap = *patch.SemanticTotalEnergyCap
+	}
+	if patch.MaxGeneratedDenseWeightSum != nil {
+		cfg.MaxGeneratedDenseWeightSum = *patch.MaxGeneratedDenseWeightSum
+	}
+	if patch.IncludeRationaleSummary != nil {
+		cfg.IncludeRationaleSummary = *patch.IncludeRationaleSummary
+	}
+}
+
+func applyQueryAnalysisThresholdsPatch(cfg *QueryAnalysisThresholdsConfig, patch queryAnalysisThresholdsPatch) {
 	if patch.MinRuleFit != nil {
 		cfg.MinRuleFit = *patch.MinRuleFit
 	}
@@ -727,21 +996,84 @@ func applyQueryAnalysisPatch(cfg *QueryAnalysisConfig, patch queryAnalysisPatch)
 	if patch.HighSafetyRiskThreshold != nil {
 		cfg.HighSafetyRiskThreshold = *patch.HighSafetyRiskThreshold
 	}
-	if patch.MaxQueryRewrites != nil {
-		cfg.MaxQueryRewrites = *patch.MaxQueryRewrites
+}
+
+func applyQueryAnalysisBudgetPatch(cfg *QueryAnalysisBudgetConfig, patch queryAnalysisBudgetPatch) {
+	if patch.MaxSemanticCallsPerSession != nil {
+		cfg.MaxSemanticCallsPerSession = *patch.MaxSemanticCallsPerSession
 	}
-	if patch.MaxSemanticAnchors != nil {
-		cfg.MaxSemanticAnchors = *patch.MaxSemanticAnchors
+	if patch.MaxSemanticCallsPer1000Queries != nil {
+		cfg.MaxSemanticCallsPer1000Queries = *patch.MaxSemanticCallsPer1000Queries
 	}
-	if patch.SemanticTotalEnergyCap != nil {
-		cfg.SemanticTotalEnergyCap = *patch.SemanticTotalEnergyCap
+	if patch.MaxSemanticLatencyMS != nil {
+		cfg.MaxSemanticLatencyMS = *patch.MaxSemanticLatencyMS
 	}
-	if patch.MaxGeneratedDenseWeightSum != nil {
-		cfg.MaxGeneratedDenseWeightSum = *patch.MaxGeneratedDenseWeightSum
+}
+
+func applyQueryAnalysisDiagnosticsPatch(cfg *QueryAnalysisDiagnosticsConfig, patch queryAnalysisDiagnosticsPatch) {
+	if patch.IncludeScoreBreakdown != nil {
+		cfg.IncludeScoreBreakdown = *patch.IncludeScoreBreakdown
 	}
-	if patch.IncludeRationaleSummary != nil {
-		cfg.IncludeRationaleSummary = *patch.IncludeRationaleSummary
+	if patch.IncludeReasonCodes != nil {
+		cfg.IncludeReasonCodes = *patch.IncludeReasonCodes
 	}
+	if patch.SampleRate != nil {
+		cfg.SampleRate = *patch.SampleRate
+	}
+}
+
+func applyQueryAnalysisThresholdDefaults(cfg *QueryAnalysisThresholdsConfig, defaults QueryAnalysisThresholdsConfig) {
+	if cfg.MinRuleFit == 0 {
+		cfg.MinRuleFit = defaults.MinRuleFit
+	}
+	if cfg.MinAnchorReadiness == 0 {
+		cfg.MinAnchorReadiness = defaults.MinAnchorReadiness
+	}
+	if cfg.SemanticNeedThreshold == 0 {
+		cfg.SemanticNeedThreshold = defaults.SemanticNeedThreshold
+	}
+	if cfg.MinComplexityForSemantic == 0 {
+		cfg.MinComplexityForSemantic = defaults.MinComplexityForSemantic
+	}
+	if cfg.FullSemanticComplexity == 0 {
+		cfg.FullSemanticComplexity = defaults.FullSemanticComplexity
+	}
+	if cfg.DecomposeSemanticComplexity == 0 {
+		cfg.DecomposeSemanticComplexity = defaults.DecomposeSemanticComplexity
+	}
+	if cfg.MinSemanticFieldConfidence == 0 {
+		cfg.MinSemanticFieldConfidence = defaults.MinSemanticFieldConfidence
+	}
+	if cfg.MinOverrideMargin == 0 {
+		cfg.MinOverrideMargin = defaults.MinOverrideMargin
+	}
+	if cfg.HighSafetyRiskThreshold == 0 {
+		cfg.HighSafetyRiskThreshold = defaults.HighSafetyRiskThreshold
+	}
+}
+
+func applyQueryAnalysisBudgetDefaults(cfg *QueryAnalysisBudgetConfig, defaults QueryAnalysisBudgetConfig) {
+	if cfg.MaxSemanticCallsPerSession == 0 {
+		cfg.MaxSemanticCallsPerSession = defaults.MaxSemanticCallsPerSession
+	}
+	if cfg.MaxSemanticCallsPer1000Queries == 0 {
+		cfg.MaxSemanticCallsPer1000Queries = defaults.MaxSemanticCallsPer1000Queries
+	}
+	if cfg.MaxSemanticLatencyMS == 0 {
+		cfg.MaxSemanticLatencyMS = defaults.MaxSemanticLatencyMS
+	}
+}
+
+func syncQueryAnalysisFlatThresholdsFromNested(cfg *QueryAnalysisConfig) {
+	cfg.MinRuleFit = cfg.Thresholds.MinRuleFit
+	cfg.MinAnchorReadiness = cfg.Thresholds.MinAnchorReadiness
+	cfg.SemanticNeedThreshold = cfg.Thresholds.SemanticNeedThreshold
+	cfg.MinComplexityForSemantic = cfg.Thresholds.MinComplexityForSemantic
+	cfg.FullSemanticComplexity = cfg.Thresholds.FullSemanticComplexity
+	cfg.DecomposeSemanticComplexity = cfg.Thresholds.DecomposeSemanticComplexity
+	cfg.MinSemanticFieldConfidence = cfg.Thresholds.MinSemanticFieldConfidence
+	cfg.MinOverrideMargin = cfg.Thresholds.MinOverrideMargin
+	cfg.HighSafetyRiskThreshold = cfg.Thresholds.HighSafetyRiskThreshold
 }
 
 func applyCorePatch(cfg *CoreConfig, patch corePatch) {
@@ -864,10 +1196,33 @@ var configYAMLFields = yamlFieldSet{
 		"sensitivity_permission": nil,
 	},
 	"query_analysis": {
-		"provider":                       nil,
-		"mode":                           nil,
-		"sidecar_url":                    nil,
-		"timeout_ms":                     nil,
+		"provider":       nil,
+		"mode":           nil,
+		"sidecar_url":    nil,
+		"timeout_ms":     nil,
+		"scorer_version": nil,
+		"router_version": nil,
+		"thresholds": {
+			"min_rule_fit":                  nil,
+			"min_anchor_readiness":          nil,
+			"semantic_need":                 nil,
+			"min_complexity_for_semantic":   nil,
+			"full_semantic_complexity":      nil,
+			"decompose_complexity":          nil,
+			"min_semantic_field_confidence": nil,
+			"min_override_margin":           nil,
+			"high_safety_risk":              nil,
+		},
+		"budget": {
+			"max_semantic_calls_per_session":      nil,
+			"max_semantic_calls_per_1000_queries": nil,
+			"max_semantic_latency_ms":             nil,
+		},
+		"diagnostics": {
+			"include_score_breakdown": nil,
+			"include_reason_codes":    nil,
+			"sample_rate":             nil,
+		},
 		"min_confidence_to_override":     nil,
 		"min_entity_semantic_confidence": nil,
 		"min_rule_fit":                   nil,

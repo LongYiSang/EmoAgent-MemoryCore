@@ -64,6 +64,9 @@ func loadYAMLBytes(data []byte, validate bool) (Config, error) {
 		}
 		return Config{}, err
 	}
+	if err := validateConfigPatchMigration(patch); err != nil {
+		return Config{}, err
+	}
 	applyConfigPatch(&cfg, patch)
 	if validate {
 		if err := cfg.Validate(); err != nil {
@@ -91,6 +94,9 @@ func loadJSONBytes(data []byte, validate bool) (Config, error) {
 			}
 			return cfg, nil
 		}
+		return Config{}, err
+	}
+	if err := validateConfigPatchMigration(patch); err != nil {
 		return Config{}, err
 	}
 	applyConfigPatch(&cfg, patch)

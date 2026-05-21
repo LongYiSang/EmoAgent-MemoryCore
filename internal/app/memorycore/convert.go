@@ -354,6 +354,7 @@ func queryAnchorProbeBreakdownFromStore(values []memsqlite.QueryAnchorProbeBreak
 	for _, value := range values {
 		out = append(out, QueryAnchorProbeBreakdown{
 			Source:      value.Source,
+			Status:      value.Status,
 			Confidence:  value.Confidence,
 			HitCount:    value.HitCount,
 			TopScore:    value.TopScore,

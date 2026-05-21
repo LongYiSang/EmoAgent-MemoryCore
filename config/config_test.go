@@ -41,6 +41,8 @@ func TestDefaultValues(t *testing.T) {
 		cfg.QueryAnalysis.Mode != "rule_only" ||
 		cfg.QueryAnalysis.SidecarURL != "http://127.0.0.1:8765" ||
 		cfg.QueryAnalysis.TimeoutMS != 1500 ||
+		cfg.QueryAnalysis.ScorerVersion != "query_analysis_scorer_v1" ||
+		cfg.QueryAnalysis.RouterVersion != "semantic_router_v1" ||
 		cfg.QueryAnalysis.MinConfidenceToOverride != 0.72 ||
 		cfg.QueryAnalysis.MinEntitySemanticConfidence != 0.70 ||
 		cfg.QueryAnalysis.MinRuleFit != 0.66 ||
@@ -56,7 +58,13 @@ func TestDefaultValues(t *testing.T) {
 		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
 		cfg.QueryAnalysis.SemanticTotalEnergyCap != 5.0 ||
 		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum != 3.0 ||
-		cfg.QueryAnalysis.IncludeRationaleSummary {
+		cfg.QueryAnalysis.IncludeRationaleSummary ||
+		cfg.QueryAnalysis.Budget.MaxSemanticCallsPerSession != 8 ||
+		cfg.QueryAnalysis.Budget.MaxSemanticCallsPer1000Queries != 250 ||
+		cfg.QueryAnalysis.Budget.MaxSemanticLatencyMS != 1500 ||
+		!cfg.QueryAnalysis.Diagnostics.IncludeScoreBreakdown ||
+		!cfg.QueryAnalysis.Diagnostics.IncludeReasonCodes ||
+		cfg.QueryAnalysis.Diagnostics.SampleRate != 1.0 {
 		t.Fatalf("query_analysis defaults = %#v", cfg.QueryAnalysis)
 	}
 	if cfg.Sidecar.Enabled || cfg.Sidecar.URL != "" || cfg.Sidecar.Adapter != "trivium" {
@@ -132,6 +140,102 @@ query_analysis:
 	}
 	if len(cfg.Retention.Jobs) != 1 || cfg.Retention.Jobs[0] != string(memorycore.RetentionJobDailyTTLExpiry) {
 		t.Fatalf("retention jobs = %#v", cfg.Retention.Jobs)
+	}
+}
+
+func TestLoadYAMLAcceptsNestedAdaptiveQueryAnalysisConfig(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+query_analysis:
+  provider: sidecar
+  mode: adaptive_full
+  scorer_version: query_analysis_scorer_v2
+  router_version: semantic_router_v2
+  thresholds:
+    min_rule_fit: 0.71
+    min_anchor_readiness: 0.46
+    semantic_need: 0.62
+    min_complexity_for_semantic: 0.51
+    full_semantic_complexity: 0.73
+    decompose_complexity: 0.81
+    min_semantic_field_confidence: 0.74
+    min_override_margin: 0.11
+  budget:
+    max_semantic_calls_per_session: 2
+    max_semantic_calls_per_1000_queries: 3
+    max_semantic_latency_ms: 900
+  diagnostics:
+    include_score_breakdown: false
+    include_reason_codes: false
+    sample_rate: 0.25
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	if cfg.QueryAnalysis.ScorerVersion != "query_analysis_scorer_v2" ||
+		cfg.QueryAnalysis.RouterVersion != "semantic_router_v2" {
+		t.Fatalf("query_analysis versions = %#v", cfg.QueryAnalysis)
+	}
+	if cfg.QueryAnalysis.Thresholds.MinRuleFit != 0.71 ||
+		cfg.QueryAnalysis.Thresholds.MinAnchorReadiness != 0.46 ||
+		cfg.QueryAnalysis.Thresholds.SemanticNeedThreshold != 0.62 ||
+		cfg.QueryAnalysis.Thresholds.MinComplexityForSemantic != 0.51 ||
+		cfg.QueryAnalysis.Thresholds.FullSemanticComplexity != 0.73 ||
+		cfg.QueryAnalysis.Thresholds.DecomposeSemanticComplexity != 0.81 ||
+		cfg.QueryAnalysis.Thresholds.MinSemanticFieldConfidence != 0.74 ||
+		cfg.QueryAnalysis.Thresholds.MinOverrideMargin != 0.11 {
+		t.Fatalf("query_analysis thresholds = %#v", cfg.QueryAnalysis.Thresholds)
+	}
+	if cfg.QueryAnalysis.Budget.MaxSemanticCallsPerSession != 2 ||
+		cfg.QueryAnalysis.Budget.MaxSemanticCallsPer1000Queries != 3 ||
+		cfg.QueryAnalysis.Budget.MaxSemanticLatencyMS != 900 {
+		t.Fatalf("query_analysis budget = %#v", cfg.QueryAnalysis.Budget)
+	}
+	if cfg.QueryAnalysis.Diagnostics.IncludeScoreBreakdown ||
+		cfg.QueryAnalysis.Diagnostics.IncludeReasonCodes ||
+		cfg.QueryAnalysis.Diagnostics.SampleRate != 0.25 {
+		t.Fatalf("query_analysis diagnostics = %#v", cfg.QueryAnalysis.Diagnostics)
+	}
+
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		t.Fatalf("ToOptions: %v", err)
+	}
+	qa := opts.QueryAnalysis
+	if qa.ScorerVersion != "query_analysis_scorer_v2" ||
+		qa.RouterVersion != "semantic_router_v2" ||
+		qa.MinRuleFit != 0.71 ||
+		qa.MinAnchorReadiness != 0.46 ||
+		qa.SemanticNeedThreshold != 0.62 ||
+		qa.MaxSemanticCallsPerSession != 2 ||
+		qa.MaxSemanticCallsPer1000Queries != 3 ||
+		qa.MaxSemanticLatency != 900*time.Millisecond ||
+		!qa.DiagnosticsConfigured ||
+		qa.DiagnosticsIncludeScoreBreakdown ||
+		qa.DiagnosticsIncludeReasonCodes ||
+		qa.DiagnosticsSampleRate != 0.25 {
+		t.Fatalf("query analysis options = %#v", qa)
+	}
+}
+
+func TestLoadYAMLRejectsMixedLegacyAndNestedQueryAnalysisConfig(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+query_analysis:
+  provider: sidecar
+  mode: adaptive_safe
+  min_rule_fit: 0.70
+  thresholds:
+    min_rule_fit: 0.71
+`)
+
+	_, err := memconfig.LoadYAML(path)
+	if err == nil {
+		t.Fatal("LoadYAML err = nil, want mixed legacy/nested query_analysis error")
+	}
+	if !strings.Contains(err.Error(), "query_analysis.thresholds") ||
+		!strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("LoadYAML err = %v, want nested/legacy migration error", err)
 	}
 }
 

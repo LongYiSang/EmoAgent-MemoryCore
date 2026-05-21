@@ -328,6 +328,20 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			wantReason:   "anchor_readiness_low",
 			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
 		},
+		{
+			name: "legacy only records adaptive shadow decision without semantic effect",
+			mode: QueryAnalysisModeLegacyOnly,
+			rule: adaptiveRuleAnalysis("我为什么最近这么抗拒上班？", memsqlite.QueryAnalysisScores{
+				RuleFit:         0.82,
+				AnchorReadiness: 0.18,
+				SemanticNeed:    0.44,
+				Complexity:      0.84,
+			}),
+			wantSemantic: false,
+			wantMode:     "semantic_decompose",
+			wantReason:   "anchor_readiness_low",
+			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1069,6 +1083,128 @@ func TestQueryAnalysisSemanticRequestCapsBudgetToSoftJoinTimeout(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSemanticRequestCapsBudgetToMaxSemanticLatency(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Confidence:    0.1,
+	}
+	semantic := &capturingSemanticQueryAnalyzer{
+		result: &SemanticQueryAnalysisResult{
+			Status: "ok",
+			Analysis: SemanticQueryAnalysis{
+				QueryRewrites: []QueryRewrite{{Text: "咖啡偏好", Weight: 0.5}},
+			},
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider:           QueryAnalysisProviderSidecar,
+		Mode:               QueryAnalysisModeSemanticAlways,
+		Timeout:            5 * time.Second,
+		MaxSemanticLatency: 900 * time.Millisecond,
+	})
+	if _, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: "咖啡", Now: fixedQueryAnalysisNow()}); err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if semantic.request.DeadlineMS != 900 || semantic.request.ProviderTimeoutMS != 900 {
+		t.Fatalf("budget fields = deadline:%d provider:%d, want 900/900", semantic.request.DeadlineMS, semantic.request.ProviderTimeoutMS)
+	}
+}
+
+func TestQueryAnalysisSemanticBudgetLimitsSessionCalls(t *testing.T) {
+	sessionID := "session-budget"
+	rule := adaptiveRuleAnalysis("我喜欢什么？", memsqlite.QueryAnalysisScores{
+		RuleFit:         0.20,
+		AnchorReadiness: 0.10,
+		SemanticNeed:    0.90,
+		Complexity:      0.60,
+	})
+	semantic := &countingSemanticQueryAnalyzer{
+		result: &SemanticQueryAnalysisResult{
+			Status: "ok",
+			Analysis: SemanticQueryAnalysis{
+				Confidence:      0.95,
+				FieldConfidence: QueryAnalysisConfidence{Overall: 0.95},
+			},
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider:                         QueryAnalysisProviderSidecar,
+		Mode:                             QueryAnalysisModeSemanticAlways,
+		MaxSemanticCallsPerSession:       1,
+		MaxSemanticCallsPer1000Queries:   100,
+		MaxSemanticLatency:               time.Second,
+		DiagnosticsIncludeScoreBreakdown: true,
+		DiagnosticsIncludeReasonCodes:    true,
+		DiagnosticsSampleRate:            1,
+		DiagnosticsConfigured:            true,
+	})
+
+	first, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", SessionID: &sessionID, QueryText: rule.Raw})
+	if err != nil {
+		t.Fatalf("first analyze query: %v", err)
+	}
+	if first.Source != memsqlite.QueryAnalysisSourceMerged || semantic.calls != 1 {
+		t.Fatalf("first source/calls = %q/%d, want merged/1", first.Source, semantic.calls)
+	}
+
+	second, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", SessionID: &sessionID, QueryText: rule.Raw})
+	if err != nil {
+		t.Fatalf("second analyze query: %v", err)
+	}
+	if semantic.calls != 1 {
+		t.Fatalf("semantic calls = %d, want budget to block second call", semantic.calls)
+	}
+	if second.Source != memsqlite.QueryAnalysisSourceSemanticFallback ||
+		second.Diagnostics == nil ||
+		second.Diagnostics.FallbackReason != "semantic_budget_exhausted" {
+		t.Fatalf("second analysis = %#v, want semantic budget fallback", second)
+	}
+}
+
+func TestQueryAnalysisSemanticBudgetLimitsRollingQueryWindow(t *testing.T) {
+	rule := adaptiveRuleAnalysis("我喜欢什么？", memsqlite.QueryAnalysisScores{
+		RuleFit:         0.20,
+		AnchorReadiness: 0.10,
+		SemanticNeed:    0.90,
+		Complexity:      0.60,
+	})
+	semantic := &countingSemanticQueryAnalyzer{
+		result: &SemanticQueryAnalysisResult{
+			Status: "ok",
+			Analysis: SemanticQueryAnalysis{
+				Confidence:      0.95,
+				FieldConfidence: QueryAnalysisConfidence{Overall: 0.95},
+			},
+		},
+	}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider:                       QueryAnalysisProviderSidecar,
+		Mode:                           QueryAnalysisModeSemanticAlways,
+		MaxSemanticCallsPerSession:     100,
+		MaxSemanticCallsPer1000Queries: 1,
+		MaxSemanticLatency:             time.Second,
+	})
+
+	if _, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: rule.Raw}); err != nil {
+		t.Fatalf("first analyze query: %v", err)
+	}
+	second, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: rule.Raw})
+	if err != nil {
+		t.Fatalf("second analyze query: %v", err)
+	}
+	if semantic.calls != 1 {
+		t.Fatalf("semantic calls = %d, want rolling budget to block second call", semantic.calls)
+	}
+	if second.Diagnostics == nil || second.Diagnostics.FallbackReason != "semantic_budget_exhausted" {
+		t.Fatalf("second diagnostics = %#v, want semantic budget fallback", second.Diagnostics)
+	}
+}
+
 func TestQueryAnalysisInvalidSemanticDoesNotDowngradeRuleForgetDelete(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "忘掉这条记忆",
@@ -1558,6 +1694,22 @@ type capturingSemanticQueryAnalyzer struct {
 
 func (a *capturingSemanticQueryAnalyzer) AnalyzeSemanticQuery(_ context.Context, req SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
 	a.request = req
+	if a.result == nil {
+		return nil, nil
+	}
+	cloned := *a.result
+	raw, _ := json.Marshal(a.result.Analysis)
+	_ = json.Unmarshal(raw, &cloned.Analysis)
+	return &cloned, nil
+}
+
+type countingSemanticQueryAnalyzer struct {
+	calls  int
+	result *SemanticQueryAnalysisResult
+}
+
+func (a *countingSemanticQueryAnalyzer) AnalyzeSemanticQuery(_ context.Context, _ SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
+	a.calls++
 	if a.result == nil {
 		return nil, nil
 	}
