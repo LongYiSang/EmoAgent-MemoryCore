@@ -55,3 +55,51 @@ func TestShouldSkipSelectiveRerankAllowsLargeDirectRawMargin(t *testing.T) {
 		t.Fatalf("shouldSkipSelectiveRerank = false, want skip for direct raw candidate with clear margin")
 	}
 }
+
+func TestShouldUseCorrectedRetrievalAllowsSemanticReplacement(t *testing.T) {
+	original := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "weak_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:          0.30,
+			CorrectiveAction: memsqlite.RetrievalCorrectiveActionSemanticLight,
+		},
+	}
+	corrected := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "better_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{Overall: 0.72},
+	}
+
+	if !shouldUseCorrectedRetrieval(original, corrected) {
+		t.Fatalf("shouldUseCorrectedRetrieval = false, want semantic_light correction to replace weak non-empty result")
+	}
+}
+
+func TestShouldUseCorrectedRetrievalRejectsSemanticReplacementWithWorseOverallAndTinyDimensionGain(t *testing.T) {
+	original := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "strong_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:          0.80,
+			SourceDiversity:  0.30,
+			CorrectiveAction: memsqlite.RetrievalCorrectiveActionSemanticLight,
+		},
+	}
+	corrected := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "different_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:         0.60,
+			SourceDiversity: 0.31,
+		},
+	}
+
+	if shouldUseCorrectedRetrieval(original, corrected) {
+		t.Fatalf("shouldUseCorrectedRetrieval = true, want reject when semantic_light changes nodes with worse overall and only tiny dimension gain")
+	}
+}

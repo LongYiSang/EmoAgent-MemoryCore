@@ -471,14 +471,18 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 }
 
 func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
-	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, true)
+	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, true, "")
+}
+
+func (r *RetrievalRepository) CompleteFinalWithCorrectiveAction(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics, correctiveAction string) (MemoryContext, error) {
+	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, true, correctiveAction)
 }
 
 func (r *RetrievalRepository) CompleteFinalPreview(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
-	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, false)
+	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, false, "")
 }
 
-func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics, logAccess bool) (MemoryContext, error) {
+func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics, logAccess bool, correctiveAction string) (MemoryContext, error) {
 	req := finalCandidates.Request
 	query := finalCandidates.Query
 	policy := finalCandidates.Policy
@@ -633,6 +637,9 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 		contextResult.TokenEstimate = tokenEstimate
 	}
 	confidence := evaluateRetrievalConfidence(finalCandidates, scored, selected, blocks, contextResult.DoNotMention)
+	if correctiveAction != "" && confidence.CorrectiveAction != RetrievalCorrectiveActionSuppressMemoryInjection {
+		confidence.CorrectiveAction = correctiveAction
+	}
 	contextResult.RetrievalConfidence = &confidence
 	if confidence.CorrectiveAction == RetrievalCorrectiveActionSuppressMemoryInjection {
 		for _, candidate := range selected {

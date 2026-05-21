@@ -17,6 +17,8 @@ const (
 	retrievalConfidenceMinimumAuthorityPassRatio     = 0.70
 	retrievalConfidenceMinimumAnchorCoverage         = 0.40
 	retrievalConfidenceMinimumRequiredChainCoverage  = 0.50
+	retrievalConfidenceMinimumSourceDiversity        = 0.50
+	retrievalConfidenceMinimumMMRDiversity           = 0.70
 	retrievalConfidenceDiversityNormalizationSources = 3
 )
 
@@ -73,6 +75,10 @@ func decideRetrievalCorrectiveAction(finalCandidates PreparedFinalCandidates, co
 	case confidence.AnchorCoverage < retrievalConfidenceMinimumAnchorCoverage && queryAllowsSemanticCorrective(finalCandidates.Query):
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
 	case confidence.RequiredChainCoverage < retrievalConfidenceMinimumRequiredChainCoverage && queryRequiresChainCoverage(finalCandidates.Query):
+		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
+	case confidence.SourceDiversity < retrievalConfidenceMinimumSourceDiversity && queryAllowsSemanticCorrective(finalCandidates.Query):
+		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
+	case confidence.MMRDiversity < retrievalConfidenceMinimumMMRDiversity && queryAllowsSemanticCorrective(finalCandidates.Query):
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
 	}
 	return confidence

@@ -669,6 +669,58 @@ func TestServiceRetrieveLowAuthorityConfidenceFallsBackToSQLiteOnce(t *testing.T
 	if contextResult.RetrievalConfidence.AuthorityPassRatio != 1 {
 		t.Fatalf("authority_pass_ratio = %f, want final sqlite fallback ratio 1", contextResult.RetrievalConfidence.AuthorityPassRatio)
 	}
+	breakdown := requireAccessEventBreakdown(t, db, coffee.ID, "retrieved")
+	observed := requireBreakdownObject(t, breakdown, "observed_confidence")
+	if observed["corrective_action"] != memorycore.RetrievalCorrectiveActionSQLiteFallback {
+		t.Fatalf("logged corrective_action = %#v, want sqlite_fallback", observed["corrective_action"])
+	}
+}
+
+func TestServiceRetrieveSemanticFallbackStillAllowsSQLiteCorrectiveFallback(t *testing.T) {
+	ctx := context.Background()
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "semantic unavailable", http.StatusServiceUnavailable)
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeSemanticAlways,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡，也提到过隐藏茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	coffee := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	hidden := consolidateLiteral(t, ctx, svc, userID, "likes", "隐藏茶", "用户喜欢隐藏茶。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
+	insertMirrorMapForFact(t, db, hidden.ID, 7012, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7012, Score: 0.99, Source: "trivium_dense", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			UseFTS:           true,
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with semantic fallback and corrective sqlite fallback: %v", err)
+	}
+	requireMemoryItem(t, contextResult, coffee.ID, "用户喜欢咖啡。", "")
+	if contextResult.RetrievalConfidence == nil || contextResult.RetrievalConfidence.CorrectiveAction != memorycore.RetrievalCorrectiveActionSQLiteFallback {
+		t.Fatalf("retrieval confidence = %#v, want sqlite_fallback", contextResult.RetrievalConfidence)
+	}
+	if contextResult.RetrievalConfidence.AuthorityPassRatio != 1 {
+		t.Fatalf("authority_pass_ratio = %f, want sqlite fallback after semantic query-analysis fallback", contextResult.RetrievalConfidence.AuthorityPassRatio)
+	}
 }
 
 func TestServiceRetrieveCorrectiveSemanticFailureFallsBackToSQLite(t *testing.T) {

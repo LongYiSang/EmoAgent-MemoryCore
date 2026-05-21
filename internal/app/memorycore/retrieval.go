@@ -11,8 +11,11 @@ import (
 )
 
 const (
-	maxRerankQueryTextRune = 160
-	selectiveRerankTopN    = 12
+	maxRerankQueryTextRune               = 160
+	selectiveRerankTopN                  = 12
+	semanticCorrectionMaxOverallDrop     = 0.05
+	semanticCorrectionMinDimensionGain   = 0.10
+	retrievalConfidenceComparisonEpsilon = 0.000001
 )
 
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
@@ -45,7 +48,9 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if action == "" || action == memsqlite.RetrievalCorrectiveActionSuppressMemoryInjection {
 		return s.completeRetrievalAttempt(ctx, attempt, true)
 	}
-	if preview.QueryAnalysis != nil && preview.QueryAnalysis.Source == QueryAnalysisSourceSemanticFallback {
+	if action == memsqlite.RetrievalCorrectiveActionSemanticLight &&
+		preview.QueryAnalysis != nil &&
+		preview.QueryAnalysis.Source == QueryAnalysisSourceSemanticFallback {
 		return s.completeRetrievalAttempt(ctx, attempt, true)
 	}
 	corrected, ok, err := s.runCorrectiveRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, action)
@@ -62,7 +67,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if !shouldUseCorrectedRetrieval(preview, correctedPreview) {
 		return s.completeRetrievalAttempt(ctx, attempt, true)
 	}
-	result, err := s.completeRetrievalAttempt(ctx, corrected, true)
+	result, err := s.completeRetrievalAttemptWithAction(ctx, corrected, true, action)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +169,7 @@ func shouldUseCorrectedRetrieval(original *MemoryContext, corrected *MemoryConte
 	if corrected.RetrievalConfidence.CorrectiveAction == memsqlite.RetrievalCorrectiveActionSuppressMemoryInjection {
 		return true
 	}
+	action := original.RetrievalConfidence.CorrectiveAction
 	originalIDs := memoryContextNodeIDs(original)
 	correctedIDs := memoryContextNodeIDs(corrected)
 	if len(originalIDs) == 0 && len(correctedIDs) > 0 {
@@ -175,10 +181,34 @@ func shouldUseCorrectedRetrieval(original *MemoryContext, corrected *MemoryConte
 	if len(originalIDs) > 0 && len(correctedIDs) == 0 {
 		return false
 	}
+	if action == memsqlite.RetrievalCorrectiveActionSemanticLight {
+		return semanticCorrectionImproves(original.RetrievalConfidence, corrected.RetrievalConfidence)
+	}
 	if !sameStringSet(originalIDs, correctedIDs) {
 		return false
 	}
+	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
+		return sqliteFallbackCorrectionImproves(original.RetrievalConfidence, corrected.RetrievalConfidence)
+	}
 	return corrected.RetrievalConfidence.Overall+0.000001 >= original.RetrievalConfidence.Overall
+}
+
+func semanticCorrectionImproves(original *RetrievalConfidence, corrected *RetrievalConfidence) bool {
+	if corrected.Overall+retrievalConfidenceComparisonEpsilon >= original.Overall {
+		return true
+	}
+	if corrected.Overall+semanticCorrectionMaxOverallDrop < original.Overall {
+		return false
+	}
+	return corrected.AnchorCoverage >= original.AnchorCoverage+semanticCorrectionMinDimensionGain ||
+		corrected.RequiredChainCoverage >= original.RequiredChainCoverage+semanticCorrectionMinDimensionGain ||
+		corrected.SourceDiversity >= original.SourceDiversity+semanticCorrectionMinDimensionGain ||
+		corrected.MMRDiversity >= original.MMRDiversity+semanticCorrectionMinDimensionGain
+}
+
+func sqliteFallbackCorrectionImproves(original *RetrievalConfidence, corrected *RetrievalConfidence) bool {
+	return corrected.AuthorityPassRatio > original.AuthorityPassRatio+retrievalConfidenceComparisonEpsilon &&
+		corrected.Overall+0.10 >= original.Overall
 }
 
 func memoryContextNodeIDs(context *MemoryContext) []string {
@@ -291,9 +321,15 @@ func (s *service) runRetrievalAttempt(ctx context.Context, req RetrievalRequest,
 }
 
 func (s *service) completeRetrievalAttempt(ctx context.Context, attempt retrievalAttemptResult, logAccess bool) (*MemoryContext, error) {
+	return s.completeRetrievalAttemptWithAction(ctx, attempt, logAccess, "")
+}
+
+func (s *service) completeRetrievalAttemptWithAction(ctx context.Context, attempt retrievalAttemptResult, logAccess bool, correctiveAction string) (*MemoryContext, error) {
 	var result memsqlite.MemoryContext
 	var err error
-	if logAccess {
+	if logAccess && correctiveAction != "" {
+		result, err = s.retrieve.CompleteFinalWithCorrectiveAction(ctx, attempt.finalCandidates, attempt.rerankResults, attempt.rerankDiagnostics, correctiveAction)
+	} else if logAccess {
 		result, err = s.retrieve.CompleteFinal(ctx, attempt.finalCandidates, attempt.rerankResults, attempt.rerankDiagnostics)
 	} else {
 		result, err = s.retrieve.CompleteFinalPreview(ctx, attempt.finalCandidates, attempt.rerankResults, attempt.rerankDiagnostics)

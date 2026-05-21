@@ -122,6 +122,59 @@ func TestEvaluateRetrievalConfidenceLowAnchorCoverageRequestsSemanticLight(t *te
 	}
 }
 
+func TestEvaluateRetrievalConfidenceLowSourceDiversityRequestsSemanticLight(t *testing.T) {
+	finalCandidates := PreparedFinalCandidates{
+		Query: QueryAnalysis{
+			Raw:           "咖啡相关的长期记忆",
+			TimeMode:      QueryTimeModeCurrent,
+			MemoryAbility: MemoryAbilityDirectFact,
+			EvidenceNeed:  EvidenceNeedExactObservation,
+		},
+		Policy: RetrievalPolicy{FinalMemoryCount: 4},
+	}
+	selected := []scoredFact{
+		confidenceFact("a", 0.90, []AnchorSourceBreakdown{{Source: AnchorSourceSQLiteSparse, Rank: 1, RawScore: 0.90}}, retrievalScoreBreakdown{AnchorEnergy: 0.9, FinalScore: 0.90}),
+		confidenceFact("b", 0.82, []AnchorSourceBreakdown{{Source: AnchorSourceSQLiteSparse, Rank: 2, RawScore: 0.82}}, retrievalScoreBreakdown{AnchorEnergy: 0.8, FinalScore: 0.82}),
+	}
+
+	got := evaluateRetrievalConfidence(finalCandidates, selected, selected, nil, nil)
+
+	if got.SourceDiversity >= 0.50 {
+		t.Fatalf("source_diversity = %f, want low diversity fixture", got.SourceDiversity)
+	}
+	if got.CorrectiveAction != RetrievalCorrectiveActionSemanticLight {
+		t.Fatalf("corrective action = %q, want semantic_light", got.CorrectiveAction)
+	}
+}
+
+func TestEvaluateRetrievalConfidenceLowMMRDiversityRequestsSemanticLight(t *testing.T) {
+	finalCandidates := PreparedFinalCandidates{
+		Query: QueryAnalysis{
+			Raw:           "咖啡相关的长期记忆",
+			TimeMode:      QueryTimeModeCurrent,
+			MemoryAbility: MemoryAbilityDirectFact,
+			EvidenceNeed:  EvidenceNeedExactObservation,
+		},
+		Policy: RetrievalPolicy{FinalMemoryCount: 4},
+	}
+	selected := []scoredFact{
+		confidenceFact("a", 0.90, []AnchorSourceBreakdown{{Source: AnchorSourceSQLiteSparse, Rank: 1, RawScore: 0.90}}, retrievalScoreBreakdown{AnchorEnergy: 0.9, FinalScore: 0.90}),
+	}
+	suppressions := []MemorySuppression{
+		{NodeType: string(core.NodeTypeFact), NodeID: "dup_a", Reason: MemorySuppressionReasonMMRDuplicate},
+		{NodeType: string(core.NodeTypeFact), NodeID: "dup_b", Reason: MemorySuppressionReasonMMRDuplicate},
+	}
+
+	got := evaluateRetrievalConfidence(finalCandidates, selected, selected, nil, suppressions)
+
+	if got.MMRDiversity >= 0.70 {
+		t.Fatalf("mmr_diversity = %f, want low diversity fixture", got.MMRDiversity)
+	}
+	if got.CorrectiveAction != RetrievalCorrectiveActionSemanticLight {
+		t.Fatalf("corrective action = %q, want semantic_light", got.CorrectiveAction)
+	}
+}
+
 func confidenceFact(id string, score float64, sources []AnchorSourceBreakdown, breakdown retrievalScoreBreakdown) scoredFact {
 	breakdown.FinalScore = score
 	return scoredFact{
