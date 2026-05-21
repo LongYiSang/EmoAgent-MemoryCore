@@ -84,14 +84,15 @@ type RetrievalAffectContext struct {
 }
 
 type MemoryContext struct {
-	Blocks          []MemoryBlock
-	DoNotMention    []MemorySuppression
-	TokenEstimate   int
-	Mirror          *MirrorDiagnostics
-	GraphActivation *GraphActivationDiagnostics
-	Rerank          *RerankDiagnostics
-	QueryAnalysis   *QueryAnalysis
-	AnchorFusion    *AnchorFusionDiagnostics
+	Blocks              []MemoryBlock
+	DoNotMention        []MemorySuppression
+	TokenEstimate       int
+	Mirror              *MirrorDiagnostics
+	GraphActivation     *GraphActivationDiagnostics
+	Rerank              *RerankDiagnostics
+	QueryAnalysis       *QueryAnalysis
+	AnchorFusion        *AnchorFusionDiagnostics
+	RetrievalConfidence *RetrievalConfidence
 }
 
 type MirrorDiagnostics struct {
@@ -286,30 +287,66 @@ type scoredFact struct {
 }
 
 type retrievalScoreBreakdown struct {
-	AnchorEnergy        float64 `json:"anchor_energy"`
-	GraphEnergy         float64 `json:"graph_energy"`
-	Importance          float64 `json:"importance"`
-	Recency             float64 `json:"recency"`
-	FactTypePrior       float64 `json:"fact_type_prior"`
-	Pinned              float64 `json:"pinned"`
-	EvidenceStrength    float64 `json:"evidence_strength"`
-	LifecycleMultiplier float64 `json:"lifecycle_multiplier"`
-	FatiguePenalty      float64 `json:"fatigue_penalty"`
-	SensitivityPenalty  float64 `json:"sensitivity_penalty"`
-	RerankScore         float64 `json:"rerank_score"`
-	RerankBoost         float64 `json:"rerank_boost"`
-	RerankStatus        string  `json:"rerank_status,omitempty"`
-	RerankDebugReason   string  `json:"rerank_debug_reason,omitempty"`
-	CompletionBonus     float64 `json:"completion_bonus,omitempty"`
-	CompletionSource    string  `json:"completion_source,omitempty"`
-	CompletionLinkType  string  `json:"completion_link_type,omitempty"`
-	LexicalCoverage     float64 `json:"lexical_coverage,omitempty"`
-	SlotCoverage        float64 `json:"slot_coverage,omitempty"`
-	ReflectionBoost     float64 `json:"reflection_boost,omitempty"`
-	HubSuppression      float64 `json:"hub_suppression,omitempty"`
-	PremiseRestatement  float64 `json:"premise_restatement_penalty,omitempty"`
-	FinalScore          float64 `json:"final_score"`
-	SuppressionReason   string  `json:"suppression_reason,omitempty"`
+	ActivationScore     float64                          `json:"activation_score"`
+	FusionScore         float64                          `json:"fusion_score,omitempty"`
+	AnchorEnergy        float64                          `json:"anchor_energy"`
+	GraphEnergy         float64                          `json:"graph_energy"`
+	Importance          float64                          `json:"importance"`
+	Recency             float64                          `json:"recency"`
+	FactTypePrior       float64                          `json:"fact_type_prior"`
+	Pinned              float64                          `json:"pinned"`
+	EvidenceStrength    float64                          `json:"evidence_strength"`
+	LifecycleMultiplier float64                          `json:"lifecycle_multiplier"`
+	FatiguePenalty      float64                          `json:"fatigue_penalty"`
+	SensitivityPenalty  float64                          `json:"sensitivity_penalty"`
+	RerankScore         float64                          `json:"rerank_score"`
+	RerankBoost         float64                          `json:"rerank_boost"`
+	RerankStatus        string                           `json:"rerank_status,omitempty"`
+	RerankDebugReason   string                           `json:"rerank_debug_reason,omitempty"`
+	CompletionBonus     float64                          `json:"completion_bonus,omitempty"`
+	CompletionSource    string                           `json:"completion_source,omitempty"`
+	CompletionLinkType  string                           `json:"completion_link_type,omitempty"`
+	LexicalCoverage     float64                          `json:"lexical_coverage,omitempty"`
+	SlotCoverage        float64                          `json:"slot_coverage,omitempty"`
+	ReflectionBoost     float64                          `json:"reflection_boost,omitempty"`
+	HubSuppression      float64                          `json:"hub_suppression,omitempty"`
+	PremiseRestatement  float64                          `json:"premise_restatement_penalty,omitempty"`
+	FinalScore          float64                          `json:"final_score"`
+	SuppressionReason   string                           `json:"suppression_reason,omitempty"`
+	QueryAnalysis       *retrievalQueryAnalysisBreakdown `json:"query_analysis,omitempty"`
+	ObservedConfidence  *RetrievalConfidence             `json:"observed_confidence,omitempty"`
+}
+
+type retrievalQueryAnalysisBreakdown struct {
+	RuleFit                     float64                        `json:"rule_fit"`
+	AnchorReadiness             float64                        `json:"anchor_readiness"`
+	SemanticNeed                float64                        `json:"semantic_need"`
+	ExpectedRetrievalConfidence float64                        `json:"expected_retrieval_confidence"`
+	Scores                      retrievalQueryAnalysisScores   `json:"scores"`
+	Decision                    retrievalQueryAnalysisDecision `json:"decision"`
+	SemanticMode                string                         `json:"semantic_mode,omitempty"`
+	RetrievalMode               string                         `json:"retrieval_mode,omitempty"`
+}
+
+type retrievalQueryAnalysisScores struct {
+	RuleFit                     float64 `json:"rule_fit"`
+	AnchorReadiness             float64 `json:"anchor_readiness"`
+	SemanticNeed                float64 `json:"semantic_need"`
+	ExpectedRetrievalConfidence float64 `json:"expected_retrieval_confidence"`
+}
+
+type retrievalQueryAnalysisDecision struct {
+	SemanticMode  string `json:"semantic_mode,omitempty"`
+	RetrievalMode string `json:"retrieval_mode,omitempty"`
+}
+
+type pendingAccessEvent struct {
+	fact             core.Fact
+	accessType       string
+	score            float64
+	rank             int
+	contextBlockType string
+	breakdown        retrievalScoreBreakdown
 }
 
 func NewRetrievalRepository(db *sql.DB, newID func() string, now func() time.Time) *RetrievalRepository {
@@ -434,6 +471,14 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 }
 
 func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
+	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, true)
+}
+
+func (r *RetrievalRepository) CompleteFinalPreview(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics) (MemoryContext, error) {
+	return r.completeFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics, false)
+}
+
+func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics, logAccess bool) (MemoryContext, error) {
 	req := finalCandidates.Request
 	query := finalCandidates.Query
 	policy := finalCandidates.Policy
@@ -457,13 +502,18 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 		QueryAnalysis:   &query,
 		AnchorFusion:    &AnchorFusionDiagnostics{Seeds: fusedAnchors},
 	}
+	var accessLogs []pendingAccessEvent
 	selectable := make([]scoredFact, 0, len(scored))
 	for _, candidate := range scored {
 		if candidate.Suppressed {
 			candidate.Breakdown.SuppressionReason = candidate.Suppression
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
-				return MemoryContext{}, err
-			}
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
 			continue
 		}
 		if candidate.Score < defaultMinFinalScore {
@@ -489,9 +539,13 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 				NodeID:   candidate.Fact.ID,
 				Reason:   MemorySuppressionReasonContextBudget,
 			})
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
-				return MemoryContext{}, err
-			}
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
 			continue
 		}
 		selected = append(selected, candidate)
@@ -520,9 +574,13 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 				NodeID:   candidate.Fact.ID,
 				Reason:   MemorySuppressionReasonMMRDuplicate,
 			})
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
-				return MemoryContext{}, err
-			}
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
 			continue
 		}
 		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
@@ -532,9 +590,13 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 				NodeID:   candidate.Fact.ID,
 				Reason:   MemorySuppressionReasonContextBudget,
 			})
-			if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
-				return MemoryContext{}, err
-			}
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
 			continue
 		}
 		selected = append(selected, candidate)
@@ -550,9 +612,13 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 			NodeID:   candidate.Fact.ID,
 			Reason:   MemorySuppressionReasonMMRDuplicate,
 		})
-		if err := r.logAccessEvent(ctx, req, candidate.Fact, "suppressed", candidate.Score, nil, MemoryBlockTypeFacts, candidate.Breakdown); err != nil {
-			return MemoryContext{}, err
-		}
+		accessLogs = append(accessLogs, pendingAccessEvent{
+			fact:             candidate.Fact,
+			accessType:       "suppressed",
+			score:            candidate.Score,
+			contextBlockType: MemoryBlockTypeFacts,
+			breakdown:        candidate.Breakdown,
+		})
 	}
 	selected, err := r.ensureSelectedHistoricalSupersedesCompletions(ctx, req, query, policy, finalCandidates.Now, selected, scored)
 	if err != nil {
@@ -566,13 +632,48 @@ func (r *RetrievalRepository) CompleteFinal(ctx context.Context, finalCandidates
 	if tokenEstimate > 0 {
 		contextResult.TokenEstimate = tokenEstimate
 	}
-	for rank, candidate := range selected {
-		rank := rank + 1
-		blockType := blockTypeByFactID[candidate.Fact.ID]
-		if blockType == "" {
-			blockType = MemoryBlockTypeFacts
+	confidence := evaluateRetrievalConfidence(finalCandidates, scored, selected, blocks, contextResult.DoNotMention)
+	contextResult.RetrievalConfidence = &confidence
+	if confidence.CorrectiveAction == RetrievalCorrectiveActionSuppressMemoryInjection {
+		for _, candidate := range selected {
+			reason := confidence.HardFailureReason
+			if reason == "" {
+				reason = confidence.CorrectiveAction
+			}
+			candidate.Breakdown.SuppressionReason = reason
+			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   candidate.Fact.ID,
+				Reason:   reason,
+			})
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
 		}
-		if err := r.logAccessEvent(ctx, req, candidate.Fact, "retrieved", candidate.Score, &rank, blockType, candidate.Breakdown); err != nil {
+		contextResult.Blocks = nil
+		contextResult.TokenEstimate = 0
+	} else {
+		for rank, candidate := range selected {
+			blockType := blockTypeByFactID[candidate.Fact.ID]
+			if blockType == "" {
+				blockType = MemoryBlockTypeFacts
+			}
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "retrieved",
+				score:            candidate.Score,
+				rank:             rank + 1,
+				contextBlockType: blockType,
+				breakdown:        candidate.Breakdown,
+			})
+		}
+	}
+	if logAccess {
+		if err := r.logAccessEvents(ctx, req, query, &confidence, accessLogs); err != nil {
 			return MemoryContext{}, err
 		}
 	}
@@ -706,6 +807,8 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			sensitivityPenalty
 		score := baseScore * lifecycleMultiplier
 		breakdown := retrievalScoreBreakdown{
+			ActivationScore:     candidate.AnchorEnergy,
+			FusionScore:         candidate.FusedAnchorScore,
 			AnchorEnergy:        candidate.AnchorEnergy,
 			GraphEnergy:         candidate.GraphEnergy,
 			Importance:          fact.Importance,
@@ -1306,6 +1409,47 @@ WHERE session_id = ?
   AND node_id = ?
   AND access_type = 'retrieved'`, *sessionID, factID).Scan(&count)
 	return count, err
+}
+
+func (r *RetrievalRepository) logAccessEvents(ctx context.Context, req RetrievalRequest, query QueryAnalysis, confidence *RetrievalConfidence, events []pendingAccessEvent) error {
+	for _, event := range events {
+		breakdown := enrichScoreBreakdown(event.breakdown, query, confidence)
+		var rank *int
+		if event.rank > 0 {
+			value := event.rank
+			rank = &value
+		}
+		if err := r.logAccessEvent(ctx, req, event.fact, event.accessType, event.score, rank, event.contextBlockType, breakdown); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func enrichScoreBreakdown(breakdown retrievalScoreBreakdown, query QueryAnalysis, confidence *RetrievalConfidence) retrievalScoreBreakdown {
+	breakdown.QueryAnalysis = &retrievalQueryAnalysisBreakdown{
+		RuleFit:                     query.Scores.RuleFit,
+		AnchorReadiness:             query.Scores.AnchorReadiness,
+		SemanticNeed:                query.Scores.SemanticNeed,
+		ExpectedRetrievalConfidence: query.Scores.ExpectedRetrievalConfidence,
+		SemanticMode:                query.Decision.SemanticMode,
+		RetrievalMode:               query.Decision.RetrievalMode,
+		Scores: retrievalQueryAnalysisScores{
+			RuleFit:                     query.Scores.RuleFit,
+			AnchorReadiness:             query.Scores.AnchorReadiness,
+			SemanticNeed:                query.Scores.SemanticNeed,
+			ExpectedRetrievalConfidence: query.Scores.ExpectedRetrievalConfidence,
+		},
+		Decision: retrievalQueryAnalysisDecision{
+			SemanticMode:  query.Decision.SemanticMode,
+			RetrievalMode: query.Decision.RetrievalMode,
+		},
+	}
+	if confidence != nil {
+		copy := *confidence
+		breakdown.ObservedConfidence = &copy
+	}
+	return breakdown
 }
 
 func (r *RetrievalRepository) logAccessEvent(ctx context.Context, req RetrievalRequest, fact core.Fact, accessType string, score float64, rank *int, contextBlockType string, breakdown retrievalScoreBreakdown) error {

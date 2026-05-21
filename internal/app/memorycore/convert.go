@@ -125,14 +125,15 @@ func factFromCore(fact *core.Fact) *Fact {
 
 func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 	result := &MemoryContext{
-		Blocks:          make([]MemoryBlock, 0, len(context.Blocks)),
-		DoNotMention:    make([]MemorySuppression, 0, len(context.DoNotMention)),
-		TokenEstimate:   context.TokenEstimate,
-		Mirror:          mirrorDiagnosticsFromStore(context.Mirror),
-		GraphActivation: graphActivationDiagnosticsFromStore(context.GraphActivation),
-		Rerank:          rerankDiagnosticsFromStore(context.Rerank),
-		QueryAnalysis:   queryAnalysisFromStore(context.QueryAnalysis),
-		AnchorFusion:    anchorFusionDiagnosticsFromStore(context.AnchorFusion),
+		Blocks:              make([]MemoryBlock, 0, len(context.Blocks)),
+		DoNotMention:        make([]MemorySuppression, 0, len(context.DoNotMention)),
+		TokenEstimate:       context.TokenEstimate,
+		Mirror:              mirrorDiagnosticsFromStore(context.Mirror),
+		GraphActivation:     graphActivationDiagnosticsFromStore(context.GraphActivation),
+		Rerank:              rerankDiagnosticsFromStore(context.Rerank),
+		QueryAnalysis:       queryAnalysisFromStore(context.QueryAnalysis),
+		AnchorFusion:        anchorFusionDiagnosticsFromStore(context.AnchorFusion),
+		RetrievalConfidence: retrievalConfidenceFromStore(context.RetrievalConfidence),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -152,6 +153,26 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		})
 	}
 	return result
+}
+
+func retrievalConfidenceFromStore(value *memsqlite.RetrievalConfidence) *RetrievalConfidence {
+	if value == nil {
+		return nil
+	}
+	return &RetrievalConfidence{
+		CandidateRecallProxy:  value.CandidateRecallProxy,
+		SourceDiversity:       value.SourceDiversity,
+		AnchorCoverage:        value.AnchorCoverage,
+		TopRankMargin:         value.TopRankMargin,
+		AuthorityPassRatio:    value.AuthorityPassRatio,
+		TemporalConsistency:   value.TemporalConsistency,
+		RequiredChainCoverage: value.RequiredChainCoverage,
+		MMRDiversity:          value.MMRDiversity,
+		SensitivitySafety:     value.SensitivitySafety,
+		Overall:               value.Overall,
+		CorrectiveAction:      value.CorrectiveAction,
+		HardFailureReason:     value.HardFailureReason,
+	}
 }
 
 func memoryContextItemFromStore(item memsqlite.MemoryContextItem) MemoryContextItem {

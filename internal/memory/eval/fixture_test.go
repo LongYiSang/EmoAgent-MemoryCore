@@ -185,6 +185,10 @@ assertions:
   - type: forbidden_recall_zero
     step: retrieve
     forbidden_node_ids: [$related.fact_id]
+  - type: observed_confidence
+    step: retrieve
+    column: overall
+    max: 1.0
 `))
 	if err != nil {
 		t.Fatalf("load fixture: %v", err)

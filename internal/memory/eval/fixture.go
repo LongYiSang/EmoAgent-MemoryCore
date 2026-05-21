@@ -660,6 +660,7 @@ func knownAssertionType(value string) bool {
 		"memory_contains",
 		"memory_not_contains",
 		"query_analysis",
+		"observed_confidence",
 		"anchor_fusion",
 		"fact_count",
 		"fact_column",

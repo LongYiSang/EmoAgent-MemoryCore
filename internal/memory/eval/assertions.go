@@ -19,6 +19,8 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertMemoryContains(assertion, false)
 	case "query_analysis":
 		return s.assertQueryAnalysis(assertion)
+	case "observed_confidence":
+		return s.assertObservedConfidence(assertion)
 	case "anchor_fusion":
 		return s.assertAnchorFusion(assertion)
 	case "selected_recall_at_k":
@@ -224,6 +226,71 @@ func (s *runState) assertQueryAnalysis(assertion Assertion) error {
 		}
 	}
 	return nil
+}
+
+func (s *runState) assertObservedConfidence(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Retrieval == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "retrieve step " + assertion.Step, Actual: "missing"}
+	}
+	confidence := result.Retrieval.RetrievalConfidence
+	if confidence == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "observed confidence present", Actual: "nil"}
+	}
+	if assertion.Action != "" && confidence.CorrectiveAction != assertion.Action {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "corrective_action=" + assertion.Action, Actual: "corrective_action=" + confidence.CorrectiveAction}
+	}
+	if assertion.Status != "" && confidence.HardFailureReason != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "hard_failure_reason=" + assertion.Status, Actual: "hard_failure_reason=" + confidence.HardFailureReason}
+	}
+	column := assertion.Column
+	if column == "" {
+		column = "overall"
+	}
+	actual, ok := observedConfidenceColumn(confidence, column)
+	if !ok {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "supported observed confidence column", Actual: column}
+	}
+	if assertion.Min > 0 && actual < assertion.Min {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("%s>=%.3f", column, assertion.Min), Actual: fmt.Sprintf("%s=%.3f", column, actual)}
+	}
+	if assertion.Max > 0 && actual > assertion.Max {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: fmt.Sprintf("%s<=%.3f", column, assertion.Max), Actual: fmt.Sprintf("%s=%.3f", column, actual)}
+	}
+	if assertion.Equals != "" && fmt.Sprintf("%.3f", actual) != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: column + "=" + assertion.Equals, Actual: fmt.Sprintf("%s=%.3f", column, actual)}
+	}
+	return nil
+}
+
+func observedConfidenceColumn(confidence *memorycore.RetrievalConfidence, column string) (float64, bool) {
+	if confidence == nil {
+		return 0, false
+	}
+	switch strings.TrimSpace(column) {
+	case "candidate_recall_proxy":
+		return confidence.CandidateRecallProxy, true
+	case "source_diversity":
+		return confidence.SourceDiversity, true
+	case "anchor_coverage":
+		return confidence.AnchorCoverage, true
+	case "top_rank_margin":
+		return confidence.TopRankMargin, true
+	case "authority_pass_ratio":
+		return confidence.AuthorityPassRatio, true
+	case "temporal_consistency":
+		return confidence.TemporalConsistency, true
+	case "required_chain_coverage":
+		return confidence.RequiredChainCoverage, true
+	case "mmr_diversity":
+		return confidence.MMRDiversity, true
+	case "sensitivity_safety":
+		return confidence.SensitivitySafety, true
+	case "overall":
+		return confidence.Overall, true
+	default:
+		return 0, false
+	}
 }
 
 func (s *runState) assertAnchorFusion(assertion Assertion) error {

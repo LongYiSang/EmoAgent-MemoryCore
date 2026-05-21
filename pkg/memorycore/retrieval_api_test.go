@@ -37,6 +37,26 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	requireAccessEvent(t, db, fact.ID, "retrieved")
+	breakdown := requireAccessEventBreakdown(t, db, fact.ID, "retrieved")
+	if _, ok := breakdown["activation_score"].(float64); !ok {
+		t.Fatalf("activation_score = %#v, want number", breakdown["activation_score"])
+	}
+	if _, ok := breakdown["graph_energy"].(float64); !ok {
+		t.Fatalf("graph_energy = %#v, want number", breakdown["graph_energy"])
+	}
+	if _, ok := breakdown["final_score"].(float64); !ok {
+		t.Fatalf("final_score = %#v, want number", breakdown["final_score"])
+	}
+	requireBreakdownObject(t, breakdown, "query_analysis")
+	observed := requireBreakdownObject(t, breakdown, "observed_confidence")
+	if _, ok := observed["overall"].(float64); !ok {
+		t.Fatalf("observed_confidence.overall = %#v, want number", observed["overall"])
+	}
+	queryAnalysis := requireBreakdownObject(t, breakdown, "query_analysis")
+	scores := requireBreakdownObject(t, queryAnalysis, "scores")
+	if _, ok := scores["expected_retrieval_confidence"].(float64); !ok {
+		t.Fatalf("query_analysis.scores.expected_retrieval_confidence = %#v, want number", scores["expected_retrieval_confidence"])
+	}
 }
 
 func TestServiceRetrieveChineseCounterexampleExpansionWorksWithQueryAnalysisDisabled(t *testing.T) {
@@ -604,6 +624,102 @@ func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 	}
 	if contextResult.Mirror.SidecarCandidateCount != 1 || contextResult.Mirror.MappedCandidateCount != 1 || contextResult.Mirror.DroppedCandidateCount != 0 {
 		t.Fatalf("mirror counts = %#v", contextResult.Mirror)
+	}
+}
+
+func TestServiceRetrieveLowAuthorityConfidenceFallsBackToSQLiteOnce(t *testing.T) {
+	ctx := context.Background()
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorService(t, ctx, adapter)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡，也提到过隐藏茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	coffee := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	hidden := consolidateLiteral(t, ctx, svc, userID, "likes", "隐藏茶", "用户喜欢隐藏茶。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
+	insertMirrorMapForFact(t, db, hidden.ID, 7011, "indexed")
+	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7011, Score: 0.99, Source: "trivium_dense", Rank: 1}}
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			UseFTS:           true,
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with corrective fallback: %v", err)
+	}
+	requireMemoryItem(t, contextResult, coffee.ID, "用户喜欢咖啡。", "")
+	requireNoMemoryItem(t, contextResult, hidden.ID)
+	if len(adapter.candidateRequests) != 1 {
+		t.Fatalf("mirror candidate requests = %d, want one initial request before sqlite fallback", len(adapter.candidateRequests))
+	}
+	if contextResult.RetrievalConfidence == nil {
+		t.Fatalf("retrieval confidence is nil")
+	}
+	if contextResult.RetrievalConfidence.CorrectiveAction != memorycore.RetrievalCorrectiveActionSQLiteFallback {
+		t.Fatalf("corrective action = %q, want sqlite_fallback", contextResult.RetrievalConfidence.CorrectiveAction)
+	}
+	if contextResult.RetrievalConfidence.AuthorityPassRatio != 1 {
+		t.Fatalf("authority_pass_ratio = %f, want final sqlite fallback ratio 1", contextResult.RetrievalConfidence.AuthorityPassRatio)
+	}
+}
+
+func TestServiceRetrieveCorrectiveSemanticFailureFallsBackToSQLite(t *testing.T) {
+	ctx := context.Background()
+	semanticCalls := 0
+	semanticSidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		semanticCalls++
+		http.Error(w, "semantic unavailable", http.StatusServiceUnavailable)
+	}))
+	defer semanticSidecar.Close()
+
+	adapter := &retrievalMirrorAdapter{}
+	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, adapter, memorycore.QueryAnalysisOptions{
+		Provider:   memorycore.QueryAnalysisProviderSidecar,
+		Mode:       memorycore.QueryAnalysisModeRuleOnlyExplicit,
+		SidecarURL: semanticSidecar.URL,
+		Timeout:    time.Second,
+	})
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "早会让我抗拒上班。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "dislikes", "早会", "用户因为早会安排而抗拒上班。", episode.ID).Fact
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	updateFactColumn(t, db, fact.ID, "importance", 1.0)
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "为什么最近抗拒早会",
+		Policy: memorycore.RetrievalPolicy{
+			UseMirror:        true,
+			UseFTS:           false,
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with semantic corrective failure: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户因为早会安排而抗拒上班。", "")
+	if semanticCalls != 1 {
+		t.Fatalf("semantic corrective calls = %d, want 1", semanticCalls)
+	}
+	if len(adapter.candidateRequests) != 1 {
+		t.Fatalf("mirror candidate requests = %d, want one initial request before sqlite fallback", len(adapter.candidateRequests))
+	}
+	if contextResult.Mirror == nil || contextResult.Mirror.Status != "disabled_by_corrective_sqlite_fallback" {
+		t.Fatalf("mirror diagnostics = %#v, want corrective sqlite fallback", contextResult.Mirror)
+	}
+	if contextResult.RetrievalConfidence == nil || contextResult.RetrievalConfidence.CorrectiveAction != memorycore.RetrievalCorrectiveActionSemanticLight {
+		t.Fatalf("retrieval confidence = %#v, want semantic_light corrective action", contextResult.RetrievalConfidence)
 	}
 }
 
@@ -2130,6 +2246,35 @@ WHERE node_type = 'fact' AND node_id = ? AND access_type = ?`, factID, accessTyp
 	if count == 0 {
 		t.Fatalf("access event for %s/%s not found", factID, accessType)
 	}
+}
+
+func requireAccessEventBreakdown(t *testing.T, db *sql.DB, factID string, accessType string) map[string]any {
+	t.Helper()
+
+	var raw string
+	if err := db.QueryRow(`
+SELECT score_breakdown_json
+FROM memory_access_events
+WHERE node_type = 'fact' AND node_id = ? AND access_type = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, factID, accessType).Scan(&raw); err != nil {
+		t.Fatalf("load access event breakdown: %v", err)
+	}
+	var breakdown map[string]any
+	if err := json.Unmarshal([]byte(raw), &breakdown); err != nil {
+		t.Fatalf("decode score_breakdown_json %q: %v", raw, err)
+	}
+	return breakdown
+}
+
+func requireBreakdownObject(t *testing.T, breakdown map[string]any, key string) map[string]any {
+	t.Helper()
+
+	value, ok := breakdown[key].(map[string]any)
+	if !ok {
+		t.Fatalf("breakdown[%s] = %#v, want object", key, breakdown[key])
+	}
+	return value
 }
 
 func updateFactColumn(t *testing.T, db *sql.DB, factID string, column string, value any) {

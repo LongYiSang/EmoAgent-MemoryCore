@@ -138,6 +138,7 @@ type (
 	RerankDiagnostics                   = appcore.RerankDiagnostics
 	RetentionJobName                    = appcore.RetentionJobName
 	RetentionJobResult                  = appcore.RetentionJobResult
+	RetrievalConfidence                 = appcore.RetrievalConfidence
 	RetrievalAffectContext              = appcore.RetrievalAffectContext
 	RetrievalPolicy                     = appcore.RetrievalPolicy
 	RetrievalRequest                    = appcore.RetrievalRequest
@@ -354,8 +355,13 @@ const (
 )
 
 const (
-	MemorySuppressionReasonContextBudget = appcore.MemorySuppressionReasonContextBudget
-	MemorySuppressionReasonMMRDuplicate  = appcore.MemorySuppressionReasonMMRDuplicate
+	MemorySuppressionReasonContextBudget             = appcore.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonMMRDuplicate              = appcore.MemorySuppressionReasonMMRDuplicate
+	RetrievalCorrectiveActionSemanticLight           = appcore.RetrievalCorrectiveActionSemanticLight
+	RetrievalCorrectiveActionSQLiteFallback          = appcore.RetrievalCorrectiveActionSQLiteFallback
+	RetrievalCorrectiveActionSuppressMemoryInjection = appcore.RetrievalCorrectiveActionSuppressMemoryInjection
+	RetrievalHardFailureForbiddenCandidate           = appcore.RetrievalHardFailureForbiddenCandidate
+	RetrievalHardFailureTemporalInconsistency        = appcore.RetrievalHardFailureTemporalInconsistency
 )
 
 var (

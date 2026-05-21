@@ -28,6 +28,12 @@ const (
 	MemorySuppressionReasonFatigue       = core.MemorySuppressionReasonFatigue
 	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
 	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
+
+	RetrievalCorrectiveActionSemanticLight           = "semantic_light"
+	RetrievalCorrectiveActionSQLiteFallback          = "sqlite_fallback"
+	RetrievalCorrectiveActionSuppressMemoryInjection = "suppress_memory_injection"
+	RetrievalHardFailureForbiddenCandidate           = "forbidden_candidate"
+	RetrievalHardFailureTemporalInconsistency        = "temporal_inconsistency"
 )
 
 type QueryTimeMode string
@@ -121,14 +127,30 @@ type RetrievalAffectContext struct {
 }
 
 type MemoryContext struct {
-	Blocks          []MemoryBlock
-	DoNotMention    []MemorySuppression
-	TokenEstimate   int
-	Mirror          *MirrorRetrievalDiagnostics
-	GraphActivation *GraphActivationDiagnostics `json:"graph_activation,omitempty"`
-	Rerank          *RerankDiagnostics          `json:"rerank,omitempty"`
-	QueryAnalysis   *QueryAnalysis
-	AnchorFusion    *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
+	Blocks              []MemoryBlock
+	DoNotMention        []MemorySuppression
+	TokenEstimate       int
+	Mirror              *MirrorRetrievalDiagnostics
+	GraphActivation     *GraphActivationDiagnostics `json:"graph_activation,omitempty"`
+	Rerank              *RerankDiagnostics          `json:"rerank,omitempty"`
+	QueryAnalysis       *QueryAnalysis
+	AnchorFusion        *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
+	RetrievalConfidence *RetrievalConfidence     `json:"retrieval_confidence,omitempty"`
+}
+
+type RetrievalConfidence struct {
+	CandidateRecallProxy  float64 `json:"candidate_recall_proxy"`
+	SourceDiversity       float64 `json:"source_diversity"`
+	AnchorCoverage        float64 `json:"anchor_coverage"`
+	TopRankMargin         float64 `json:"top_rank_margin"`
+	AuthorityPassRatio    float64 `json:"authority_pass_ratio"`
+	TemporalConsistency   float64 `json:"temporal_consistency"`
+	RequiredChainCoverage float64 `json:"required_chain_coverage"`
+	MMRDiversity          float64 `json:"mmr_diversity"`
+	SensitivitySafety     float64 `json:"sensitivity_safety"`
+	Overall               float64 `json:"overall"`
+	CorrectiveAction      string  `json:"corrective_action,omitempty"`
+	HardFailureReason     string  `json:"hard_failure_reason,omitempty"`
 }
 
 type QueryAnalysis struct {
@@ -269,35 +291,35 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	ScorerVersion           string
-	RuleConfidenceLegacy    float64
-	RuleConfidenceReason    string
-	SemanticDecisionLegacy  bool
-	MinConfidenceToOverride float64
-	Signals                 []string
-	EntityMentionCount      int
-	Scores                  QueryAnalysisScores
-	FieldConfidence         QueryAnalysisConfidence
-	RuleDecision            QueryAnalysisDecision
-	AdaptiveDecision        QueryAnalysisDecision
-	RuleEvidence            []QueryAnalysisEvidence
-	RuleAlternatives        []QueryAnalysisAlternative
-	SemanticStatus          string
-	SemanticProvider        string
-	SemanticModel           string
-	PromptVersion           string
-	SemanticLatencyMs       int64
-	FallbackReason          string
-	RewriteCount            int
-	SemanticAnchorCount     int
-	DroppedRewriteCount     int
-	DroppedRewriteReasons   []string
+	ScorerVersion                string
+	RuleConfidenceLegacy         float64
+	RuleConfidenceReason         string
+	SemanticDecisionLegacy       bool
+	MinConfidenceToOverride      float64
+	Signals                      []string
+	EntityMentionCount           int
+	Scores                       QueryAnalysisScores
+	FieldConfidence              QueryAnalysisConfidence
+	RuleDecision                 QueryAnalysisDecision
+	AdaptiveDecision             QueryAnalysisDecision
+	RuleEvidence                 []QueryAnalysisEvidence
+	RuleAlternatives             []QueryAnalysisAlternative
+	SemanticStatus               string
+	SemanticProvider             string
+	SemanticModel                string
+	PromptVersion                string
+	SemanticLatencyMs            int64
+	FallbackReason               string
+	RewriteCount                 int
+	SemanticAnchorCount          int
+	DroppedRewriteCount          int
+	DroppedRewriteReasons        []string
 	DroppedSemanticAnchorCount   int
 	DroppedSemanticAnchorReasons []string
-	EnglishRewriteCount     int
-	SemanticDriftCount      int
-	FieldMergeDecisions     []FieldMergeDecision
-	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
+	EnglishRewriteCount          int
+	SemanticDriftCount           int
+	FieldMergeDecisions          []FieldMergeDecision
+	SemanticAnalysis             *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
 }
 
 type SemanticQueryAnalysisDiagnostics struct {

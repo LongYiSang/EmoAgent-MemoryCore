@@ -33,20 +33,213 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	analysis := ruleAnalysis
-	semanticLane := s.startSemanticQueryAnalysisLane(ctx, queryReq, ruleAnalysis)
-	sidecarCtx, sidecarCancel := sidecarTotalContext(ctx, s.sidecarResilience.Timeouts.Total)
-	defer sidecarCancel()
-	mirrorCandidates, mirrorDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, ruleAnalysis, policy, false)
+	attempt, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{})
 	if err != nil {
 		return nil, err
 	}
-	if semantic, ok := s.softJoinSemanticQueryAnalysisLane(ctx, semanticLane, ruleAnalysis); ok {
-		analysis = semantic
-		if semantic.Source == memsqlite.QueryAnalysisSourceMerged {
-			semanticCandidates, semanticDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, semantic, policy, true)
+	preview, err := s.completeRetrievalAttempt(ctx, attempt, false)
+	if err != nil {
+		return nil, err
+	}
+	action := retrievalCorrectiveAction(preview)
+	if action == "" || action == memsqlite.RetrievalCorrectiveActionSuppressMemoryInjection {
+		return s.completeRetrievalAttempt(ctx, attempt, true)
+	}
+	if preview.QueryAnalysis != nil && preview.QueryAnalysis.Source == QueryAnalysisSourceSemanticFallback {
+		return s.completeRetrievalAttempt(ctx, attempt, true)
+	}
+	corrected, ok, err := s.runCorrectiveRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, action)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return s.completeRetrievalAttempt(ctx, attempt, true)
+	}
+	correctedPreview, err := s.completeRetrievalAttempt(ctx, corrected, false)
+	if err != nil {
+		return nil, err
+	}
+	if !shouldUseCorrectedRetrieval(preview, correctedPreview) {
+		return s.completeRetrievalAttempt(ctx, attempt, true)
+	}
+	result, err := s.completeRetrievalAttempt(ctx, corrected, true)
+	if err != nil {
+		return nil, err
+	}
+	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
+		preserveOriginalRetrievalDiagnostics(result, preview)
+	}
+	annotateCorrectiveAction(result, action)
+	return result, nil
+}
+
+type retrievalAttemptOptions struct {
+	SQLiteFallback bool
+	Analysis       *memsqlite.QueryAnalysis
+}
+
+type retrievalAttemptResult struct {
+	finalCandidates   memsqlite.PreparedFinalCandidates
+	rerankResults     []memsqlite.RerankResultItem
+	rerankDiagnostics *memsqlite.RerankDiagnostics
+}
+
+func (s *service) runCorrectiveRetrievalAttempt(ctx context.Context, req RetrievalRequest, queryReq QueryAnalysisRequest, personaID string, now time.Time, policy RetrievalPolicy, ruleAnalysis memsqlite.QueryAnalysis, action string) (retrievalAttemptResult, bool, error) {
+	switch action {
+	case memsqlite.RetrievalCorrectiveActionSQLiteFallback:
+		result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{SQLiteFallback: true})
+		return result, true, err
+	case memsqlite.RetrievalCorrectiveActionSemanticLight:
+		semantic, attempted, ok := s.correctiveSemanticLight(ctx, queryReq, ruleAnalysis)
+		if ok {
+			result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{Analysis: &semantic})
+			if err == nil {
+				return result, true, nil
+			}
+		}
+		if !attempted {
+			return retrievalAttemptResult{}, false, nil
+		}
+		result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{SQLiteFallback: true})
+		return result, true, err
+	default:
+		return retrievalAttemptResult{}, false, nil
+	}
+}
+
+func (s *service) correctiveSemanticLight(ctx context.Context, req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) (memsqlite.QueryAnalysis, bool, bool) {
+	if s.queryPipeline.semantic == nil ||
+		s.queryPipeline.options.Provider != QueryAnalysisProviderSidecar ||
+		rule.Source == memsqlite.QueryAnalysisSourceSemanticFallback {
+		return memsqlite.QueryAnalysis{}, false, false
+	}
+	semanticReq := s.queryPipeline.semanticRequestForRule(req, rule, memsqlite.RetrievalCorrectiveActionSemanticLight)
+	stageCtx := ctx
+	cancel := func() {}
+	if s.queryPipeline.options.Timeout > 0 {
+		stageCtx, cancel = context.WithTimeout(ctx, s.queryPipeline.options.Timeout)
+	}
+	defer cancel()
+	semantic, err := s.queryPipeline.analyzeSemantic(stageCtx, semanticReq)
+	if err != nil || semantic == nil || semantic.Status != "ok" || semantic.Degraded {
+		return memsqlite.QueryAnalysis{}, true, false
+	}
+	return mergeSemanticQueryAnalysis(rule, *semantic, s.queryPipeline.options, semanticReq.VisibleEntityHints), true, true
+}
+
+func retrievalCorrectiveAction(result *MemoryContext) string {
+	if result == nil || result.RetrievalConfidence == nil {
+		return ""
+	}
+	return result.RetrievalConfidence.CorrectiveAction
+}
+
+func annotateCorrectiveAction(result *MemoryContext, action string) {
+	if result == nil {
+		return
+	}
+	if result.RetrievalConfidence == nil {
+		result.RetrievalConfidence = &RetrievalConfidence{}
+	}
+	result.RetrievalConfidence.CorrectiveAction = action
+}
+
+func preserveOriginalRetrievalDiagnostics(result *MemoryContext, original *MemoryContext) {
+	if result == nil || original == nil {
+		return
+	}
+	result.Mirror = original.Mirror
+	result.GraphActivation = original.GraphActivation
+	result.Rerank = original.Rerank
+	result.AnchorFusion = original.AnchorFusion
+}
+
+func shouldUseCorrectedRetrieval(original *MemoryContext, corrected *MemoryContext) bool {
+	if corrected == nil {
+		return false
+	}
+	if original == nil || original.RetrievalConfidence == nil || corrected.RetrievalConfidence == nil {
+		return true
+	}
+	if corrected.RetrievalConfidence.CorrectiveAction == memsqlite.RetrievalCorrectiveActionSuppressMemoryInjection {
+		return true
+	}
+	originalIDs := memoryContextNodeIDs(original)
+	correctedIDs := memoryContextNodeIDs(corrected)
+	if len(originalIDs) == 0 && len(correctedIDs) > 0 {
+		return true
+	}
+	if len(originalIDs) == 0 && len(correctedIDs) == 0 {
+		return false
+	}
+	if len(originalIDs) > 0 && len(correctedIDs) == 0 {
+		return false
+	}
+	if !sameStringSet(originalIDs, correctedIDs) {
+		return false
+	}
+	return corrected.RetrievalConfidence.Overall+0.000001 >= original.RetrievalConfidence.Overall
+}
+
+func memoryContextNodeIDs(context *MemoryContext) []string {
+	if context == nil {
+		return nil
+	}
+	var ids []string
+	for _, block := range context.Blocks {
+		for _, item := range block.Items {
+			if strings.TrimSpace(item.NodeID) != "" {
+				ids = append(ids, item.NodeID)
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *service) runRetrievalAttempt(ctx context.Context, req RetrievalRequest, queryReq QueryAnalysisRequest, personaID string, now time.Time, policy RetrievalPolicy, ruleAnalysis memsqlite.QueryAnalysis, options retrievalAttemptOptions) (retrievalAttemptResult, error) {
+	analysis := ruleAnalysis
+	if options.Analysis != nil {
+		analysis = *options.Analysis
+	}
+	if options.SQLiteFallback {
+		policy.UseMirror = false
+		policy.UseFTS = true
+	} else if options.Analysis == nil {
+		semanticLane := s.startSemanticQueryAnalysisLane(ctx, queryReq, ruleAnalysis)
+		if semanticLane != nil {
+			defer semanticLane.cancel()
+		}
+		if semantic, ok := s.softJoinSemanticQueryAnalysisLane(ctx, semanticLane, ruleAnalysis); ok {
+			analysis = semantic
+		}
+	}
+	sidecarCtx, sidecarCancel := sidecarTotalContext(ctx, s.sidecarResilience.Timeouts.Total)
+	defer sidecarCancel()
+	var mirrorCandidates []memsqlite.RetrievalMirrorCandidate
+	mirrorDiagnostics := &memsqlite.MirrorDiagnostics{Status: "disabled_by_corrective_sqlite_fallback", Degraded: true, FallbackReason: "observed_confidence_sqlite_fallback"}
+	var err error
+	if !options.SQLiteFallback {
+		mirrorCandidates, mirrorDiagnostics, err = s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, ruleAnalysis, policy, false)
+		if err != nil {
+			return retrievalAttemptResult{}, err
+		}
+		if analysis.Source == memsqlite.QueryAnalysisSourceMerged {
+			semanticCandidates, semanticDiagnostics, err := s.mirrorFactCandidates(ctx, sidecarCtx, personaID, req.QueryText, analysis, policy, true)
 			if err != nil {
-				return nil, err
+				return retrievalAttemptResult{}, err
 			}
 			mirrorCandidates = mergeRetrievalMirrorCandidates(mirrorCandidates, semanticCandidates)
 			mirrorDiagnostics = mergeMirrorDiagnostics(mirrorDiagnostics, semanticDiagnostics)
@@ -76,21 +269,35 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 		MirrorDiagnostics: mirrorDiagnostics,
 	})
 	if err != nil {
-		return nil, err
+		return retrievalAttemptResult{}, err
 	}
 	graphCandidates, graphDiagnostics, err := s.graphActivationCandidates(ctx, sidecarCtx, personaID, prepared)
 	if err != nil {
-		return nil, err
+		return retrievalAttemptResult{}, err
 	}
 	finalCandidates, safeRerankCandidates, err := s.retrieve.BuildRerankCandidates(ctx, prepared, graphCandidates, graphDiagnostics)
 	if err != nil {
-		return nil, err
+		return retrievalAttemptResult{}, err
 	}
 	rerankResults, rerankDiagnostics, err := s.rerankCandidates(ctx, sidecarCtx, personaID, prepared, safeRerankCandidates, graphDiagnostics)
 	if err != nil {
-		return nil, err
+		return retrievalAttemptResult{}, err
 	}
-	result, err := s.retrieve.CompleteFinal(ctx, finalCandidates, rerankResults, rerankDiagnostics)
+	return retrievalAttemptResult{
+		finalCandidates:   finalCandidates,
+		rerankResults:     rerankResults,
+		rerankDiagnostics: rerankDiagnostics,
+	}, nil
+}
+
+func (s *service) completeRetrievalAttempt(ctx context.Context, attempt retrievalAttemptResult, logAccess bool) (*MemoryContext, error) {
+	var result memsqlite.MemoryContext
+	var err error
+	if logAccess {
+		result, err = s.retrieve.CompleteFinal(ctx, attempt.finalCandidates, attempt.rerankResults, attempt.rerankDiagnostics)
+	} else {
+		result, err = s.retrieve.CompleteFinalPreview(ctx, attempt.finalCandidates, attempt.rerankResults, attempt.rerankDiagnostics)
+	}
 	if err != nil {
 		return nil, err
 	}
