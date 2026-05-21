@@ -124,8 +124,8 @@ func (s *service) correctiveSemanticLight(ctx context.Context, req QueryAnalysis
 	semanticReq := s.queryPipeline.semanticRequestForRule(req, rule, memsqlite.RetrievalCorrectiveActionSemanticLight)
 	stageCtx := ctx
 	cancel := func() {}
-	if s.queryPipeline.options.Timeout > 0 {
-		stageCtx, cancel = context.WithTimeout(ctx, s.queryPipeline.options.Timeout)
+	if budget := queryAnalysisProviderBudget(s.queryPipeline.options); budget > 0 {
+		stageCtx, cancel = context.WithTimeout(ctx, budget)
 	}
 	defer cancel()
 	semantic, err := s.queryPipeline.analyzeSemantic(stageCtx, semanticReq)

@@ -365,8 +365,8 @@ func (p queryAnalysisPipeline) AnalyzeSemanticForRule(ctx context.Context, req Q
 	semanticReq := p.semanticRequestForRule(req, rule, semanticMode)
 	stageCtx := ctx
 	cancel := func() {}
-	if p.options.Timeout > 0 {
-		stageCtx, cancel = context.WithTimeout(ctx, p.options.Timeout)
+	if budget := queryAnalysisProviderBudget(options); budget > 0 {
+		stageCtx, cancel = context.WithTimeout(ctx, budget)
 	}
 	defer cancel()
 	started := p.now
@@ -457,7 +457,7 @@ func (p queryAnalysisPipeline) shouldUseLegacySemantic(rule memsqlite.QueryAnaly
 		return true
 	case QueryAnalysisModeSemanticRewriteOnly:
 		return true
-	case QueryAnalysisModeSemanticOnLowConfidence:
+	case QueryAnalysisModeSemanticOnLowConfidence, QueryAnalysisModeShadowAdaptive:
 		confidence := rule.Confidence
 		if rule.Diagnostics != nil && rule.Diagnostics.RuleConfidenceReason != "" {
 			confidence = rule.Diagnostics.RuleConfidenceLegacy
@@ -1229,7 +1229,7 @@ func newSemanticQueryAnalyzerFromOptions(options QueryAnalysisOptions) SemanticQ
 	return sidecarSemanticQueryAnalyzer{
 		client: internalmirror.NewSidecarClient(internalmirror.SidecarClientOptions{
 			BaseURL: options.SidecarURL,
-			Timeout: options.Timeout,
+			Timeout: queryAnalysisProviderBudget(options),
 		}),
 	}
 }

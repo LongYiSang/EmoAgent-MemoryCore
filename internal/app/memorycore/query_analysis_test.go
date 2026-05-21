@@ -315,7 +315,26 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			wantSource:    memsqlite.QueryAnalysisSourceMerged,
 		},
 		{
-			name: "shadow adaptive records adaptive decision but executes legacy",
+			name: "shadow adaptive executes legacy low confidence semantic decision",
+			mode: QueryAnalysisModeShadowAdaptive,
+			rule: func() memsqlite.QueryAnalysis {
+				rule := adaptiveRuleAnalysis("我为什么最近这么抗拒上班？", memsqlite.QueryAnalysisScores{
+					RuleFit:         0.82,
+					AnchorReadiness: 0.18,
+					SemanticNeed:    0.44,
+					Complexity:      0.84,
+				})
+				rule.Diagnostics.RuleConfidenceLegacy = 0.42
+				rule.Diagnostics.RuleConfidenceReason = "exact_fact_only"
+				return rule
+			}(),
+			wantSemantic: true,
+			wantMode:     "semantic_decompose",
+			wantReason:   "anchor_readiness_low",
+			wantSource:   memsqlite.QueryAnalysisSourceMerged,
+		},
+		{
+			name: "shadow adaptive records adaptive decision without adaptive semantic effect",
 			mode: QueryAnalysisModeShadowAdaptive,
 			rule: adaptiveRuleAnalysis("我为什么最近这么抗拒上班？", memsqlite.QueryAnalysisScores{
 				RuleFit:         0.82,
@@ -1115,6 +1134,75 @@ func TestQueryAnalysisSemanticRequestCapsBudgetToMaxSemanticLatency(t *testing.T
 	}
 }
 
+func TestQueryAnalysisMaxSemanticLatencyBoundsSemanticContext(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Confidence:    0.1,
+	}
+	semantic := &blockingSemanticQueryAnalyzer{}
+	pipeline := newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+		Provider:           QueryAnalysisProviderSidecar,
+		Mode:               QueryAnalysisModeSemanticAlways,
+		Timeout:            300 * time.Millisecond,
+		MaxSemanticLatency: 30 * time.Millisecond,
+	})
+
+	begin := time.Now()
+	got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: "咖啡", Now: fixedQueryAnalysisNow()})
+	elapsed := time.Since(begin)
+	if err != nil {
+		t.Fatalf("analyze query: %v", err)
+	}
+	if elapsed > 180*time.Millisecond {
+		t.Fatalf("semantic elapsed = %s, want bounded by max semantic latency", elapsed)
+	}
+	if semantic.calls != 1 {
+		t.Fatalf("semantic calls = %d, want 1", semantic.calls)
+	}
+	if got.Source != memsqlite.QueryAnalysisSourceSemanticFallback || got.Diagnostics == nil || got.Diagnostics.FallbackReason != "semantic_timeout" {
+		t.Fatalf("analysis = %#v, want semantic timeout fallback", got)
+	}
+}
+
+func TestCorrectiveSemanticLightMaxSemanticLatencyBoundsContext(t *testing.T) {
+	rule := memsqlite.QueryAnalysis{
+		Raw:           "咖啡",
+		Normalized:    "咖啡",
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Confidence:    0.1,
+	}
+	semantic := &blockingSemanticQueryAnalyzer{}
+	svc := &service{
+		queryPipeline: newQueryAnalysisPipeline(staticRuleQueryAnalyzer{analysis: rule}, semantic, QueryAnalysisOptions{
+			Provider:           QueryAnalysisProviderSidecar,
+			Mode:               QueryAnalysisModeSemanticAlways,
+			Timeout:            300 * time.Millisecond,
+			MaxSemanticLatency: 30 * time.Millisecond,
+		}),
+	}
+
+	begin := time.Now()
+	_, attempted, ok := svc.correctiveSemanticLight(context.Background(), QueryAnalysisRequest{PersonaID: "default", QueryText: "咖啡", Now: fixedQueryAnalysisNow()}, rule)
+	elapsed := time.Since(begin)
+	if elapsed > 180*time.Millisecond {
+		t.Fatalf("corrective semantic elapsed = %s, want bounded by max semantic latency", elapsed)
+	}
+	if semantic.calls != 1 {
+		t.Fatalf("semantic calls = %d, want 1", semantic.calls)
+	}
+	if !attempted || ok {
+		t.Fatalf("attempted/ok = %v/%v, want attempted fallback", attempted, ok)
+	}
+}
+
 func TestQueryAnalysisSemanticBudgetLimitsSessionCalls(t *testing.T) {
 	sessionID := "session-budget"
 	rule := adaptiveRuleAnalysis("我喜欢什么？", memsqlite.QueryAnalysisScores{
@@ -1717,6 +1805,16 @@ func (a *countingSemanticQueryAnalyzer) AnalyzeSemanticQuery(_ context.Context, 
 	raw, _ := json.Marshal(a.result.Analysis)
 	_ = json.Unmarshal(raw, &cloned.Analysis)
 	return &cloned, nil
+}
+
+type blockingSemanticQueryAnalyzer struct {
+	calls int
+}
+
+func (a *blockingSemanticQueryAnalyzer) AnalyzeSemanticQuery(ctx context.Context, _ SemanticQueryAnalysisRequest) (*SemanticQueryAnalysisResult, error) {
+	a.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func fixedQueryAnalysisNow() time.Time {
