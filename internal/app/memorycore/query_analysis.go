@@ -347,7 +347,11 @@ func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) b
 	case QueryAnalysisModeSemanticRewriteOnly:
 		return true
 	case QueryAnalysisModeSemanticOnLowConfidence:
-		return rule.Confidence < options.MinConfidenceToOverride
+		confidence := rule.Confidence
+		if rule.Diagnostics != nil && rule.Diagnostics.RuleConfidenceReason != "" {
+			confidence = rule.Diagnostics.RuleConfidenceLegacy
+		}
+		return confidence < options.MinConfidenceToOverride
 	default:
 		return false
 	}
@@ -451,6 +455,8 @@ func copyLegacyQueryAnalysisDiagnostics(dst *memsqlite.QueryAnalysisDiagnostics,
 	dst.MinConfidenceToOverride = src.MinConfidenceToOverride
 	dst.Signals = append([]string(nil), src.Signals...)
 	dst.EntityMentionCount = src.EntityMentionCount
+	dst.Scores = src.Scores
+	dst.FieldConfidence = src.FieldConfidence
 }
 
 func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsqlite.SemanticQueryAnalysisDiagnostics {

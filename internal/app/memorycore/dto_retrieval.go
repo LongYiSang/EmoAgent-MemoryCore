@@ -265,6 +265,8 @@ type QueryAnalysisDiagnostics struct {
 	MinConfidenceToOverride float64
 	Signals                 []string
 	EntityMentionCount      int
+	Scores                  QueryAnalysisScores
+	FieldConfidence         QueryAnalysisConfidence
 	SemanticStatus          string
 	SemanticProvider        string
 	SemanticModel           string

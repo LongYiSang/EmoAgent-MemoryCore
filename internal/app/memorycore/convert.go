@@ -394,6 +394,8 @@ func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics
 		MinConfidenceToOverride: value.MinConfidenceToOverride,
 		Signals:                 append([]string(nil), value.Signals...),
 		EntityMentionCount:      value.EntityMentionCount,
+		Scores:                  queryAnalysisScoresFromStore(value.Scores),
+		FieldConfidence:         queryAnalysisConfidenceFromStore(value.FieldConfidence),
 		SemanticStatus:          value.SemanticStatus,
 		SemanticProvider:        value.SemanticProvider,
 		SemanticModel:           value.SemanticModel,

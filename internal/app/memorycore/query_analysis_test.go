@@ -140,6 +140,83 @@ func TestQueryAnalysisSemanticOnLowConfidenceLegacyDiagnostics(t *testing.T) {
 	}
 }
 
+func TestQueryAnalysisSemanticOnLowConfidenceUsesLegacyConfidenceDuringPhase2(t *testing.T) {
+	semantic := &SemanticQueryAnalysisResult{
+		Status: "ok",
+		Analysis: SemanticQueryAnalysis{
+			Confidence: 0.95,
+			FieldConfidence: QueryAnalysisConfidence{
+				Overall: 0.95,
+			},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		rule       memsqlite.QueryAnalysis
+		wantSource memsqlite.QueryAnalysisSource
+	}{
+		{
+			name: "new high score still triggers when legacy score is low",
+			rule: memsqlite.QueryAnalysis{
+				Raw:           "咖啡",
+				Normalized:    "咖啡",
+				TimeMode:      memsqlite.QueryTimeModeCurrent,
+				MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+				MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+				EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+				Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+				Confidence:    0.90,
+				Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+					RuleConfidenceLegacy: 0.42,
+					RuleConfidenceReason: "exact_fact_only",
+				},
+			},
+			wantSource: memsqlite.QueryAnalysisSourceMerged,
+		},
+		{
+			name: "new low score still skips when legacy score is high",
+			rule: memsqlite.QueryAnalysis{
+				Raw:           "LongYi 喜欢咖啡吗",
+				Normalized:    "longyi 喜欢咖啡吗",
+				TimeMode:      memsqlite.QueryTimeModeCurrent,
+				MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+				MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+				EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+				Source:        memsqlite.QueryAnalysisSourceRuleOnly,
+				Confidence:    0.30,
+				Diagnostics: &memsqlite.QueryAnalysisDiagnostics{
+					RuleConfidenceLegacy: 0.74,
+					RuleConfidenceReason: "entity_mention",
+				},
+			},
+			wantSource: memsqlite.QueryAnalysisSourceRuleOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline := newQueryAnalysisPipeline(
+				staticRuleQueryAnalyzer{analysis: tt.rule},
+				staticSemanticQueryAnalyzer{result: semantic},
+				QueryAnalysisOptions{Provider: QueryAnalysisProviderSidecar, Mode: QueryAnalysisModeSemanticOnLowConfidence, MinConfidenceToOverride: 0.72},
+			)
+
+			got, err := pipeline.AnalyzeQuery(context.Background(), QueryAnalysisRequest{
+				PersonaID: "default",
+				QueryText: tt.rule.Raw,
+				Now:       fixedQueryAnalysisNow(),
+			})
+			if err != nil {
+				t.Fatalf("analyze query: %v", err)
+			}
+			if got.Source != tt.wantSource {
+				t.Fatalf("source = %q, want %q", got.Source, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestQueryAnalysisRuleOnlyKeepsLegacyDiagnosticsVisible(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "咖啡",

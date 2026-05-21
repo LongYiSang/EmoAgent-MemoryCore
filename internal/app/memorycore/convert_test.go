@@ -60,13 +60,22 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 			DroppedRewriteCount:     1,
 			DroppedRewriteReasons:   []string{"rewrite_language_mismatch"},
 			EnglishRewriteCount:     2,
-			ScorerVersion:           "rule_confidence_legacy.v0",
+			ScorerVersion:           "query_analysis_rule_feature_scorer.v1",
 			RuleConfidenceLegacy:    0.42,
 			RuleConfidenceReason:    "exact_fact_only",
 			SemanticDecisionLegacy:  true,
 			MinConfidenceToOverride: 0.72,
 			Signals:                 []string{string(memsqlite.QuerySignalExactFact)},
 			EntityMentionCount:      1,
+			Scores: memsqlite.QueryAnalysisScores{
+				RuleFit:                     0.61,
+				ExpectedRetrievalConfidence: 0.61,
+				IntentEvidence:              0.42,
+			},
+			FieldConfidence: memsqlite.QueryAnalysisConfidence{
+				Overall:       0.61,
+				MemoryAbility: 0.42,
+			},
 		},
 	})
 	if analysis == nil || analysis.Diagnostics == nil {
@@ -81,13 +90,20 @@ func TestQueryAnalysisRewriteDropDiagnosticsMapToPublicDTO(t *testing.T) {
 	if len(analysis.Diagnostics.DroppedRewriteReasons) != 1 || analysis.Diagnostics.DroppedRewriteReasons[0] != "rewrite_language_mismatch" {
 		t.Fatalf("dropped rewrite reasons = %#v, want rewrite_language_mismatch", analysis.Diagnostics.DroppedRewriteReasons)
 	}
-	if analysis.Diagnostics.ScorerVersion != "rule_confidence_legacy.v0" ||
+	if analysis.Diagnostics.ScorerVersion != "query_analysis_rule_feature_scorer.v1" ||
 		analysis.Diagnostics.RuleConfidenceLegacy != 0.42 ||
 		analysis.Diagnostics.RuleConfidenceReason != "exact_fact_only" ||
 		!analysis.Diagnostics.SemanticDecisionLegacy ||
 		analysis.Diagnostics.MinConfidenceToOverride != 0.72 ||
 		analysis.Diagnostics.EntityMentionCount != 1 {
 		t.Fatalf("legacy diagnostics = %#v, want mapped legacy fields", analysis.Diagnostics)
+	}
+	if analysis.Diagnostics.Scores.RuleFit != 0.61 ||
+		analysis.Diagnostics.Scores.ExpectedRetrievalConfidence != 0.61 ||
+		analysis.Diagnostics.Scores.IntentEvidence != 0.42 ||
+		analysis.Diagnostics.FieldConfidence.Overall != 0.61 ||
+		analysis.Diagnostics.FieldConfidence.MemoryAbility != 0.42 {
+		t.Fatalf("diagnostic scores = %#v field confidence = %#v, want mapped phase 2 scores", analysis.Diagnostics.Scores, analysis.Diagnostics.FieldConfidence)
 	}
 	if len(analysis.Diagnostics.Signals) != 1 || analysis.Diagnostics.Signals[0] != string(memsqlite.QuerySignalExactFact) {
 		t.Fatalf("diagnostic signals = %#v, want exact_fact", analysis.Diagnostics.Signals)

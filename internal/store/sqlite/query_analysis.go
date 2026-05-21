@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
@@ -74,7 +75,7 @@ const (
 	QueryAnalysisSourceSemanticFallback QueryAnalysisSource = "semantic_failed_rule_fallback"
 )
 
-const ruleConfidenceLegacyScorerVersion = "rule_confidence_legacy.v0"
+const ruleFeatureScorerVersion = "query_analysis_rule_feature_scorer.v1"
 
 type QueryAnalysis struct {
 	Raw               string
@@ -210,6 +211,8 @@ type QueryAnalysisDiagnostics struct {
 	MinConfidenceToOverride float64
 	Signals                 []string
 	EntityMentionCount      int
+	Scores                  QueryAnalysisScores
+	FieldConfidence         QueryAnalysisConfidence
 	SemanticStatus          string
 	SemanticProvider        string
 	SemanticModel           string
@@ -277,10 +280,11 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 		return QueryAnalysis{}, err
 	}
 	analysis.EntityMentions = mentions
-	analysis.Confidence = ruleConfidence(normalized, analysis)
-	analysis.Scores = legacyQueryAnalysisScores(analysis.Confidence)
-	analysis.FieldConfidence = ruleFieldConfidence(normalized, analysis)
-	analysis.Diagnostics = legacyQueryAnalysisDiagnostics(normalized, analysis)
+	legacy := ruleConfidenceLegacy(normalized, analysis)
+	analysis.Scores = ComputeRuleFit(normalized, analysis, analysis.Evidence)
+	analysis.Confidence = analysis.Scores.ExpectedRetrievalConfidence
+	analysis.FieldConfidence = ComputeFieldConfidence(analysis, analysis.Scores)
+	analysis.Diagnostics = ruleQueryAnalysisDiagnostics(normalized, analysis, legacy, analysis.Scores, analysis.FieldConfidence)
 	return analysis, nil
 }
 
@@ -319,13 +323,6 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
-}
-
-func legacyQueryAnalysisScores(confidence float64) QueryAnalysisScores {
-	return QueryAnalysisScores{
-		RuleFit:                     confidence,
-		ExpectedRetrievalConfidence: confidence,
-	}
 }
 
 func cloneQueryAnalysisDecision(value QueryAnalysisDecision) QueryAnalysisDecision {
@@ -684,7 +681,7 @@ func hasRelationshipArcIntent(normalized string) bool {
 }
 
 func ruleConfidence(normalized string, analysis QueryAnalysis) float64 {
-	return ruleConfidenceLegacy(normalized, analysis).Score
+	return ComputeRuleFit(normalized, analysis, analysis.Evidence).ExpectedRetrievalConfidence
 }
 
 type ruleConfidenceLegacyResult struct {
@@ -709,14 +706,15 @@ func ruleConfidenceLegacy(normalized string, analysis QueryAnalysis) ruleConfide
 	}
 }
 
-func legacyQueryAnalysisDiagnostics(normalized string, analysis QueryAnalysis) *QueryAnalysisDiagnostics {
-	legacy := ruleConfidenceLegacy(normalized, analysis)
+func ruleQueryAnalysisDiagnostics(normalized string, analysis QueryAnalysis, legacy ruleConfidenceLegacyResult, scores QueryAnalysisScores, fieldConfidence QueryAnalysisConfidence) *QueryAnalysisDiagnostics {
 	return &QueryAnalysisDiagnostics{
-		ScorerVersion:        ruleConfidenceLegacyScorerVersion,
+		ScorerVersion:        ruleFeatureScorerVersion,
 		RuleConfidenceLegacy: legacy.Score,
 		RuleConfidenceReason: legacy.Reason,
 		Signals:              querySignalsToStrings(analysis.Signals),
 		EntityMentionCount:   len(analysis.EntityMentions),
+		Scores:               scores,
+		FieldConfidence:      fieldConfidence,
 	}
 }
 
@@ -735,20 +733,500 @@ func onlyExactFactSignal(signals []QuerySignal) bool {
 	return len(signals) == 1 && signals[0] == QuerySignalExactFact
 }
 
-func ruleFieldConfidence(normalized string, analysis QueryAnalysis) QueryAnalysisConfidence {
-	confidence := ruleConfidence(normalized, analysis)
-	entityResolution := 0.0
-	if len(analysis.EntityMentions) > 0 {
-		entityResolution = 0.74
+func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) QueryAnalysisScores {
+	normalized = strings.TrimSpace(normalized)
+	if len(ev) == 0 {
+		ev = analysis.Evidence
 	}
+	if normalized == "" {
+		return QueryAnalysisScores{}
+	}
+
+	var s QueryAnalysisScores
+	s.IntentEvidence = scoreIntentEvidence(normalized, analysis, ev)
+	s.FieldConsistency = scoreFieldConsistency(analysis)
+	s.EntityResolution = scoreEntityResolution(analysis.EntityMentions)
+	s.TimeEvidence = scoreTimeEvidence(normalized, analysis.TimeMode, ev)
+	s.DomainEvidence = scoreDomainEvidence(normalized, analysis.MemoryDomain, ev)
+	s.EvidenceNeedEvidence = scoreEvidenceNeed(normalized, analysis.EvidenceNeed, ev)
+	s.Specificity = scoreLexicalSpecificity(normalized)
+	s.Ambiguity = scoreAmbiguity(normalized, analysis, ev)
+	s.Complexity = scoreComplexity(normalized, analysis)
+	s.SafetyRisk = scoreSafetyRisk(normalized, analysis)
+	s.DefaultFallbackPenalty = scoreDefaultFallbackPenalty(normalized, analysis)
+	s.MultiIntentConflictPenalty = scoreMultiIntentConflictPenalty(analysis)
+	s.SensitivityPenalty = s.SafetyRisk
+
+	s.RuleFit = clamp01(
+		0.20 +
+			0.18*s.IntentEvidence +
+			0.14*s.FieldConsistency +
+			0.13*s.EntityResolution +
+			0.10*s.TimeEvidence +
+			0.09*s.DomainEvidence +
+			0.08*s.EvidenceNeedEvidence +
+			0.08*s.Specificity -
+			0.15*s.DefaultFallbackPenalty -
+			0.12*s.Ambiguity -
+			0.08*s.MultiIntentConflictPenalty -
+			0.06*s.SensitivityPenalty,
+	)
+	s.ExpectedRetrievalConfidence = s.RuleFit
+	return s
+}
+
+func ComputeFieldConfidence(_ QueryAnalysis, s QueryAnalysisScores) QueryAnalysisConfidence {
 	return QueryAnalysisConfidence{
-		Overall:          confidence,
-		TimeMode:         confidence,
-		MemoryAbility:    confidence,
-		MemoryDomain:     confidence,
-		EvidenceNeed:     confidence,
-		EntityResolution: entityResolution,
+		Overall:          clamp01(s.ExpectedRetrievalConfidence),
+		TimeMode:         clamp01(s.TimeEvidence),
+		MemoryAbility:    clamp01(s.IntentEvidence),
+		MemoryDomain:     clamp01(s.DomainEvidence),
+		EvidenceNeed:     clamp01(s.EvidenceNeedEvidence),
+		EntityResolution: clamp01(s.EntityResolution),
 	}
+}
+
+func scoreIntentEvidence(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) float64 {
+	if strings.TrimSpace(normalized) == "" {
+		return 0
+	}
+	score := evidenceScore(ev, "memory_ability")
+	switch analysis.MemoryAbility {
+	case MemoryAbilityDirectFact:
+		if onlyExactFactSignal(analysis.Signals) {
+			score = maxFloat(score, 0.42)
+		} else if len(analysis.Signals) > 0 {
+			score = maxFloat(score, 0.62)
+		} else {
+			score = maxFloat(score, 0.45)
+		}
+	case MemoryAbilityCausalExplain:
+		score = maxFloat(score, 0.78)
+		if hasQuerySignal(analysis, QuerySignalCausal) {
+			score += 0.12
+		}
+		if hasQuerySignal(analysis, QuerySignalCausalChain) {
+			score += 0.04
+		}
+	case MemoryAbilityHistorical:
+		score = maxFloat(score, 0.76)
+		if hasQuerySignal(analysis, QuerySignalHistorical) || hasQuerySignal(analysis, QuerySignalStateTransition) {
+			score += 0.12
+		}
+	case MemoryAbilityProvenance:
+		score = maxFloat(score, 0.78)
+		if hasQuerySignal(analysis, QuerySignalProvenance) || hasQuerySignal(analysis, QuerySignalProvenanceSource) {
+			score += 0.12
+		}
+	case MemoryAbilityPremiseCheck:
+		score = maxFloat(score, 0.78)
+		if hasQuerySignal(analysis, QuerySignalPremiseCheck) || hasQuerySignal(analysis, QuerySignalPremiseCounterexample) {
+			score += 0.12
+		}
+	case MemoryAbilityRelationshipArc:
+		score = maxFloat(score, 0.78)
+		if hasQuerySignal(analysis, QuerySignalRelationshipArc) {
+			score += 0.12
+		}
+	case MemoryAbilityBoundary:
+		score = maxFloat(score, 0.76)
+		if hasQuerySignal(analysis, QuerySignalForgetDelete) {
+			score += 0.10
+		}
+	case MemoryAbilityWorkflow, MemoryAbilityGotcha, MemoryAbilityDynamicState, MemoryAbilityStaticState, MemoryAbilityPlanning, MemoryAbilitySupportive:
+		score = maxFloat(score, 0.70)
+	default:
+		score = maxFloat(score, 0.35)
+	}
+	return clamp01(score)
+}
+
+func scoreFieldConsistency(analysis QueryAnalysis) float64 {
+	if analysis.TimeMode == "" && analysis.MemoryAbility == "" && analysis.EvidenceNeed == "" {
+		return 0
+	}
+	score := 0.62
+	switch analysis.MemoryAbility {
+	case MemoryAbilityDirectFact:
+		if analysis.EvidenceNeed == EvidenceNeedExactObservation {
+			score += 0.08
+		}
+		if analysis.EvidenceNeed != "" && analysis.EvidenceNeed != EvidenceNeedExactObservation {
+			score -= 0.25
+		}
+		if hasQuerySignal(analysis, QuerySignalStateTransition) || hasQuerySignal(analysis, QuerySignalCausal) ||
+			hasQuerySignal(analysis, QuerySignalPremiseCounterexample) || hasQuerySignal(analysis, QuerySignalProvenanceSource) {
+			score -= 0.15
+		}
+	case MemoryAbilityHistorical:
+		if analysis.TimeMode == QueryTimeModeHistorical {
+			score += 0.08
+		}
+		if analysis.EvidenceNeed == EvidenceNeedStateTransition || hasQuerySignal(analysis, QuerySignalStateTransition) {
+			score += 0.16
+		}
+	case MemoryAbilityCausalExplain:
+		if hasQuerySignal(analysis, QuerySignalCausal) {
+			score += 0.16
+		}
+		if analysis.EvidenceNeed == EvidenceNeedStateTransition || hasQuerySignal(analysis, QuerySignalCausalChain) {
+			score += 0.06
+		}
+	case MemoryAbilityProvenance:
+		if analysis.EvidenceNeed == EvidenceNeedProvenanceSource || hasQuerySignal(analysis, QuerySignalProvenanceSource) {
+			score += 0.18
+		}
+	case MemoryAbilityPremiseCheck:
+		if analysis.EvidenceNeed == EvidenceNeedPremiseCounterexample || hasQuerySignal(analysis, QuerySignalPremiseCounterexample) {
+			score += 0.18
+		}
+	case MemoryAbilityRelationshipArc:
+		if analysis.EvidenceNeed == EvidenceNeedRelationshipTimeline || hasQuerySignal(analysis, QuerySignalRelationshipArc) {
+			score += 0.18
+		}
+	case MemoryAbilityWorkflow:
+		if analysis.EvidenceNeed == EvidenceNeedProcedureNote {
+			score += 0.14
+		}
+	case MemoryAbilityGotcha:
+		if analysis.EvidenceNeed == EvidenceNeedGotchaNote {
+			score += 0.14
+		}
+	}
+	if analysis.TimeMode == QueryTimeModeCurrent && hasQuerySignal(analysis, QuerySignalHistorical) {
+		score -= 0.14
+	}
+	if analysis.MemoryAbility != MemoryAbilityDirectFact && onlyExactFactSignal(analysis.Signals) {
+		score -= 0.20
+	}
+	return clamp01(score)
+}
+
+func scoreEntityResolution(mentions []QueryEntityMention) float64 {
+	if len(mentions) == 0 {
+		return 0.20
+	}
+	best := 0.45
+	seen := make(map[string]struct{}, len(mentions))
+	for _, mention := range mentions {
+		switch mention.MatchKind {
+		case QueryEntityMentionKindCanonical:
+			best = maxFloat(best, 0.88)
+		case QueryEntityMentionKindAlias:
+			best = maxFloat(best, 0.78)
+		default:
+			best = maxFloat(best, 0.68)
+		}
+		if mention.EntityID != "" {
+			seen[mention.EntityID] = struct{}{}
+		}
+	}
+	if len(seen) > 1 {
+		best -= 0.12
+	}
+	return clamp01(best)
+}
+
+func scoreTimeEvidence(normalized string, mode QueryTimeMode, ev []QueryAnalysisEvidence) float64 {
+	if strings.TrimSpace(normalized) == "" {
+		return 0
+	}
+	score := evidenceScore(ev, "time_mode")
+	switch mode {
+	case QueryTimeModeHistorical:
+		score = maxFloat(score, 0.66)
+		if hasOldStateMarker(normalized) || hasPastEventDirectFactIntent(normalized) {
+			score = maxFloat(score, 0.86)
+		}
+		if hasStateTransitionIntent(normalized) {
+			score = maxFloat(score, 0.90)
+		}
+	case QueryTimeModeBitemporalCheck:
+		score = maxFloat(score, 0.84)
+	case QueryTimeModeCurrent:
+		score = maxFloat(score, 0.46)
+		if containsAny(normalized, "最近", "现在", "当前", "最新", "current", "latest") {
+			score = maxFloat(score, 0.72)
+		}
+	default:
+		score = maxFloat(score, 0.35)
+	}
+	return clamp01(score)
+}
+
+func scoreDomainEvidence(normalized string, domain MemoryDomain, ev []QueryAnalysisEvidence) float64 {
+	if strings.TrimSpace(normalized) == "" {
+		return 0
+	}
+	score := evidenceScore(ev, "memory_domain")
+	switch domain {
+	case MemoryDomainUserProfile:
+		score = maxFloat(score, 0.58)
+		if containsAny(normalized, "我是谁", "身份", "名字", "昵称", "偏好", "喜欢", "讨厌", "住在", "profile", "preference", "identity") {
+			score = maxFloat(score, 0.84)
+		}
+	case MemoryDomainWorkExperience:
+		score = maxFloat(score, 0.58)
+		if containsAny(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch", "上班", "工作") {
+			score = maxFloat(score, 0.82)
+		}
+	case MemoryDomainEnvironmentExperience:
+		score = maxFloat(score, 0.58)
+		if containsAny(normalized, "环境", "路径", "依赖", "python", "uv", "windows", "powershell", "权限", "toolchain", "runtime", "缓存", "cache") {
+			score = maxFloat(score, 0.84)
+		}
+	case MemoryDomainRelationship:
+		score = maxFloat(score, 0.44)
+		if containsAny(normalized, "关系", "朋友", "同事", "家人", "小李", "relationship", "friend") {
+			score = maxFloat(score, 0.78)
+		}
+	default:
+		score = maxFloat(score, 0.35)
+	}
+	return clamp01(score)
+}
+
+func scoreEvidenceNeed(normalized string, need EvidenceNeed, ev []QueryAnalysisEvidence) float64 {
+	if strings.TrimSpace(normalized) == "" {
+		return 0
+	}
+	score := evidenceScore(ev, "evidence_need")
+	switch need {
+	case EvidenceNeedStateTransition:
+		score = maxFloat(score, 0.68)
+		if hasStateTransitionIntent(normalized) || containsAny(normalized, "最近", "后来", "变化", "变成", "changed") {
+			score = maxFloat(score, 0.86)
+		}
+	case EvidenceNeedProcedureNote:
+		score = maxFloat(score, 0.82)
+	case EvidenceNeedGotchaNote:
+		score = maxFloat(score, 0.82)
+	case EvidenceNeedPremiseCounterexample:
+		score = maxFloat(score, 0.86)
+	case EvidenceNeedProvenanceSource:
+		score = maxFloat(score, 0.86)
+	case EvidenceNeedRelationshipTimeline:
+		score = maxFloat(score, 0.86)
+	case EvidenceNeedExactObservation:
+		score = maxFloat(score, 0.48)
+		if hasPastEventDirectFactIntent(normalized) || containsAny(normalized, "住在哪里", "喜欢什么", "哪个城市") {
+			score = maxFloat(score, 0.62)
+		}
+	default:
+		score = maxFloat(score, 0.35)
+	}
+	return clamp01(score)
+}
+
+func scoreLexicalSpecificity(normalized string) float64 {
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return 0
+	}
+	runes := nonSpaceRuneCount(normalized)
+	score := 0.25
+	if runes >= 4 {
+		score += 0.12
+	}
+	if runes >= 8 {
+		score += 0.13
+	}
+	if runes >= 16 {
+		score += 0.15
+	}
+	if len(strings.Fields(normalized)) >= 2 {
+		score += 0.08
+	}
+	if containsAny(normalized, "什么时候", "哪里", "哪次", "谁", "哪个城市", "住在哪里", "source", "evidence") {
+		score += 0.10
+	}
+	if containsLatinOrDigit(normalized) {
+		score += 0.08
+	}
+	if containsAny(normalized, "什么都", "任何", "所有", "每个") {
+		score -= 0.08
+	}
+	if runes <= 2 {
+		score = minScore(score, 0.35)
+	}
+	return clamp01(score)
+}
+
+func scoreAmbiguity(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) float64 {
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return 1
+	}
+	score := 0.08
+	if containsAny(normalized, "这件事", "这个", "那个", "这次", "那次", "它", "this thing", "that thing") {
+		score += 0.28
+	}
+	if containsAny(normalized, "什么", "哪些", "怎么样", "怎么回事", "anything", "whatever") {
+		score += 0.14
+	}
+	if len(analysis.EntityMentions) == 0 &&
+		(analysis.MemoryAbility != MemoryAbilityDirectFact || containsAny(normalized, "这件事", "这个", "那个")) {
+		score += 0.18
+	}
+	if len(analysis.EntityMentions) > 1 {
+		score += 0.12
+	}
+	if scoreMultiIntentConflictPenalty(analysis) > 0 {
+		score += 0.14
+	}
+	if len(ev) > 1 {
+		score += 0.05
+	}
+	if len(analysis.EntityMentions) == 1 {
+		score -= 0.12
+	}
+	return clamp01(score)
+}
+
+func scoreComplexity(normalized string, analysis QueryAnalysis) float64 {
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return 0
+	}
+	score := 0.15
+	switch analysis.MemoryAbility {
+	case MemoryAbilityCausalExplain, MemoryAbilityHistorical, MemoryAbilityProvenance, MemoryAbilityPremiseCheck, MemoryAbilityRelationshipArc:
+		score += 0.30
+	case MemoryAbilityWorkflow, MemoryAbilityGotcha, MemoryAbilityDynamicState:
+		score += 0.18
+	case MemoryAbilityBoundary:
+		score += 0.12
+	}
+	semanticSignals := 0
+	for _, signal := range analysis.Signals {
+		switch signal {
+		case QuerySignalCausal, QuerySignalHistorical, QuerySignalStateTransition, QuerySignalProvenanceSource, QuerySignalPremiseCounterexample, QuerySignalRelationshipArc, QuerySignalCausalChain:
+			semanticSignals++
+		}
+	}
+	score += minScore(float64(semanticSignals)*0.04, 0.18)
+	if nonSpaceRuneCount(normalized) >= 14 {
+		score += 0.08
+	}
+	if containsAny(normalized, "为什么", "后来", "之前", "从什么时候", "是不是", "有没有反例", "causal", "why") {
+		score += 0.08
+	}
+	return clamp01(score)
+}
+
+func scoreSafetyRisk(normalized string, analysis QueryAnalysis) float64 {
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return 0
+	}
+	score := 0.0
+	if hasQuerySignal(analysis, QuerySignalForgetDelete) {
+		score += 0.70
+	}
+	if hasQuerySignal(analysis, QuerySignalSensitivity) {
+		score += 0.15
+	}
+	if containsAny(normalized, "忘掉", "删除", "删掉", "清除", "不要再提", "forget", "delete", "remove") {
+		score += 0.10
+	}
+	if containsAny(normalized, "隐私", "敏感", "private", "sensitive") {
+		score += 0.15
+	}
+	if hasQuerySignal(analysis, QuerySignalDebug) {
+		score += 0.10
+	}
+	return clamp01(score)
+}
+
+func scoreDefaultFallbackPenalty(normalized string, analysis QueryAnalysis) float64 {
+	if strings.TrimSpace(normalized) == "" {
+		return 1
+	}
+	if analysis.MemoryAbility != MemoryAbilityDirectFact || len(analysis.EntityMentions) > 0 {
+		return 0
+	}
+	switch {
+	case onlyExactFactSignal(analysis.Signals):
+		return 0.65
+	case len(analysis.Signals) == 0:
+		return 0.75
+	case len(analysis.Signals) == 1 && analysis.Signals[0] == QuerySignalPastEventDirectFact:
+		return 0.20
+	default:
+		return 0.30
+	}
+}
+
+func scoreMultiIntentConflictPenalty(analysis QueryAnalysis) float64 {
+	intents := 0
+	for _, signal := range analysis.Signals {
+		switch signal {
+		case QuerySignalCausal, QuerySignalProvenanceSource, QuerySignalPremiseCounterexample, QuerySignalRelationshipArc, QuerySignalForgetDelete, QuerySignalReflectionSummary, QuerySignalEventBundle:
+			intents++
+		}
+	}
+	if intents <= 1 {
+		return 0
+	}
+	penalty := minScore(0.10*float64(intents-1), 0.35)
+	if hasQuerySignal(analysis, QuerySignalForgetDelete) {
+		penalty += 0.15
+	}
+	return clamp01(penalty)
+}
+
+func evidenceScore(ev []QueryAnalysisEvidence, field string) float64 {
+	best := 0.0
+	for _, item := range ev {
+		if item.Field == field {
+			best = maxFloat(best, item.Weight)
+		}
+	}
+	return clamp01(best)
+}
+
+func nonSpaceRuneCount(value string) int {
+	count := 0
+	for _, r := range value {
+		if !unicode.IsSpace(r) {
+			count++
+		}
+	}
+	return count
+}
+
+func containsLatinOrDigit(value string) bool {
+	for _, r := range value {
+		if ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9') {
+			return true
+		}
+	}
+	return false
+}
+
+func clamp01(value float64) float64 {
+	switch {
+	case value < 0:
+		return 0
+	case value > 1:
+		return 1
+	default:
+		return value
+	}
+}
+
+func maxFloat(a float64, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minScore(a float64, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func hasStaticStateIntent(normalized string) bool {

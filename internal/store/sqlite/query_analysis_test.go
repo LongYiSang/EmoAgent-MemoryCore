@@ -564,8 +564,8 @@ func TestQueryAnalysisExactFactSignalDoesNotRaisePlainDirectFactConfidence(t *te
 	if !hasQuerySignal(analysis, QuerySignalExactFact) {
 		t.Fatalf("signals = %#v, missing %q", analysis.Signals, QuerySignalExactFact)
 	}
-	if got := ruleConfidence("咖啡", analysis); got != 0.42 {
-		t.Fatalf("ruleConfidence for exact_fact-only plain query = %v, want 0.42", got)
+	if got := ruleConfidenceLegacy("咖啡", analysis).Score; got != 0.42 {
+		t.Fatalf("legacy rule confidence for exact_fact-only plain query = %v, want 0.42", got)
 	}
 }
 
@@ -643,10 +643,166 @@ func TestRuleConfidenceLegacySnapshots(t *testing.T) {
 			if got.Reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", got.Reason, tt.wantReason)
 			}
-			if legacy := ruleConfidence(tt.normalized, tt.analysis); legacy != got.Score {
-				t.Fatalf("ruleConfidence = %v, legacy helper score = %v", legacy, got.Score)
-			}
 		})
+	}
+}
+
+func TestScoreIntentEvidence(t *testing.T) {
+	causal := QueryAnalysis{
+		MemoryAbility: MemoryAbilityCausalExplain,
+		Signals:       []QuerySignal{QuerySignalCausal},
+	}
+	direct := QueryAnalysis{
+		MemoryAbility: MemoryAbilityDirectFact,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+	}
+
+	if got := scoreIntentEvidence("为什么最近抗拒上班", causal, nil); got < 0.85 {
+		t.Fatalf("causal intent evidence = %v, want >= 0.85", got)
+	}
+	if got := scoreIntentEvidence("咖啡", direct, nil); got > 0.50 {
+		t.Fatalf("plain direct intent evidence = %v, want <= 0.50", got)
+	}
+}
+
+func TestScoreFieldConsistency(t *testing.T) {
+	consistent := QueryAnalysis{
+		TimeMode:      QueryTimeModeHistorical,
+		MemoryAbility: MemoryAbilityHistorical,
+		EvidenceNeed:  EvidenceNeedStateTransition,
+		Signals:       []QuerySignal{QuerySignalHistorical, QuerySignalStateTransition},
+	}
+	conflicting := QueryAnalysis{
+		TimeMode:      QueryTimeModeCurrent,
+		MemoryAbility: MemoryAbilityDirectFact,
+		EvidenceNeed:  EvidenceNeedStateTransition,
+		Signals:       []QuerySignal{QuerySignalStateTransition},
+	}
+
+	if got := scoreFieldConsistency(consistent); got < 0.85 {
+		t.Fatalf("consistent field score = %v, want >= 0.85", got)
+	}
+	if got := scoreFieldConsistency(conflicting); got > 0.60 {
+		t.Fatalf("conflicting field score = %v, want <= 0.60", got)
+	}
+}
+
+func TestScoreLexicalSpecificity(t *testing.T) {
+	specific := scoreLexicalSpecificity("我什么时候告诉过你我喜欢laufey这件事")
+	generic := scoreLexicalSpecificity("咖啡")
+	if specific <= generic {
+		t.Fatalf("specificity specific=%v generic=%v, want specific > generic", specific, generic)
+	}
+	if generic > 0.45 {
+		t.Fatalf("generic specificity = %v, want <= 0.45", generic)
+	}
+}
+
+func TestScoreAmbiguity(t *testing.T) {
+	ambiguous := QueryAnalysis{MemoryAbility: MemoryAbilityHistorical}
+	anchored := QueryAnalysis{
+		MemoryAbility:  MemoryAbilityProvenance,
+		EntityMentions: []QueryEntityMention{{EntityID: "ent_laufey", MatchText: "laufey"}},
+	}
+
+	if got := scoreAmbiguity("这件事后来怎么样了", ambiguous, nil); got < 0.50 {
+		t.Fatalf("ambiguous query score = %v, want >= 0.50", got)
+	}
+	if got := scoreAmbiguity("我喜欢laufey这件事是从哪里知道的", anchored, nil); got > 0.45 {
+		t.Fatalf("anchored query ambiguity = %v, want <= 0.45", got)
+	}
+}
+
+func TestScoreComplexity(t *testing.T) {
+	complex := QueryAnalysis{
+		MemoryAbility: MemoryAbilityCausalExplain,
+		Signals:       []QuerySignal{QuerySignalCausal, QuerySignalHistorical, QuerySignalStateTransition},
+	}
+	simple := QueryAnalysis{
+		MemoryAbility: MemoryAbilityDirectFact,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+	}
+
+	if got := scoreComplexity("为什么我后来不喝咖啡了", complex); got < 0.60 {
+		t.Fatalf("complex query score = %v, want >= 0.60", got)
+	}
+	if got := scoreComplexity("咖啡", simple); got > 0.35 {
+		t.Fatalf("simple query complexity = %v, want <= 0.35", got)
+	}
+}
+
+func TestScoreSafetyRisk(t *testing.T) {
+	forget := QueryAnalysis{Signals: []QuerySignal{QuerySignalForgetDelete, QuerySignalSensitivity}}
+	normal := QueryAnalysis{Signals: []QuerySignal{QuerySignalExactFact}}
+
+	if got := scoreSafetyRisk("忘掉我不喜欢香菜这件事", forget); got < 0.80 {
+		t.Fatalf("forget safety risk = %v, want >= 0.80", got)
+	}
+	if got := scoreSafetyRisk("我喜欢咖啡吗", normal); got != 0 {
+		t.Fatalf("normal safety risk = %v, want 0", got)
+	}
+}
+
+func TestComputeFieldConfidenceUsesScoreDimensions(t *testing.T) {
+	scores := QueryAnalysisScores{
+		ExpectedRetrievalConfidence: 0.61,
+		TimeEvidence:                0.86,
+		IntentEvidence:              0.82,
+		DomainEvidence:              0.44,
+		EvidenceNeedEvidence:        0.76,
+		EntityResolution:            0.20,
+	}
+
+	got := ComputeFieldConfidence(QueryAnalysis{}, scores)
+	if got.Overall != 0.61 ||
+		got.TimeMode != 0.86 ||
+		got.MemoryAbility != 0.82 ||
+		got.MemoryDomain != 0.44 ||
+		got.EvidenceNeed != 0.76 ||
+		got.EntityResolution != 0.20 {
+		t.Fatalf("field confidence = %#v, want score-backed fields", got)
+	}
+	if got.TimeMode == got.Overall || got.MemoryDomain == got.Overall {
+		t.Fatalf("field confidence copied overall: %#v", got)
+	}
+}
+
+func TestComputeRuleFitPopulatesFeatureScoresAndClamps(t *testing.T) {
+	analysis := QueryAnalysis{
+		TimeMode:      QueryTimeModeHistorical,
+		MemoryDomain:  MemoryDomainWorkExperience,
+		MemoryAbility: MemoryAbilityCausalExplain,
+		EvidenceNeed:  EvidenceNeedStateTransition,
+		Signals:       []QuerySignal{QuerySignalCausal, QuerySignalHistorical, QuerySignalStateTransition},
+	}
+
+	got := ComputeRuleFit("为什么我后来不喝咖啡了", analysis, nil)
+	if got.RuleFit <= 0 || got.RuleFit > 1 {
+		t.Fatalf("rule fit = %v, want clamped unit score", got.RuleFit)
+	}
+	if got.ExpectedRetrievalConfidence != got.RuleFit {
+		t.Fatalf("expected retrieval confidence = %v, want rule fit %v in phase 2", got.ExpectedRetrievalConfidence, got.RuleFit)
+	}
+	if got.IntentEvidence == 0 ||
+		got.FieldConsistency == 0 ||
+		got.TimeEvidence == 0 ||
+		got.DomainEvidence == 0 ||
+		got.EvidenceNeedEvidence == 0 ||
+		got.Specificity == 0 ||
+		got.Complexity == 0 {
+		t.Fatalf("scores missing feature dimensions: %#v", got)
+	}
+}
+
+func TestRuleConfidenceUsesFeatureScorer(t *testing.T) {
+	analysis := QueryAnalysis{
+		MemoryAbility: MemoryAbilityCausalExplain,
+		Signals:       []QuerySignal{QuerySignalCausal},
+	}
+	legacy := ruleConfidenceLegacy("为什么最近抗拒上班", analysis).Score
+	active := ruleConfidence("为什么最近抗拒上班", analysis)
+	if active == legacy {
+		t.Fatalf("active rule confidence = legacy score %v, want feature scorer value", legacy)
 	}
 }
 
