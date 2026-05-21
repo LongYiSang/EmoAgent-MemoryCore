@@ -23,6 +23,7 @@ _MINIMAL_PROVIDER_FIELDS = (
     "confidence",
     "rewrite",
     "language",
+    "field_proposals",
 )
 
 _ENUM_ANALYSIS_FIELDS = (
@@ -244,8 +245,8 @@ def _system_prompt(prompt_version: str) -> str:
         "of causal_explain unless the query truly asks why an effect happened. "
         "For causal why questions, set memory_ability=causal_explain and include "
         "a causal signal. Required provider fields are intent, confidence, rewrite, "
-        "and language. Optional arrays/objects such as anchors, semantic_anchors, "
-        "entity_mentions, signals, field_proposals, subqueries, safety_notes, "
+        "language, and field_proposals with evidence. Optional arrays/objects such as "
+        "anchors, semantic_anchors, entity_mentions, signals, subqueries, safety_notes, "
         "policy_hints, and context_block_hints may be "
         "omitted; the sidecar treats missing values as empty. "
         "counterexample_rewrite is optional and may be omitted when there is no "
@@ -282,6 +283,7 @@ def _provider_user_payload(
                 "confidence",
                 "rewrite",
                 "language",
+                "field_proposals",
             ],
             "optional_fields": [
                 "counterexample_rewrite",
@@ -296,7 +298,6 @@ def _provider_user_payload(
                 "memory_ability",
                 "evidence_need",
                 "semantic_mode",
-                "field_proposals",
                 "subqueries",
                 "safety_notes",
                 "policy_hints",
@@ -424,6 +425,8 @@ def _validate_provider_analysis(
 
 
 def _validate_provider_shape(payload: dict[str, Any]) -> None:
+    if "field_proposals" not in payload:
+        raise ValueError("analysis missing field_proposals")
     if all(field in payload for field in _LEGACY_PROVIDER_FIELDS):
         return
     missing = [field for field in _MINIMAL_PROVIDER_FIELDS if field not in payload]
@@ -638,48 +641,34 @@ def _field_proposals(
     field_confidence: dict[str, float],
     confidence: float,
 ) -> dict[str, dict[str, Any]]:
-    if value is not None:
-        if not isinstance(value, dict):
-            raise ValueError("field_proposals must be an object")
-        out: dict[str, dict[str, Any]] = {}
-        for field in _ENUM_ANALYSIS_FIELDS:
-            item = value.get(field)
-            if item is None:
-                continue
-            if isinstance(item, str):
-                proposal_value = item.strip()[:64]
-                proposal_confidence = field_confidence.get(field, confidence)
-                evidence: list[str] = []
-            elif isinstance(item, dict):
-                proposal_value = _optional_string(item.get("value"))[:64]
-                proposal_confidence = round(
-                    clamp_float(
-                        item.get("confidence"),
-                        0.0,
-                        1.0,
-                        field_confidence.get(field, confidence),
-                    ),
-                    6,
-                )
-                evidence = _string_list(item.get("evidence", []), "field_proposals.evidence")[:8]
-            else:
-                continue
-            if proposal_value:
-                out[field] = {
-                    "value": proposal_value,
-                    "confidence": proposal_confidence,
-                    "evidence": evidence,
-                }
-        return out
-    out = {}
-    for field, proposal_value in parsed_enums.items():
-        proposal_confidence = field_confidence.get(field, confidence)
-        if proposal_value and proposal_confidence > 0:
+    if not isinstance(value, dict):
+        raise ValueError("field_proposals must be an object")
+    out: dict[str, dict[str, Any]] = {}
+    for field in _ENUM_ANALYSIS_FIELDS:
+        item = value.get(field)
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            raise ValueError("field proposal must be an object")
+        proposal_value = _optional_string(item.get("value"))[:64]
+        proposal_confidence = round(
+            clamp_float(
+                item.get("confidence"),
+                0.0,
+                1.0,
+                field_confidence.get(field, confidence),
+            ),
+            6,
+        )
+        evidence = _string_list(item.get("evidence", []), "field_proposals.evidence")[:8]
+        if proposal_value and evidence:
             out[field] = {
                 "value": proposal_value,
-                "confidence": round(clamp_float(proposal_confidence, 0.0, 1.0, 0.0), 6),
-                "evidence": [],
+                "confidence": proposal_confidence,
+                "evidence": evidence,
             }
+    if not out:
+        raise ValueError("field_proposals must include evidenced proposals")
     return out
 
 

@@ -142,6 +142,15 @@ steps:
         memory_ability: provenance
         evidence_need: provenance_source
         confidence: 0.95
+        field_proposals:
+          memory_ability:
+            value: provenance
+            confidence: 0.95
+            evidence: [where did I mention]
+          evidence_need:
+            value: provenance_source
+            confidence: 0.95
+            evidence: [where did I mention]
         query_rewrites:
           - text: sqlite first migration checklist
             purpose: provenance_dense

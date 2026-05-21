@@ -193,6 +193,51 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			wantSource:   memsqlite.QueryAnalysisSourceMerged,
 		},
 		{
+			name: "adaptive safe skips simple weak anchor when semantic need is low",
+			mode: QueryAnalysisModeAdaptiveSafe,
+			rule: adaptiveRuleAnalysis("我喜欢咖啡吗？", memsqlite.QueryAnalysisScores{
+				RuleFit:         0.88,
+				AnchorReadiness: 0.18,
+				SemanticNeed:    0.29,
+				Complexity:      0.20,
+				Ambiguity:       0.05,
+			}),
+			wantSemantic: false,
+			wantMode:     "none",
+			wantReason:   "rule_and_anchor_sufficient",
+			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
+		},
+		{
+			name: "adaptive safe skips complex query when rule and anchors are sufficient",
+			mode: QueryAnalysisModeAdaptiveSafe,
+			rule: adaptiveRuleAnalysis("我为什么最近又开始能接受早会了？", memsqlite.QueryAnalysisScores{
+				RuleFit:         0.86,
+				AnchorReadiness: 0.80,
+				SemanticNeed:    0.36,
+				Complexity:      0.84,
+				Ambiguity:       0.05,
+			}),
+			wantSemantic: false,
+			wantMode:     "none",
+			wantReason:   "rule_and_anchor_sufficient",
+			wantSource:   memsqlite.QueryAnalysisSourceRuleOnly,
+		},
+		{
+			name: "adaptive safe routes high semantic need",
+			mode: QueryAnalysisModeAdaptiveSafe,
+			rule: adaptiveRuleAnalysis("我对最近这件事到底是什么感觉？", memsqlite.QueryAnalysisScores{
+				RuleFit:         0.82,
+				AnchorReadiness: 0.62,
+				SemanticNeed:    0.61,
+				Complexity:      0.45,
+				Ambiguity:       0.42,
+			}),
+			wantSemantic: true,
+			wantMode:     "semantic_light",
+			wantReason:   "semantic_need_high",
+			wantSource:   memsqlite.QueryAnalysisSourceMerged,
+		},
+		{
 			name: "forget delete routes target resolver without semantic call",
 			mode: QueryAnalysisModeAdaptiveFull,
 			rule: func() memsqlite.QueryAnalysis {
@@ -248,9 +293,9 @@ func TestQueryAnalysisAdaptiveRoutingModes(t *testing.T) {
 			semantic := &SemanticQueryAnalysisResult{
 				Status: "ok",
 				Analysis: SemanticQueryAnalysis{
-					Confidence: 0.95,
+					Confidence:      0.95,
 					FieldConfidence: QueryAnalysisConfidence{Overall: 0.95},
-					QueryRewrites: []QueryRewrite{{Text: tt.rule.Raw, Purpose: "semantic_recall", Weight: 0.5}},
+					QueryRewrites:   []QueryRewrite{{Text: tt.rule.Raw, Purpose: "semantic_recall", Weight: 0.5}},
 				},
 			}
 			pipeline := newQueryAnalysisPipeline(
@@ -314,41 +359,41 @@ func TestQueryAnalysisSemanticFieldMergeUsesConfidenceMarginAndDiagnostics(t *te
 		Status: "ok",
 		Analysis: SemanticQueryAnalysis{
 			FieldProposals: map[string]SemanticFieldProposal{
-				"time_mode":      {Value: string(memsqlite.QueryTimeModeHistorical), Confidence: 0.92, Evidence: []string{"之前"}},
-				"memory_ability": {Value: string(memsqlite.MemoryAbilityPremiseCheck), Confidence: 0.92, Evidence: []string{"是不是"}},
+				"time_mode":      {Value: string(memsqlite.QueryTimeModeBitemporalCheck), Confidence: 0.98, Evidence: []string{"是不是"}},
+				"memory_ability": {Value: string(memsqlite.MemoryAbilityPremiseCheck), Confidence: 0.98, Evidence: []string{"是不是"}},
 				"memory_domain":  {Value: string(memsqlite.MemoryDomainRelationship), Confidence: 0.76, Evidence: []string{"朋友"}},
-				"evidence_need":  {Value: string(memsqlite.EvidenceNeedProvenanceSource), Confidence: 0.60, Evidence: []string{"哪里知道"}},
+				"evidence_need":  {Value: string(memsqlite.EvidenceNeedPremiseCounterexample), Confidence: 0.98, Evidence: []string{"反例"}},
 			},
 		},
 	}
 
 	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{
 		MinSemanticFieldConfidence: 0.70,
-		MinOverrideMargin:         0.08,
+		MinOverrideMargin:          0.08,
 	}, nil)
 
-	if got.TimeMode != memsqlite.QueryTimeModeHistorical {
-		t.Fatalf("time_mode = %q, want semantic override", got.TimeMode)
+	if got.TimeMode != memsqlite.QueryTimeModeBitemporalCheck {
+		t.Fatalf("time_mode = %q, want semantic premise override", got.TimeMode)
 	}
-	if got.MemoryAbility != memsqlite.MemoryAbilityDirectFact {
-		t.Fatalf("memory_ability = %q, want direct_fact kept by premise clamp", got.MemoryAbility)
+	if got.MemoryAbility != memsqlite.MemoryAbilityPremiseCheck {
+		t.Fatalf("memory_ability = %q, want semantic premise override", got.MemoryAbility)
 	}
 	if got.MemoryDomain != memsqlite.MemoryDomainUserProfile {
 		t.Fatalf("memory_domain = %q, want rule kept by insufficient margin", got.MemoryDomain)
 	}
-	if got.EvidenceNeed != memsqlite.EvidenceNeedExactObservation {
-		t.Fatalf("evidence_need = %q, want rule kept by semantic low confidence", got.EvidenceNeed)
+	if got.EvidenceNeed != memsqlite.EvidenceNeedPremiseCounterexample {
+		t.Fatalf("evidence_need = %q, want semantic counterexample override", got.EvidenceNeed)
 	}
 	if got.Diagnostics == nil || len(got.Diagnostics.FieldMergeDecisions) == 0 {
 		t.Fatalf("field merge diagnostics = %#v, want decisions", got.Diagnostics)
 	}
 	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "time_mode", "semantic_higher_confidence")
-	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "memory_ability", "policy_clamp")
+	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "memory_ability", "semantic_higher_confidence")
 	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "memory_domain", "insufficient_margin")
-	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "evidence_need", "semantic_low_confidence")
+	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "evidence_need", "semantic_higher_confidence")
 }
 
-func TestQueryAnalysisSemanticMergeSynthesizesFieldProposalsFromLegacyConfidence(t *testing.T) {
+func TestQueryAnalysisSemanticMergeDoesNotSynthesizeFieldProposalsFromLegacyConfidence(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "我为什么最近抗拒上班？",
 		Normalized:    "我为什么最近抗拒上班？",
@@ -377,17 +422,17 @@ func TestQueryAnalysisSemanticMergeSynthesizesFieldProposalsFromLegacyConfidence
 
 	got := mergeSemanticQueryAnalysis(rule, semantic, QueryAnalysisOptions{
 		MinSemanticFieldConfidence: 0.70,
-		MinOverrideMargin:         0.08,
+		MinOverrideMargin:          0.08,
 	}, nil)
 
-	if got.MemoryAbility != memsqlite.MemoryAbilityCausalExplain {
-		t.Fatalf("memory_ability = %q, want synthesized legacy proposal override", got.MemoryAbility)
+	if got.MemoryAbility != memsqlite.MemoryAbilityDirectFact {
+		t.Fatalf("memory_ability = %q, want rule value kept without explicit field proposal", got.MemoryAbility)
 	}
-	if got.EvidenceNeed != memsqlite.EvidenceNeedStateTransition {
-		t.Fatalf("evidence_need = %q, want synthesized legacy proposal override", got.EvidenceNeed)
+	if got.EvidenceNeed != memsqlite.EvidenceNeedExactObservation {
+		t.Fatalf("evidence_need = %q, want rule value kept without explicit field proposal", got.EvidenceNeed)
 	}
-	if got.Diagnostics == nil || got.Diagnostics.SemanticAnalysis == nil || len(got.Diagnostics.SemanticAnalysis.FieldProposals) == 0 {
-		t.Fatalf("semantic diagnostics = %#v, want synthesized field proposals", got.Diagnostics)
+	if got.Diagnostics == nil || got.Diagnostics.SemanticAnalysis == nil || len(got.Diagnostics.SemanticAnalysis.FieldProposals) != 0 {
+		t.Fatalf("semantic diagnostics = %#v, want no synthesized field proposals", got.Diagnostics)
 	}
 }
 
@@ -583,6 +628,12 @@ func TestQueryAnalysisSemanticMergeClampsUntrustedFields(t *testing.T) {
 				MemoryAbility: 0.9,
 				MemoryDomain:  0.9,
 				EvidenceNeed:  0.9,
+			},
+			FieldProposals: map[string]SemanticFieldProposal{
+				"time_mode":      {Value: string(memsqlite.QueryTimeModeHistorical), Confidence: 0.9, Evidence: []string{"证据"}},
+				"memory_domain":  {Value: string(memsqlite.MemoryDomainRelationship), Confidence: 0.9, Evidence: []string{"Long"}},
+				"memory_ability": {Value: string(memsqlite.MemoryAbilityProvenance), Confidence: 0.9, Evidence: []string{"证据"}},
+				"evidence_need":  {Value: string(memsqlite.EvidenceNeedProvenanceSource), Confidence: 0.9, Evidence: []string{"证据"}},
 			},
 			EntityMentions: []SemanticQueryEntityMention{
 				{EntityID: "ent_visible", CanonicalName: "Long", MatchText: "Long", MatchKind: string(memsqlite.QueryEntityMentionKindCanonical), Confidence: 0.8},

@@ -393,9 +393,19 @@ def test_analyze_query_retries_missing_field_then_ok(monkeypatch):
     assert len(result["diagnostics"]["first_failure_reason"]) <= 64
 
 
-def test_analyze_query_completes_missing_optional_fields_from_minimal_schema(monkeypatch):
+def test_analyze_query_rejects_provider_payload_without_field_proposals(monkeypatch):
     calls = []
     responses = [
+        _provider_response(
+            json.dumps(
+                {
+                    "intent": "direct_fact",
+                    "confidence": 0.72,
+                    "rewrite": "coffee preference",
+                    "language": "en",
+                }
+            )
+        ),
         _provider_response(
             json.dumps(
                 {
@@ -430,25 +440,12 @@ def test_analyze_query_completes_missing_optional_fields_from_minimal_schema(mon
         env={"QUERY_KEY": "secret"},
     )
 
-    assert len(calls) == 1
-    assert result["status"] == "ok"
-    assert result["time_mode"] == "recent"
-    assert result["semantic_mode"] == "semantic_light"
-    assert result["field_proposals"]["time_mode"] == {
-        "value": "recent",
-        "confidence": 0.72,
-        "evidence": [],
-    }
-    assert result["signals"] == []
-    assert result["confidence"] == 0.72
-    assert result["field_confidence"] == {}
-    assert result["entity_mentions"] == []
-    assert result["query_rewrites"] == [
-        {"text": "coffee preference", "weight": 0.7, "purpose": "semantic_recall"}
-    ]
-    assert result["semantic_anchors"] == []
-    assert result["context_block_hints"] == []
-    assert result["policy_hints"] == {}
+    assert len(calls) == 2
+    assert result["status"] == "degraded"
+    assert result["degraded"] is True
+    assert result["fallback_reason"] == "validation_failed"
+    assert result["diagnostics"]["first_failure_reason"] == "validation_failed"
+    assert result["diagnostics"]["final_fallback_reason"] == "validation_failed"
 
 
 def test_analyze_query_retries_invalid_enum_then_ok(monkeypatch):
@@ -726,26 +723,26 @@ def test_analyze_query_sends_rich_request_payload_and_strict_prompt(monkeypatch)
             "confidence",
             "rewrite",
             "language",
+            "field_proposals",
         ],
-            "optional_fields": [
-                "counterexample_rewrite",
-                "anchors",
-                "semantic_anchors",
-                "query_rewrites",
-                "signals",
-                "entity_mentions",
-                "context_block_hints",
-                "time_mode",
-                "memory_domain",
-                "memory_ability",
-                "evidence_need",
-                "semantic_mode",
-                "field_proposals",
-                "subqueries",
-                "safety_notes",
-                "policy_hints",
-                "rationale_summary",
-            ],
+        "optional_fields": [
+            "counterexample_rewrite",
+            "anchors",
+            "semantic_anchors",
+            "query_rewrites",
+            "signals",
+            "entity_mentions",
+            "context_block_hints",
+            "time_mode",
+            "memory_domain",
+            "memory_ability",
+            "evidence_need",
+            "semantic_mode",
+            "subqueries",
+            "safety_notes",
+            "policy_hints",
+            "rationale_summary",
+        ],
         "sidecar_completes_protocol_fields": True,
         "rewrite_language": "same_as_query",
         "max_anchors": 4,
@@ -808,6 +805,13 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
                                         "signals": [],
                                         "confidence": 0.5,
                                         "field_confidence": {"time_mode": 0.5},
+                                        "field_proposals": {
+                                            "time_mode": {
+                                                "value": "unspecified",
+                                                "confidence": 0.5,
+                                                "evidence": ["rule"],
+                                            }
+                                        },
                                         "entity_mentions": [],
                                         "query_rewrites": [],
                                         "semantic_anchors": [],
@@ -1166,6 +1170,12 @@ def _valid_analysis(**overrides):
         "signals": [],
         "confidence": 0.5,
         "field_confidence": {"time_mode": 0.5},
+        "field_proposals": {
+            "time_mode": {"value": "unspecified", "confidence": 0.5, "evidence": ["rule"]},
+            "memory_domain": {"value": "general", "confidence": 0.5, "evidence": ["rule"]},
+            "memory_ability": {"value": "recall", "confidence": 0.5, "evidence": ["rule"]},
+            "evidence_need": {"value": "medium", "confidence": 0.5, "evidence": ["rule"]},
+        },
         "entity_mentions": [],
         "query_rewrites": [],
         "semantic_anchors": [],

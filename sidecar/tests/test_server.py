@@ -334,6 +334,18 @@ def test_server_query_analysis_preserves_go_context_for_provider(monkeypatch):
                                         "signals": ["relationship_arc"],
                                         "confidence": 0.8,
                                         "field_confidence": {"time_mode": 0.8},
+                                        "field_proposals": {
+                                            "memory_ability": {
+                                                "value": "relationship_arc",
+                                                "confidence": 0.8,
+                                                "evidence": ["一开始"],
+                                            },
+                                            "evidence_need": {
+                                                "value": "relationship_timeline",
+                                                "confidence": 0.8,
+                                                "evidence": ["一开始"],
+                                            },
+                                        },
                                         "entity_mentions": [],
                                         "query_rewrites": [],
                                         "semantic_anchors": [],

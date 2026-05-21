@@ -92,6 +92,15 @@ steps:
         memory_ability: relationship_arc
         evidence_need: relationship_timeline
         confidence: 0.9
+        field_proposals:
+          memory_ability:
+            value: relationship_arc
+            confidence: 0.9
+            evidence: [陪伴]
+          evidence_need:
+            value: relationship_timeline
+            confidence: 0.9
+            evidence: [陪伴]
         query_rewrites:
           - text: 小星 陪伴 没那么孤单
             purpose: relationship_timeline

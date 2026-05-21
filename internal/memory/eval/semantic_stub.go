@@ -37,17 +37,24 @@ type evalSemanticResponse struct {
 }
 
 type evalSemanticAnalysis struct {
-	TimeMode          string                 `json:"time_mode,omitempty"`
-	Signals           []string               `json:"signals,omitempty"`
-	MemoryDomain      string                 `json:"memory_domain,omitempty"`
-	MemoryAbility     string                 `json:"memory_ability,omitempty"`
-	EvidenceNeed      string                 `json:"evidence_need,omitempty"`
-	Confidence        float64                `json:"confidence,omitempty"`
-	FieldConfidence   evalSemanticConfidence `json:"field_confidence,omitempty"`
-	EntityMentions    []evalSemanticEntity   `json:"entity_mentions,omitempty"`
-	QueryRewrites     []evalSemanticRewrite  `json:"query_rewrites,omitempty"`
-	SemanticAnchors   []evalSemanticAnchor   `json:"semantic_anchors,omitempty"`
-	ContextBlockHints []string               `json:"context_block_hints,omitempty"`
+	TimeMode          string                               `json:"time_mode,omitempty"`
+	Signals           []string                             `json:"signals,omitempty"`
+	MemoryDomain      string                               `json:"memory_domain,omitempty"`
+	MemoryAbility     string                               `json:"memory_ability,omitempty"`
+	EvidenceNeed      string                               `json:"evidence_need,omitempty"`
+	Confidence        float64                              `json:"confidence,omitempty"`
+	FieldConfidence   evalSemanticConfidence               `json:"field_confidence,omitempty"`
+	FieldProposals    map[string]evalSemanticFieldProposal `json:"field_proposals,omitempty"`
+	EntityMentions    []evalSemanticEntity                 `json:"entity_mentions,omitempty"`
+	QueryRewrites     []evalSemanticRewrite                `json:"query_rewrites,omitempty"`
+	SemanticAnchors   []evalSemanticAnchor                 `json:"semantic_anchors,omitempty"`
+	ContextBlockHints []string                             `json:"context_block_hints,omitempty"`
+}
+
+type evalSemanticFieldProposal struct {
+	Value      string   `json:"value,omitempty"`
+	Confidence float64  `json:"confidence,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
 }
 
 type evalSemanticConfidence struct {
@@ -197,6 +204,16 @@ func evalSemanticAnalysisFromStub(value SemanticStubAnalysis) evalSemanticAnalys
 			MatchKind:     mention.MatchKind,
 			Confidence:    mention.Confidence,
 		})
+	}
+	if len(value.FieldProposals) > 0 {
+		out.FieldProposals = make(map[string]evalSemanticFieldProposal, len(value.FieldProposals))
+		for key, proposal := range value.FieldProposals {
+			out.FieldProposals[key] = evalSemanticFieldProposal{
+				Value:      proposal.Value,
+				Confidence: proposal.Confidence,
+				Evidence:   append([]string(nil), proposal.Evidence...),
+			}
+		}
 	}
 	for _, rewrite := range value.QueryRewrites {
 		out.QueryRewrites = append(out.QueryRewrites, evalSemanticRewrite{

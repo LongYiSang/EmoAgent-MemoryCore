@@ -217,35 +217,35 @@ type QueryPolicyHints struct {
 }
 
 type QueryAnalysisDiagnostics struct {
-	ScorerVersion           string
-	RuleConfidenceLegacy    float64
-	RuleConfidenceReason    string
-	SemanticDecisionLegacy  bool
-	MinConfidenceToOverride float64
-	Signals                 []string
-	EntityMentionCount      int
-	Scores                  QueryAnalysisScores
-	FieldConfidence         QueryAnalysisConfidence
-	RuleDecision            QueryAnalysisDecision
-	AdaptiveDecision        QueryAnalysisDecision
-	RuleEvidence            []QueryAnalysisEvidence
-	RuleAlternatives        []QueryAnalysisAlternative
-	SemanticStatus          string
-	SemanticProvider        string
-	SemanticModel           string
-	PromptVersion           string
-	SemanticLatencyMs       int64
-	FallbackReason          string
-	RewriteCount            int
-	SemanticAnchorCount     int
-	DroppedRewriteCount     int
-	DroppedRewriteReasons   []string
+	ScorerVersion                string
+	RuleConfidenceLegacy         float64
+	RuleConfidenceReason         string
+	SemanticDecisionLegacy       bool
+	MinConfidenceToOverride      float64
+	Signals                      []string
+	EntityMentionCount           int
+	Scores                       QueryAnalysisScores
+	FieldConfidence              QueryAnalysisConfidence
+	RuleDecision                 QueryAnalysisDecision
+	AdaptiveDecision             QueryAnalysisDecision
+	RuleEvidence                 []QueryAnalysisEvidence
+	RuleAlternatives             []QueryAnalysisAlternative
+	SemanticStatus               string
+	SemanticProvider             string
+	SemanticModel                string
+	PromptVersion                string
+	SemanticLatencyMs            int64
+	FallbackReason               string
+	RewriteCount                 int
+	SemanticAnchorCount          int
+	DroppedRewriteCount          int
+	DroppedRewriteReasons        []string
 	DroppedSemanticAnchorCount   int
 	DroppedSemanticAnchorReasons []string
-	EnglishRewriteCount     int
-	SemanticDriftCount      int
-	FieldMergeDecisions     []FieldMergeDecision
-	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics
+	EnglishRewriteCount          int
+	SemanticDriftCount           int
+	FieldMergeDecisions          []FieldMergeDecision
+	SemanticAnalysis             *SemanticQueryAnalysisDiagnostics
 }
 
 type SemanticQueryAnalysisDiagnostics struct {
@@ -1521,6 +1521,12 @@ func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 			0.06*s.SensitivityPenalty,
 	)
 	s.AnchorReadiness = ComputeAnchorReadiness(analysis.Probes)
+	s.SemanticNeed = clamp01(
+		0.35*(1-s.RuleFit) +
+			0.25*(1-s.AnchorReadiness) +
+			0.25*s.Complexity +
+			0.15*s.Ambiguity,
+	)
 	s.ExpectedRetrievalConfidence = clamp01(0.60*s.RuleFit + 0.40*s.AnchorReadiness - 0.10*s.SafetyRisk)
 	return s
 }

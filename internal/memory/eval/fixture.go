@@ -353,17 +353,24 @@ type SemanticStubSettings struct {
 }
 
 type SemanticStubAnalysis struct {
-	TimeMode          string                 `yaml:"time_mode"`
-	Signals           []string               `yaml:"signals"`
-	MemoryDomain      string                 `yaml:"memory_domain"`
-	MemoryAbility     string                 `yaml:"memory_ability"`
-	EvidenceNeed      string                 `yaml:"evidence_need"`
-	Confidence        float64                `yaml:"confidence"`
-	FieldConfidence   SemanticStubConfidence `yaml:"field_confidence"`
-	EntityMentions    []SemanticStubEntity   `yaml:"entity_mentions"`
-	QueryRewrites     []SemanticStubRewrite  `yaml:"query_rewrites"`
-	SemanticAnchors   []SemanticStubAnchor   `yaml:"semantic_anchors"`
-	ContextBlockHints []string               `yaml:"context_block_hints"`
+	TimeMode          string                               `yaml:"time_mode"`
+	Signals           []string                             `yaml:"signals"`
+	MemoryDomain      string                               `yaml:"memory_domain"`
+	MemoryAbility     string                               `yaml:"memory_ability"`
+	EvidenceNeed      string                               `yaml:"evidence_need"`
+	Confidence        float64                              `yaml:"confidence"`
+	FieldConfidence   SemanticStubConfidence               `yaml:"field_confidence"`
+	FieldProposals    map[string]SemanticStubFieldProposal `yaml:"field_proposals"`
+	EntityMentions    []SemanticStubEntity                 `yaml:"entity_mentions"`
+	QueryRewrites     []SemanticStubRewrite                `yaml:"query_rewrites"`
+	SemanticAnchors   []SemanticStubAnchor                 `yaml:"semantic_anchors"`
+	ContextBlockHints []string                             `yaml:"context_block_hints"`
+}
+
+type SemanticStubFieldProposal struct {
+	Value      string   `yaml:"value"`
+	Confidence float64  `yaml:"confidence"`
+	Evidence   []string `yaml:"evidence"`
 }
 
 type SemanticStubConfidence struct {

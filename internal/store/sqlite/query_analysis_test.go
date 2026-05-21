@@ -1202,6 +1202,15 @@ func TestComputeRuleFitPopulatesFeatureScoresAndClamps(t *testing.T) {
 	if got.AnchorReadiness != 0.75 || got.ExpectedRetrievalConfidence != wantExpected {
 		t.Fatalf("scores = %#v, want anchor readiness 0.75 and expected retrieval confidence %v", got, wantExpected)
 	}
+	wantSemanticNeed := clamp01(
+		0.35*(1-got.RuleFit) +
+			0.25*(1-got.AnchorReadiness) +
+			0.25*got.Complexity +
+			0.15*got.Ambiguity,
+	)
+	if got.SemanticNeed != wantSemanticNeed {
+		t.Fatalf("semantic need = %v, want %v from feature formula; scores=%#v", got.SemanticNeed, wantSemanticNeed, got)
+	}
 	if got.IntentEvidence == 0 ||
 		got.FieldConsistency == 0 ||
 		got.TimeEvidence == 0 ||
