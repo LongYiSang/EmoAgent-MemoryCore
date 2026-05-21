@@ -26,6 +26,15 @@ const (
 	defaultQueryAnalysisMaxSemanticAnchors      = 8
 	defaultQueryAnalysisSemanticEnergyCap       = 5.0
 	defaultQueryAnalysisGeneratedDenseWeightSum = 3.0
+	defaultQueryAnalysisMinRuleFit              = 0.66
+	defaultQueryAnalysisMinAnchorReadiness      = 0.45
+	defaultQueryAnalysisSemanticNeed            = 0.58
+	defaultQueryAnalysisMinComplexity           = 0.50
+	defaultQueryAnalysisFullComplexity          = 0.72
+	defaultQueryAnalysisDecomposeComplexity     = 0.80
+	defaultQueryAnalysisMinFieldConfidence      = 0.70
+	defaultQueryAnalysisOverrideMargin          = 0.08
+	defaultQueryAnalysisHighSafetyRisk          = 0.80
 )
 
 const rewriteDropReasonLanguageMismatch = "rewrite_language_mismatch"
@@ -154,6 +163,7 @@ type SemanticQueryAnalysisRequest struct {
 	SessionID                  *string
 	MessageID                  *string
 	QueryText                  string
+	SemanticMode               string
 	Now                        time.Time
 	Timezone                   string
 	RuleAnalysis               memsqlite.QueryAnalysis
@@ -179,12 +189,14 @@ type SemanticQueryAnalysisResult struct {
 
 type SemanticQueryAnalysis struct {
 	TimeMode          string
+	SemanticMode      string
 	Signals           []string
 	MemoryDomain      string
 	MemoryAbility     string
 	EvidenceNeed      string
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
+	FieldProposals    map[string]SemanticFieldProposal
 	Scores            QueryAnalysisScores
 	Probes            QueryAnchorProbe
 	Decision          QueryAnalysisDecision
@@ -193,6 +205,8 @@ type SemanticQueryAnalysis struct {
 	EntityMentions    []SemanticQueryEntityMention
 	QueryRewrites     []QueryRewrite
 	SemanticAnchors   []SemanticAnchor
+	Subqueries        []string
+	SafetyNotes       []string
 	ContextBlockHints []string
 	PolicyHints       QueryPolicyHints
 }
@@ -255,15 +269,28 @@ func (p queryAnalysisPipeline) AnalyzeRuleQuery(ctx context.Context, req QueryAn
 
 func (p queryAnalysisPipeline) AnalyzeSemanticForRule(ctx context.Context, req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) memsqlite.QueryAnalysis {
 	options := normalizeQueryAnalysisOptions(p.options)
-	useSemantic := p.shouldUseSemantic(rule)
-	rule = annotateLegacySemanticDecision(rule, useSemantic, options.MinConfidenceToOverride)
+	legacyUseSemantic := p.shouldUseLegacySemantic(rule)
+	adaptiveDecision := memsqlite.QueryAnalysisDecision{}
+	if isAdaptiveQueryAnalysisMode(options.Mode) {
+		adaptiveDecision = DecideSemanticRoute(rule, options)
+	}
+	useSemantic := legacyUseSemantic
+	semanticMode := ""
+	switch options.Mode {
+	case QueryAnalysisModeAdaptive, QueryAnalysisModeAdaptiveSafe, QueryAnalysisModeAdaptiveFull:
+		useSemantic = adaptiveDecision.UseSemantic
+		semanticMode = adaptiveDecision.SemanticMode
+	case QueryAnalysisModeShadowAdaptive:
+		useSemantic = legacyUseSemantic
+	}
+	rule = annotateSemanticDecisions(rule, legacyUseSemantic, adaptiveDecision, options.MinConfidenceToOverride)
 	if !useSemantic {
 		return rule
 	}
 	if p.semantic == nil {
 		return semanticRuleFallback(rule, "semantic_analyzer_missing", SemanticQueryAnalysisResult{})
 	}
-	semanticReq := p.semanticRequestForRule(req, rule)
+	semanticReq := p.semanticRequestForRule(req, rule, semanticMode)
 	stageCtx := ctx
 	cancel := func() {}
 	if p.options.Timeout > 0 {
@@ -297,10 +324,10 @@ func (p queryAnalysisPipeline) AnalyzeSemanticForRule(ctx context.Context, req Q
 	if semantic.Degraded {
 		return semanticRuleFallback(rule, sanitizeSemanticFallbackReason(semantic.FallbackReason, "semantic_unavailable"), *semantic)
 	}
-	return mergeSemanticQueryAnalysis(rule, *semantic, p.options, semanticReq.VisibleEntityHints)
+	return mergeSemanticQueryAnalysis(rule, *semantic, options, semanticReq.VisibleEntityHints)
 }
 
-func (p queryAnalysisPipeline) semanticRequestForRule(req QueryAnalysisRequest, rule memsqlite.QueryAnalysis) SemanticQueryAnalysisRequest {
+func (p queryAnalysisPipeline) semanticRequestForRule(req QueryAnalysisRequest, rule memsqlite.QueryAnalysis, semanticMode string) SemanticQueryAnalysisRequest {
 	providerBudget := queryAnalysisProviderBudget(p.options)
 	return SemanticQueryAnalysisRequest{
 		RequestID:                  req.RequestID,
@@ -308,6 +335,7 @@ func (p queryAnalysisPipeline) semanticRequestForRule(req QueryAnalysisRequest, 
 		SessionID:                  req.SessionID,
 		MessageID:                  req.MessageID,
 		QueryText:                  req.QueryText,
+		SemanticMode:               semanticMode,
 		Now:                        req.Now,
 		Timezone:                   req.Timezone,
 		RuleAnalysis:               cloneStoreQueryAnalysis(rule),
@@ -336,7 +364,7 @@ func (p queryAnalysisPipeline) analyzeSemantic(ctx context.Context, req Semantic
 	return p.options.Cache.Analyze(ctx, req, p.semantic)
 }
 
-func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) bool {
+func (p queryAnalysisPipeline) shouldUseLegacySemantic(rule memsqlite.QueryAnalysis) bool {
 	options := normalizeQueryAnalysisOptions(p.options)
 	if options.Provider != QueryAnalysisProviderSidecar {
 		return false
@@ -355,6 +383,92 @@ func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) b
 	default:
 		return false
 	}
+}
+
+func (p queryAnalysisPipeline) shouldUseSemantic(rule memsqlite.QueryAnalysis) bool {
+	options := normalizeQueryAnalysisOptions(p.options)
+	if options.Provider != QueryAnalysisProviderSidecar {
+		return false
+	}
+	switch options.Mode {
+	case QueryAnalysisModeAdaptive, QueryAnalysisModeAdaptiveSafe, QueryAnalysisModeAdaptiveFull:
+		return DecideSemanticRoute(rule, options).UseSemantic
+	default:
+		return p.shouldUseLegacySemantic(rule)
+	}
+}
+
+func isAdaptiveQueryAnalysisMode(mode QueryAnalysisMode) bool {
+	switch mode {
+	case QueryAnalysisModeShadowAdaptive, QueryAnalysisModeAdaptive, QueryAnalysisModeAdaptiveSafe, QueryAnalysisModeAdaptiveFull:
+		return true
+	default:
+		return false
+	}
+}
+
+func DecideSemanticRoute(rule memsqlite.QueryAnalysis, options QueryAnalysisOptions) memsqlite.QueryAnalysisDecision {
+	options = normalizeQueryAnalysisOptions(options)
+	decision := memsqlite.QueryAnalysisDecision{
+		SemanticMode:     "none",
+		RetrievalMode:    "rule",
+		ReasonCodes:      []string{"rule_and_anchor_sufficient"},
+		ThresholdVersion: "adaptive_semantic_router_v1",
+		ScorerVersion:    "query_analysis_scorer_v1",
+	}
+	if strings.TrimSpace(rule.Raw) == "" {
+		decision.ReasonCodes = []string{"empty_query"}
+		return decision
+	}
+	if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) || rule.MemoryAbility == memsqlite.MemoryAbilityBoundary {
+		decision.SemanticMode = "target_resolver"
+		decision.RetrievalMode = "target_resolver"
+		decision.ReasonCodes = []string{"forget_or_delete_intent"}
+		return decision
+	}
+	scores := rule.Scores
+	if validUnitScore(scores.SafetyRisk) && scores.SafetyRisk >= options.HighSafetyRiskThreshold {
+		decision.ReasonCodes = []string{"safety_policy_first"}
+		return decision
+	}
+	reasons := adaptiveSemanticRouteReasons(scores, options)
+	if len(reasons) == 0 {
+		return decision
+	}
+	decision.UseSemantic = true
+	decision.RetrievalMode = "semantic"
+	decision.ReasonCodes = reasons
+	if validUnitScore(scores.Complexity) && scores.Complexity >= options.DecomposeSemanticComplexity {
+		decision.SemanticMode = "semantic_decompose"
+		return decision
+	}
+	if options.Mode == QueryAnalysisModeAdaptiveFull && validUnitScore(scores.Complexity) && scores.Complexity >= options.FullSemanticComplexity {
+		decision.SemanticMode = "semantic_full"
+		return decision
+	}
+	decision.SemanticMode = "semantic_light"
+	return decision
+}
+
+func adaptiveSemanticRouteReasons(scores memsqlite.QueryAnalysisScores, options QueryAnalysisOptions) []string {
+	var reasons []string
+	if !validUnitScore(scores.RuleFit) || scores.RuleFit < options.MinRuleFit {
+		reasons = append(reasons, "rule_fit_low")
+	}
+	if !validUnitScore(scores.AnchorReadiness) || scores.AnchorReadiness < options.MinAnchorReadiness {
+		reasons = append(reasons, "anchor_readiness_low")
+	}
+	if validUnitScore(scores.SemanticNeed) && scores.SemanticNeed >= options.SemanticNeedThreshold {
+		reasons = append(reasons, "semantic_need_high")
+	}
+	if validUnitScore(scores.Complexity) && scores.Complexity >= options.MinComplexityForSemantic {
+		reasons = append(reasons, "complexity_high")
+	}
+	return reasons
+}
+
+func validUnitScore(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
 func semanticRuleFallback(rule memsqlite.QueryAnalysis, fallbackReason string, semantic SemanticQueryAnalysisResult) memsqlite.QueryAnalysis {
@@ -378,22 +492,9 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 	out := cloneStoreQueryAnalysis(rule)
 	analysis := semantic.Analysis
 	controlLocked := options.Mode == QueryAnalysisModeSemanticRewriteOnly
+	var fieldMergeDecisions []memsqlite.FieldMergeDecision
 	if !controlLocked {
-		if isValidQueryTimeMode(analysis.TimeMode) && confidenceForField(analysis.FieldConfidence.TimeMode, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-			out.TimeMode = memsqlite.QueryTimeMode(analysis.TimeMode)
-		}
-		if isValidMemoryDomain(analysis.MemoryDomain) && confidenceForField(analysis.FieldConfidence.MemoryDomain, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-			out.MemoryDomain = memsqlite.MemoryDomain(analysis.MemoryDomain)
-		}
-		if isValidMemoryAbility(analysis.MemoryAbility) && confidenceForField(analysis.FieldConfidence.MemoryAbility, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-			out.MemoryAbility = memsqlite.MemoryAbility(analysis.MemoryAbility)
-		}
-		if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) {
-			out.MemoryAbility = rule.MemoryAbility
-		}
-		if isValidEvidenceNeed(analysis.EvidenceNeed) && confidenceForField(analysis.FieldConfidence.EvidenceNeed, analysis.FieldConfidence.Overall, analysis.Confidence) >= options.MinConfidenceToOverride {
-			out.EvidenceNeed = memsqlite.EvidenceNeed(analysis.EvidenceNeed)
-		}
+		fieldMergeDecisions = mergeSemanticControlFields(&out, rule, analysis, options)
 		if validUnitConfidence(analysis.Confidence) && analysis.Confidence >= options.MinConfidenceToOverride {
 			out.Confidence = analysis.Confidence
 			out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
@@ -405,9 +506,10 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 	}
 	budget := generatedWeightBudget(options)
 	var rewriteDiagnostics rewriteSanitizationDiagnostics
+	var anchorDiagnostics semanticAnchorSanitizationDiagnostics
 	if !options.DisableGeneratedDense {
 		out.QueryRewrites, rewriteDiagnostics = sanitizedQueryRewrites(out.Raw, analysis.QueryRewrites, options.MaxQueryRewrites, &budget)
-		out.SemanticAnchors = sanitizedSemanticAnchors(analysis.SemanticAnchors, hints, options, &budget)
+		out.SemanticAnchors, anchorDiagnostics = sanitizedSemanticAnchors(analysis.SemanticAnchors, hints, options, &budget)
 	}
 	out.ContextBlockHints = primaryContextBlockHint(out)
 	if !controlLocked {
@@ -416,31 +518,209 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 	mergeSemanticQueryAnalysisPhase1DTO(&out, analysis)
 	out.Source = memsqlite.QueryAnalysisSourceMerged
 	out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{
-		SemanticStatus:        defaultString(semantic.Status, "ok"),
-		SemanticProvider:      semantic.Provider,
-		SemanticModel:         semantic.Model,
-		PromptVersion:         semantic.PromptVersion,
-		SemanticLatencyMs:     semantic.LatencyMs,
-		FallbackReason:        semantic.FallbackReason,
-		RewriteCount:          len(out.QueryRewrites),
-		SemanticAnchorCount:   len(out.SemanticAnchors),
-		DroppedRewriteCount:   rewriteDiagnostics.DroppedCount,
-		DroppedRewriteReasons: rewriteDiagnostics.DroppedReasons,
-		EnglishRewriteCount:   rewriteDiagnostics.EnglishCount,
-		SemanticDriftCount:    semanticControlDriftCount(rule, out),
-		SemanticAnalysis:      semanticAnalysisDiagnosticsFromSemantic(analysis),
+		SemanticStatus:               defaultString(semantic.Status, "ok"),
+		SemanticProvider:             semantic.Provider,
+		SemanticModel:                semantic.Model,
+		PromptVersion:                semantic.PromptVersion,
+		SemanticLatencyMs:            semantic.LatencyMs,
+		FallbackReason:               semantic.FallbackReason,
+		RewriteCount:                 len(out.QueryRewrites),
+		SemanticAnchorCount:          len(out.SemanticAnchors),
+		DroppedRewriteCount:          rewriteDiagnostics.DroppedCount,
+		DroppedRewriteReasons:        rewriteDiagnostics.DroppedReasons,
+		DroppedSemanticAnchorCount:   anchorDiagnostics.DroppedCount,
+		DroppedSemanticAnchorReasons: anchorDiagnostics.DroppedReasons,
+		EnglishRewriteCount:          rewriteDiagnostics.EnglishCount,
+		SemanticDriftCount:           semanticControlDriftCount(rule, out),
+		FieldMergeDecisions:          fieldMergeDecisions,
+		SemanticAnalysis:             semanticAnalysisDiagnosticsFromSemantic(analysis),
 	}
 	copyLegacyQueryAnalysisDiagnostics(out.Diagnostics, rule.Diagnostics)
 	return out
 }
 
-func annotateLegacySemanticDecision(rule memsqlite.QueryAnalysis, decision bool, minConfidence float64) memsqlite.QueryAnalysis {
+func mergeSemanticControlFields(out *memsqlite.QueryAnalysis, rule memsqlite.QueryAnalysis, analysis SemanticQueryAnalysis, options QueryAnalysisOptions) []memsqlite.FieldMergeDecision {
+	if out == nil {
+		return nil
+	}
+	proposals := semanticFieldProposals(analysis)
+	if len(proposals) == 0 {
+		return nil
+	}
+	fields := []string{"time_mode", "memory_ability", "memory_domain", "evidence_need"}
+	decisions := make([]memsqlite.FieldMergeDecision, 0, len(fields))
+	for _, field := range fields {
+		proposal, ok := proposals[field]
+		if !ok {
+			continue
+		}
+		decision := mergeSemanticFieldDecision(field, rule, proposal, options)
+		decisions = append(decisions, decision)
+		if !decision.UseSemantic {
+			continue
+		}
+		switch field {
+		case "time_mode":
+			out.TimeMode = memsqlite.QueryTimeMode(decision.SemanticValue)
+		case "memory_ability":
+			out.MemoryAbility = memsqlite.MemoryAbility(decision.SemanticValue)
+		case "memory_domain":
+			out.MemoryDomain = memsqlite.MemoryDomain(decision.SemanticValue)
+		case "evidence_need":
+			out.EvidenceNeed = memsqlite.EvidenceNeed(decision.SemanticValue)
+		}
+	}
+	return decisions
+}
+
+func mergeSemanticFieldDecision(field string, rule memsqlite.QueryAnalysis, proposal SemanticFieldProposal, options QueryAnalysisOptions) memsqlite.FieldMergeDecision {
+	ruleValue := ruleFieldValue(rule, field)
+	semanticValue := strings.TrimSpace(proposal.Value)
+	ruleConfidence := ruleConfidenceForField(rule, field)
+	semanticConfidence := proposal.Confidence
+	decision := memsqlite.FieldMergeDecision{
+		Field:              field,
+		RuleValue:          ruleValue,
+		SemanticValue:      semanticValue,
+		RuleConfidence:     ruleConfidence,
+		SemanticConfidence: semanticConfidence,
+		Evidence:           append([]string(nil), proposal.Evidence...),
+	}
+	switch {
+	case !isValidSemanticFieldValue(field, semanticValue):
+		decision.Reason = "semantic_invalid"
+	case semanticFieldPolicyClamped(field, semanticValue, rule):
+		decision.Reason = "policy_clamp"
+	case !validUnitConfidence(semanticConfidence) || semanticConfidence < options.MinSemanticFieldConfidence:
+		decision.Reason = "semantic_low_confidence"
+	case semanticConfidence-ruleConfidence < options.MinOverrideMargin:
+		decision.Reason = "insufficient_margin"
+	default:
+		decision.Reason = "semantic_higher_confidence"
+		decision.UseSemantic = true
+	}
+	return decision
+}
+
+func semanticFieldProposals(analysis SemanticQueryAnalysis) map[string]SemanticFieldProposal {
+	if len(analysis.FieldProposals) > 0 {
+		out := make(map[string]SemanticFieldProposal, len(analysis.FieldProposals))
+		for key, value := range analysis.FieldProposals {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			value.Value = strings.TrimSpace(value.Value)
+			value.Evidence = append([]string(nil), value.Evidence...)
+			out[key] = value
+		}
+		return out
+	}
+	out := map[string]SemanticFieldProposal{}
+	addSyntheticSemanticFieldProposal(out, "time_mode", analysis.TimeMode, confidenceForField(analysis.FieldConfidence.TimeMode, analysis.FieldConfidence.Overall, analysis.Confidence))
+	addSyntheticSemanticFieldProposal(out, "memory_ability", analysis.MemoryAbility, confidenceForField(analysis.FieldConfidence.MemoryAbility, analysis.FieldConfidence.Overall, analysis.Confidence))
+	addSyntheticSemanticFieldProposal(out, "memory_domain", analysis.MemoryDomain, confidenceForField(analysis.FieldConfidence.MemoryDomain, analysis.FieldConfidence.Overall, analysis.Confidence))
+	addSyntheticSemanticFieldProposal(out, "evidence_need", analysis.EvidenceNeed, confidenceForField(analysis.FieldConfidence.EvidenceNeed, analysis.FieldConfidence.Overall, analysis.Confidence))
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func addSyntheticSemanticFieldProposal(out map[string]SemanticFieldProposal, field string, value string, confidence float64) {
+	value = strings.TrimSpace(value)
+	if value == "" || !validUnitConfidence(confidence) {
+		return
+	}
+	out[field] = SemanticFieldProposal{Value: value, Confidence: confidence}
+}
+
+func ruleFieldValue(rule memsqlite.QueryAnalysis, field string) string {
+	switch field {
+	case "time_mode":
+		return string(rule.TimeMode)
+	case "memory_ability":
+		return string(rule.MemoryAbility)
+	case "memory_domain":
+		return string(rule.MemoryDomain)
+	case "evidence_need":
+		return string(rule.EvidenceNeed)
+	default:
+		return ""
+	}
+}
+
+func ruleConfidenceForField(rule memsqlite.QueryAnalysis, field string) float64 {
+	fieldConfidence := 0.0
+	switch field {
+	case "time_mode":
+		fieldConfidence = rule.FieldConfidence.TimeMode
+	case "memory_ability":
+		fieldConfidence = rule.FieldConfidence.MemoryAbility
+	case "memory_domain":
+		fieldConfidence = rule.FieldConfidence.MemoryDomain
+	case "evidence_need":
+		fieldConfidence = rule.FieldConfidence.EvidenceNeed
+	}
+	if validUnitConfidence(fieldConfidence) && validUnitConfidence(rule.Confidence) {
+		return math.Min(fieldConfidence, rule.Confidence)
+	}
+	if validUnitConfidence(fieldConfidence) {
+		return fieldConfidence
+	}
+	if validUnitConfidence(rule.Confidence) {
+		return rule.Confidence
+	}
+	if rule.Diagnostics != nil && validUnitConfidence(rule.Diagnostics.RuleConfidenceLegacy) {
+		return rule.Diagnostics.RuleConfidenceLegacy
+	}
+	return 0
+}
+
+func isValidSemanticFieldValue(field string, value string) bool {
+	switch field {
+	case "time_mode":
+		return isValidQueryTimeMode(value)
+	case "memory_ability":
+		return isValidMemoryAbility(value)
+	case "memory_domain":
+		return isValidMemoryDomain(value)
+	case "evidence_need":
+		return isValidEvidenceNeed(value)
+	default:
+		return false
+	}
+}
+
+func semanticFieldPolicyClamped(field string, value string, rule memsqlite.QueryAnalysis) bool {
+	if field == "memory_ability" && hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) && value != string(rule.MemoryAbility) {
+		return true
+	}
+	if ruleSupportsPremiseCheck(rule) {
+		return false
+	}
+	switch field {
+	case "time_mode":
+		return value == string(memsqlite.QueryTimeModeBitemporalCheck)
+	case "memory_ability":
+		return value == string(memsqlite.MemoryAbilityPremiseCheck)
+	case "evidence_need":
+		return value == string(memsqlite.EvidenceNeedPremiseCounterexample)
+	default:
+		return false
+	}
+}
+
+func annotateSemanticDecisions(rule memsqlite.QueryAnalysis, legacyDecision bool, adaptiveDecision memsqlite.QueryAnalysisDecision, minConfidence float64) memsqlite.QueryAnalysis {
 	out := cloneStoreQueryAnalysis(rule)
 	if out.Diagnostics == nil {
 		out.Diagnostics = &memsqlite.QueryAnalysisDiagnostics{}
 	}
-	out.Diagnostics.SemanticDecisionLegacy = decision
+	out.Diagnostics.SemanticDecisionLegacy = legacyDecision
 	out.Diagnostics.MinConfidenceToOverride = minConfidence
+	if !isZeroStoreQueryAnalysisDecision(adaptiveDecision) {
+		out.Diagnostics.AdaptiveDecision = cloneStoreQueryAnalysisDecision(adaptiveDecision)
+	}
 	return out
 }
 
@@ -458,6 +738,7 @@ func copyLegacyQueryAnalysisDiagnostics(dst *memsqlite.QueryAnalysisDiagnostics,
 	dst.Scores = src.Scores
 	dst.FieldConfidence = src.FieldConfidence
 	dst.RuleDecision = cloneStoreQueryAnalysisDecision(src.RuleDecision)
+	dst.AdaptiveDecision = cloneStoreQueryAnalysisDecision(src.AdaptiveDecision)
 	dst.RuleEvidence = append([]memsqlite.QueryAnalysisEvidence(nil), src.RuleEvidence...)
 	dst.RuleAlternatives = cloneStoreQueryAnalysisAlternatives(src.RuleAlternatives)
 }
@@ -468,12 +749,14 @@ func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsq
 	}
 	out := &memsqlite.SemanticQueryAnalysisDiagnostics{
 		TimeMode:          strings.TrimSpace(value.TimeMode),
+		SemanticMode:      strings.TrimSpace(value.SemanticMode),
 		Signals:           append([]string(nil), value.Signals...),
 		MemoryDomain:      strings.TrimSpace(value.MemoryDomain),
 		MemoryAbility:     strings.TrimSpace(value.MemoryAbility),
 		EvidenceNeed:      strings.TrimSpace(value.EvidenceNeed),
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidenceToStore(value.FieldConfidence),
+		FieldProposals:    semanticFieldProposalsToStore(semanticFieldProposals(value)),
 		Scores:            queryAnalysisScoresToStore(value.Scores),
 		Probes:            queryAnchorProbeToStore(value.Probes),
 		Decision:          queryAnalysisDecisionToStore(value.Decision),
@@ -481,6 +764,8 @@ func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsq
 		Alternatives:      queryAnalysisAlternativesToStore(value.Alternatives),
 		QueryRewrites:     queryRewritesToStoreDiagnostics(value.QueryRewrites),
 		SemanticAnchors:   semanticAnchorsToStoreDiagnostics(value.SemanticAnchors),
+		Subqueries:        append([]string(nil), value.Subqueries...),
+		SafetyNotes:       append([]string(nil), value.SafetyNotes...),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
 		PolicyHints:       queryPolicyHintsToStore(value.PolicyHints),
 	}
@@ -499,11 +784,13 @@ func semanticAnalysisDiagnosticsFromSemantic(value SemanticQueryAnalysis) *memsq
 
 func isEmptySemanticQueryAnalysis(value SemanticQueryAnalysis) bool {
 	if strings.TrimSpace(value.TimeMode) != "" ||
+		strings.TrimSpace(value.SemanticMode) != "" ||
 		strings.TrimSpace(value.MemoryDomain) != "" ||
 		strings.TrimSpace(value.MemoryAbility) != "" ||
 		strings.TrimSpace(value.EvidenceNeed) != "" ||
 		value.Confidence != 0 ||
 		!isZeroQueryAnalysisConfidence(value.FieldConfidence) ||
+		len(value.FieldProposals) > 0 ||
 		!isZeroQueryAnalysisScores(value.Scores) ||
 		!isZeroQueryAnchorProbe(value.Probes) ||
 		!isZeroQueryAnalysisDecision(value.Decision) ||
@@ -513,6 +800,8 @@ func isEmptySemanticQueryAnalysis(value SemanticQueryAnalysis) bool {
 		len(value.EntityMentions) > 0 ||
 		len(value.QueryRewrites) > 0 ||
 		len(value.SemanticAnchors) > 0 ||
+		len(value.Subqueries) > 0 ||
+		len(value.SafetyNotes) > 0 ||
 		len(value.ContextBlockHints) > 0 ||
 		!isZeroQueryPolicyHints(value.PolicyHints) {
 		return false
@@ -615,6 +904,28 @@ func queryRewritesToStoreDiagnostics(values []QueryRewrite) []memsqlite.QueryRew
 	return out
 }
 
+func semanticFieldProposalsToStore(values map[string]SemanticFieldProposal) map[string]memsqlite.SemanticFieldProposal {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]memsqlite.SemanticFieldProposal, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = memsqlite.SemanticFieldProposal{
+			Value:      strings.TrimSpace(value.Value),
+			Confidence: value.Confidence,
+			Evidence:   append([]string(nil), value.Evidence...),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func semanticAnchorsToStoreDiagnostics(values []SemanticAnchor) []memsqlite.SemanticAnchor {
 	if len(values) == 0 {
 		return nil
@@ -670,6 +981,33 @@ func normalizeQueryAnalysisOptions(options QueryAnalysisOptions) QueryAnalysisOp
 	}
 	if options.MinEntitySemanticConfidence <= 0 || options.MinEntitySemanticConfidence > 1 {
 		options.MinEntitySemanticConfidence = defaultQueryAnalysisMinEntityConfidence
+	}
+	if options.MinRuleFit <= 0 || options.MinRuleFit > 1 {
+		options.MinRuleFit = defaultQueryAnalysisMinRuleFit
+	}
+	if options.MinAnchorReadiness <= 0 || options.MinAnchorReadiness > 1 {
+		options.MinAnchorReadiness = defaultQueryAnalysisMinAnchorReadiness
+	}
+	if options.SemanticNeedThreshold <= 0 || options.SemanticNeedThreshold > 1 {
+		options.SemanticNeedThreshold = defaultQueryAnalysisSemanticNeed
+	}
+	if options.MinComplexityForSemantic <= 0 || options.MinComplexityForSemantic > 1 {
+		options.MinComplexityForSemantic = defaultQueryAnalysisMinComplexity
+	}
+	if options.FullSemanticComplexity <= 0 || options.FullSemanticComplexity > 1 {
+		options.FullSemanticComplexity = defaultQueryAnalysisFullComplexity
+	}
+	if options.DecomposeSemanticComplexity <= 0 || options.DecomposeSemanticComplexity > 1 {
+		options.DecomposeSemanticComplexity = defaultQueryAnalysisDecomposeComplexity
+	}
+	if options.MinSemanticFieldConfidence <= 0 || options.MinSemanticFieldConfidence > 1 {
+		options.MinSemanticFieldConfidence = defaultQueryAnalysisMinFieldConfidence
+	}
+	if options.MinOverrideMargin <= 0 || options.MinOverrideMargin > 1 {
+		options.MinOverrideMargin = defaultQueryAnalysisOverrideMargin
+	}
+	if options.HighSafetyRiskThreshold <= 0 || options.HighSafetyRiskThreshold > 1 {
+		options.HighSafetyRiskThreshold = defaultQueryAnalysisHighSafetyRisk
 	}
 	if options.MaxQueryRewrites <= 0 {
 		options.MaxQueryRewrites = defaultQueryAnalysisMaxQueryRewrites
@@ -759,6 +1097,7 @@ func (a sidecarSemanticQueryAnalyzer) AnalyzeSemanticQuery(ctx context.Context, 
 		SessionID:          req.SessionID,
 		MessageID:          req.MessageID,
 		QueryText:          req.QueryText,
+		SemanticMode:       req.SemanticMode,
 		Now:                req.Now,
 		Timezone:           req.Timezone,
 		RuleAnalysis:       queryAnalysisToMirror(req.RuleAnalysis),
@@ -902,6 +1241,11 @@ type rewriteSanitizationDiagnostics struct {
 	EnglishCount   int
 }
 
+type semanticAnchorSanitizationDiagnostics struct {
+	DroppedCount   int
+	DroppedReasons []string
+}
+
 func sanitizedQueryRewrites(rawQuery string, values []QueryRewrite, limit int, budget *float64) ([]memsqlite.QueryRewrite, rewriteSanitizationDiagnostics) {
 	var diagnostics rewriteSanitizationDiagnostics
 	if limit <= 0 || len(values) == 0 {
@@ -1041,9 +1385,10 @@ func hasASCIILetter(value string) bool {
 	return false
 }
 
-func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint, options QueryAnalysisOptions, budget *float64) []memsqlite.SemanticAnchor {
+func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint, options QueryAnalysisOptions, budget *float64) ([]memsqlite.SemanticAnchor, semanticAnchorSanitizationDiagnostics) {
+	diagnostics := semanticAnchorSanitizationDiagnostics{}
 	if options.MaxSemanticAnchors <= 0 || len(values) == 0 {
-		return nil
+		return nil, diagnostics
 	}
 	visible := visibleEntitySet(hints)
 	out := make([]memsqlite.SemanticAnchor, 0, minInt(len(values), options.MaxSemanticAnchors))
@@ -1053,6 +1398,11 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 		}
 		text := strings.TrimSpace(value.Text)
 		if text == "" {
+			continue
+		}
+		if isGenericSemanticAnchor(text) {
+			diagnostics.DroppedCount++
+			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, "generic_semantic_anchor")
 			continue
 		}
 		entityID := strings.TrimSpace(value.EntityID)
@@ -1084,7 +1434,17 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 			Confidence: clampFloat(value.Confidence, 0, 1),
 		})
 	}
-	return out
+	return out, diagnostics
+}
+
+func isGenericSemanticAnchor(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "工作", "情绪", "最近", "事情", "记忆", "memory", "recent":
+		return true
+	default:
+		return false
+	}
 }
 
 func generatedWeightBudget(options QueryAnalysisOptions) float64 {
@@ -1463,17 +1823,21 @@ func semanticQueryAnalysisResultFromMirror(value internalmirror.QueryAnalysisRes
 func semanticQueryAnalysisFromMirror(value internalmirror.QueryAnalysis) SemanticQueryAnalysis {
 	out := SemanticQueryAnalysis{
 		TimeMode:          value.TimeMode,
+		SemanticMode:      value.SemanticMode,
 		Signals:           append([]string(nil), value.Signals...),
 		MemoryDomain:      value.MemoryDomain,
 		MemoryAbility:     value.MemoryAbility,
 		EvidenceNeed:      value.EvidenceNeed,
 		Confidence:        value.Confidence,
 		FieldConfidence:   queryAnalysisConfidenceFromMirror(value.FieldConfidence),
+		FieldProposals:    semanticFieldProposalsFromMirror(value.FieldProposals),
 		Scores:            queryAnalysisScoresFromMirror(value.Scores),
 		Probes:            queryAnchorProbeFromMirror(value.Probes),
 		Decision:          queryAnalysisDecisionFromMirror(value.Decision),
 		Evidence:          queryAnalysisEvidenceFromMirror(value.Evidence),
 		Alternatives:      queryAnalysisAlternativesFromMirror(value.Alternatives),
+		Subqueries:        append([]string(nil), value.Subqueries...),
+		SafetyNotes:       append([]string(nil), value.SafetyNotes...),
 		ContextBlockHints: append([]string(nil), value.ContextBlockHints...),
 		PolicyHints:       queryPolicyHintsFromMirror(value.PolicyHints),
 	}
@@ -1658,6 +2022,28 @@ func queryAnalysisConfidenceFromMirror(value internalmirror.QueryAnalysisConfide
 	}
 }
 
+func semanticFieldProposalsFromMirror(values map[string]internalmirror.SemanticFieldProposal) map[string]SemanticFieldProposal {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]SemanticFieldProposal, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = SemanticFieldProposal{
+			Value:      strings.TrimSpace(value.Value),
+			Confidence: value.Confidence,
+			Evidence:   append([]string(nil), value.Evidence...),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func queryAnalysisScoresFromMirror(value internalmirror.QueryAnalysisScores) QueryAnalysisScores {
 	return QueryAnalysisScores{
 		RuleFit:                     value.RuleFit,
@@ -1800,9 +2186,12 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
 		diagnostics.RuleDecision = cloneStoreQueryAnalysisDecision(value.Diagnostics.RuleDecision)
+		diagnostics.AdaptiveDecision = cloneStoreQueryAnalysisDecision(value.Diagnostics.AdaptiveDecision)
 		diagnostics.RuleEvidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Diagnostics.RuleEvidence...)
 		diagnostics.RuleAlternatives = cloneStoreQueryAnalysisAlternatives(value.Diagnostics.RuleAlternatives)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
+		diagnostics.DroppedSemanticAnchorReasons = append([]string(nil), value.Diagnostics.DroppedSemanticAnchorReasons...)
+		diagnostics.FieldMergeDecisions = cloneStoreFieldMergeDecisions(value.Diagnostics.FieldMergeDecisions)
 		diagnostics.SemanticAnalysis = cloneStoreSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
 	}
@@ -1816,19 +2205,55 @@ func cloneStoreSemanticQueryAnalysisDiagnostics(value *memsqlite.SemanticQueryAn
 	out := *value
 	out.Signals = append([]string(nil), value.Signals...)
 	out.Decision = cloneStoreQueryAnalysisDecision(value.Decision)
+	out.FieldProposals = cloneStoreSemanticFieldProposals(value.FieldProposals)
 	out.Evidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Evidence...)
 	out.Alternatives = cloneStoreQueryAnalysisAlternatives(value.Alternatives)
 	out.EntityMentions = append([]memsqlite.SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
 	out.QueryRewrites = append([]memsqlite.QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]memsqlite.SemanticAnchor(nil), value.SemanticAnchors...)
+	out.Subqueries = append([]string(nil), value.Subqueries...)
+	out.SafetyNotes = append([]string(nil), value.SafetyNotes...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
+}
+
+func cloneStoreSemanticFieldProposals(values map[string]memsqlite.SemanticFieldProposal) map[string]memsqlite.SemanticFieldProposal {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]memsqlite.SemanticFieldProposal, len(values))
+	for key, value := range values {
+		value.Evidence = append([]string(nil), value.Evidence...)
+		out[key] = value
+	}
+	return out
+}
+
+func cloneStoreFieldMergeDecisions(values []memsqlite.FieldMergeDecision) []memsqlite.FieldMergeDecision {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]memsqlite.FieldMergeDecision, 0, len(values))
+	for _, value := range values {
+		value.Evidence = append([]string(nil), value.Evidence...)
+		out = append(out, value)
+	}
+	return out
 }
 
 func cloneStoreQueryAnalysisDecision(value memsqlite.QueryAnalysisDecision) memsqlite.QueryAnalysisDecision {
 	out := value
 	out.ReasonCodes = append([]string(nil), value.ReasonCodes...)
 	return out
+}
+
+func isZeroStoreQueryAnalysisDecision(value memsqlite.QueryAnalysisDecision) bool {
+	return !value.UseSemantic &&
+		strings.TrimSpace(value.SemanticMode) == "" &&
+		strings.TrimSpace(value.RetrievalMode) == "" &&
+		len(value.ReasonCodes) == 0 &&
+		strings.TrimSpace(value.ThresholdVersion) == "" &&
+		strings.TrimSpace(value.ScorerVersion) == ""
 }
 
 func cloneStoreQueryAnalysisAlternatives(values []memsqlite.QueryAnalysisAlternative) []memsqlite.QueryAnalysisAlternative {

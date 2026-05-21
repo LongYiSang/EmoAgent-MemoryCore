@@ -227,6 +227,7 @@ type QueryAnalysisDiagnostics struct {
 	Scores                  QueryAnalysisScores
 	FieldConfidence         QueryAnalysisConfidence
 	RuleDecision            QueryAnalysisDecision
+	AdaptiveDecision        QueryAnalysisDecision
 	RuleEvidence            []QueryAnalysisEvidence
 	RuleAlternatives        []QueryAnalysisAlternative
 	SemanticStatus          string
@@ -239,19 +240,24 @@ type QueryAnalysisDiagnostics struct {
 	SemanticAnchorCount     int
 	DroppedRewriteCount     int
 	DroppedRewriteReasons   []string
+	DroppedSemanticAnchorCount   int
+	DroppedSemanticAnchorReasons []string
 	EnglishRewriteCount     int
 	SemanticDriftCount      int
+	FieldMergeDecisions     []FieldMergeDecision
 	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics
 }
 
 type SemanticQueryAnalysisDiagnostics struct {
 	TimeMode          string
+	SemanticMode      string
 	Signals           []string
 	MemoryDomain      string
 	MemoryAbility     string
 	EvidenceNeed      string
 	Confidence        float64
 	FieldConfidence   QueryAnalysisConfidence
+	FieldProposals    map[string]SemanticFieldProposal
 	Scores            QueryAnalysisScores
 	Probes            QueryAnchorProbe
 	Decision          QueryAnalysisDecision
@@ -260,8 +266,27 @@ type SemanticQueryAnalysisDiagnostics struct {
 	EntityMentions    []SemanticQueryEntityMentionDiagnostics
 	QueryRewrites     []QueryRewrite
 	SemanticAnchors   []SemanticAnchor
+	Subqueries        []string
+	SafetyNotes       []string
 	ContextBlockHints []string
 	PolicyHints       QueryPolicyHints
+}
+
+type SemanticFieldProposal struct {
+	Value      string
+	Confidence float64
+	Evidence   []string
+}
+
+type FieldMergeDecision struct {
+	Field              string
+	RuleValue          string
+	SemanticValue      string
+	RuleConfidence     float64
+	SemanticConfidence float64
+	Reason             string
+	Evidence           []string
+	UseSemantic        bool
 }
 
 type SemanticQueryEntityMentionDiagnostics struct {
@@ -324,9 +349,12 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
 		diagnostics.RuleDecision = cloneQueryAnalysisDecision(value.Diagnostics.RuleDecision)
+		diagnostics.AdaptiveDecision = cloneQueryAnalysisDecision(value.Diagnostics.AdaptiveDecision)
 		diagnostics.RuleEvidence = cloneQueryAnalysisEvidence(value.Diagnostics.RuleEvidence)
 		diagnostics.RuleAlternatives = cloneQueryAnalysisAlternatives(value.Diagnostics.RuleAlternatives)
 		diagnostics.DroppedRewriteReasons = append([]string(nil), value.Diagnostics.DroppedRewriteReasons...)
+		diagnostics.DroppedSemanticAnchorReasons = append([]string(nil), value.Diagnostics.DroppedSemanticAnchorReasons...)
+		diagnostics.FieldMergeDecisions = cloneFieldMergeDecisions(value.Diagnostics.FieldMergeDecisions)
 		diagnostics.SemanticAnalysis = cloneSemanticQueryAnalysisDiagnostics(value.Diagnostics.SemanticAnalysis)
 		out.Diagnostics = &diagnostics
 	}
@@ -340,12 +368,15 @@ func cloneSemanticQueryAnalysisDiagnostics(value *SemanticQueryAnalysisDiagnosti
 	out := *value
 	out.Signals = append([]string(nil), value.Signals...)
 	out.Probes = cloneQueryAnchorProbe(value.Probes)
+	out.FieldProposals = cloneSemanticFieldProposals(value.FieldProposals)
 	out.Decision = cloneQueryAnalysisDecision(value.Decision)
 	out.Evidence = cloneQueryAnalysisEvidence(value.Evidence)
 	out.Alternatives = cloneQueryAnalysisAlternatives(value.Alternatives)
 	out.EntityMentions = append([]SemanticQueryEntityMentionDiagnostics(nil), value.EntityMentions...)
 	out.QueryRewrites = append([]QueryRewrite(nil), value.QueryRewrites...)
 	out.SemanticAnchors = append([]SemanticAnchor(nil), value.SemanticAnchors...)
+	out.Subqueries = append([]string(nil), value.Subqueries...)
+	out.SafetyNotes = append([]string(nil), value.SafetyNotes...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
 }
@@ -375,6 +406,30 @@ func cloneQueryAnalysisAlternatives(values []QueryAnalysisAlternative) []QueryAn
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func cloneSemanticFieldProposals(values map[string]SemanticFieldProposal) map[string]SemanticFieldProposal {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]SemanticFieldProposal, len(values))
+	for key, value := range values {
+		value.Evidence = append([]string(nil), value.Evidence...)
+		out[key] = value
+	}
+	return out
+}
+
+func cloneFieldMergeDecisions(values []FieldMergeDecision) []FieldMergeDecision {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]FieldMergeDecision, 0, len(values))
+	for _, value := range values {
+		value.Evidence = append([]string(nil), value.Evidence...)
+		out = append(out, value)
 	}
 	return out
 }

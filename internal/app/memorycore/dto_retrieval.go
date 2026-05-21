@@ -279,6 +279,7 @@ type QueryAnalysisDiagnostics struct {
 	Scores                  QueryAnalysisScores
 	FieldConfidence         QueryAnalysisConfidence
 	RuleDecision            QueryAnalysisDecision
+	AdaptiveDecision        QueryAnalysisDecision
 	RuleEvidence            []QueryAnalysisEvidence
 	RuleAlternatives        []QueryAnalysisAlternative
 	SemanticStatus          string
@@ -291,19 +292,24 @@ type QueryAnalysisDiagnostics struct {
 	SemanticAnchorCount     int
 	DroppedRewriteCount     int
 	DroppedRewriteReasons   []string
+	DroppedSemanticAnchorCount   int
+	DroppedSemanticAnchorReasons []string
 	EnglishRewriteCount     int
 	SemanticDriftCount      int
+	FieldMergeDecisions     []FieldMergeDecision
 	SemanticAnalysis        *SemanticQueryAnalysisDiagnostics `json:"semantic_analysis,omitempty"`
 }
 
 type SemanticQueryAnalysisDiagnostics struct {
 	TimeMode          string                                  `json:"time_mode,omitempty"`
+	SemanticMode      string                                  `json:"semantic_mode,omitempty"`
 	Signals           []string                                `json:"signals,omitempty"`
 	MemoryDomain      string                                  `json:"memory_domain,omitempty"`
 	MemoryAbility     string                                  `json:"memory_ability,omitempty"`
 	EvidenceNeed      string                                  `json:"evidence_need,omitempty"`
 	Confidence        float64                                 `json:"confidence,omitempty"`
 	FieldConfidence   QueryAnalysisConfidence                 `json:"field_confidence,omitempty"`
+	FieldProposals    map[string]SemanticFieldProposal        `json:"field_proposals,omitempty"`
 	Scores            QueryAnalysisScores                     `json:"scores,omitempty"`
 	Probes            QueryAnchorProbe                        `json:"probes,omitempty"`
 	Decision          QueryAnalysisDecision                   `json:"decision,omitempty"`
@@ -312,8 +318,27 @@ type SemanticQueryAnalysisDiagnostics struct {
 	EntityMentions    []SemanticQueryEntityMentionDiagnostics `json:"entity_mentions,omitempty"`
 	QueryRewrites     []QueryRewrite                          `json:"query_rewrites,omitempty"`
 	SemanticAnchors   []SemanticAnchor                        `json:"semantic_anchors,omitempty"`
+	Subqueries        []string                                `json:"subqueries,omitempty"`
+	SafetyNotes       []string                                `json:"safety_notes,omitempty"`
 	ContextBlockHints []string                                `json:"context_block_hints,omitempty"`
 	PolicyHints       QueryPolicyHints                        `json:"policy_hints,omitempty"`
+}
+
+type SemanticFieldProposal struct {
+	Value      string   `json:"value,omitempty"`
+	Confidence float64  `json:"confidence,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
+}
+
+type FieldMergeDecision struct {
+	Field              string   `json:"field,omitempty"`
+	RuleValue          string   `json:"rule_value,omitempty"`
+	SemanticValue      string   `json:"semantic_value,omitempty"`
+	RuleConfidence     float64  `json:"rule_confidence,omitempty"`
+	SemanticConfidence float64  `json:"semantic_confidence,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	Evidence           []string `json:"evidence,omitempty"`
+	UseSemantic        bool     `json:"use_semantic,omitempty"`
 }
 
 type SemanticQueryEntityMentionDiagnostics struct {

@@ -230,6 +230,14 @@ def test_analyze_query_retries_once_after_schema_validation_failure(monkeypatch)
                                 "signals": ["preference"],
                                 "confidence": 0.8,
                                 "field_confidence": {"time_mode": 0.7},
+                                "semantic_mode": "semantic_light",
+                                "field_proposals": {
+                                    "time_mode": {
+                                        "value": "recent",
+                                        "confidence": 0.82,
+                                        "evidence": ["recent"],
+                                    }
+                                },
                                 "entity_mentions": [
                                     {
                                         "entity_id": "ent_coffee",
@@ -253,6 +261,8 @@ def test_analyze_query_retries_once_after_schema_validation_failure(monkeypatch)
                                     "max_hops_hint": 2,
                                 },
                                 "rationale_summary": "User asks about a preference.",
+                                "subqueries": ["coffee likes"],
+                                "safety_notes": ["no safety issue"],
                             }
                         )
                     }
@@ -305,10 +315,18 @@ def test_analyze_query_retries_once_after_schema_validation_failure(monkeypatch)
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert result["degraded"] is False
     assert result["provider"] == "openai-compatible"
+    assert result["semantic_mode"] == "semantic_light"
+    assert result["field_proposals"]["time_mode"] == {
+        "value": "recent",
+        "confidence": 0.82,
+        "evidence": ["recent"],
+    }
     assert result["entity_mentions"][0]["entity_id"] == "ent_coffee"
     assert result["policy_hints"]["prefer_evidenced_by_links"] is True
     assert result["policy_hints"]["max_hops_hint"] == 2
     assert result["query_rewrites"][0]["text"] == "coffee preference"
+    assert result["subqueries"] == ["coffee likes"]
+    assert result["safety_notes"] == ["no safety issue"]
     assert result["rationale_summary"] == "User asks about a preference."
     assert "secret" not in str(result)
 
@@ -415,6 +433,12 @@ def test_analyze_query_completes_missing_optional_fields_from_minimal_schema(mon
     assert len(calls) == 1
     assert result["status"] == "ok"
     assert result["time_mode"] == "recent"
+    assert result["semantic_mode"] == "semantic_light"
+    assert result["field_proposals"]["time_mode"] == {
+        "value": "recent",
+        "confidence": 0.72,
+        "evidence": [],
+    }
     assert result["signals"] == []
     assert result["confidence"] == 0.72
     assert result["field_confidence"] == {}
@@ -703,21 +727,25 @@ def test_analyze_query_sends_rich_request_payload_and_strict_prompt(monkeypatch)
             "rewrite",
             "language",
         ],
-        "optional_fields": [
-            "counterexample_rewrite",
-            "anchors",
-            "semantic_anchors",
-            "query_rewrites",
-            "signals",
-            "entity_mentions",
-            "context_block_hints",
-            "time_mode",
-            "memory_domain",
-            "memory_ability",
-            "evidence_need",
-            "policy_hints",
-            "rationale_summary",
-        ],
+            "optional_fields": [
+                "counterexample_rewrite",
+                "anchors",
+                "semantic_anchors",
+                "query_rewrites",
+                "signals",
+                "entity_mentions",
+                "context_block_hints",
+                "time_mode",
+                "memory_domain",
+                "memory_ability",
+                "evidence_need",
+                "semantic_mode",
+                "field_proposals",
+                "subqueries",
+                "safety_notes",
+                "policy_hints",
+                "rationale_summary",
+            ],
         "sidecar_completes_protocol_fields": True,
         "rewrite_language": "same_as_query",
         "max_anchors": 4,

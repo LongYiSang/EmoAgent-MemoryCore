@@ -310,6 +310,12 @@ const (
 	QueryAnalysisModeRuleOnlyExplicit         = appcore.QueryAnalysisModeRuleOnlyExplicit
 	QueryAnalysisModeSemanticAlways           = appcore.QueryAnalysisModeSemanticAlways
 	QueryAnalysisModeSemanticOnLowConfidence  = appcore.QueryAnalysisModeSemanticOnLowConfidence
+	QueryAnalysisModeSemanticRewriteOnly      = appcore.QueryAnalysisModeSemanticRewriteOnly
+	QueryAnalysisModeLegacyOnly               = appcore.QueryAnalysisModeLegacyOnly
+	QueryAnalysisModeShadowAdaptive           = appcore.QueryAnalysisModeShadowAdaptive
+	QueryAnalysisModeAdaptive                 = appcore.QueryAnalysisModeAdaptive
+	QueryAnalysisModeAdaptiveSafe             = appcore.QueryAnalysisModeAdaptiveSafe
+	QueryAnalysisModeAdaptiveFull             = appcore.QueryAnalysisModeAdaptiveFull
 	QueryAnalysisProviderNone                 = appcore.QueryAnalysisProviderNone
 	QueryAnalysisProviderSidecar              = appcore.QueryAnalysisProviderSidecar
 	QueryAnalysisSourceRuleOnly               = appcore.QueryAnalysisSourceRuleOnly

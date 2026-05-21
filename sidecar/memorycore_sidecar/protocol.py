@@ -266,6 +266,9 @@ def parse_query_analysis_request(data: Any) -> dict[str, Any]:
         "conversation_window": _optional_array(data.get("conversation_window")),
         "include_rationale": include_rationale,
     }
+    semantic_mode = _optional_string(data.get("semantic_mode"))[:64]
+    if semantic_mode:
+        parsed["semantic_mode"] = semantic_mode
     for field in ("deadline_ms", "provider_timeout_ms"):
         if field in data:
             parsed[field] = _positive_budget_ms(data[field], field)

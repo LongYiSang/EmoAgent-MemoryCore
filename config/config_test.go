@@ -43,6 +43,15 @@ func TestDefaultValues(t *testing.T) {
 		cfg.QueryAnalysis.TimeoutMS != 1500 ||
 		cfg.QueryAnalysis.MinConfidenceToOverride != 0.72 ||
 		cfg.QueryAnalysis.MinEntitySemanticConfidence != 0.70 ||
+		cfg.QueryAnalysis.MinRuleFit != 0.66 ||
+		cfg.QueryAnalysis.MinAnchorReadiness != 0.45 ||
+		cfg.QueryAnalysis.SemanticNeedThreshold != 0.58 ||
+		cfg.QueryAnalysis.MinComplexityForSemantic != 0.50 ||
+		cfg.QueryAnalysis.FullSemanticComplexity != 0.72 ||
+		cfg.QueryAnalysis.DecomposeSemanticComplexity != 0.80 ||
+		cfg.QueryAnalysis.MinSemanticFieldConfidence != 0.70 ||
+		cfg.QueryAnalysis.MinOverrideMargin != 0.08 ||
+		cfg.QueryAnalysis.HighSafetyRiskThreshold != 0.80 ||
 		cfg.QueryAnalysis.MaxQueryRewrites != 5 ||
 		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
 		cfg.QueryAnalysis.SemanticTotalEnergyCap != 5.0 ||
@@ -82,8 +91,11 @@ retrieval:
   final_memory_count: 3
 query_analysis:
   provider: sidecar
-  mode: semantic_on_low_confidence
+  mode: adaptive_full
   timeout_ms: 1600
+  min_rule_fit: 0.7
+  semantic_need: 0.61
+  min_override_margin: 0.12
   max_query_rewrites: 4
   max_generated_dense_weight_sum: 2.5
 `)
@@ -108,8 +120,11 @@ query_analysis:
 		t.Fatalf("context budget = %d, want default 1200", cfg.Retrieval.ContextBudgetTokens)
 	}
 	if cfg.QueryAnalysis.Provider != "sidecar" ||
-		cfg.QueryAnalysis.Mode != "semantic_on_low_confidence" ||
+		cfg.QueryAnalysis.Mode != "adaptive_full" ||
 		cfg.QueryAnalysis.TimeoutMS != 1600 ||
+		cfg.QueryAnalysis.MinRuleFit != 0.7 ||
+		cfg.QueryAnalysis.SemanticNeedThreshold != 0.61 ||
+		cfg.QueryAnalysis.MinOverrideMargin != 0.12 ||
 		cfg.QueryAnalysis.MaxQueryRewrites != 4 ||
 		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
 		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum != 2.5 {
@@ -242,10 +257,21 @@ func TestValidateRules(t *testing.T) {
 		requireErrorContains(t, cfg.Validate(), "query_analysis.mode")
 	})
 
+	t.Run("adaptive query analysis modes validate with sidecar", func(t *testing.T) {
+		for _, mode := range []string{"legacy_only", "shadow_adaptive", "adaptive", "adaptive_safe", "adaptive_full"} {
+			cfg := memconfig.Default()
+			cfg.QueryAnalysis.Provider = "sidecar"
+			cfg.QueryAnalysis.Mode = mode
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("mode %q validate: %v", mode, err)
+			}
+		}
+	})
+
 	t.Run("provider none requires rule only mode", func(t *testing.T) {
 		cfg := memconfig.Default()
 		cfg.QueryAnalysis.Provider = "none"
-		cfg.QueryAnalysis.Mode = "semantic_always"
+		cfg.QueryAnalysis.Mode = "adaptive_safe"
 		requireErrorContains(t, cfg.Validate(), "query_analysis.mode")
 	})
 
@@ -259,6 +285,12 @@ func TestValidateRules(t *testing.T) {
 		cfg := memconfig.Default()
 		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum = 0
 		requireErrorContains(t, cfg.Validate(), "query_analysis.max_generated_dense_weight_sum")
+	})
+
+	t.Run("query analysis adaptive thresholds must be unit intervals", func(t *testing.T) {
+		cfg := memconfig.Default()
+		cfg.QueryAnalysis.MinRuleFit = 1.2
+		requireErrorContains(t, cfg.Validate(), "query_analysis.min_rule_fit")
 	})
 
 	t.Run("mirror requires sidecar", func(t *testing.T) {

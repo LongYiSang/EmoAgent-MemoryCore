@@ -28,6 +28,11 @@ const (
 	QueryAnalysisModeSemanticAlways          QueryAnalysisMode = "semantic_always"
 	QueryAnalysisModeSemanticOnLowConfidence QueryAnalysisMode = "semantic_on_low_confidence"
 	QueryAnalysisModeSemanticRewriteOnly     QueryAnalysisMode = "semantic_rewrite_only"
+	QueryAnalysisModeLegacyOnly              QueryAnalysisMode = "legacy_only"
+	QueryAnalysisModeShadowAdaptive          QueryAnalysisMode = "shadow_adaptive"
+	QueryAnalysisModeAdaptive                QueryAnalysisMode = "adaptive"
+	QueryAnalysisModeAdaptiveSafe            QueryAnalysisMode = "adaptive_safe"
+	QueryAnalysisModeAdaptiveFull            QueryAnalysisMode = "adaptive_full"
 )
 
 type QueryAnalysisOptions struct {
@@ -39,6 +44,15 @@ type QueryAnalysisOptions struct {
 	Cache                       *QueryAnalysisCache
 	MinConfidenceToOverride     float64
 	MinEntitySemanticConfidence float64
+	MinRuleFit                  float64
+	MinAnchorReadiness          float64
+	SemanticNeedThreshold       float64
+	MinComplexityForSemantic    float64
+	FullSemanticComplexity      float64
+	DecomposeSemanticComplexity float64
+	MinSemanticFieldConfidence  float64
+	MinOverrideMargin           float64
+	HighSafetyRiskThreshold     float64
 	MaxQueryRewrites            int
 	MaxSemanticAnchors          int
 	SemanticTotalEnergyCap      float64

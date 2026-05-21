@@ -245,7 +245,8 @@ def _system_prompt(prompt_version: str) -> str:
         "For causal why questions, set memory_ability=causal_explain and include "
         "a causal signal. Required provider fields are intent, confidence, rewrite, "
         "and language. Optional arrays/objects such as anchors, semantic_anchors, "
-        "entity_mentions, signals, policy_hints, and context_block_hints may be "
+        "entity_mentions, signals, field_proposals, subqueries, safety_notes, "
+        "policy_hints, and context_block_hints may be "
         "omitted; the sidecar treats missing values as empty. "
         "counterexample_rewrite is optional and may be omitted when there is no "
         "counterexample query. Protocol enum fields such as "
@@ -264,6 +265,7 @@ def _provider_user_payload(
         "query_text": query_text,
         "input_language": _optional_string(request.get("input_language"))
         or _input_language(query_text),
+        "semantic_mode": _optional_string(request.get("semantic_mode"))[:64],
         "now": _optional_string(request.get("now")),
         "timezone": _optional_string(request.get("timezone")),
         "rule_analysis": _optional_object(request.get("rule_analysis")),
@@ -293,6 +295,10 @@ def _provider_user_payload(
                 "memory_domain",
                 "memory_ability",
                 "evidence_need",
+                "semantic_mode",
+                "field_proposals",
+                "subqueries",
+                "safety_notes",
                 "policy_hints",
                 "rationale_summary",
             ],
@@ -379,24 +385,33 @@ def _validate_provider_analysis(
     _validate_allowed_enums(parsed_enums, request.get("allowed_enums"))
     query_rewrites = _provider_query_rewrites(payload)
     semantic_anchors = _provider_semantic_anchors(payload)
+    confidence = round(clamp_float(payload.get("confidence"), 0.0, 1.0, 0.5), 6)
+    field_confidence = _field_confidence(payload.get("field_confidence", {}))
 
     result = _base_result(config, degraded=False, fallback_reason=None)
     result.update(
         {
             "time_mode": parsed_enums["time_mode"],
+            "semantic_mode": _semantic_mode(payload, request),
             "memory_domain": parsed_enums["memory_domain"],
             "memory_ability": parsed_enums["memory_ability"],
             "evidence_need": parsed_enums["evidence_need"],
             "signals": _provider_signals(payload)[:12],
-            "confidence": round(
-                clamp_float(payload.get("confidence"), 0.0, 1.0, 0.5), 6
+            "confidence": confidence,
+            "field_confidence": field_confidence,
+            "field_proposals": _field_proposals(
+                payload.get("field_proposals"),
+                parsed_enums,
+                field_confidence,
+                confidence,
             ),
-            "field_confidence": _field_confidence(payload.get("field_confidence", {})),
             "entity_mentions": _entity_mention_list(
                 payload.get("entity_mentions", [])
             )[:12],
             "query_rewrites": query_rewrites[:5],
             "semantic_anchors": semantic_anchors[:8],
+            "subqueries": _string_list(payload.get("subqueries", []), "subqueries")[:8],
+            "safety_notes": _string_list(payload.get("safety_notes", []), "safety_notes")[:8],
             "context_block_hints": _string_list(
                 payload.get("context_block_hints", []), "context_block_hints"
             )[:8],
@@ -528,6 +543,7 @@ def _fallback(
     result.update(
         {
             "time_mode": "unspecified",
+            "semantic_mode": _optional_string(request.get("semantic_mode"))[:64],
             "memory_domain": "general",
             "memory_ability": "recall",
             "evidence_need": "medium",
@@ -539,9 +555,17 @@ def _fallback(
                 "memory_ability": 0.1,
                 "evidence_need": 0.1,
             },
+            "field_proposals": {
+                "time_mode": {"value": "unspecified", "confidence": 0.1, "evidence": []},
+                "memory_domain": {"value": "general", "confidence": 0.1, "evidence": []},
+                "memory_ability": {"value": "recall", "confidence": 0.1, "evidence": []},
+                "evidence_need": {"value": "medium", "confidence": 0.1, "evidence": []},
+            },
             "entity_mentions": [],
             "query_rewrites": rewrites,
             "semantic_anchors": [],
+            "subqueries": [],
+            "safety_notes": [],
             "context_block_hints": [],
             "policy_hints": {},
         }
@@ -597,6 +621,65 @@ def _field_confidence(value: Any) -> dict[str, float]:
     for key, score in value.items():
         if isinstance(key, str) and key.strip():
             out[key.strip()[:64]] = round(clamp_float(score, 0.0, 1.0, 0.0), 6)
+    return out
+
+
+def _semantic_mode(payload: dict[str, Any], request: dict[str, Any]) -> str:
+    return (
+        _optional_string(payload.get("semantic_mode"))
+        or _optional_string(request.get("semantic_mode"))
+        or "semantic_light"
+    )[:64]
+
+
+def _field_proposals(
+    value: Any,
+    parsed_enums: dict[str, str],
+    field_confidence: dict[str, float],
+    confidence: float,
+) -> dict[str, dict[str, Any]]:
+    if value is not None:
+        if not isinstance(value, dict):
+            raise ValueError("field_proposals must be an object")
+        out: dict[str, dict[str, Any]] = {}
+        for field in _ENUM_ANALYSIS_FIELDS:
+            item = value.get(field)
+            if item is None:
+                continue
+            if isinstance(item, str):
+                proposal_value = item.strip()[:64]
+                proposal_confidence = field_confidence.get(field, confidence)
+                evidence: list[str] = []
+            elif isinstance(item, dict):
+                proposal_value = _optional_string(item.get("value"))[:64]
+                proposal_confidence = round(
+                    clamp_float(
+                        item.get("confidence"),
+                        0.0,
+                        1.0,
+                        field_confidence.get(field, confidence),
+                    ),
+                    6,
+                )
+                evidence = _string_list(item.get("evidence", []), "field_proposals.evidence")[:8]
+            else:
+                continue
+            if proposal_value:
+                out[field] = {
+                    "value": proposal_value,
+                    "confidence": proposal_confidence,
+                    "evidence": evidence,
+                }
+        return out
+    out = {}
+    for field, proposal_value in parsed_enums.items():
+        proposal_confidence = field_confidence.get(field, confidence)
+        if proposal_value and proposal_confidence > 0:
+            out[field] = {
+                "value": proposal_value,
+                "confidence": round(clamp_float(proposal_confidence, 0.0, 1.0, 0.0), 6),
+                "evidence": [],
+            }
     return out
 
 

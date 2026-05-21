@@ -23,6 +23,7 @@ type QueryAnalysisRequest struct {
 	SessionID          *string                   `json:"session_id,omitempty"`
 	MessageID          *string                   `json:"message_id,omitempty"`
 	QueryText          string                    `json:"query_text"`
+	SemanticMode       string                    `json:"semantic_mode,omitempty"`
 	Now                time.Time                 `json:"now"`
 	Timezone           string                    `json:"timezone,omitempty"`
 	RuleAnalysis       QueryAnalysis             `json:"rule_analysis"`
@@ -35,27 +36,31 @@ type QueryAnalysisRequest struct {
 }
 
 type QueryAnalysis struct {
-	Raw               string                     `json:"raw,omitempty"`
-	Normalized        string                     `json:"normalized,omitempty"`
-	Terms             []string                   `json:"terms,omitempty"`
-	EntityMentions    []QueryEntityMention       `json:"entity_mentions,omitempty"`
-	TimeMode          string                     `json:"time_mode,omitempty"`
-	Signals           []string                   `json:"signals,omitempty"`
-	MemoryDomain      string                     `json:"memory_domain,omitempty"`
-	MemoryAbility     string                     `json:"memory_ability,omitempty"`
-	EvidenceNeed      string                     `json:"evidence_need,omitempty"`
-	Source            string                     `json:"source,omitempty"`
-	Confidence        float64                    `json:"confidence,omitempty"`
-	FieldConfidence   QueryAnalysisConfidence    `json:"field_confidence,omitempty"`
-	Scores            QueryAnalysisScores        `json:"scores,omitempty"`
-	Probes            QueryAnchorProbe           `json:"probes,omitempty"`
-	Decision          QueryAnalysisDecision      `json:"decision,omitempty"`
-	Evidence          []QueryAnalysisEvidence    `json:"evidence,omitempty"`
-	Alternatives      []QueryAnalysisAlternative `json:"alternatives,omitempty"`
-	QueryRewrites     []QueryRewrite             `json:"query_rewrites,omitempty"`
-	SemanticAnchors   []SemanticAnchor           `json:"semantic_anchors,omitempty"`
-	ContextBlockHints []string                   `json:"context_block_hints,omitempty"`
-	PolicyHints       QueryPolicyHints           `json:"policy_hints,omitempty"`
+	Raw               string                           `json:"raw,omitempty"`
+	Normalized        string                           `json:"normalized,omitempty"`
+	Terms             []string                         `json:"terms,omitempty"`
+	EntityMentions    []QueryEntityMention             `json:"entity_mentions,omitempty"`
+	TimeMode          string                           `json:"time_mode,omitempty"`
+	SemanticMode      string                           `json:"semantic_mode,omitempty"`
+	Signals           []string                         `json:"signals,omitempty"`
+	MemoryDomain      string                           `json:"memory_domain,omitempty"`
+	MemoryAbility     string                           `json:"memory_ability,omitempty"`
+	EvidenceNeed      string                           `json:"evidence_need,omitempty"`
+	Source            string                           `json:"source,omitempty"`
+	Confidence        float64                          `json:"confidence,omitempty"`
+	FieldConfidence   QueryAnalysisConfidence          `json:"field_confidence,omitempty"`
+	FieldProposals    map[string]SemanticFieldProposal `json:"field_proposals,omitempty"`
+	Scores            QueryAnalysisScores              `json:"scores,omitempty"`
+	Probes            QueryAnchorProbe                 `json:"probes,omitempty"`
+	Decision          QueryAnalysisDecision            `json:"decision,omitempty"`
+	Evidence          []QueryAnalysisEvidence          `json:"evidence,omitempty"`
+	Alternatives      []QueryAnalysisAlternative       `json:"alternatives,omitempty"`
+	QueryRewrites     []QueryRewrite                   `json:"query_rewrites,omitempty"`
+	SemanticAnchors   []SemanticAnchor                 `json:"semantic_anchors,omitempty"`
+	Subqueries        []string                         `json:"subqueries,omitempty"`
+	SafetyNotes       []string                         `json:"safety_notes,omitempty"`
+	ContextBlockHints []string                         `json:"context_block_hints,omitempty"`
+	PolicyHints       QueryPolicyHints                 `json:"policy_hints,omitempty"`
 }
 
 type QueryEntityMention struct {
@@ -88,6 +93,12 @@ type QueryAnalysisConfidence struct {
 	MemoryDomain     float64 `json:"memory_domain,omitempty"`
 	EvidenceNeed     float64 `json:"evidence_need,omitempty"`
 	EntityResolution float64 `json:"entity_resolution,omitempty"`
+}
+
+type SemanticFieldProposal struct {
+	Value      string   `json:"value,omitempty"`
+	Confidence float64  `json:"confidence,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
 }
 
 type QueryAnalysisScores struct {
