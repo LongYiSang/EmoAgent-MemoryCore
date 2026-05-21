@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sort"
 	"strings"
 	"unicode"
@@ -1068,28 +1070,38 @@ func probeEntityAnchors(probe *QueryAnchorProbe, mentions []QueryEntityMention) 
 }
 
 func (r *RetrievalRepository) probeSparseAnchors(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
-	docs, err := r.search.SearchDocumentsForAnalyzedRetrieval(ctx, personaID, analysis, policy.UseFTS, 8, policy)
+	docs, err := r.search.SearchDocumentsForAnalyzedRetrieval(ctx, personaID, analysis, policy.UseFTS, 32, policy)
 	if err != nil {
 		return err
 	}
 	scores := make([]float64, 0, len(docs))
 	for _, doc := range docs {
+		allowed, err := r.searchDocumentProbeAuthorityAllows(ctx, personaID, doc, policy)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			continue
+		}
 		score := textMatchScore(analysis, doc.SearchText)
 		if score <= 0 {
 			score = 0.20
 		}
 		scores = append(scores, clamp01(score))
+		if len(scores) >= 8 {
+			break
+		}
 	}
 	sort.Sort(sort.Reverse(sort.Float64Slice(scores)))
 	top1, top2 := topProbeScores(scores)
-	probe.FallbackSearchHitCount = len(docs)
+	probe.FallbackSearchHitCount = len(scores)
 	probe.Top1Score = top1
 	probe.Top2Score = top2
 	probe.Top1Margin = clamp01(top1 - top2)
 	switch {
-	case len(docs) >= 3 && top1 >= 0.60:
+	case len(scores) >= 3 && top1 >= 0.60:
 		probe.SparseProbeConf = 0.75
-	case len(docs) > 0:
+	case len(scores) > 0:
 		probe.SparseProbeConf = 0.40
 	default:
 		probe.SparseProbeConf = 0
@@ -1100,8 +1112,22 @@ func (r *RetrievalRepository) probeSparseAnchors(ctx context.Context, personaID 
 	} else if probe.SparseProbeConf > 0 {
 		reason = "weak sqlite search document match"
 	}
-	probe.Breakdown = append(probe.Breakdown, probeBreakdown("sparse_probe", probe.SparseProbeConf, len(docs), top1, top2, reason, nil))
+	probe.Breakdown = append(probe.Breakdown, probeBreakdown("sparse_probe", probe.SparseProbeConf, len(scores), top1, top2, reason, nil))
 	return nil
+}
+
+func (r *RetrievalRepository) searchDocumentProbeAuthorityAllows(ctx context.Context, personaID string, doc core.SearchDocument, policy RetrievalPolicy) (bool, error) {
+	if doc.NodeType != core.NodeTypeFact {
+		return searchDocumentAuthorityAllows(doc, policy), nil
+	}
+	fact, err := r.getFact(ctx, personaID, doc.NodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return r.authorityAllows(ctx, fact, policy)
 }
 
 func (r *RetrievalRepository) probePredicateAnchors(ctx context.Context, personaID string, normalized string, analysis QueryAnalysis, policy RetrievalPolicy, probe *QueryAnchorProbe) error {
@@ -1138,7 +1164,7 @@ func (r *RetrievalRepository) probeRecentAnchors(ctx context.Context, personaID 
 		return nil
 	}
 	count, top, err := r.countFactsByQuery(ctx, personaID, policy, `
-SELECT COUNT(*), COALESCE(MAX(importance), 0)
+SELECT id, importance
 FROM facts
 WHERE persona_id = ?
   AND importance >= 0.7
@@ -1147,7 +1173,9 @@ WHERE persona_id = ?
   AND lifecycle_status IN ('active', 'dormant', 'consolidated')
   AND (validity_status != 'invalidated' OR ? = 1)
   AND (lifecycle_status != 'archived' OR ? = 1)
-  AND (lifecycle_status != 'deep_archived' OR ? = 1)`)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY importance DESC, updated_at DESC, id ASC
+LIMIT 32`)
 	if err != nil {
 		return err
 	}
@@ -1164,7 +1192,7 @@ func (r *RetrievalRepository) probePinnedCoreAnchors(ctx context.Context, person
 		return nil
 	}
 	count, top, err := r.countFactsByQuery(ctx, personaID, policy, `
-SELECT COUNT(*), COALESCE(MAX(importance), 0)
+SELECT id, importance
 FROM facts
 WHERE persona_id = ?
   AND pinned = 1
@@ -1173,7 +1201,9 @@ WHERE persona_id = ?
   AND searchable = 1
   AND (validity_status != 'invalidated' OR ? = 1)
   AND (lifecycle_status != 'archived' OR ? = 1)
-  AND (lifecycle_status != 'deep_archived' OR ? = 1)`)
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY importance DESC, updated_at DESC, id ASC
+LIMIT 32`)
 	if err != nil {
 		return err
 	}
@@ -1219,7 +1249,7 @@ func (r *RetrievalRepository) countFactsForPredicates(ctx context.Context, perso
 		return 0, 0, nil
 	}
 	placeholders := make([]string, len(predicates))
-	args := make([]any, 0, 1+len(predicates)+3)
+	args := make([]any, 0, 1+len(predicates)+3+1)
 	args = append(args, personaID)
 	for i, predicate := range predicates {
 		placeholders[i] = "?"
@@ -1230,8 +1260,9 @@ func (r *RetrievalRepository) countFactsForPredicates(ctx context.Context, perso
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowDeepArchive),
 	)
+	args = append(args, 32)
 	query := `
-SELECT COUNT(*), COALESCE(MAX(importance), 0)
+SELECT id, importance
 FROM facts
 WHERE persona_id = ?
   AND predicate IN (` + strings.Join(placeholders, ", ") + `)
@@ -1239,11 +1270,10 @@ WHERE persona_id = ?
   AND searchable = 1
   AND (validity_status != 'invalidated' OR ? = 1)
   AND (lifecycle_status != 'archived' OR ? = 1)
-  AND (lifecycle_status != 'deep_archived' OR ? = 1)`
-	var count int
-	var top float64
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count, &top)
-	return count, clamp01(top), err
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY importance DESC, updated_at DESC, id ASC
+LIMIT ?`
+	return r.countEligibleFactsByQuery(ctx, personaID, policy, query, args...)
 }
 
 func (r *RetrievalRepository) countFactsForGenericTerms(ctx context.Context, personaID string, analysis QueryAnalysis, policy RetrievalPolicy) (int, float64, error) {
@@ -1266,8 +1296,9 @@ func (r *RetrievalRepository) countFactsForGenericTerms(ctx context.Context, per
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowDeepArchive),
 	)
+	args = append(args, 32)
 	query := `
-SELECT COUNT(*), COALESCE(MAX(importance), 0)
+SELECT id, importance
 FROM facts
 WHERE persona_id = ?
   AND (` + strings.Join(clauses, " OR ") + `)
@@ -1275,23 +1306,69 @@ WHERE persona_id = ?
   AND searchable = 1
   AND (validity_status != 'invalidated' OR ? = 1)
   AND (lifecycle_status != 'archived' OR ? = 1)
-  AND (lifecycle_status != 'deep_archived' OR ? = 1)`
-	var count int
-	var top float64
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count, &top)
-	return count, clamp01(top), err
+  AND (lifecycle_status != 'deep_archived' OR ? = 1)
+ORDER BY importance DESC, updated_at DESC, id ASC
+LIMIT ?`
+	return r.countEligibleFactsByQuery(ctx, personaID, policy, query, args...)
 }
 
 func (r *RetrievalRepository) countFactsByQuery(ctx context.Context, personaID string, policy RetrievalPolicy, query string) (int, float64, error) {
-	var count int
-	var top float64
-	err := r.db.QueryRowContext(ctx, query,
+	return r.countEligibleFactsByQuery(ctx, personaID, policy, query,
 		personaID,
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowHistorical),
 		boolInt(policy.AllowDeepArchive),
-	).Scan(&count, &top)
-	return count, clamp01(top), err
+	)
+}
+
+func (r *RetrievalRepository) countEligibleFactsByQuery(ctx context.Context, personaID string, policy RetrievalPolicy, query string, args ...any) (int, float64, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	var candidates []factProbeCandidate
+	for rows.Next() {
+		var candidate factProbeCandidate
+		if err := rows.Scan(&candidate.ID, &candidate.Importance); err != nil {
+			_ = rows.Close()
+			return 0, 0, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+
+	var count int
+	var top float64
+	for _, candidate := range candidates {
+		fact, err := r.getFact(ctx, personaID, candidate.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		allowed, err := r.authorityAllows(ctx, fact, policy)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !allowed {
+			continue
+		}
+		count++
+		top = maxFloat(top, candidate.Importance)
+	}
+	return count, clamp01(top), nil
+}
+
+type factProbeCandidate struct {
+	ID         string
+	Importance float64
 }
 
 func predicateProbePredicates(normalized string) []string {

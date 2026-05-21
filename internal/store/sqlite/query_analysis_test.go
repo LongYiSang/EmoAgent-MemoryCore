@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
@@ -418,6 +419,119 @@ func TestAnalyzeQueryPopulatesSparsePredicateAndSupportProbeBreakdown(t *testing
 		t.Fatalf("pinned core confidence = %v, want non-zero", pinned.Probes.PinnedCoreProbeConf)
 	}
 	requireProbeBreakdown(t, pinned.Probes, "pinned_core_probe", pinned.Probes.PinnedCoreProbeConf, "")
+}
+
+func TestAnalyzeQueryAnchorProbesRespectAuthorityPolicy(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+	normalPolicy := RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal), UseFTS: true}
+	sensitivePolicy := RetrievalPolicy{SensitivityPermission: string(core.SensitivitySensitive), UseFTS: true}
+
+	insertProbeEntity(t, ctx, db.SQLDB(), "ent_user", "Long")
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:          "fact_sensitive_coffee_1",
+		predicate:   "likes",
+		object:      "coffee",
+		summary:     "user likes coffee morning ritual",
+		factType:    core.FactTypeStablePreference,
+		importance:  0.90,
+		sensitivity: core.SensitivitySensitive,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:          "fact_sensitive_coffee_2",
+		predicate:   "likes",
+		object:      "coffee beans",
+		summary:     "coffee morning preference is stable",
+		factType:    core.FactTypeStablePreference,
+		importance:  0.85,
+		sensitivity: core.SensitivitySensitive,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:          "fact_sensitive_coffee_3",
+		predicate:   "drinks",
+		object:      "coffee",
+		summary:     "coffee morning drink appears in notes",
+		factType:    core.FactTypeStablePreference,
+		importance:  0.80,
+		sensitivity: core.SensitivitySensitive,
+	})
+	insertProbeFact(t, ctx, db.SQLDB(), probeFact{
+		id:          "fact_sensitive_pinned_core",
+		predicate:   "prefers_name",
+		object:      "Long",
+		summary:     "sensitive pinned core identity note",
+		factType:    core.FactTypeCoreIdentity,
+		importance:  0.95,
+		pinned:      true,
+		sensitivity: core.SensitivitySensitive,
+	})
+	rebuildProbeSearch(t, ctx, db.SQLDB())
+
+	normalSparse, err := repo.AnalyzeQuery(ctx, "default", "coffee morning", normalPolicy)
+	if err != nil {
+		t.Fatalf("analyze normal sparse query: %v", err)
+	}
+	if normalSparse.Probes.SparseProbeConf != 0 || normalSparse.Probes.PredicateProbeConf != 0 || normalSparse.Scores.AnchorReadiness != 0 {
+		t.Fatalf("normal sparse probes = %#v scores=%#v, want no readiness from sensitive facts", normalSparse.Probes, normalSparse.Scores)
+	}
+
+	normalPredicate, err := repo.AnalyzeQuery(ctx, "default", "我喜欢什么", normalPolicy)
+	if err != nil {
+		t.Fatalf("analyze normal predicate query: %v", err)
+	}
+	if normalPredicate.Probes.PredicateProbeConf != 0 {
+		t.Fatalf("normal predicate confidence = %v, want 0 from sensitive facts", normalPredicate.Probes.PredicateProbeConf)
+	}
+
+	normalRecent, err := repo.AnalyzeQuery(ctx, "default", "为什么 coffee morning", normalPolicy)
+	if err != nil {
+		t.Fatalf("analyze normal recent query: %v", err)
+	}
+	if normalRecent.Probes.SparseProbeConf != 0 || normalRecent.Probes.RecentProbeConf != 0 {
+		t.Fatalf("normal recent probes = %#v, want no sparse/recent readiness from sensitive facts", normalRecent.Probes)
+	}
+
+	normalPinned, err := repo.AnalyzeQuery(ctx, "default", "我的边界是什么", normalPolicy)
+	if err != nil {
+		t.Fatalf("analyze normal pinned query: %v", err)
+	}
+	if normalPinned.Probes.PinnedCoreProbeConf != 0 {
+		t.Fatalf("normal pinned confidence = %v, want 0 from sensitive facts", normalPinned.Probes.PinnedCoreProbeConf)
+	}
+
+	sensitiveSparse, err := repo.AnalyzeQuery(ctx, "default", "coffee morning", sensitivePolicy)
+	if err != nil {
+		t.Fatalf("analyze sensitive sparse query: %v", err)
+	}
+	if sensitiveSparse.Probes.SparseProbeConf != 0.75 {
+		t.Fatalf("sensitive sparse confidence = %v, want 0.75", sensitiveSparse.Probes.SparseProbeConf)
+	}
+
+	sensitivePredicate, err := repo.AnalyzeQuery(ctx, "default", "我喜欢什么", sensitivePolicy)
+	if err != nil {
+		t.Fatalf("analyze sensitive predicate query: %v", err)
+	}
+	if sensitivePredicate.Probes.PredicateProbeConf < 0.70 {
+		t.Fatalf("sensitive predicate confidence = %v, want >= 0.70", sensitivePredicate.Probes.PredicateProbeConf)
+	}
+
+	sensitiveRecent, err := repo.AnalyzeQuery(ctx, "default", "为什么 coffee morning", sensitivePolicy)
+	if err != nil {
+		t.Fatalf("analyze sensitive recent query: %v", err)
+	}
+	if sensitiveRecent.Probes.RecentProbeConf == 0 {
+		t.Fatalf("sensitive recent confidence = %v, want non-zero", sensitiveRecent.Probes.RecentProbeConf)
+	}
+
+	sensitivePinned, err := repo.AnalyzeQuery(ctx, "default", "我的边界是什么", sensitivePolicy)
+	if err != nil {
+		t.Fatalf("analyze sensitive pinned query: %v", err)
+	}
+	if sensitivePinned.Probes.PinnedCoreProbeConf == 0 {
+		t.Fatalf("sensitive pinned confidence = %v, want non-zero", sensitivePinned.Probes.PinnedCoreProbeConf)
+	}
 }
 
 func TestComputeAnchorReadinessNoisyOrAndPenalties(t *testing.T) {
@@ -1255,13 +1369,14 @@ func equalQuerySignals(a []QuerySignal, b []QuerySignal) bool {
 }
 
 type probeFact struct {
-	id         string
-	predicate  string
-	object     string
-	summary    string
-	factType   core.FactType
-	importance float64
-	pinned     bool
+	id          string
+	predicate   string
+	object      string
+	summary     string
+	factType    core.FactType
+	importance  float64
+	pinned      bool
+	sensitivity core.SensitivityLevel
 }
 
 func openQueryProbeDB(t *testing.T, ctx context.Context, enableFTS bool) *DB {
@@ -1277,6 +1392,10 @@ func openQueryProbeDB(t *testing.T, ctx context.Context, enableFTS bool) *DB {
 	if err := NewStore(db.SQLDB()).EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
 		_ = db.Close()
 		t.Fatalf("ensure persona: %v", err)
+	}
+	if err := NewStore(db.SQLDB()).EnsureSession(ctx, core.Session{ID: "session_probe", PersonaID: "default", Channel: core.ChannelAPI}); err != nil {
+		_ = db.Close()
+		t.Fatalf("ensure session: %v", err)
 	}
 	return db
 }
@@ -1322,9 +1441,38 @@ func insertProbeFact(t *testing.T, ctx context.Context, db *sql.DB, value probeF
 		FactType:             value.factType,
 		ExtractionConfidence: core.ExtractionConfidenceExplicit,
 		Importance:           value.importance,
+		SensitivityLevel:     value.sensitivity,
 		Pinned:               value.pinned,
 	}); err != nil {
 		t.Fatalf("insert fact %s: %v", value.id, err)
+	}
+	insertProbeEvidence(t, ctx, db, value.id, value.sensitivity)
+}
+
+func insertProbeEvidence(t *testing.T, ctx context.Context, db *sql.DB, factID string, sensitivity core.SensitivityLevel) {
+	t.Helper()
+	episodeID := "episode_" + factID
+	if err := NewEpisodeRepository(db).Append(ctx, core.Episode{
+		ID:               episodeID,
+		PersonaID:        "default",
+		SessionID:        "session_probe",
+		Role:             core.RoleUser,
+		Content:          "source for " + factID,
+		OccurredAt:       time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC),
+		SensitivityLevel: sensitivity,
+	}); err != nil {
+		t.Fatalf("insert episode for fact %s: %v", factID, err)
+	}
+	if err := NewLinkRepository(db).Insert(ctx, core.MemoryLink{
+		ID:           "link_" + factID,
+		PersonaID:    "default",
+		FromNodeType: core.NodeTypeFact,
+		FromNodeID:   factID,
+		LinkType:     core.LinkTypeEvidencedBy,
+		ToNodeType:   core.NodeTypeEpisode,
+		ToNodeID:     episodeID,
+	}); err != nil {
+		t.Fatalf("insert evidence link for fact %s: %v", factID, err)
 	}
 }
 
