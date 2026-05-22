@@ -53,7 +53,7 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 		preview.QueryAnalysis.Source == QueryAnalysisSourceSemanticFallback {
 		return s.completeRetrievalAttempt(ctx, attempt, true)
 	}
-	corrected, ok, err := s.runCorrectiveRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, action)
+	corrected, fallback, ok, err := s.runCorrectiveRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, action)
 	if err != nil {
 		return nil, err
 	}
@@ -71,10 +71,11 @@ func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryCo
 	if err != nil {
 		return nil, err
 	}
-	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
+	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback || fallback.Action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
 		preserveOriginalRetrievalDiagnostics(result, preview)
 	}
 	annotateCorrectiveAction(result, action)
+	annotateCorrectiveFallback(result, fallback)
 	return result, nil
 }
 
@@ -89,26 +90,34 @@ type retrievalAttemptResult struct {
 	rerankDiagnostics *memsqlite.RerankDiagnostics
 }
 
-func (s *service) runCorrectiveRetrievalAttempt(ctx context.Context, req RetrievalRequest, queryReq QueryAnalysisRequest, personaID string, now time.Time, policy RetrievalPolicy, ruleAnalysis memsqlite.QueryAnalysis, action string) (retrievalAttemptResult, bool, error) {
+type correctiveFallback struct {
+	Action string
+	Reason string
+}
+
+func (s *service) runCorrectiveRetrievalAttempt(ctx context.Context, req RetrievalRequest, queryReq QueryAnalysisRequest, personaID string, now time.Time, policy RetrievalPolicy, ruleAnalysis memsqlite.QueryAnalysis, action string) (retrievalAttemptResult, correctiveFallback, bool, error) {
 	switch action {
 	case memsqlite.RetrievalCorrectiveActionSQLiteFallback:
 		result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{SQLiteFallback: true})
-		return result, true, err
+		return result, correctiveFallback{}, true, err
 	case memsqlite.RetrievalCorrectiveActionSemanticLight:
 		semantic, attempted, ok := s.correctiveSemanticLight(ctx, queryReq, ruleAnalysis)
 		if ok {
 			result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{Analysis: &semantic})
 			if err == nil {
-				return result, true, nil
+				return result, correctiveFallback{}, true, nil
 			}
 		}
 		if !attempted {
-			return retrievalAttemptResult{}, false, nil
+			return retrievalAttemptResult{}, correctiveFallback{}, false, nil
 		}
 		result, err := s.runRetrievalAttempt(ctx, req, queryReq, personaID, now, policy, ruleAnalysis, retrievalAttemptOptions{SQLiteFallback: true})
-		return result, true, err
+		return result, correctiveFallback{
+			Action: memsqlite.RetrievalCorrectiveActionSQLiteFallback,
+			Reason: RetrievalCorrectiveFallbackReasonSemanticFailed,
+		}, true, err
 	default:
-		return retrievalAttemptResult{}, false, nil
+		return retrievalAttemptResult{}, correctiveFallback{}, false, nil
 	}
 }
 
@@ -150,6 +159,17 @@ func annotateCorrectiveAction(result *MemoryContext, action string) {
 		result.RetrievalConfidence = &RetrievalConfidence{}
 	}
 	result.RetrievalConfidence.CorrectiveAction = action
+}
+
+func annotateCorrectiveFallback(result *MemoryContext, fallback correctiveFallback) {
+	if result == nil || fallback.Action == "" {
+		return
+	}
+	if result.RetrievalConfidence == nil {
+		result.RetrievalConfidence = &RetrievalConfidence{}
+	}
+	result.RetrievalConfidence.CorrectiveFallback = fallback.Action
+	result.RetrievalConfidence.CorrectiveFallbackReason = fallback.Reason
 }
 
 func preserveOriginalRetrievalDiagnostics(result *MemoryContext, original *MemoryContext) {

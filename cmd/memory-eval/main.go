@@ -214,6 +214,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	var queryAnalysisMode string
 	var queryAnalysisTimeoutMS int
 	var queryAnalysisSoftJoinTimeoutMS int
+	var queryAnalysisMaxSemanticLatencyMS int
 	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -234,6 +235,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only, legacy_only, shadow_adaptive, adaptive, adaptive_safe, or adaptive_full")
 	fs.IntVar(&queryAnalysisTimeoutMS, "query-analysis-timeout-ms", 1500, "query analysis sidecar timeout in milliseconds")
 	fs.IntVar(&queryAnalysisSoftJoinTimeoutMS, "query-analysis-soft-join-timeout-ms", 0, "semantic query-analysis wait budget before raw-only completion in milliseconds; 0 uses query-analysis-timeout-ms")
+	fs.IntVar(&queryAnalysisMaxSemanticLatencyMS, "query-analysis-max-semantic-latency-ms", 0, "maximum semantic provider latency budget in milliseconds; 0 uses query-analysis default")
 	if err := fs.Parse(args); err != nil {
 		return options{}, false
 	}
@@ -255,7 +257,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		fmt.Fprintln(stderr, "query-analysis-mode requires at least one mirror/semantic profile")
 		return options{}, false
 	}
-	queryAnalysis, err := parseQueryAnalysisOptions(queryAnalysisMode, opts.sidecarURL, queryAnalysisTimeoutMS, queryAnalysisSoftJoinTimeoutMS)
+	queryAnalysis, err := parseQueryAnalysisOptions(queryAnalysisMode, opts.sidecarURL, queryAnalysisTimeoutMS, queryAnalysisSoftJoinTimeoutMS, queryAnalysisMaxSemanticLatencyMS)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return options{}, false
@@ -301,7 +303,7 @@ func hasMirrorProfile(profiles []memoryeval.Profile) bool {
 	return false
 }
 
-func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, softJoinTimeoutMS int) (memorycore.QueryAnalysisOptions, error) {
+func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, softJoinTimeoutMS int, maxSemanticLatencyMS int) (memorycore.QueryAnalysisOptions, error) {
 	mode = strings.TrimSpace(mode)
 	if mode == "" {
 		mode = "rule_only"
@@ -324,6 +326,9 @@ func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, so
 	if softJoinTimeoutMS < 0 {
 		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-soft-join-timeout-ms must be >= 0")
 	}
+	if maxSemanticLatencyMS < 0 {
+		return memorycore.QueryAnalysisOptions{}, fmt.Errorf("query-analysis-max-semantic-latency-ms must be >= 0")
+	}
 	options := memorycore.QueryAnalysisOptions{
 		Provider:   memorycore.QueryAnalysisProviderSidecar,
 		Mode:       memorycore.QueryAnalysisMode(mode),
@@ -332,6 +337,9 @@ func parseQueryAnalysisOptions(mode string, sidecarURL string, timeoutMS int, so
 	}
 	if softJoinTimeoutMS > 0 {
 		options.SoftJoinTimeout = time.Duration(softJoinTimeoutMS) * time.Millisecond
+	}
+	if maxSemanticLatencyMS > 0 {
+		options.MaxSemanticLatency = time.Duration(maxSemanticLatencyMS) * time.Millisecond
 	}
 	return options, nil
 }

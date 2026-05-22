@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import time
 import urllib.error
@@ -188,9 +189,58 @@ def _call_openai_compatible(
     )
     with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
         raw = response.read()
-    payload = json.loads(raw.decode("utf-8"))
+    raw_text = raw.decode("utf-8")
+    _write_provider_raw_response(
+        request,
+        config,
+        raw_text,
+        retry_after_validation_failure=retry_after_validation_failure,
+    )
+    payload = json.loads(raw_text)
     content = _extract_content(payload)
     return json.loads(content)
+
+
+def _write_provider_raw_response(
+    request: dict[str, Any],
+    config: QueryAnalysisConfig,
+    raw_text: str,
+    *,
+    retry_after_validation_failure: bool,
+) -> None:
+    raw_dir = os.environ.get("MEMORYCORE_QUERY_ANALYSIS_PROVIDER_RAW_DIR", "").strip()
+    if not raw_dir:
+        return
+    try:
+        directory = Path(raw_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        request_id = _safe_artifact_name(_optional_string(request.get("request_id")))
+        if not request_id:
+            request_id = "query"
+        suffix = "retry" if retry_after_validation_failure else "initial"
+        filename = f"{request_id}-{suffix}-{time.time_ns()}.json"
+        artifact = {
+            "schema_version": "query_analysis_provider_raw.v0.1",
+            "request_id": _optional_string(request.get("request_id")),
+            "query_text": str(request.get("query_text", "")),
+            "semantic_mode": _optional_string(request.get("semantic_mode")),
+            "provider": config.provider,
+            "model": config.model,
+            "prompt_version": config.prompt_version,
+            "retry_after_validation_failure": retry_after_validation_failure,
+            "provider_raw_response": raw_text,
+        }
+        (directory / filename).write_text(
+            json.dumps(artifact, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _safe_artifact_name(value: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return value[:80].strip("._-")
 
 
 def _system_prompt(prompt_version: str) -> str:

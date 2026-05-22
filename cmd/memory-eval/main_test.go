@@ -236,6 +236,7 @@ func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T)
 		"--query-analysis-mode", "semantic_always",
 		"--query-analysis-timeout-ms", "2500",
 		"--query-analysis-soft-join-timeout-ms", "1200",
+		"--query-analysis-max-semantic-latency-ms", "900",
 	}, &stderr)
 
 	if !ok {
@@ -246,6 +247,9 @@ func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T)
 	}
 	if opts.queryAnalysis.Timeout != 2500*time.Millisecond || opts.queryAnalysis.SoftJoinTimeout != 1200*time.Millisecond {
 		t.Fatalf("query analysis timeouts = timeout:%s soft_join:%s", opts.queryAnalysis.Timeout, opts.queryAnalysis.SoftJoinTimeout)
+	}
+	if opts.queryAnalysis.MaxSemanticLatency != 900*time.Millisecond {
+		t.Fatalf("query analysis max semantic latency = %s, want 900ms", opts.queryAnalysis.MaxSemanticLatency)
 	}
 }
 

@@ -20,7 +20,7 @@ param(
 
     [switch]$NoRerank,
 
-    [ValidateSet("rule_only", "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only")]
+    [ValidateSet("rule_only", "semantic_always", "semantic_on_low_confidence", "semantic_rewrite_only", "legacy_only", "shadow_adaptive", "adaptive", "adaptive_safe", "adaptive_full")]
     [string]$QueryAnalysisMode = "rule_only",
 
     [string]$QueryAnalysisKeyFile = "",
@@ -30,6 +30,8 @@ param(
     [int]$QueryAnalysisTimeoutMS = 15000,
 
     [int]$QueryAnalysisSoftJoinTimeoutMS = 0,
+
+    [int]$QueryAnalysisMaxSemanticLatencyMS = 0,
 
     [int]$QueryAnalysisMaxTokens = 512,
 
@@ -194,6 +196,9 @@ if ($queryAnalysisEnabled) {
     if ($QueryAnalysisSoftJoinTimeoutMS -lt 0) {
         throw "QueryAnalysisSoftJoinTimeoutMS must be >= 0."
     }
+    if ($QueryAnalysisMaxSemanticLatencyMS -lt 0) {
+        throw "QueryAnalysisMaxSemanticLatencyMS must be >= 0."
+    }
     if (-not $QueryAnalysisKeyFile) {
         $QueryAnalysisKeyFile = Join-Path $repoRoot "tmp\TMP_KEY_LLM"
     }
@@ -206,6 +211,9 @@ if ($queryAnalysisEnabled) {
     $env:MEMORYCORE_QUERY_ANALYSIS_MODEL = $QueryAnalysisModel
     $env:MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_SECONDS = [string][Math]::Max(1, [Math]::Ceiling($QueryAnalysisTimeoutMS / 1000.0))
     $env:MEMORYCORE_QUERY_ANALYSIS_TIMEOUT_MS = [string]$QueryAnalysisTimeoutMS
+    $providerRawDir = Join-Path $reportDir "query_analysis_provider_raw"
+    New-Item -ItemType Directory -Force -Path $providerRawDir | Out-Null
+    $env:MEMORYCORE_QUERY_ANALYSIS_PROVIDER_RAW_DIR = $providerRawDir
     if ($QueryAnalysisSoftJoinTimeoutMS -gt 0) {
         $env:MEMORYCORE_QUERY_ANALYSIS_SOFT_JOIN_TIMEOUT_MS = [string]$QueryAnalysisSoftJoinTimeoutMS
     }
@@ -296,6 +304,9 @@ try {
         $args += @("--query-analysis-mode", $QueryAnalysisMode, "--query-analysis-timeout-ms", $QueryAnalysisTimeoutMS)
         if ($QueryAnalysisSoftJoinTimeoutMS -gt 0) {
             $args += @("--query-analysis-soft-join-timeout-ms", $QueryAnalysisSoftJoinTimeoutMS)
+        }
+        if ($QueryAnalysisMaxSemanticLatencyMS -gt 0) {
+            $args += @("--query-analysis-max-semantic-latency-ms", $QueryAnalysisMaxSemanticLatencyMS)
         }
     }
     if ($AllowSkipMissingProvider) {

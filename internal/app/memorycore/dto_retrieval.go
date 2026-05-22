@@ -32,6 +32,7 @@ const (
 	RetrievalCorrectiveActionSemanticLight           = "semantic_light"
 	RetrievalCorrectiveActionSQLiteFallback          = "sqlite_fallback"
 	RetrievalCorrectiveActionSuppressMemoryInjection = "suppress_memory_injection"
+	RetrievalCorrectiveFallbackReasonSemanticFailed  = "semantic_light_failed"
 	RetrievalHardFailureForbiddenCandidate           = "forbidden_candidate"
 	RetrievalHardFailureTemporalInconsistency        = "temporal_inconsistency"
 )
@@ -139,18 +140,20 @@ type MemoryContext struct {
 }
 
 type RetrievalConfidence struct {
-	CandidateRecallProxy  float64 `json:"candidate_recall_proxy"`
-	SourceDiversity       float64 `json:"source_diversity"`
-	AnchorCoverage        float64 `json:"anchor_coverage"`
-	TopRankMargin         float64 `json:"top_rank_margin"`
-	AuthorityPassRatio    float64 `json:"authority_pass_ratio"`
-	TemporalConsistency   float64 `json:"temporal_consistency"`
-	RequiredChainCoverage float64 `json:"required_chain_coverage"`
-	MMRDiversity          float64 `json:"mmr_diversity"`
-	SensitivitySafety     float64 `json:"sensitivity_safety"`
-	Overall               float64 `json:"overall"`
-	CorrectiveAction      string  `json:"corrective_action,omitempty"`
-	HardFailureReason     string  `json:"hard_failure_reason,omitempty"`
+	CandidateRecallProxy     float64 `json:"candidate_recall_proxy"`
+	SourceDiversity          float64 `json:"source_diversity"`
+	AnchorCoverage           float64 `json:"anchor_coverage"`
+	TopRankMargin            float64 `json:"top_rank_margin"`
+	AuthorityPassRatio       float64 `json:"authority_pass_ratio"`
+	TemporalConsistency      float64 `json:"temporal_consistency"`
+	RequiredChainCoverage    float64 `json:"required_chain_coverage"`
+	MMRDiversity             float64 `json:"mmr_diversity"`
+	SensitivitySafety        float64 `json:"sensitivity_safety"`
+	Overall                  float64 `json:"overall"`
+	CorrectiveAction         string  `json:"corrective_action,omitempty"`
+	CorrectiveFallback       string  `json:"corrective_fallback,omitempty"`
+	CorrectiveFallbackReason string  `json:"corrective_fallback_reason,omitempty"`
+	HardFailureReason        string  `json:"hard_failure_reason,omitempty"`
 }
 
 type QueryAnalysis struct {

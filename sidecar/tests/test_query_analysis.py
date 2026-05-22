@@ -364,6 +364,39 @@ def test_analyze_query_retries_invalid_json_then_ok(monkeypatch):
     assert "secret" not in str(result)
 
 
+def test_analyze_query_writes_provider_raw_response_artifact(monkeypatch, tmp_path):
+    response = _provider_response(json.dumps(_valid_analysis(query_rewrites=["咖啡偏好"])))
+
+    def fake_urlopen(request, timeout):
+        return _Response(response)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setenv("MEMORYCORE_QUERY_ANALYSIS_PROVIDER_RAW_DIR", str(tmp_path))
+
+    result = analyze_query(
+        {
+            "request_id": "qa/raw-1",
+            "persona_id": "default",
+            "query_text": "咖啡偏好",
+            "include_rationale": False,
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["status"] == "ok"
+    artifacts = list(tmp_path.glob("qa_raw-1-initial-*.json"))
+    assert len(artifacts) == 1
+    artifact_text = artifacts[0].read_text(encoding="utf-8")
+    artifact = json.loads(artifact_text)
+    assert artifact["schema_version"] == "query_analysis_provider_raw.v0.1"
+    assert artifact["request_id"] == "qa/raw-1"
+    assert artifact["query_text"] == "咖啡偏好"
+    assert artifact["retry_after_validation_failure"] is False
+    assert "choices" in artifact["provider_raw_response"]
+    assert "secret" not in artifact_text
+
+
 def test_analyze_query_retries_missing_field_then_ok(monkeypatch):
     calls = []
     responses = [

@@ -882,6 +882,9 @@ func requireMirrorUsed(caseID string, profile Profile, result *memorycore.Memory
 	if result == nil || result.Mirror == nil {
 		return fmt.Errorf("case %s profile %s requires mirror diagnostics", caseID, profile)
 	}
+	if isCorrectiveSQLiteFallbackStatus(result.Mirror.Status) {
+		return nil
+	}
 	if result.Mirror.Status != "used" {
 		return fmt.Errorf("case %s profile %s requires mirror status used, got %s", caseID, profile, result.Mirror.Status)
 	}

@@ -360,6 +360,7 @@ const (
 	RetrievalCorrectiveActionSemanticLight           = appcore.RetrievalCorrectiveActionSemanticLight
 	RetrievalCorrectiveActionSQLiteFallback          = appcore.RetrievalCorrectiveActionSQLiteFallback
 	RetrievalCorrectiveActionSuppressMemoryInjection = appcore.RetrievalCorrectiveActionSuppressMemoryInjection
+	RetrievalCorrectiveFallbackReasonSemanticFailed  = appcore.RetrievalCorrectiveFallbackReasonSemanticFailed
 	RetrievalHardFailureForbiddenCandidate           = appcore.RetrievalHardFailureForbiddenCandidate
 	RetrievalHardFailureTemporalInconsistency        = appcore.RetrievalHardFailureTemporalInconsistency
 )

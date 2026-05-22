@@ -104,6 +104,10 @@ type MatrixMetrics struct {
 	SemanticCostPer1000Queries          float64            `json:"semantic_cost_per_1000_queries"`
 	RetrievalLatencyP95                 int64              `json:"retrieval_latency_p95"`
 	PostEvalCorrectiveActionRate        float64            `json:"post_eval_corrective_action_rate"`
+	CorrectiveSQLiteFallbackCount       int                `json:"corrective_sqlite_fallback_count"`
+	CorrectiveSemanticLightCount        int                `json:"corrective_semantic_light_count"`
+	CorrectiveSuppressMemoryCount       int                `json:"corrective_suppress_memory_injection_count"`
+	CorrectiveRollbackCount             int                `json:"corrective_rollback_count"`
 	RedundancyRate                      float64            `json:"redundancy_rate"`
 	RestraintViolationRate              float64            `json:"restraint_violation_rate"`
 	EnglishRewriteCount                 int                `json:"english_rewrite_count"`
@@ -602,6 +606,7 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			continue
 		}
 		retrievalCount++
+		mirrorCorrectiveSQLiteFallback := false
 		if retrieval.Mirror != nil {
 			metrics.EmbeddingCacheHits += retrieval.Mirror.EmbeddingCacheHits
 			metrics.EmbeddingCacheMisses += retrieval.Mirror.EmbeddingCacheMisses
@@ -617,7 +622,9 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 			if retrieval.Mirror.Status == "used" {
 				metrics.MirrorUsedCount++
 			}
-			if requirements.RequiresMirror && retrieval.Mirror.Degraded {
+			if isCorrectiveSQLiteFallbackStatus(retrieval.Mirror.Status) {
+				mirrorCorrectiveSQLiteFallback = true
+			} else if requirements.RequiresMirror && retrieval.Mirror.Degraded {
 				metrics.SidecarDegradedCount++
 				metrics.FallbackCount++
 			}
@@ -639,8 +646,11 @@ func computeMatrixMetrics(fixture *Fixture, report Report, profile Profile) Matr
 		if retrieval.RetrievalConfidence != nil && retrieval.RetrievalConfidence.HardFailureReason == memorycore.RetrievalHardFailureTemporalInconsistency {
 			metrics.TemporalCorrectnessHardFailures++
 		}
-		if retrieval.RetrievalConfidence != nil && retrieval.RetrievalConfidence.CorrectiveAction != "" {
-			correctiveActionCount++
+		if retrieval.RetrievalConfidence != nil {
+			collectCorrectiveMetrics(retrieval.RetrievalConfidence, &metrics, &correctiveActionCount)
+		}
+		if mirrorCorrectiveSQLiteFallback && !retrievalConfidenceIncludesSQLiteFallback(retrieval.RetrievalConfidence) {
+			metrics.CorrectiveSQLiteFallbackCount++
 		}
 		if retrieval.GraphActivation != nil {
 			if retrieval.GraphActivation.Status == "used" {
@@ -726,6 +736,37 @@ func collectQueryAnalysisMetrics(analysis *memorycore.QueryAnalysis, metrics *Ma
 	metrics.EnglishRewriteCount += diagnostics.EnglishRewriteCount
 	metrics.DroppedRewriteCount += diagnostics.DroppedRewriteCount
 	metrics.SemanticDriftCount += diagnostics.SemanticDriftCount
+}
+
+func collectCorrectiveMetrics(confidence *memorycore.RetrievalConfidence, metrics *MatrixMetrics, correctiveActionCount *int) {
+	if confidence == nil || metrics == nil {
+		return
+	}
+	if confidence.CorrectiveAction != "" && correctiveActionCount != nil {
+		(*correctiveActionCount)++
+	}
+	switch confidence.CorrectiveAction {
+	case memorycore.RetrievalCorrectiveActionSQLiteFallback:
+		metrics.CorrectiveSQLiteFallbackCount++
+	case memorycore.RetrievalCorrectiveActionSemanticLight:
+		metrics.CorrectiveSemanticLightCount++
+	case memorycore.RetrievalCorrectiveActionSuppressMemoryInjection:
+		metrics.CorrectiveSuppressMemoryCount++
+	}
+	if confidence.CorrectiveFallback != "" {
+		metrics.CorrectiveRollbackCount++
+	}
+	if confidence.CorrectiveFallback == memorycore.RetrievalCorrectiveActionSQLiteFallback {
+		metrics.CorrectiveSQLiteFallbackCount++
+	}
+}
+
+func retrievalConfidenceIncludesSQLiteFallback(confidence *memorycore.RetrievalConfidence) bool {
+	if confidence == nil {
+		return false
+	}
+	return confidence.CorrectiveAction == memorycore.RetrievalCorrectiveActionSQLiteFallback ||
+		confidence.CorrectiveFallback == memorycore.RetrievalCorrectiveActionSQLiteFallback
 }
 
 func collectQuerySignalMetrics(signals []memorycore.QuerySignal, metrics *MatrixMetrics) {
@@ -1212,6 +1253,10 @@ func isFallbackStatus(status string) bool {
 	}
 }
 
+func isCorrectiveSQLiteFallbackStatus(status string) bool {
+	return status == "disabled_by_corrective_sqlite_fallback"
+}
+
 func profileDeltas(profiles []ProfileMatrixReport) map[string]float64 {
 	byProfile := map[Profile]MatrixMetrics{}
 	for _, profile := range profiles {
@@ -1279,6 +1324,10 @@ func FormatMatrixReport(report MatrixReport) string {
 		fmt.Fprintf(&b, "semantic_cost_per_1000_queries: %.3f\n", profile.Metrics.SemanticCostPer1000Queries)
 		fmt.Fprintf(&b, "retrieval_latency_p95: %d\n", profile.Metrics.RetrievalLatencyP95)
 		fmt.Fprintf(&b, "post_eval_corrective_action_rate: %.3f\n", profile.Metrics.PostEvalCorrectiveActionRate)
+		fmt.Fprintf(&b, "corrective_sqlite_fallback_count: %d\n", profile.Metrics.CorrectiveSQLiteFallbackCount)
+		fmt.Fprintf(&b, "corrective_semantic_light_count: %d\n", profile.Metrics.CorrectiveSemanticLightCount)
+		fmt.Fprintf(&b, "corrective_suppress_memory_injection_count: %d\n", profile.Metrics.CorrectiveSuppressMemoryCount)
+		fmt.Fprintf(&b, "corrective_rollback_count: %d\n", profile.Metrics.CorrectiveRollbackCount)
 		fmt.Fprintf(&b, "fallback_count: %d\n", profile.Metrics.FallbackCount)
 		fmt.Fprintf(&b, "query_analysis_used_count: %d\n", profile.Metrics.QueryAnalysisUsedCount)
 		fmt.Fprintf(&b, "query_analysis_fallback_count: %d\n", profile.Metrics.QueryAnalysisFallbackCount)

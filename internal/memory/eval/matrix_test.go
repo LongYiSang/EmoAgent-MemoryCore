@@ -1301,6 +1301,10 @@ func TestFormatMatrixReportIncludesPhase8MetricNames(t *testing.T) {
 				SemanticCallsPer1000Queries:     25,
 				RetrievalLatencyP95:             12,
 				PostEvalCorrectiveActionRate:    0.05,
+				CorrectiveSQLiteFallbackCount:   1,
+				CorrectiveSemanticLightCount:    2,
+				CorrectiveSuppressMemoryCount:   3,
+				CorrectiveRollbackCount:         4,
 				SemanticLatencyP95:              34,
 			},
 		}},
@@ -1328,6 +1332,10 @@ func TestFormatMatrixReportIncludesPhase8MetricNames(t *testing.T) {
 		"semantic_cost_per_1000_queries: 0.000",
 		"retrieval_latency_p95: 12",
 		"post_eval_corrective_action_rate: 0.050",
+		"corrective_sqlite_fallback_count: 1",
+		"corrective_semantic_light_count: 2",
+		"corrective_suppress_memory_injection_count: 3",
+		"corrective_rollback_count: 4",
 		"semantic_latency_p95: 34",
 	} {
 		if !strings.Contains(out, want) {
@@ -1691,6 +1699,53 @@ func TestComputeProfileMatrixMetricsCountsOnlyRequiredStageFallbacks(t *testing.
 	rerank := ComputeProfileMatrixMetrics(nil, report, ProfileMirrorRealGraphRerank)
 	if rerank.FallbackCount != 2 || rerank.GraphRequiredButNotUsedCount != 1 || rerank.RerankRequiredButNotUsedCount != 1 {
 		t.Fatalf("rerank metrics = %#v, want graph and rerank fallbacks counted", rerank)
+	}
+}
+
+func TestComputeProfileMatrixMetricsCountsCorrectiveSQLiteFallbackSeparately(t *testing.T) {
+	report := Report{
+		Steps: []StepReport{{
+			ID:     "q1",
+			Action: "retrieve",
+			Retrieval: &memorycore.MemoryContext{
+				Mirror: &memorycore.MirrorRetrievalDiagnostics{
+					Status:         "disabled_by_corrective_sqlite_fallback",
+					Degraded:       true,
+					FallbackReason: "observed_confidence_sqlite_fallback",
+				},
+				RetrievalConfidence: &memorycore.RetrievalConfidence{
+					CorrectiveAction:         memorycore.RetrievalCorrectiveActionSemanticLight,
+					CorrectiveFallback:       memorycore.RetrievalCorrectiveActionSQLiteFallback,
+					CorrectiveFallbackReason: memorycore.RetrievalCorrectiveFallbackReasonSemanticFailed,
+				},
+			},
+		}},
+	}
+
+	metrics := ComputeProfileMatrixMetrics(nil, report, ProfileSemanticFullSoftGated)
+	if metrics.FallbackCount != 0 || metrics.SidecarDegradedCount != 0 {
+		t.Fatalf("stage fallback metrics = fallback:%d degraded:%d, want corrective fallback excluded", metrics.FallbackCount, metrics.SidecarDegradedCount)
+	}
+	if metrics.CorrectiveSemanticLightCount != 1 || metrics.CorrectiveSQLiteFallbackCount != 1 || metrics.CorrectiveRollbackCount != 1 {
+		t.Fatalf("corrective metrics = %#v, want semantic_light with sqlite rollback", metrics)
+	}
+}
+
+func TestRequireMirrorUsedAllowsCorrectiveSQLiteFallbackStatus(t *testing.T) {
+	result := &memorycore.MemoryContext{
+		Mirror: &memorycore.MirrorRetrievalDiagnostics{
+			Status:         "disabled_by_corrective_sqlite_fallback",
+			Degraded:       true,
+			FallbackReason: "observed_confidence_sqlite_fallback",
+		},
+		RetrievalConfidence: &memorycore.RetrievalConfidence{
+			CorrectiveAction:         memorycore.RetrievalCorrectiveActionSemanticLight,
+			CorrectiveFallback:       memorycore.RetrievalCorrectiveActionSQLiteFallback,
+			CorrectiveFallbackReason: memorycore.RetrievalCorrectiveFallbackReasonSemanticFailed,
+		},
+	}
+	if err := requireMirrorUsed("case", ProfileSemanticFullSoftGated, result); err != nil {
+		t.Fatalf("requireMirrorUsed returned error for corrective fallback: %v", err)
 	}
 }
 

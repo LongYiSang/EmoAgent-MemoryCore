@@ -767,11 +767,17 @@ func TestServiceRetrieveCorrectiveSemanticFailureFallsBackToSQLite(t *testing.T)
 	if len(adapter.candidateRequests) != 1 {
 		t.Fatalf("mirror candidate requests = %d, want one initial request before sqlite fallback", len(adapter.candidateRequests))
 	}
-	if contextResult.Mirror == nil || contextResult.Mirror.Status != "disabled_by_corrective_sqlite_fallback" {
-		t.Fatalf("mirror diagnostics = %#v, want corrective sqlite fallback", contextResult.Mirror)
+	if contextResult.Mirror == nil || contextResult.Mirror.Status != "no_candidates" {
+		t.Fatalf("mirror diagnostics = %#v, want initial no_candidates diagnostics", contextResult.Mirror)
 	}
 	if contextResult.RetrievalConfidence == nil || contextResult.RetrievalConfidence.CorrectiveAction != memorycore.RetrievalCorrectiveActionSemanticLight {
 		t.Fatalf("retrieval confidence = %#v, want semantic_light corrective action", contextResult.RetrievalConfidence)
+	}
+	if contextResult.RetrievalConfidence.CorrectiveFallback != memorycore.RetrievalCorrectiveActionSQLiteFallback {
+		t.Fatalf("corrective fallback = %q, want sqlite_fallback", contextResult.RetrievalConfidence.CorrectiveFallback)
+	}
+	if contextResult.RetrievalConfidence.CorrectiveFallbackReason != memorycore.RetrievalCorrectiveFallbackReasonSemanticFailed {
+		t.Fatalf("corrective fallback reason = %q, want semantic failure", contextResult.RetrievalConfidence.CorrectiveFallbackReason)
 	}
 }
 
