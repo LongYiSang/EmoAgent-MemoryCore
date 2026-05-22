@@ -393,6 +393,8 @@ def test_analyze_query_writes_provider_raw_response_artifact(monkeypatch, tmp_pa
     assert artifact["request_id"] == "qa/raw-1"
     assert artifact["query_text"] == "咖啡偏好"
     assert artifact["retry_after_validation_failure"] is False
+    assert artifact["provider_request_body"]["model"] == "test-model"
+    assert artifact["provider_request_body"]["messages"][1]["role"] == "user"
     assert "choices" in artifact["provider_raw_response"]
     assert "secret" not in artifact_text
 
@@ -779,10 +781,52 @@ def test_analyze_query_sends_rich_request_payload_and_strict_prompt(monkeypatch)
         "sidecar_completes_protocol_fields": True,
         "rewrite_language": "same_as_query",
         "max_anchors": 4,
+        "field_proposals_schema": {
+            "time_mode": {
+                "value": "allowed enum string",
+                "confidence": "number from 0 to 1",
+                "evidence": ["short evidence string"],
+            },
+            "memory_domain": {
+                "value": "allowed enum string",
+                "confidence": "number from 0 to 1",
+                "evidence": ["short evidence string"],
+            },
+            "memory_ability": {
+                "value": "allowed enum string",
+                "confidence": "number from 0 to 1",
+                "evidence": ["short evidence string"],
+            },
+            "evidence_need": {
+                "value": "allowed enum string",
+                "confidence": "number from 0 to 1",
+                "evidence": ["short evidence string"],
+            },
+        },
+        "query_rewrites_schema": {
+            "text": "same-language retrieval query distinct from query_text",
+            "purpose": "semantic_recall | counterexample | operation_target",
+            "weight": "number from 0.1 to 0.9",
+            "rules": [
+                "omit rewrites that duplicate or nearly duplicate query_text",
+                "split compound questions into focused retrieval asks",
+                "return an empty array when no useful extra retrieval angle exists",
+            ],
+        },
     }
     prompt = calls[0]["messages"][0]["content"]
     assert "Return strict JSON object only" in prompt
     assert "provider-minimal JSON schema" in prompt
+    assert "FORMAT ONLY JSON EXAMPLE" in prompt
+    assert "Do not copy values or evidence from the example" in prompt
+    assert "Evidence must come from query_text or rule_analysis evidence/signals" in prompt
+    assert "Do not include query_rewrites that are identical or near-identical to query_text" in prompt
+    assert "If no useful extra rewrite exists, return query_rewrites: []" in prompt
+    assert '"time_mode": {"value": "historical"' in prompt
+    assert "我每天早上起来做的第一件事" not in prompt
+    assert "present habitual query" not in prompt
+    assert "asks for an exact remembered fact" not in prompt
+    assert "field_proposals values must be objects" in prompt
     assert "Do not translate Chinese queries into English" in prompt
     assert "Optional arrays/objects" in prompt
     assert "premise_counterexample" in prompt
@@ -888,6 +932,61 @@ def test_analyze_query_provider_payload_always_uses_zero_temperature(monkeypatch
     assert result["degraded"] is False
     assert calls[0]["temperature"] == 0
     assert calls[0]["max_tokens"] == 384
+
+
+def test_analyze_query_disables_deepseek_thinking(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(_provider_response(json.dumps(_valid_analysis())))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        QueryAnalysisConfig(
+            provider="openai-compatible",
+            base_url="https://api.deepseek.com",
+            api_key_env="QUERY_KEY",
+            model="deepseek-v4-flash",
+            timeout_seconds=2,
+            temperature=0.0,
+            response_format="json_object",
+            prompt_version="query-analysis-v0.1",
+        ),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["degraded"] is False
+    assert calls[0]["thinking"] == {"type": "disabled"}
+
+
+def test_analyze_query_does_not_send_thinking_to_generic_provider(monkeypatch):
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return _Response(_provider_response(json.dumps(_valid_analysis())))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = analyze_query(
+        {
+            "request_id": "qa-1",
+            "persona_id": "default",
+            "query_text": "coffee preference",
+        },
+        _query_config(),
+        env={"QUERY_KEY": "secret"},
+    )
+
+    assert result["degraded"] is False
+    assert "thinking" not in calls[0]
 
 
 def test_analyze_query_provider_max_tokens_clamps_to_512(monkeypatch):

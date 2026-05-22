@@ -178,6 +178,8 @@ def _call_openai_compatible(
             },
         ],
     }
+    if _should_disable_thinking(config):
+        body["thinking"] = {"type": "disabled"}
     http_request = urllib.request.Request(
         config.base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -193,6 +195,7 @@ def _call_openai_compatible(
     _write_provider_raw_response(
         request,
         config,
+        body,
         raw_text,
         retry_after_validation_failure=retry_after_validation_failure,
     )
@@ -204,6 +207,7 @@ def _call_openai_compatible(
 def _write_provider_raw_response(
     request: dict[str, Any],
     config: QueryAnalysisConfig,
+    provider_request_body: dict[str, Any],
     raw_text: str,
     *,
     retry_after_validation_failure: bool,
@@ -228,6 +232,7 @@ def _write_provider_raw_response(
             "model": config.model,
             "prompt_version": config.prompt_version,
             "retry_after_validation_failure": retry_after_validation_failure,
+            "provider_request_body": provider_request_body,
             "provider_raw_response": raw_text,
         }
         (directory / filename).write_text(
@@ -295,7 +300,28 @@ def _system_prompt(prompt_version: str) -> str:
         "of causal_explain unless the query truly asks why an effect happened. "
         "For causal why questions, set memory_ability=causal_explain and include "
         "a causal signal. Required provider fields are intent, confidence, rewrite, "
-        "language, and field_proposals with evidence. Optional arrays/objects such as "
+        "language, and field_proposals with evidence. field_proposals values must be objects "
+        "with value, confidence, and evidence; never return strings for field_proposals. "
+        "Use rule_analysis as a baseline hypothesis, not as ground truth. "
+        "Evidence must come from query_text or rule_analysis evidence/signals. "
+        "Do not copy values or evidence from the example, schema text, or output_contract. "
+        "When semantic analysis agrees with rule_analysis, still provide input-derived evidence. "
+        "Query rewrites must add distinct retrieval angles. Do not include query_rewrites that are "
+        "identical or near-identical to query_text. For compound questions, produce 1-3 focused "
+        "retrieval queries, one per ask. If no useful extra rewrite exists, return query_rewrites: []. "
+        "semantic_anchors may be answer-shaped retrieval probes, but they are not factual claims "
+        "and must not be used as evidence for field_proposals. "
+        "FORMAT ONLY JSON EXAMPLE: {\"intent\": \"historical\", \"confidence\": 0.82, "
+        "\"rewrite\": \"上次项目复盘提到的上线风险\", \"language\": \"zh-Hans\", "
+        "\"field_proposals\": {\"time_mode\": {\"value\": \"historical\", \"confidence\": 0.82, "
+        "\"evidence\": [\"query_text contains 上次\"]}, \"memory_domain\": {\"value\": "
+        "\"work_experience_memory\", \"confidence\": 0.72, \"evidence\": [\"query_text mentions 项目复盘\"]}, "
+        "\"memory_ability\": {\"value\": \"direct_fact\", \"confidence\": 0.86, "
+        "\"evidence\": [\"query asks for a specific recorded risk\"]}, \"evidence_need\": "
+        "{\"value\": \"exact_observation\", \"confidence\": 0.84, "
+        "\"evidence\": [\"query asks what was mentioned\"]}}, "
+        "\"query_rewrites\": [{\"text\": \"项目复盘 上线风险\", "
+        "\"purpose\": \"semantic_recall\", \"weight\": 0.6}]}. Optional arrays/objects such as "
         "anchors, semantic_anchors, entity_mentions, signals, subqueries, safety_notes, "
         "policy_hints, and context_block_hints may be "
         "omitted; the sidecar treats missing values as empty. "
@@ -356,6 +382,38 @@ def _provider_user_payload(
             "sidecar_completes_protocol_fields": True,
             "rewrite_language": "same_as_query",
             "max_anchors": 4,
+            "field_proposals_schema": {
+                "time_mode": {
+                    "value": "allowed enum string",
+                    "confidence": "number from 0 to 1",
+                    "evidence": ["short evidence string"],
+                },
+                "memory_domain": {
+                    "value": "allowed enum string",
+                    "confidence": "number from 0 to 1",
+                    "evidence": ["short evidence string"],
+                },
+                "memory_ability": {
+                    "value": "allowed enum string",
+                    "confidence": "number from 0 to 1",
+                    "evidence": ["short evidence string"],
+                },
+                "evidence_need": {
+                    "value": "allowed enum string",
+                    "confidence": "number from 0 to 1",
+                    "evidence": ["short evidence string"],
+                },
+            },
+            "query_rewrites_schema": {
+                "text": "same-language retrieval query distinct from query_text",
+                "purpose": "semantic_recall | counterexample | operation_target",
+                "weight": "number from 0.1 to 0.9",
+                "rules": [
+                    "omit rewrites that duplicate or nearly duplicate query_text",
+                    "split compound questions into focused retrieval asks",
+                    "return an empty array when no useful extra retrieval angle exists",
+                ],
+            },
         },
     }
 
@@ -376,6 +434,12 @@ def _extract_content(payload: Any) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("provider message content must be a JSON string")
     return content
+
+
+def _should_disable_thinking(config: QueryAnalysisConfig) -> bool:
+    model = config.model.casefold()
+    base_url = config.base_url.casefold()
+    return model.startswith("deepseek-") or "deepseek.com" in base_url
 
 
 def _is_provider_timeout_error(exc: BaseException) -> bool:
