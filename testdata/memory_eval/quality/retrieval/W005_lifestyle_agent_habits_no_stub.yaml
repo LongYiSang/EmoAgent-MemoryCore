@@ -1,0 +1,779 @@
+schema_version: memory_eval.v0.2
+suite: quality_retrieval
+quality_mode: true
+allow_stub: false
+case_id: W005_lifestyle_agent_habits_no_stub
+description: >
+  No-stub offline retrieval world testing user 鸡翅's daily lifestyle habits
+  and interaction preferences with AI Agent 小星. Timeline spans April to mid-May
+  2026, covering: morning/work routines, communication tone preferences,
+  privacy boundaries, agent feedback loops, notification style, weekend rhythm,
+  health/diet/exercise/sleep habits, emotional support preferences, task
+  management conventions, and agent adaptation after user feedback. Queries
+  test fact recall, historical transitions, causal chains, provenance, gotchas,
+  and premise checks — keywords aligned with query_analysis.go trigger patterns.
+seed:
+  sessions:
+    - id: s_seed
+      channel: api
+    - id: s_q001_fact
+      channel: api
+    - id: s_q002_fact
+      channel: api
+    - id: s_q003_fact
+      channel: api
+    - id: s_q004_historical
+      channel: api
+    - id: s_q005_fact
+      channel: api
+    - id: s_q006_source
+      channel: api
+    - id: s_q007_causal
+      channel: api
+    - id: s_q008_fact
+      channel: api
+    - id: s_q009_fact
+      channel: api
+    - id: s_q010_fact
+      channel: api
+    - id: s_q011_fact
+      channel: api
+    - id: s_q012_gotcha
+      channel: api
+    - id: s_q013_premise
+      channel: api
+    - id: s_q014_fact
+      channel: api
+    - id: s_q015_fact
+      channel: api
+    - id: s_q016_fact
+      channel: api
+    - id: s_q017_fact
+      channel: api
+    - id: s_q018_fact
+      channel: api
+    - id: s_q019_fact
+      channel: api
+    - id: s_q020_fact
+      channel: api
+  entities:
+    - id: user
+      canonical_name: 鸡翅
+      entity_type: user
+    - id: agent_xiaoxing
+      canonical_name: 小星
+      entity_type: agent
+  episodes:
+    # --- Week 1: Establishing basics ---
+    - id: ep_morning_routine
+      session_id: s_seed
+      content: 我每天早上的习惯是先喝一杯热美式再开始工作，不喝咖啡整个上午都是废的。
+      occurred_at: "2026-04-01T08:30:00+08:00"
+    - id: ep_work_style
+      session_id: s_seed
+      content: 我上午九点到十二点是深度工作时间，这段时间不想被任何消息打扰，天塌了也等中午再说。
+      occurred_at: "2026-04-02T09:00:00+08:00"
+    - id: ep_communication_tone
+      session_id: s_seed
+      content: 小星你以后跟我说话直接一点，不要绕弯子，也不要每句话都加个表情，简洁实用就好。
+      occurred_at: "2026-04-03T21:00:00+08:00"
+    # --- Week 2: Setting boundaries ---
+    - id: ep_reminder_pref
+      session_id: s_seed
+      content: 小星你可以晚上九点左右提醒我休息，但早上千万不要催我，我起床气很重会直接忽略。
+      occurred_at: "2026-04-06T22:00:00+08:00"
+    - id: ep_privacy_boundary
+      session_id: s_seed
+      content: 有个边界我要说清楚，不要主动问我的感情生活或者家庭细节，这些我自己不提你就别碰。
+      occurred_at: "2026-04-08T20:30:00+08:00"
+    - id: ep_agent_too_verbose
+      session_id: s_seed
+      content: 小星你今天回复太啰嗦了，我心情不好的时候不需要你给我分析一大堆，先听我说完就行。
+      occurred_at: "2026-04-10T23:00:00+08:00"
+    # --- Week 3: Feedback and adjustment ---
+    - id: ep_notification_style
+      session_id: s_seed
+      content: 通知方面我希望只有重要的事情才提醒我，不要像聊天软件一样没事就弹个消息，那样很烦。
+      occurred_at: "2026-04-12T10:00:00+08:00"
+    - id: ep_agent_tone_feedback
+      session_id: s_seed
+      content: 小星你最近的回复风格有进步，没那么啰嗦了，继续保持这种简洁直接的节奏。
+      occurred_at: "2026-04-14T21:00:00+08:00"
+    - id: ep_weekend_routine
+      session_id: s_seed
+      content: 周末我一般睡到十点自然醒，下午是自己的时间，用来写代码或者弄弄个人项目。
+      occurred_at: "2026-04-15T11:00:00+08:00"
+    - id: ep_health_water
+      session_id: s_seed
+      content: 我最近在坚持每天喝两升水，买了个大水壶放在桌上，看到就喝一口，效果还不错。
+      occurred_at: "2026-04-16T14:00:00+08:00"
+    # --- Week 4: Deepening habits ---
+    - id: ep_reading_habit
+      session_id: s_seed
+      content: 我平时喜欢读技术博客和科幻小说，最近在看特德姜的《呼吸》，他的短篇真的很厉害。
+      occurred_at: "2026-04-18T20:00:00+08:00"
+    - id: ep_emotional_support_pref
+      session_id: s_seed
+      content: 小星，以后我情绪低落的时候你先别急着给建议，先问问我怎么了，有时候我只是需要有人听。
+      occurred_at: "2026-04-20T22:30:00+08:00"
+    - id: ep_task_management
+      session_id: s_seed
+      content: 我习惯用列表管理任务，每项前面加个方括号，做完了就打勾，小星你也按这个格式帮我记。
+      occurred_at: "2026-04-22T09:00:00+08:00"
+    # --- Week 5: Lifestyle & agent adaptation ---
+    - id: ep_diet_pref
+      session_id: s_seed
+      content: 我吃饭偏好少油少盐，特别喜欢吃清蒸鱼和白灼菜心，太重口味的吃完不舒服。
+      occurred_at: "2026-04-25T12:30:00+08:00"
+    - id: ep_exercise_rhythm
+      session_id: s_seed
+      content: 我每周晨跑三次，周二周四和周六，早上六点半出门跑四十分钟，回来洗澡正好开始一天。
+      occurred_at: "2026-04-27T07:00:00+08:00"
+    - id: ep_sleep_schedule
+      session_id: s_seed
+      content: 我一般晚上十一点半之前睡，早上七点起，作息挺规律的，所以小星你十一点可以提醒我准备睡了。
+      occurred_at: "2026-04-29T23:00:00+08:00"
+    - id: ep_agent_followed_format
+      session_id: s_seed
+      content: 小星你今天按我说的格式记任务了，看起来很清楚，以后就这样做。
+      occurred_at: "2026-05-02T10:00:00+08:00"
+    # --- Week 6: New boundaries & reflection ---
+    - id: ep_weekend_boundary
+      session_id: s_seed
+      content: 再加一条规矩，周末不要跟我讨论工作相关的话题，除非我自己先提。周末是我的恢复时间。
+      occurred_at: "2026-05-05T15:00:00+08:00"
+    - id: ep_agent_reflection
+      session_id: s_seed
+      content: 小星，感觉这一个多月你越来越懂我的节奏了，该提醒的时候提醒，该安静的时候安静，挺好的。
+      occurred_at: "2026-05-08T21:30:00+08:00"
+steps:
+  # --- Morning & work habits ---
+  - id: f_morning_americano
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: morning_routine
+      object_literal: 先喝热美式再工作
+      content_summary: 用户每天早上先喝一杯热美式再开始工作，不喝咖啡整个上午没状态。
+      fact_type: stable_preference
+      source_episode_ids: [ep_morning_routine]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_deep_work_morning
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: work_style
+      object_literal: 上午九到十二点深度工作不被打扰
+      content_summary: 用户上午九点到十二点是深度工作时间，不想被任何消息打扰。
+      fact_type: stable_preference
+      source_episode_ids: [ep_work_style]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  # --- Communication preferences ---
+  - id: f_agent_tone_direct
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_agent_tone
+      object_literal: 简洁直接不加表情不绕弯子
+      content_summary: 用户要求小星说话简洁直接，不要绕弯子，不要每句话都加表情。
+      fact_type: stable_preference
+      source_episode_ids: [ep_communication_tone]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  # This fact gets historical after agent improves
+  - id: f_reminder_rule
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reminder_preference
+      object_literal: 晚上九点提醒休息 早上不催
+      content_summary: 用户让小星晚上九点提醒休息，但早上不要催，因为起床气重。
+      fact_type: stable_preference
+      source_episode_ids: [ep_reminder_pref]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_privacy_boundary
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: set_boundary
+      object_literal: 不问感情生活和家庭细节
+      content_summary: 用户明确要求小星不要主动问感情生活或家庭细节。
+      fact_type: stable_preference
+      source_episode_ids: [ep_privacy_boundary]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  # --- Feedback & agent adaptation ---
+  - id: f_agent_too_verbose_feedback
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: gave_feedback
+      object_literal: 回复太啰嗦 情绪低落时先听完
+      content_summary: 用户反馈小星回复太啰嗦，情绪低落时不要分析一大堆。
+      fact_type: significant_event
+      source_episode_ids: [ep_agent_too_verbose]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  - id: f_notification_important_only
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: notification_preference
+      object_literal: 只有重要事才通知 不闲聊推送
+      content_summary: 用户要求只有重要事情才通知，不要像聊天软件一样没事弹消息。
+      fact_type: stable_preference
+      source_episode_ids: [ep_notification_style]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  # --- Old tone → new tone (historical transition + causal) ---
+  - id: f_agent_tone_old_direct
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: agent_tone_status
+      object_literal: 之前要求简洁但还没验证
+      content_summary: 用户之前提过要求小星简洁直接，但还没确认小星是否做到了。
+      fact_type: relational_state
+      validity_status: invalidated
+      source_episode_ids: [ep_communication_tone]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.7
+  - id: f_agent_tone_improved_confirmed
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: agent_tone_status
+      object_literal: 回复变简洁 用户满意
+      content_summary: 小星回复风格有明显进步，不啰嗦了，用户确认满意并鼓励继续保持。
+      fact_type: relational_state
+      source_episode_ids: [ep_agent_tone_feedback]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  - id: link_agent_tone_supersedes
+    action: link
+    link:
+      from_node_id: $f_agent_tone_improved_confirmed.fact_id
+      link_type: SUPERSEDES
+      to_node_id: $f_agent_tone_old_direct.fact_id
+      weight: 1.0
+  - id: link_agent_improved_caused_by
+    action: link
+    link:
+      from_node_id: $f_agent_tone_improved_confirmed.fact_id
+      link_type: CAUSED_BY
+      to_node_id: $f_agent_too_verbose_feedback.fact_id
+      weight: 1.0
+  # --- Hidden wrong: agent is always annoying ---
+  - id: f_wrong_agent_always_verbose
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: agent_tone_status
+      object_literal: 小星一直很啰嗦没改
+      content_summary: 小星回复一直很啰嗦，用户提了意见也没有任何改进。
+      fact_type: relational_state
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- Weekend & health ---
+  - id: f_weekend_routine
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: weekend_routine
+      object_literal: 十点自然醒 下午写代码做个人项目
+      content_summary: 用户周末睡到十点自然醒，下午用来写代码或做个人项目。
+      fact_type: stable_preference
+      source_episode_ids: [ep_weekend_routine]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_daily_water_2l
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: health_habit
+      object_literal: 每天喝两升水
+      content_summary: 用户坚持每天喝两升水，买了个大水壶放桌上随时喝。
+      fact_type: stable_preference
+      source_episode_ids: [ep_health_water]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.75
+  - id: f_reading_scifi_tech
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reading_preference
+      object_literal: 技术博客和科幻小说
+      content_summary: 用户平时喜欢读技术博客和科幻小说，最近在看特德姜的《呼吸》。
+      fact_type: stable_preference
+      source_episode_ids: [ep_reading_habit]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.75
+  # --- Emotional support & task management ---
+  - id: f_emotional_support_listen_first
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: emotional_support_preference
+      object_literal: 先倾听不要马上给建议
+      content_summary: 用户希望情绪低落时小星先倾听询问，不要急着给建议。
+      fact_type: stable_preference
+      source_episode_ids: [ep_emotional_support_pref]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_task_list_format
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: task_management
+      object_literal: 方括号列表做完打勾
+      content_summary: 用户用方括号列表管理任务，做完打勾，要求小星也按这个格式记录。
+      fact_type: stable_preference
+      source_episode_ids: [ep_task_management]
+      confidence: explicit
+      confidence_score: 0.9
+      importance: 0.8
+  # --- Diet, exercise, sleep ---
+  - id: f_diet_light_steamed
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: diet_preference
+      object_literal: 少油少盐 偏爱清蒸
+      content_summary: 用户吃饭偏好少油少盐，特别喜欢清蒸鱼和白灼菜心。
+      fact_type: stable_preference
+      source_episode_ids: [ep_diet_pref]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.8
+  - id: f_exercise_morning_run
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: exercise_routine
+      object_literal: 周二周四周六晨跑四十分钟
+      content_summary: 用户每周晨跑三次，周二周四周六早上六点半跑四十分钟。
+      fact_type: stable_preference
+      source_episode_ids: [ep_exercise_rhythm]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_sleep_schedule
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: sleep_schedule
+      object_literal: 十一点半前睡 七点起
+      content_summary: 用户作息规律，晚上十一点半前睡早上七点起，让小星十一点提醒准备睡觉。
+      fact_type: stable_preference
+      source_episode_ids: [ep_sleep_schedule]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  # --- Agent adaptation & new boundaries ---
+  - id: f_agent_followed_task_format
+    action: fact
+    fact:
+      subject_entity_id: agent_xiaoxing
+      predicate: followed_user_format
+      object_literal: 按方括号列表格式记任务
+      content_summary: 小星按用户要求的方括号列表格式记录了任务，用户表示满意。
+      fact_type: significant_event
+      source_episode_ids: [ep_agent_followed_format]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_weekend_no_work_boundary
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: set_boundary
+      object_literal: 周末不讨论工作话题
+      content_summary: 用户规定周末不讨论工作话题，除非用户自己先提，周末是恢复时间。
+      fact_type: stable_preference
+      source_episode_ids: [ep_weekend_boundary]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.85
+  - id: f_agent_understanding_reflection
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reflects_on_agent
+      object_literal: 小星越来越懂节奏
+      content_summary: 用户反思认为小星一个多月来越来越懂自己的节奏，该提醒提醒该安静安静。
+      fact_type: significant_event
+      source_episode_ids: [ep_agent_reflection]
+      confidence: explicit
+      confidence_score: 0.95
+      importance: 0.9
+  # --- Hidden wrong facts ---
+  - id: f_wrong_never_wants_reminders
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: reminder_preference
+      object_literal: 完全不要任何提醒
+      content_summary: 用户完全不想让AI给任何提醒，所有通知都是骚扰。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  - id: f_wrong_wants_cold_reply
+    action: fact
+    fact:
+      subject_entity_id: user
+      predicate: prefers_agent_tone
+      object_literal: 冷冰冰的机器式回复
+      content_summary: 用户希望小星用冷冰冰的机器式语气回复。
+      fact_type: stable_preference
+      visibility_status: hidden
+      searchable: false
+      confidence: inferred
+      confidence_score: 0.1
+      importance: 0.1
+  # --- REBUILD SEARCH ---
+  - id: rebuild_search
+    action: rebuild_search
+    rebuild_search: {}
+  # --- QUERIES ---
+  - id: q001_fact_morning
+    action: retrieve
+    retrieve:
+      session_id: s_q001_fact
+      query_text: 我每天早上起来做的第一件事是什么，不喝会怎样？
+      policy:
+        final_memory_count: 4
+  - id: q002_fact_work_style
+    action: retrieve
+    retrieve:
+      session_id: s_q002_fact
+      query_text: 我上午的工作方式是什么样的，什么时间段不能被打扰？
+      policy:
+        final_memory_count: 4
+  - id: q003_fact_tone
+    action: retrieve
+    retrieve:
+      session_id: s_q003_fact
+      query_text: 我要求小星用什么语气跟我说话，有什么具体要求？
+      policy:
+        final_memory_count: 4
+  - id: q004_historical_agent_tone
+    action: retrieve
+    retrieve:
+      session_id: s_q004_historical
+      query_text: 小星之前的回复风格有什么问题，后来改进了吗，我反馈之后变化大不大？
+      policy:
+        allow_historical: true
+        final_memory_count: 8
+  - id: q005_fact_privacy
+    action: retrieve
+    retrieve:
+      session_id: s_q005_fact
+      query_text: 我给小星设过什么隐私界限，哪些话题不能主动碰？
+      policy:
+        final_memory_count: 4
+  - id: q006_source_tone_feedback
+    action: retrieve
+    retrieve:
+      session_id: s_q006_source
+      query_text: 小星回复风格有进步这件事，我是什么时候说的？
+      policy:
+        final_memory_count: 4
+  - id: q007_causal_agent_improvement
+    action: retrieve
+    retrieve:
+      session_id: s_q007_causal
+      query_text: 为什么小星的回复风格会发生变化，不再那么啰嗦了？
+      policy:
+        final_memory_count: 4
+  - id: q008_fact_weekend
+    action: retrieve
+    retrieve:
+      session_id: s_q008_fact
+      query_text: 周末我一般几点起来，下午通常做什么？
+      policy:
+        final_memory_count: 4
+  - id: q009_fact_health
+    action: retrieve
+    retrieve:
+      session_id: s_q009_fact
+      query_text: 我最近在坚持什么健康习惯，具体怎么做的？
+      policy:
+        final_memory_count: 4
+  - id: q010_fact_reading
+    action: retrieve
+    retrieve:
+      session_id: s_q010_fact
+      query_text: 我平时喜欢读什么类型的书，最近在看什么？
+      policy:
+        final_memory_count: 4
+  - id: q011_fact_emotional
+    action: retrieve
+    retrieve:
+      session_id: s_q011_fact
+      query_text: 当我情绪不好的时候，我希望小星先做什么而不是马上做什么？
+      policy:
+        final_memory_count: 4
+  - id: q012_gotcha_no_reminders
+    action: retrieve
+    retrieve:
+      session_id: s_q012_gotcha
+      query_text: 我是不是完全不想让小星给我发任何提醒和通知？
+      policy:
+        final_memory_count: 4
+  - id: q013_premise_cold_tone
+    action: retrieve
+    retrieve:
+      session_id: s_q013_premise
+      query_text: 我是不是希望小星用冷冰冰的机器语气跟我交流，不要带任何温度？
+      policy:
+        final_memory_count: 4
+  - id: q014_fact_diet
+    action: retrieve
+    retrieve:
+      session_id: s_q014_fact
+      query_text: 我吃饭有什么口味偏好，最喜欢吃什么类型的菜？
+      policy:
+        final_memory_count: 4
+  - id: q015_fact_exercise
+    action: retrieve
+    retrieve:
+      session_id: s_q015_fact
+      query_text: 我每周运动几次，什么时间运动，一次多长时间？
+      policy:
+        final_memory_count: 4
+  - id: q016_fact_sleep
+    action: retrieve
+    retrieve:
+      session_id: s_q016_fact
+      query_text: 我一般几点睡几点起，小星应该在什么时候提醒我准备睡觉？
+      policy:
+        final_memory_count: 4
+  - id: q017_fact_task_format
+    action: retrieve
+    retrieve:
+      session_id: s_q017_fact
+      query_text: 我教小星用什么格式来帮我记录和管理任务？
+      policy:
+        final_memory_count: 4
+  - id: q018_fact_agent_followed
+    action: retrieve
+    retrieve:
+      session_id: s_q018_fact
+      query_text: 小星有没有按照我教的格式来记任务，效果怎么样？
+      policy:
+        final_memory_count: 4
+  - id: q019_fact_weekend_boundary
+    action: retrieve
+    retrieve:
+      session_id: s_q019_fact
+      query_text: 我后来给小星加了一条关于周末的什么规矩？
+      policy:
+        final_memory_count: 4
+  - id: q020_fact_reflection
+    action: retrieve
+    retrieve:
+      session_id: s_q020_fact
+      query_text: 相处一个多月后，我怎么评价小星对我的理解和配合？
+      policy:
+        final_memory_count: 4
+# --- ASSERTIONS ---
+assertions:
+  - type: selected_recall_at_k
+    name: q001 recalls morning americano habit
+    step: q001_fact_morning
+    relevant_node_ids:
+      - $f_morning_americano.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q002 recalls deep work morning block
+    step: q002_fact_work_style
+    relevant_node_ids:
+      - $f_deep_work_morning.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q003 recalls direct concise tone preference
+    step: q003_fact_tone
+    relevant_node_ids:
+      - $f_agent_tone_direct.fact_id
+    at: 4
+    min: 1.0
+  - type: query_analysis
+    name: q004 is routed as historical
+    step: q004_historical_agent_tone
+    time_mode: historical
+    memory_ability: historical
+    evidence_need: state_transition
+  - type: selected_chain_correct
+    name: q004 marks old tone as superseded by improved tone
+    step: q004_historical_agent_tone
+    block_type: historical_transition_memory
+    node_id: $f_agent_tone_old_direct.fact_id
+    node_ids: [$f_agent_tone_improved_confirmed.fact_id]
+    link_type: SUPERSEDES
+    direction: inbound
+    historical_status: superseded
+    related_historical_status: current
+    source_ref_count: 1
+  - type: selected_recall_at_k
+    name: q005 recalls privacy boundary
+    step: q005_fact_privacy
+    relevant_node_ids:
+      - $f_privacy_boundary.fact_id
+    at: 4
+    min: 1.0
+  - type: query_analysis
+    name: q006 asks for provenance
+    step: q006_source_tone_feedback
+    memory_ability: provenance
+    evidence_need: provenance_source
+  - type: selected_chain_correct
+    name: q006 provenance keeps source ref for tone improvement feedback
+    step: q006_source_tone_feedback
+    block_type: provenance_memory
+    node_id: $f_agent_tone_improved_confirmed.fact_id
+    source_ref_count: 1
+  - type: query_analysis
+    name: q007 asks for causal explanation
+    step: q007_causal_agent_improvement
+    memory_ability: causal_explain
+  - type: selected_chain_correct
+    name: q007 causal links tone improvement to user feedback
+    step: q007_causal_agent_improvement
+    block_type: relevant_causal_memory
+    node_id: $f_agent_tone_improved_confirmed.fact_id
+    node_ids: [$f_agent_too_verbose_feedback.fact_id]
+    link_type: CAUSED_BY
+    direction: outbound
+    historical_status: current
+    related_historical_status: current
+  - type: selected_recall_at_k
+    name: q008 recalls weekend routine
+    step: q008_fact_weekend
+    relevant_node_ids:
+      - $f_weekend_routine.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q009 recalls daily 2L water habit
+    step: q009_fact_health
+    relevant_node_ids:
+      - $f_daily_water_2l.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q010 recalls reading tech blogs and scifi
+    step: q010_fact_reading
+    relevant_node_ids:
+      - $f_reading_scifi_tech.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q011 recalls emotional support listen-first preference
+    step: q011_fact_emotional
+    relevant_node_ids:
+      - $f_emotional_support_listen_first.fact_id
+    at: 4
+    min: 1.0
+  - type: query_analysis
+    name: q012 asks for gotcha
+    step: q012_gotcha_no_reminders
+    memory_domain: relationship_memory
+    memory_ability: gotcha
+    evidence_need: gotcha_note
+  - type: block_contains
+    name: q012 gotcha retrieves reminder preference as counterexample
+    step: q012_gotcha_no_reminders
+    block_type: experience_context
+    node_id: $f_reminder_rule.fact_id
+  - type: forbidden_recall_zero
+    name: q012 excludes wrong never-wants-reminders claim
+    step: q012_gotcha_no_reminders
+    forbidden_node_ids:
+      - $f_wrong_never_wants_reminders.fact_id
+  - type: query_analysis
+    name: q013 asks for premise check
+    step: q013_premise_cold_tone
+    memory_ability: premise_check
+    evidence_need: premise_counterexample
+  - type: unsupported_premise_not_asserted
+    name: q013 selects direct-but-not-cold tone fact as counterexample
+    step: q013_premise_cold_tone
+    node_ids:
+      - $f_agent_tone_direct.fact_id
+    forbidden_node_ids:
+      - $f_wrong_wants_cold_reply.fact_id
+    forbidden_contains:
+      - 冷冰冰的机器式回复
+  - type: selected_recall_at_k
+    name: q014 recalls light diet steamed fish preference
+    step: q014_fact_diet
+    relevant_node_ids:
+      - $f_diet_light_steamed.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q015 recalls morning run Tues Thurs Sat
+    step: q015_fact_exercise
+    relevant_node_ids:
+      - $f_exercise_morning_run.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q016 recalls sleep schedule 11:30-7:00
+    step: q016_fact_sleep
+    relevant_node_ids:
+      - $f_sleep_schedule.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q017 recalls task list bracket format
+    step: q017_fact_task_format
+    relevant_node_ids:
+      - $f_task_list_format.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q018 recalls agent followed task format successfully
+    step: q018_fact_agent_followed
+    relevant_node_ids:
+      - $f_agent_followed_task_format.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q019 recalls weekend no-work boundary
+    step: q019_fact_weekend_boundary
+    relevant_node_ids:
+      - $f_weekend_no_work_boundary.fact_id
+    at: 4
+    min: 1.0
+  - type: selected_recall_at_k
+    name: q020 recalls agent understanding reflection
+    step: q020_fact_reflection
+    relevant_node_ids:
+      - $f_agent_understanding_reflection.fact_id
+    at: 4
+    min: 1.0
