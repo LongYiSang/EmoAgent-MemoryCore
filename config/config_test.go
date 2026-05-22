@@ -45,15 +45,15 @@ func TestDefaultValues(t *testing.T) {
 		cfg.QueryAnalysis.RouterVersion != "semantic_router_v1" ||
 		cfg.QueryAnalysis.MinConfidenceToOverride != 0.72 ||
 		cfg.QueryAnalysis.MinEntitySemanticConfidence != 0.70 ||
-		cfg.QueryAnalysis.MinRuleFit != 0.66 ||
-		cfg.QueryAnalysis.MinAnchorReadiness != 0.45 ||
-		cfg.QueryAnalysis.SemanticNeedThreshold != 0.58 ||
-		cfg.QueryAnalysis.MinComplexityForSemantic != 0.50 ||
-		cfg.QueryAnalysis.FullSemanticComplexity != 0.72 ||
-		cfg.QueryAnalysis.DecomposeSemanticComplexity != 0.80 ||
-		cfg.QueryAnalysis.MinSemanticFieldConfidence != 0.70 ||
-		cfg.QueryAnalysis.MinOverrideMargin != 0.08 ||
-		cfg.QueryAnalysis.HighSafetyRiskThreshold != 0.80 ||
+		cfg.QueryAnalysis.Thresholds.MinRuleFit != 0.66 ||
+		cfg.QueryAnalysis.Thresholds.MinAnchorReadiness != 0.45 ||
+		cfg.QueryAnalysis.Thresholds.SemanticNeedThreshold != 0.58 ||
+		cfg.QueryAnalysis.Thresholds.MinComplexityForSemantic != 0.50 ||
+		cfg.QueryAnalysis.Thresholds.FullSemanticComplexity != 0.72 ||
+		cfg.QueryAnalysis.Thresholds.DecomposeSemanticComplexity != 0.80 ||
+		cfg.QueryAnalysis.Thresholds.MinSemanticFieldConfidence != 0.70 ||
+		cfg.QueryAnalysis.Thresholds.MinOverrideMargin != 0.08 ||
+		cfg.QueryAnalysis.Thresholds.HighSafetyRiskThreshold != 0.80 ||
 		cfg.QueryAnalysis.MaxQueryRewrites != 5 ||
 		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
 		cfg.QueryAnalysis.SemanticTotalEnergyCap != 5.0 ||
@@ -101,9 +101,10 @@ query_analysis:
   provider: sidecar
   mode: adaptive_full
   timeout_ms: 1600
-  min_rule_fit: 0.7
-  semantic_need: 0.61
-  min_override_margin: 0.12
+  thresholds:
+    min_rule_fit: 0.7
+    semantic_need: 0.61
+    min_override_margin: 0.12
   max_query_rewrites: 4
   max_generated_dense_weight_sum: 2.5
 `)
@@ -130,9 +131,9 @@ query_analysis:
 	if cfg.QueryAnalysis.Provider != "sidecar" ||
 		cfg.QueryAnalysis.Mode != "adaptive_full" ||
 		cfg.QueryAnalysis.TimeoutMS != 1600 ||
-		cfg.QueryAnalysis.MinRuleFit != 0.7 ||
-		cfg.QueryAnalysis.SemanticNeedThreshold != 0.61 ||
-		cfg.QueryAnalysis.MinOverrideMargin != 0.12 ||
+		cfg.QueryAnalysis.Thresholds.MinRuleFit != 0.7 ||
+		cfg.QueryAnalysis.Thresholds.SemanticNeedThreshold != 0.61 ||
+		cfg.QueryAnalysis.Thresholds.MinOverrideMargin != 0.12 ||
 		cfg.QueryAnalysis.MaxQueryRewrites != 4 ||
 		cfg.QueryAnalysis.MaxSemanticAnchors != 8 ||
 		cfg.QueryAnalysis.MaxGeneratedDenseWeightSum != 2.5 {
@@ -219,23 +220,20 @@ query_analysis:
 	}
 }
 
-func TestLoadYAMLRejectsMixedLegacyAndNestedQueryAnalysisConfig(t *testing.T) {
+func TestLoadYAMLRejectsFlatQueryAnalysisThresholdAliases(t *testing.T) {
 	path := writeTempFile(t, "memory.yaml", `
 query_analysis:
   provider: sidecar
   mode: adaptive_safe
   min_rule_fit: 0.70
-  thresholds:
-    min_rule_fit: 0.71
 `)
 
 	_, err := memconfig.LoadYAML(path)
 	if err == nil {
-		t.Fatal("LoadYAML err = nil, want mixed legacy/nested query_analysis error")
+		t.Fatal("LoadYAML err = nil, want flat query_analysis threshold alias error")
 	}
-	if !strings.Contains(err.Error(), "query_analysis.thresholds") ||
-		!strings.Contains(err.Error(), "legacy") {
-		t.Fatalf("LoadYAML err = %v, want nested/legacy migration error", err)
+	if !strings.Contains(err.Error(), "field min_rule_fit not found") {
+		t.Fatalf("LoadYAML err = %v, want flat threshold alias unknown-field error", err)
 	}
 }
 
@@ -393,8 +391,8 @@ func TestValidateRules(t *testing.T) {
 
 	t.Run("query analysis adaptive thresholds must be unit intervals", func(t *testing.T) {
 		cfg := memconfig.Default()
-		cfg.QueryAnalysis.MinRuleFit = 1.2
-		requireErrorContains(t, cfg.Validate(), "query_analysis.min_rule_fit")
+		cfg.QueryAnalysis.Thresholds.MinRuleFit = 1.2
+		requireErrorContains(t, cfg.Validate(), "query_analysis.thresholds.min_rule_fit")
 	})
 
 	t.Run("mirror requires sidecar", func(t *testing.T) {
