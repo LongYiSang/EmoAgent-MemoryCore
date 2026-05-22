@@ -103,3 +103,63 @@ func TestShouldUseCorrectedRetrievalRejectsSemanticReplacementWithWorseOverallAn
 		t.Fatalf("shouldUseCorrectedRetrieval = true, want reject when semantic_light changes nodes with worse overall and only tiny dimension gain")
 	}
 }
+
+func TestShouldUseCorrectedRetrievalAllowsSQLiteFallbackDifferentIDsWhenSafer(t *testing.T) {
+	original := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "semantic_stale_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:             0.58,
+			AuthorityPassRatio:  0.40,
+			SensitivitySafety:   1,
+			TemporalConsistency: 1,
+			CorrectiveAction:    memsqlite.RetrievalCorrectiveActionSQLiteFallback,
+		},
+	}
+	corrected := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "sqlite_safe_fact"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:             0.55,
+			AuthorityPassRatio:  1.00,
+			SensitivitySafety:   1,
+			TemporalConsistency: 1,
+		},
+	}
+
+	if !shouldUseCorrectedRetrieval(original, corrected) {
+		t.Fatalf("shouldUseCorrectedRetrieval = false, want safer sqlite fallback to replace different IDs")
+	}
+}
+
+func TestShouldUseCorrectedRetrievalRejectsSQLiteFallbackSubset(t *testing.T) {
+	original := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "safe_fact_a"}, {NodeID: "safe_fact_b"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:             0.58,
+			AuthorityPassRatio:  0.40,
+			SensitivitySafety:   1,
+			TemporalConsistency: 1,
+			CorrectiveAction:    memsqlite.RetrievalCorrectiveActionSQLiteFallback,
+		},
+	}
+	corrected := &MemoryContext{
+		Blocks: []MemoryBlock{{
+			Items: []MemoryContextItem{{NodeID: "safe_fact_b"}},
+		}},
+		RetrievalConfidence: &RetrievalConfidence{
+			Overall:             0.99,
+			AuthorityPassRatio:  1.00,
+			SensitivitySafety:   1,
+			TemporalConsistency: 1,
+		},
+	}
+
+	if shouldUseCorrectedRetrieval(original, corrected) {
+		t.Fatalf("shouldUseCorrectedRetrieval = true, want reject sqlite fallback that drops an original safe result")
+	}
+}

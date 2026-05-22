@@ -38,6 +38,7 @@ const (
 	defaultQueryAnalysisScorerVersion           = "query_analysis_scorer_v1"
 	defaultQueryAnalysisRouterVersion           = "semantic_router_v1"
 	defaultQueryAnalysisMaxCallsPerSession      = 8
+	defaultQueryAnalysisSessionBudgetWindow     = 30 * time.Minute
 	defaultQueryAnalysisMaxCallsPer1000Queries  = 250
 	defaultQueryAnalysisDiagnosticsSampleRate   = 1.0
 )
@@ -146,11 +147,19 @@ type QueryAnalysisRequest struct {
 }
 
 type VisibleEntityHint struct {
-	EntityID      string `json:"entity_id"`
-	CanonicalName string `json:"canonical_name,omitempty"`
-	Alias         string `json:"alias,omitempty"`
-	MatchText     string `json:"match_text,omitempty"`
+	EntityID      string                `json:"entity_id"`
+	CanonicalName string                `json:"canonical_name,omitempty"`
+	Alias         string                `json:"alias,omitempty"`
+	MatchText     string                `json:"match_text,omitempty"`
+	HintKind      VisibleEntityHintKind `json:"hint_kind,omitempty"`
 }
+
+type VisibleEntityHintKind string
+
+const (
+	VisibleEntityHintKindVisible   VisibleEntityHintKind = "visible"
+	VisibleEntityHintKindCandidate VisibleEntityHintKind = "candidate"
+)
 
 type QueryAnalysisAllowedEnums struct {
 	TimeModes          []string `json:"time_modes,omitempty"`
@@ -235,12 +244,17 @@ type queryAnalysisPipeline struct {
 
 type queryAnalysisSemanticBudget struct {
 	mu           sync.Mutex
-	sessionCalls map[string]int
+	sessionCalls map[string]sessionBudgetCounter
 	queryWindow  []int
 }
 
+type sessionBudgetCounter struct {
+	Count   int
+	ResetAt time.Time
+}
+
 func newQueryAnalysisSemanticBudget() *queryAnalysisSemanticBudget {
-	return &queryAnalysisSemanticBudget{sessionCalls: map[string]int{}}
+	return &queryAnalysisSemanticBudget{sessionCalls: map[string]sessionBudgetCounter{}}
 }
 
 func (b *queryAnalysisSemanticBudget) recordQuery() {
@@ -255,18 +269,26 @@ func (b *queryAnalysisSemanticBudget) recordQuery() {
 	}
 }
 
-func (b *queryAnalysisSemanticBudget) tryConsume(sessionID *string, options QueryAnalysisOptions) bool {
+func (b *queryAnalysisSemanticBudget) tryConsume(sessionID *string, options QueryAnalysisOptions, now time.Time) bool {
 	if b == nil {
 		return true
 	}
 	options = normalizeQueryAnalysisOptions(options)
+	if now.IsZero() {
+		now = time.Now()
+	}
 	sessionKey := semanticBudgetSessionKey(sessionID)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.sessionCalls == nil {
-		b.sessionCalls = map[string]int{}
+		b.sessionCalls = map[string]sessionBudgetCounter{}
 	}
-	if b.sessionCalls[sessionKey] >= options.MaxSemanticCallsPerSession {
+	counter := b.sessionCalls[sessionKey]
+	if counter.ResetAt.IsZero() || !now.Before(counter.ResetAt) {
+		counter = sessionBudgetCounter{ResetAt: now.Add(options.MaxSemanticCallsPerSessionWindow)}
+	}
+	if counter.Count >= options.MaxSemanticCallsPerSession {
+		b.sessionCalls[sessionKey] = counter
 		return false
 	}
 	semanticCalls := 0
@@ -276,7 +298,8 @@ func (b *queryAnalysisSemanticBudget) tryConsume(sessionID *string, options Quer
 	if semanticCalls >= options.MaxSemanticCallsPer1000Queries {
 		return false
 	}
-	b.sessionCalls[sessionKey]++
+	counter.Count++
+	b.sessionCalls[sessionKey] = counter
 	if len(b.queryWindow) == 0 {
 		b.queryWindow = append(b.queryWindow, 1)
 		return true
@@ -444,7 +467,11 @@ func (p queryAnalysisPipeline) consumeSemanticBudget(sessionID *string) bool {
 	if p.budget == nil {
 		return true
 	}
-	return p.budget.tryConsume(sessionID, p.options)
+	now := time.Now()
+	if p.now != nil {
+		now = p.now()
+	}
+	return p.budget.tryConsume(sessionID, p.options, now)
 }
 
 func (p queryAnalysisPipeline) shouldUseLegacySemantic(rule memsqlite.QueryAnalysis) bool {
@@ -458,6 +485,9 @@ func (p queryAnalysisPipeline) shouldUseLegacySemantic(rule memsqlite.QueryAnaly
 	case QueryAnalysisModeSemanticRewriteOnly:
 		return true
 	case QueryAnalysisModeSemanticOnLowConfidence, QueryAnalysisModeShadowAdaptive:
+		if !queryHasLongTermMemoryIntentForRoute(rule) {
+			return false
+		}
 		confidence := rule.Confidence
 		if rule.Diagnostics != nil && rule.Diagnostics.RuleConfidenceReason != "" {
 			confidence = rule.Diagnostics.RuleConfidenceLegacy
@@ -506,6 +536,7 @@ func isAdaptiveQueryAnalysisMode(mode QueryAnalysisMode) bool {
 func DecideSemanticRoute(rule memsqlite.QueryAnalysis, options QueryAnalysisOptions) memsqlite.QueryAnalysisDecision {
 	options = normalizeQueryAnalysisOptions(options)
 	decision := memsqlite.QueryAnalysisDecision{
+		RouteKind:        memsqlite.QueryRouteRuleOnly,
 		SemanticMode:     "none",
 		RetrievalMode:    "rule",
 		ReasonCodes:      []string{"rule_and_anchor_sufficient"},
@@ -517,14 +548,21 @@ func DecideSemanticRoute(rule memsqlite.QueryAnalysis, options QueryAnalysisOpti
 		return decision
 	}
 	if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalForgetDelete) || rule.MemoryAbility == memsqlite.MemoryAbilityBoundary {
+		decision.UseTargetResolver = true
+		decision.RouteKind = memsqlite.QueryRouteTargetResolver
 		decision.SemanticMode = "target_resolver"
 		decision.RetrievalMode = "target_resolver"
 		decision.ReasonCodes = []string{"forget_or_delete_intent"}
 		return decision
 	}
+	if !queryHasLongTermMemoryIntentForRoute(rule) {
+		decision.ReasonCodes = []string{"no_long_term_memory_intent"}
+		return decision
+	}
 	scores := rule.Scores
 	if hasStoreQuerySignal(rule.Signals, memsqlite.QuerySignalSensitivity) ||
 		(validUnitScore(scores.SafetyRisk) && scores.SafetyRisk >= options.HighSafetyRiskThreshold) {
+		decision.RouteKind = memsqlite.QueryRouteSafetyPolicy
 		decision.ReasonCodes = []string{"safety_policy_first"}
 		return decision
 	}
@@ -542,6 +580,7 @@ func DecideSemanticRoute(rule memsqlite.QueryAnalysis, options QueryAnalysisOpti
 
 func semanticRouteDecisionByComplexity(rule memsqlite.QueryAnalysis, decision memsqlite.QueryAnalysisDecision, scores memsqlite.QueryAnalysisScores, options QueryAnalysisOptions, reason string) memsqlite.QueryAnalysisDecision {
 	decision.UseSemantic = true
+	decision.RouteKind = memsqlite.QueryRouteSemantic
 	decision.RetrievalMode = "semantic"
 	decision.ReasonCodes = adaptiveSemanticReasonCodes(rule, scores, options, reason)
 	if rule.MemoryAbility == memsqlite.MemoryAbilityCausalExplain && scores.AnchorReadiness <= options.MinAnchorReadiness {
@@ -566,7 +605,9 @@ func adaptiveSemanticReasonCodes(rule memsqlite.QueryAnalysis, scores memsqlite.
 	if rule.MemoryAbility == memsqlite.MemoryAbilityCausalExplain {
 		reasons = append(reasons, "causal_intent")
 	}
-	if scores.AnchorReadiness <= options.MinAnchorReadiness {
+	if rule.Probes.UnknownProbeCount > 0 && rule.Probes.ProbeReliability < 0.70 {
+		reasons = append(reasons, "probe_unavailable")
+	} else if scores.AnchorReadiness <= options.MinAnchorReadiness {
 		reasons = append(reasons, "weak_anchor")
 	}
 	if reason != "" {
@@ -582,6 +623,14 @@ func adaptiveSemanticReasonCodes(rule memsqlite.QueryAnalysis, scores memsqlite.
 		out = append(out, value)
 	}
 	return out
+}
+
+func queryHasLongTermMemoryIntentForRoute(rule memsqlite.QueryAnalysis) bool {
+	if validUnitScore(rule.Scores.MemoryIntent) && rule.Scores.MemoryIntent > 0 {
+		return rule.Scores.MemoryIntent >= 0.45
+	}
+	return strings.TrimSpace(rule.Raw) != "" &&
+		(rule.MemoryAbility != "" || len(rule.Signals) > 0 || len(rule.EntityMentions) > 0)
 }
 
 func validUnitScore(value float64) bool {
@@ -601,6 +650,11 @@ func semanticRuleFallback(rule memsqlite.QueryAnalysis, fallbackReason string, s
 		SemanticAnalysis:  semanticAnalysisDiagnosticsFromSemantic(semantic.Analysis),
 	}
 	copyLegacyQueryAnalysisDiagnostics(out.Diagnostics, rule.Diagnostics)
+	out.Diagnostics.Scores = out.Scores
+	out.Diagnostics.FieldConfidence = out.FieldConfidence
+	out.Diagnostics.RuleScores = rule.Scores
+	out.Diagnostics.SemanticScores = queryAnalysisScoresToStore(semantic.Analysis.Scores)
+	out.Diagnostics.MergedScores = out.Scores
 	return out
 }
 
@@ -614,13 +668,19 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 		fieldMergeDecisions = mergeSemanticControlFields(&out, rule, analysis, options)
 		if validUnitConfidence(analysis.Confidence) && analysis.Confidence >= options.MinConfidenceToOverride {
 			out.Confidence = analysis.Confidence
-			out.FieldConfidence = queryAnalysisConfidenceToStore(analysis.FieldConfidence)
 		}
 		out.Signals = mergeQuerySignals(rule.Signals, analysis.Signals)
 		applyUnsupportedPremiseClamp(&out, rule, acceptedSemanticPremiseOverride(fieldMergeDecisions))
 		applyHistoricalTransitionClamp(&out, rule)
 		out.EntityMentions = mergeSemanticEntityMentions(rule.EntityMentions, analysis.EntityMentions, hints, options.MinEntitySemanticConfidence)
 	}
+	out.Scores = memsqlite.ComputeQueryAnalysisScores(out.Normalized, out, out.Evidence)
+	out.Confidence = out.Scores.ExpectedRetrievalConfidence
+	out.FieldConfidence = mergeFieldConfidence(rule.FieldConfidence, queryAnalysisConfidenceToStore(analysis.FieldConfidence), fieldMergeDecisions)
+	if controlLocked || len(fieldMergeDecisions) == 0 {
+		out.FieldConfidence.Overall = memsqlite.ComputeFieldConfidence(out, out.Scores).Overall
+	}
+	out.Decision = memsqlite.ComputeQueryAnalysisDecision(out, out.Scores)
 	budget := generatedWeightBudget(options)
 	var rewriteDiagnostics rewriteSanitizationDiagnostics
 	var anchorDiagnostics semanticAnchorSanitizationDiagnostics
@@ -651,8 +711,16 @@ func mergeSemanticQueryAnalysis(rule memsqlite.QueryAnalysis, semantic SemanticQ
 		SemanticDriftCount:           semanticControlDriftCount(rule, out),
 		FieldMergeDecisions:          fieldMergeDecisions,
 		SemanticAnalysis:             semanticAnalysisDiagnosticsFromSemantic(analysis),
+		RuleScores:                   rule.Scores,
+		SemanticScores:               queryAnalysisScoresToStore(analysis.Scores),
+		MergedScores:                 out.Scores,
 	}
 	copyLegacyQueryAnalysisDiagnostics(out.Diagnostics, rule.Diagnostics)
+	out.Diagnostics.Scores = out.Scores
+	out.Diagnostics.FieldConfidence = out.FieldConfidence
+	out.Diagnostics.RuleScores = rule.Scores
+	out.Diagnostics.SemanticScores = queryAnalysisScoresToStore(analysis.Scores)
+	out.Diagnostics.MergedScores = out.Scores
 	return out
 }
 
@@ -688,6 +756,46 @@ func mergeSemanticControlFields(out *memsqlite.QueryAnalysis, rule memsqlite.Que
 		}
 	}
 	return decisions
+}
+
+func mergeFieldConfidence(rule memsqlite.QueryAnalysisConfidence, semantic memsqlite.QueryAnalysisConfidence, decisions []memsqlite.FieldMergeDecision) memsqlite.QueryAnalysisConfidence {
+	out := rule
+	for _, decision := range decisions {
+		if !decision.UseSemantic || !validUnitConfidence(decision.SemanticConfidence) {
+			continue
+		}
+		switch decision.Field {
+		case "time_mode":
+			out.TimeMode = decision.SemanticConfidence
+		case "memory_ability":
+			out.MemoryAbility = decision.SemanticConfidence
+		case "memory_domain":
+			out.MemoryDomain = decision.SemanticConfidence
+		case "evidence_need":
+			out.EvidenceNeed = decision.SemanticConfidence
+		}
+	}
+	if validUnitConfidence(semantic.EntityResolution) {
+		out.EntityResolution = semantic.EntityResolution
+	}
+	out.Overall = recomputeOverallFromFieldConfidence(out)
+	return out
+}
+
+func recomputeOverallFromFieldConfidence(value memsqlite.QueryAnalysisConfidence) float64 {
+	var sum float64
+	var count float64
+	for _, score := range []float64{value.TimeMode, value.MemoryAbility, value.MemoryDomain, value.EvidenceNeed, value.EntityResolution} {
+		if !validUnitConfidence(score) {
+			continue
+		}
+		sum += score
+		count++
+	}
+	if count == 0 {
+		return value.Overall
+	}
+	return clampFloat(sum/count, 0, 1)
 }
 
 func mergeSemanticFieldDecision(field string, rule memsqlite.QueryAnalysis, proposal SemanticFieldProposal, options QueryAnalysisOptions) memsqlite.FieldMergeDecision {
@@ -769,7 +877,7 @@ func ruleConfidenceForField(rule memsqlite.QueryAnalysis, field string) float64 
 		fieldConfidence = rule.FieldConfidence.EvidenceNeed
 	}
 	if validUnitConfidence(fieldConfidence) && validUnitConfidence(rule.Confidence) {
-		return math.Min(fieldConfidence, rule.Confidence)
+		return fieldConfidence
 	}
 	if validUnitConfidence(fieldConfidence) {
 		return fieldConfidence
@@ -815,9 +923,28 @@ func annotateSemanticDecisions(rule memsqlite.QueryAnalysis, legacyDecision bool
 	out.Diagnostics.MinConfidenceToOverride = options.MinConfidenceToOverride
 	if !isZeroStoreQueryAnalysisDecision(adaptiveDecision) {
 		out.Diagnostics.AdaptiveDecision = cloneStoreQueryAnalysisDecision(adaptiveDecision)
+		if shouldPromoteAdaptiveDecision(options.Mode, adaptiveDecision) {
+			out.Decision = cloneStoreQueryAnalysisDecision(adaptiveDecision)
+		}
 	}
 	applyQueryAnalysisDiagnosticsOptions(out.Raw, out.Diagnostics, options)
 	return out
+}
+
+func shouldPromoteAdaptiveDecision(mode QueryAnalysisMode, decision memsqlite.QueryAnalysisDecision) bool {
+	if isZeroStoreQueryAnalysisDecision(decision) {
+		return false
+	}
+	switch mode {
+	case QueryAnalysisModeAdaptive, QueryAnalysisModeAdaptiveSafe, QueryAnalysisModeAdaptiveFull:
+		return true
+	}
+	switch decision.RouteKind {
+	case memsqlite.QueryRouteTargetResolver, memsqlite.QueryRouteSafetyPolicy:
+		return true
+	default:
+		return false
+	}
 }
 
 func applyQueryAnalysisDiagnosticsOptions(raw string, diagnostics *memsqlite.QueryAnalysisDiagnostics, options QueryAnalysisOptions) {
@@ -867,6 +994,9 @@ func copyLegacyQueryAnalysisDiagnostics(dst *memsqlite.QueryAnalysisDiagnostics,
 	dst.Signals = append([]string(nil), src.Signals...)
 	dst.EntityMentionCount = src.EntityMentionCount
 	dst.Scores = src.Scores
+	dst.RuleScores = src.RuleScores
+	dst.SemanticScores = src.SemanticScores
+	dst.MergedScores = src.MergedScores
 	dst.FieldConfidence = src.FieldConfidence
 	dst.RuleDecision = cloneStoreQueryAnalysisDecision(src.RuleDecision)
 	dst.AdaptiveDecision = cloneStoreQueryAnalysisDecision(src.AdaptiveDecision)
@@ -950,21 +1080,9 @@ func isZeroQueryAnalysisConfidence(value QueryAnalysisConfidence) bool {
 }
 
 func mergeSemanticQueryAnalysisPhase1DTO(out *memsqlite.QueryAnalysis, analysis SemanticQueryAnalysis) {
-	if !isZeroQueryAnalysisScores(analysis.Scores) {
-		out.Scores = queryAnalysisScoresToStore(analysis.Scores)
-	}
-	if !isZeroQueryAnchorProbe(analysis.Probes) {
-		out.Probes = queryAnchorProbeToStore(analysis.Probes)
-	}
-	if !isZeroQueryAnalysisDecision(analysis.Decision) {
-		out.Decision = queryAnalysisDecisionToStore(analysis.Decision)
-	}
-	if len(analysis.Evidence) > 0 {
-		out.Evidence = queryAnalysisEvidenceToStore(analysis.Evidence)
-	}
-	if len(analysis.Alternatives) > 0 {
-		out.Alternatives = queryAnalysisAlternativesToStore(analysis.Alternatives)
-	}
+	// Raw semantic phase-1 DTO fields stay in Diagnostics.SemanticAnalysis.
+	// The final analysis is recomputed from accepted merged fields so route
+	// explanations cannot describe a pre-clamp semantic state.
 }
 
 func isZeroQueryAnalysisScores(value QueryAnalysisScores) bool {
@@ -972,6 +1090,7 @@ func isZeroQueryAnalysisScores(value QueryAnalysisScores) bool {
 		value.AnchorReadiness == 0 &&
 		value.ExpectedRetrievalConfidence == 0 &&
 		value.SemanticNeed == 0 &&
+		value.MemoryIntent == 0 &&
 		value.Complexity == 0 &&
 		value.Ambiguity == 0 &&
 		value.Specificity == 0 &&
@@ -999,11 +1118,15 @@ func isZeroQueryAnchorProbe(value QueryAnchorProbe) bool {
 		value.Top1Score == 0 &&
 		value.Top2Score == 0 &&
 		value.Top1Margin == 0 &&
+		value.ProbeReliability == 0 &&
+		value.UnknownProbeCount == 0 &&
 		len(value.Breakdown) == 0
 }
 
 func isZeroQueryAnalysisDecision(value QueryAnalysisDecision) bool {
 	return !value.UseSemantic &&
+		!value.UseTargetResolver &&
+		strings.TrimSpace(value.RouteKind) == "" &&
 		strings.TrimSpace(value.SemanticMode) == "" &&
 		strings.TrimSpace(value.RetrievalMode) == "" &&
 		len(value.ReasonCodes) == 0 &&
@@ -1152,6 +1275,9 @@ func normalizeQueryAnalysisOptions(options QueryAnalysisOptions) QueryAnalysisOp
 	if options.MaxSemanticCallsPerSession <= 0 {
 		options.MaxSemanticCallsPerSession = defaultQueryAnalysisMaxCallsPerSession
 	}
+	if options.MaxSemanticCallsPerSessionWindow <= 0 {
+		options.MaxSemanticCallsPerSessionWindow = defaultQueryAnalysisSessionBudgetWindow
+	}
 	if options.MaxSemanticCallsPer1000Queries <= 0 || options.MaxSemanticCallsPer1000Queries > 1000 {
 		options.MaxSemanticCallsPer1000Queries = defaultQueryAnalysisMaxCallsPer1000Queries
 	}
@@ -1274,15 +1400,15 @@ func (a sidecarSemanticQueryAnalyzer) AnalyzeSemanticQuery(ctx context.Context, 
 }
 
 func visibleEntityHintsFromRule(rule memsqlite.QueryAnalysis) []VisibleEntityHint {
-	hints := make([]VisibleEntityHint, 0, len(rule.EntityMentions))
+	hints := make([]VisibleEntityHint, 0, len(rule.EntityMentions)+len(rule.CandidateEntityMentions))
 	seen := map[string]struct{}{}
-	for _, mention := range rule.EntityMentions {
+	add := func(mention memsqlite.QueryEntityMention, kind VisibleEntityHintKind) {
 		id := strings.TrimSpace(mention.EntityID)
 		if id == "" {
-			continue
+			return
 		}
 		if _, ok := seen[id]; ok {
-			continue
+			return
 		}
 		seen[id] = struct{}{}
 		hints = append(hints, VisibleEntityHint{
@@ -1290,7 +1416,14 @@ func visibleEntityHintsFromRule(rule memsqlite.QueryAnalysis) []VisibleEntityHin
 			CanonicalName: mention.CanonicalName,
 			Alias:         mention.Alias,
 			MatchText:     mention.MatchText,
+			HintKind:      kind,
 		})
+	}
+	for _, mention := range rule.EntityMentions {
+		add(mention, VisibleEntityHintKindVisible)
+	}
+	for _, mention := range rule.CandidateEntityMentions {
+		add(mention, VisibleEntityHintKindCandidate)
 	}
 	return hints
 }
@@ -1351,7 +1484,7 @@ func mergeQuerySignals(rule []memsqlite.QuerySignal, semantic []string) []memsql
 }
 
 func mergeSemanticEntityMentions(rule []memsqlite.QueryEntityMention, semantic []SemanticQueryEntityMention, hints []VisibleEntityHint, minConfidence float64) []memsqlite.QueryEntityMention {
-	visible := visibleEntitySet(hints)
+	visible := visibleEntityKinds(hints)
 	out := append([]memsqlite.QueryEntityMention(nil), rule...)
 	seen := map[string]struct{}{}
 	for _, mention := range out {
@@ -1364,7 +1497,11 @@ func mergeSemanticEntityMentions(rule []memsqlite.QueryEntityMention, semantic [
 		if id == "" || mention.Confidence < minConfidence {
 			continue
 		}
-		if _, ok := visible[id]; !ok {
+		hintKind, ok := visible[id]
+		if !ok {
+			continue
+		}
+		if hintKind == VisibleEntityHintKindCandidate && mention.Confidence < 0.82 {
 			continue
 		}
 		if _, ok := seen[id]; ok {
@@ -1416,7 +1553,7 @@ func sanitizedQueryRewrites(rawQuery string, values []QueryRewrite, limit int, b
 		if !textCJKHeavy && hasASCIILetter(text) {
 			diagnostics.EnglishCount++
 		}
-		if rawCJKHeavy && !textCJKHeavy && runeLen(text) > 12 {
+		if rawCJKHeavy && !textCJKHeavy && runeLen(text) > 12 && !looksLikeTechnicalAnchor(text) {
 			diagnostics.DroppedCount++
 			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, rewriteDropReasonLanguageMismatch)
 			continue
@@ -1432,6 +1569,22 @@ func sanitizedQueryRewrites(rawQuery string, values []QueryRewrite, limit int, b
 		})
 	}
 	return out, diagnostics
+}
+
+func looksLikeTechnicalAnchor(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	if strings.ContainsAny(normalized, "._-/:") {
+		return true
+	}
+	for _, token := range []string{"python", "uv", "powershell", "github", "api", "json", "sqlite", "go", "openai", "response_format", "executionpolicy"} {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyHistoricalTransitionClamp(out *memsqlite.QueryAnalysis, rule memsqlite.QueryAnalysis) {
@@ -1559,12 +1712,21 @@ func hasASCIILetter(value string) bool {
 	return false
 }
 
+func containsCJK(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint, options QueryAnalysisOptions, budget *float64) ([]memsqlite.SemanticAnchor, semanticAnchorSanitizationDiagnostics) {
 	diagnostics := semanticAnchorSanitizationDiagnostics{}
 	if options.MaxSemanticAnchors <= 0 || len(values) == 0 {
 		return nil, diagnostics
 	}
-	visible := visibleEntitySet(hints)
+	visible := visibleEntityKinds(hints)
 	out := make([]memsqlite.SemanticAnchor, 0, minInt(len(values), options.MaxSemanticAnchors))
 	for _, value := range values {
 		if len(out) >= options.MaxSemanticAnchors {
@@ -1574,9 +1736,9 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 		if text == "" {
 			continue
 		}
-		if isGenericSemanticAnchor(text) {
+		if reason := semanticAnchorDropReason(text); reason != "" {
 			diagnostics.DroppedCount++
-			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, "generic_semantic_anchor")
+			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, reason)
 			continue
 		}
 		entityID := strings.TrimSpace(value.EntityID)
@@ -1612,13 +1774,51 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 }
 
 func isGenericSemanticAnchor(value string) bool {
+	return semanticAnchorDropReason(value) == "generic_semantic_anchor"
+}
+
+func semanticAnchorDropReason(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
-	case "工作", "情绪", "最近", "事情", "记忆", "memory", "recent":
-		return true
-	default:
-		return false
+	case "我", "用户", "事情", "问题", "原因", "关系", "情绪", "记忆", "最近", "工作", "喜欢", "讨厌",
+		"memory", "recent", "reason", "relationship", "emotion", "work", "preference":
+		return "generic_semantic_anchor"
 	}
+	if lexicalSpecificityForAnchor(normalized) < 0.35 {
+		return "low_specificity_semantic_anchor"
+	}
+	return ""
+}
+
+func lexicalSpecificityForAnchor(value string) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	score := 0.10
+	runes := runeLen(value)
+	if runes >= 4 {
+		score += 0.15
+	}
+	if runes >= 5 && containsCJK(value) {
+		score += 0.15
+	}
+	if runes >= 8 {
+		score += 0.20
+	}
+	if hasASCIILetter(value) {
+		score += 0.20
+	}
+	if strings.ContainsAny(value, "._-/:") {
+		score += 0.15
+	}
+	if len(strings.Fields(value)) >= 2 {
+		score += 0.15
+	}
+	if runes <= 2 {
+		score -= 0.10
+	}
+	return clampFloat(score, 0, 1)
 }
 
 func generatedWeightBudget(options QueryAnalysisOptions) float64 {
@@ -1708,12 +1908,16 @@ func primaryContextBlockHint(query memsqlite.QueryAnalysis) []string {
 	}
 }
 
-func visibleEntitySet(hints []VisibleEntityHint) map[string]struct{} {
-	visible := map[string]struct{}{}
+func visibleEntityKinds(hints []VisibleEntityHint) map[string]VisibleEntityHintKind {
+	visible := map[string]VisibleEntityHintKind{}
 	for _, hint := range hints {
 		id := strings.TrimSpace(hint.EntityID)
 		if id != "" {
-			visible[id] = struct{}{}
+			kind := hint.HintKind
+			if kind == "" {
+				kind = VisibleEntityHintKindVisible
+			}
+			visible[id] = kind
 		}
 	}
 	return visible
@@ -1821,6 +2025,7 @@ func queryAnalysisScoresToStore(value QueryAnalysisScores) memsqlite.QueryAnalys
 		AnchorReadiness:             value.AnchorReadiness,
 		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
 		SemanticNeed:                value.SemanticNeed,
+		MemoryIntent:                value.MemoryIntent,
 		Complexity:                  value.Complexity,
 		Ambiguity:                   value.Ambiguity,
 		Specificity:                 value.Specificity,
@@ -1850,6 +2055,8 @@ func queryAnchorProbeToStore(value QueryAnchorProbe) memsqlite.QueryAnchorProbe 
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		ProbeReliability:       value.ProbeReliability,
+		UnknownProbeCount:      value.UnknownProbeCount,
 		Breakdown:              queryAnchorProbeBreakdownToStore(value.Breakdown),
 	}
 }
@@ -1876,12 +2083,14 @@ func queryAnchorProbeBreakdownToStore(values []QueryAnchorProbeBreakdown) []mems
 
 func queryAnalysisDecisionToStore(value QueryAnalysisDecision) memsqlite.QueryAnalysisDecision {
 	return memsqlite.QueryAnalysisDecision{
-		UseSemantic:      value.UseSemantic,
-		SemanticMode:     value.SemanticMode,
-		RetrievalMode:    value.RetrievalMode,
-		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
-		ThresholdVersion: value.ThresholdVersion,
-		ScorerVersion:    value.ScorerVersion,
+		UseSemantic:       value.UseSemantic,
+		UseTargetResolver: value.UseTargetResolver,
+		RouteKind:         memsqlite.QueryRouteKind(value.RouteKind),
+		SemanticMode:      value.SemanticMode,
+		RetrievalMode:     value.RetrievalMode,
+		ReasonCodes:       append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion:  value.ThresholdVersion,
+		ScorerVersion:     value.ScorerVersion,
 	}
 }
 
@@ -2053,6 +2262,7 @@ func visibleEntityHintsToMirror(values []VisibleEntityHint) []internalmirror.Vis
 			CanonicalName: value.CanonicalName,
 			Alias:         value.Alias,
 			MatchText:     value.MatchText,
+			HintKind:      string(value.HintKind),
 		})
 	}
 	return out
@@ -2087,6 +2297,7 @@ func queryAnalysisScoresToMirror(value memsqlite.QueryAnalysisScores) internalmi
 		AnchorReadiness:             value.AnchorReadiness,
 		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
 		SemanticNeed:                value.SemanticNeed,
+		MemoryIntent:                value.MemoryIntent,
 		Complexity:                  value.Complexity,
 		Ambiguity:                   value.Ambiguity,
 		Specificity:                 value.Specificity,
@@ -2116,6 +2327,8 @@ func queryAnchorProbeToMirror(value memsqlite.QueryAnchorProbe) internalmirror.Q
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		ProbeReliability:       value.ProbeReliability,
+		UnknownProbeCount:      value.UnknownProbeCount,
 		Breakdown:              queryAnchorProbeBreakdownToMirror(value.Breakdown),
 	}
 }
@@ -2142,12 +2355,14 @@ func queryAnchorProbeBreakdownToMirror(values []memsqlite.QueryAnchorProbeBreakd
 
 func queryAnalysisDecisionToMirror(value memsqlite.QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {
 	return internalmirror.QueryAnalysisDecision{
-		UseSemantic:      value.UseSemantic,
-		SemanticMode:     value.SemanticMode,
-		RetrievalMode:    value.RetrievalMode,
-		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
-		ThresholdVersion: value.ThresholdVersion,
-		ScorerVersion:    value.ScorerVersion,
+		UseSemantic:       value.UseSemantic,
+		UseTargetResolver: value.UseTargetResolver,
+		RouteKind:         string(value.RouteKind),
+		SemanticMode:      value.SemanticMode,
+		RetrievalMode:     value.RetrievalMode,
+		ReasonCodes:       append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion:  value.ThresholdVersion,
+		ScorerVersion:     value.ScorerVersion,
 	}
 }
 
@@ -2226,6 +2441,7 @@ func queryAnalysisScoresFromMirror(value internalmirror.QueryAnalysisScores) Que
 		AnchorReadiness:             value.AnchorReadiness,
 		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
 		SemanticNeed:                value.SemanticNeed,
+		MemoryIntent:                value.MemoryIntent,
 		Complexity:                  value.Complexity,
 		Ambiguity:                   value.Ambiguity,
 		Specificity:                 value.Specificity,
@@ -2255,6 +2471,8 @@ func queryAnchorProbeFromMirror(value internalmirror.QueryAnchorProbe) QueryAnch
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		ProbeReliability:       value.ProbeReliability,
+		UnknownProbeCount:      value.UnknownProbeCount,
 		Breakdown:              queryAnchorProbeBreakdownFromMirror(value.Breakdown),
 	}
 }
@@ -2281,12 +2499,14 @@ func queryAnchorProbeBreakdownFromMirror(values []internalmirror.QueryAnchorProb
 
 func queryAnalysisDecisionFromMirror(value internalmirror.QueryAnalysisDecision) QueryAnalysisDecision {
 	return QueryAnalysisDecision{
-		UseSemantic:      value.UseSemantic,
-		SemanticMode:     value.SemanticMode,
-		RetrievalMode:    value.RetrievalMode,
-		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
-		ThresholdVersion: value.ThresholdVersion,
-		ScorerVersion:    value.ScorerVersion,
+		UseSemantic:       value.UseSemantic,
+		UseTargetResolver: value.UseTargetResolver,
+		RouteKind:         value.RouteKind,
+		SemanticMode:      value.SemanticMode,
+		RetrievalMode:     value.RetrievalMode,
+		ReasonCodes:       append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion:  value.ThresholdVersion,
+		ScorerVersion:     value.ScorerVersion,
 	}
 }
 
@@ -2352,7 +2572,9 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	out := value
 	out.Terms = append([]string(nil), value.Terms...)
 	out.EntityMentions = append([]memsqlite.QueryEntityMention(nil), value.EntityMentions...)
+	out.CandidateEntityMentions = append([]memsqlite.QueryEntityMention(nil), value.CandidateEntityMentions...)
 	out.Signals = append([]memsqlite.QuerySignal(nil), value.Signals...)
+	out.Probes = cloneStoreQueryAnchorProbe(value.Probes)
 	out.Decision = cloneStoreQueryAnalysisDecision(value.Decision)
 	out.Evidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Evidence...)
 	out.Alternatives = cloneStoreQueryAnalysisAlternatives(value.Alternatives)
@@ -2362,6 +2584,9 @@ func cloneStoreQueryAnalysis(value memsqlite.QueryAnalysis) memsqlite.QueryAnaly
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
+		diagnostics.RuleScores = value.Diagnostics.RuleScores
+		diagnostics.SemanticScores = value.Diagnostics.SemanticScores
+		diagnostics.MergedScores = value.Diagnostics.MergedScores
 		diagnostics.RuleDecision = cloneStoreQueryAnalysisDecision(value.Diagnostics.RuleDecision)
 		diagnostics.AdaptiveDecision = cloneStoreQueryAnalysisDecision(value.Diagnostics.AdaptiveDecision)
 		diagnostics.RuleEvidence = append([]memsqlite.QueryAnalysisEvidence(nil), value.Diagnostics.RuleEvidence...)
@@ -2392,6 +2617,12 @@ func cloneStoreSemanticQueryAnalysisDiagnostics(value *memsqlite.SemanticQueryAn
 	out.SafetyNotes = append([]string(nil), value.SafetyNotes...)
 	out.ContextBlockHints = append([]string(nil), value.ContextBlockHints...)
 	return &out
+}
+
+func cloneStoreQueryAnchorProbe(value memsqlite.QueryAnchorProbe) memsqlite.QueryAnchorProbe {
+	out := value
+	out.Breakdown = append([]memsqlite.QueryAnchorProbeBreakdown(nil), value.Breakdown...)
+	return out
 }
 
 func cloneStoreSemanticFieldProposals(values map[string]memsqlite.SemanticFieldProposal) map[string]memsqlite.SemanticFieldProposal {

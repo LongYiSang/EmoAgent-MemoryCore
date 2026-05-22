@@ -37,6 +37,18 @@ type RetrievalConfidence struct {
 	HardFailureReason     string  `json:"hard_failure_reason,omitempty"`
 }
 
+type RetrievalConfidenceWeights struct {
+	CandidateRecallProxy  float64
+	SourceDiversity       float64
+	AnchorCoverage        float64
+	TopRankMargin         float64
+	AuthorityPassRatio    float64
+	TemporalConsistency   float64
+	RequiredChainCoverage float64
+	MMRDiversity          float64
+	SensitivitySafety     float64
+}
+
 func evaluateRetrievalConfidence(finalCandidates PreparedFinalCandidates, scored []scoredFact, selected []scoredFact, blocks []MemoryBlock, suppressions []MemorySuppression) RetrievalConfidence {
 	confidence := RetrievalConfidence{
 		CandidateRecallProxy:  candidateRecallProxy(finalCandidates.Policy, scored, selected),
@@ -49,15 +61,17 @@ func evaluateRetrievalConfidence(finalCandidates PreparedFinalCandidates, scored
 		MMRDiversity:          mmrDiversity(selected, suppressions),
 		SensitivitySafety:     sensitivitySafety(finalCandidates.Policy, selected),
 	}
+	weights := retrievalConfidenceWeights(finalCandidates.Query)
 	confidence.Overall = clamp01(
-		0.18*confidence.AnchorCoverage +
-			0.15*confidence.SourceDiversity +
-			0.14*confidence.TopRankMargin +
-			0.14*confidence.AuthorityPassRatio +
-			0.12*confidence.TemporalConsistency +
-			0.12*confidence.RequiredChainCoverage +
-			0.08*confidence.MMRDiversity +
-			0.07*confidence.SensitivitySafety,
+		weights.CandidateRecallProxy*confidence.CandidateRecallProxy +
+			weights.AnchorCoverage*confidence.AnchorCoverage +
+			weights.SourceDiversity*confidence.SourceDiversity +
+			weights.TopRankMargin*confidence.TopRankMargin +
+			weights.AuthorityPassRatio*confidence.AuthorityPassRatio +
+			weights.TemporalConsistency*confidence.TemporalConsistency +
+			weights.RequiredChainCoverage*confidence.RequiredChainCoverage +
+			weights.MMRDiversity*confidence.MMRDiversity +
+			weights.SensitivitySafety*confidence.SensitivitySafety,
 	)
 	return decideRetrievalCorrectiveAction(finalCandidates, confidence)
 }
@@ -76,12 +90,57 @@ func decideRetrievalCorrectiveAction(finalCandidates PreparedFinalCandidates, co
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
 	case confidence.RequiredChainCoverage < retrievalConfidenceMinimumRequiredChainCoverage && queryRequiresChainCoverage(finalCandidates.Query):
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
-	case confidence.SourceDiversity < retrievalConfidenceMinimumSourceDiversity && queryAllowsSemanticCorrective(finalCandidates.Query):
+	case confidence.SourceDiversity < retrievalConfidenceMinimumSourceDiversity && queryNeedsSourceDiversityCorrective(finalCandidates.Query):
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
 	case confidence.MMRDiversity < retrievalConfidenceMinimumMMRDiversity && queryAllowsSemanticCorrective(finalCandidates.Query):
 		confidence.CorrectiveAction = RetrievalCorrectiveActionSemanticLight
 	}
 	return confidence
+}
+
+func retrievalConfidenceWeights(query QueryAnalysis) RetrievalConfidenceWeights {
+	switch query.MemoryAbility {
+	case MemoryAbilityDirectFact, MemoryAbilityStaticState:
+		return RetrievalConfidenceWeights{
+			CandidateRecallProxy:  0.08,
+			AnchorCoverage:        0.24,
+			TopRankMargin:         0.20,
+			AuthorityPassRatio:    0.19,
+			TemporalConsistency:   0.13,
+			SensitivitySafety:     0.10,
+			MMRDiversity:          0.04,
+			SourceDiversity:       0.02,
+			RequiredChainCoverage: 0,
+		}
+	case MemoryAbilityCausalExplain, MemoryAbilityPremiseCheck, MemoryAbilityRelationshipArc, MemoryAbilityProvenance, MemoryAbilityHistorical:
+		return RetrievalConfidenceWeights{
+			CandidateRecallProxy:  0.06,
+			RequiredChainCoverage: 0.20,
+			SourceDiversity:       0.17,
+			AnchorCoverage:        0.17,
+			AuthorityPassRatio:    0.13,
+			TemporalConsistency:   0.11,
+			MMRDiversity:          0.08,
+			TopRankMargin:         0.04,
+			SensitivitySafety:     0.04,
+		}
+	default:
+		return defaultRetrievalConfidenceWeights()
+	}
+}
+
+func defaultRetrievalConfidenceWeights() RetrievalConfidenceWeights {
+	return RetrievalConfidenceWeights{
+		CandidateRecallProxy:  0.06,
+		AnchorCoverage:        0.17,
+		SourceDiversity:       0.14,
+		TopRankMargin:         0.13,
+		AuthorityPassRatio:    0.14,
+		TemporalConsistency:   0.12,
+		RequiredChainCoverage: 0.10,
+		MMRDiversity:          0.07,
+		SensitivitySafety:     0.07,
+	}
 }
 
 func candidateRecallProxy(policy RetrievalPolicy, scored []scoredFact, selected []scoredFact) float64 {
@@ -337,14 +396,45 @@ func selectedFactForbidden(fact core.Fact, policy RetrievalPolicy) bool {
 }
 
 func queryHasLongTermMemoryIntent(query QueryAnalysis) bool {
+	if validUnitRetrievalScore(query.Scores.MemoryIntent) && query.Scores.MemoryIntent > 0 {
+		return query.Scores.MemoryIntent >= 0.45
+	}
+	if isDefaultNonMemoryQuery(query) {
+		return false
+	}
 	return strings.TrimSpace(query.Raw) != "" &&
 		(query.MemoryAbility != "" || len(query.Signals) > 0 || len(query.EntityMentions) > 0)
+}
+
+func validUnitRetrievalScore(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
 func queryAllowsSemanticCorrective(query QueryAnalysis) bool {
 	return queryHasLongTermMemoryIntent(query) &&
 		!hasQuerySignal(query, QuerySignalForgetDelete) &&
 		query.MemoryAbility != MemoryAbilityBoundary
+}
+
+func queryNeedsSourceDiversityCorrective(query QueryAnalysis) bool {
+	if !queryAllowsSemanticCorrective(query) {
+		return false
+	}
+	switch query.MemoryAbility {
+	case MemoryAbilityCausalExplain, MemoryAbilityHistorical, MemoryAbilityProvenance, MemoryAbilityPremiseCheck, MemoryAbilityRelationshipArc:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDefaultNonMemoryQuery(query QueryAnalysis) bool {
+	return strings.TrimSpace(query.Raw) != "" &&
+		query.MemoryAbility == MemoryAbilityDirectFact &&
+		onlyExactFactSignal(query.Signals) &&
+		len(query.EntityMentions) == 0 &&
+		query.Scores.AnchorReadiness < 0.20 &&
+		query.Scores.Specificity < 0.45
 }
 
 func minInt(left int, right int) int {

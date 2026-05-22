@@ -301,6 +301,9 @@ func assertQueryAnalysisScoreBounds(caseID string, assertion Assertion, scores m
 	if err := check("semantic_need", scores.SemanticNeed, assertion.MinSemanticNeed, assertion.MaxSemanticNeed); err != nil {
 		return err
 	}
+	if err := check("memory_intent", scores.MemoryIntent, assertion.MinMemoryIntent, assertion.MaxMemoryIntent); err != nil {
+		return err
+	}
 	if err := check("expected_retrieval_confidence", scores.ExpectedRetrievalConfidence, assertion.MinExpectedRetrievalConfidence, assertion.MaxExpectedRetrievalConfidence); err != nil {
 		return err
 	}

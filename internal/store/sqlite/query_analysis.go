@@ -80,28 +80,29 @@ const (
 const ruleFeatureScorerVersion = "query_analysis_rule_feature_scorer.v1"
 
 type QueryAnalysis struct {
-	Raw               string
-	Normalized        string
-	Terms             []string
-	EntityMentions    []QueryEntityMention
-	TimeMode          QueryTimeMode
-	Signals           []QuerySignal
-	MemoryDomain      MemoryDomain
-	MemoryAbility     MemoryAbility
-	EvidenceNeed      EvidenceNeed
-	Source            QueryAnalysisSource
-	Confidence        float64
-	FieldConfidence   QueryAnalysisConfidence
-	Scores            QueryAnalysisScores
-	Probes            QueryAnchorProbe
-	Decision          QueryAnalysisDecision
-	Evidence          []QueryAnalysisEvidence
-	Alternatives      []QueryAnalysisAlternative
-	QueryRewrites     []QueryRewrite
-	SemanticAnchors   []SemanticAnchor
-	ContextBlockHints []string
-	PolicyHints       QueryPolicyHints
-	Diagnostics       *QueryAnalysisDiagnostics
+	Raw                     string
+	Normalized              string
+	Terms                   []string
+	EntityMentions          []QueryEntityMention
+	CandidateEntityMentions []QueryEntityMention
+	TimeMode                QueryTimeMode
+	Signals                 []QuerySignal
+	MemoryDomain            MemoryDomain
+	MemoryAbility           MemoryAbility
+	EvidenceNeed            EvidenceNeed
+	Source                  QueryAnalysisSource
+	Confidence              float64
+	FieldConfidence         QueryAnalysisConfidence
+	Scores                  QueryAnalysisScores
+	Probes                  QueryAnchorProbe
+	Decision                QueryAnalysisDecision
+	Evidence                []QueryAnalysisEvidence
+	Alternatives            []QueryAnalysisAlternative
+	QueryRewrites           []QueryRewrite
+	SemanticAnchors         []SemanticAnchor
+	ContextBlockHints       []string
+	PolicyHints             QueryPolicyHints
+	Diagnostics             *QueryAnalysisDiagnostics
 }
 
 type QueryEntityMention struct {
@@ -140,6 +141,7 @@ type QueryAnalysisScores struct {
 	AnchorReadiness             float64
 	ExpectedRetrievalConfidence float64
 	SemanticNeed                float64
+	MemoryIntent                float64
 	Complexity                  float64
 	Ambiguity                   float64
 	Specificity                 float64
@@ -167,6 +169,8 @@ type QueryAnchorProbe struct {
 	Top1Score              float64
 	Top2Score              float64
 	Top1Margin             float64
+	ProbeReliability       float64
+	UnknownProbeCount      int
 	Breakdown              []QueryAnchorProbeBreakdown
 }
 
@@ -182,13 +186,24 @@ type QueryAnchorProbeBreakdown struct {
 }
 
 type QueryAnalysisDecision struct {
-	UseSemantic      bool
-	SemanticMode     string
-	RetrievalMode    string
-	ReasonCodes      []string
-	ThresholdVersion string
-	ScorerVersion    string
+	UseSemantic       bool
+	UseTargetResolver bool
+	RouteKind         QueryRouteKind
+	SemanticMode      string
+	RetrievalMode     string
+	ReasonCodes       []string
+	ThresholdVersion  string
+	ScorerVersion     string
 }
+
+type QueryRouteKind string
+
+const (
+	QueryRouteRuleOnly       QueryRouteKind = "rule_only"
+	QueryRouteSemantic       QueryRouteKind = "semantic_query_analysis"
+	QueryRouteTargetResolver QueryRouteKind = "target_resolver"
+	QueryRouteSafetyPolicy   QueryRouteKind = "safety_policy"
+)
 
 type QueryAnalysisEvidence struct {
 	Field     string
@@ -226,6 +241,9 @@ type QueryAnalysisDiagnostics struct {
 	Signals                      []string
 	EntityMentionCount           int
 	Scores                       QueryAnalysisScores
+	RuleScores                   QueryAnalysisScores
+	SemanticScores               QueryAnalysisScores
+	MergedScores                 QueryAnalysisScores
 	FieldConfidence              QueryAnalysisConfidence
 	RuleDecision                 QueryAnalysisDecision
 	AdaptiveDecision             QueryAnalysisDecision
@@ -322,13 +340,14 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 		return QueryAnalysis{}, err
 	}
 	analysis.EntityMentions = mentions
+	analysis.CandidateEntityMentions = r.candidateEntityMentions(ctx, personaID, policy)
 	legacy := ruleConfidenceLegacy(normalized, analysis)
 	analysis.Evidence = ruleQueryAnalysisEvidence(normalized, analysis)
+	analysis.Alternatives = ruleQueryAnalysisAlternatives(normalized, analysis)
 	analysis.Probes = r.probeQueryAnchors(ctx, personaID, normalized, analysis, policy)
-	analysis.Scores = ComputeRuleFit(normalized, analysis, analysis.Evidence)
+	analysis.Scores = ComputeQueryAnalysisScores(normalized, analysis, analysis.Evidence)
 	analysis.Confidence = analysis.Scores.ExpectedRetrievalConfidence
 	analysis.FieldConfidence = ComputeFieldConfidence(analysis, analysis.Scores)
-	analysis.Alternatives = ruleQueryAnalysisAlternatives(normalized, analysis)
 	analysis.Decision = ruleQueryAnalysisDecision(analysis, analysis.Scores)
 	analysis.Diagnostics = ruleQueryAnalysisDiagnostics(normalized, analysis, legacy, analysis.Scores, analysis.FieldConfidence)
 	return analysis, nil
@@ -338,6 +357,7 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	out := value
 	out.Terms = append([]string(nil), value.Terms...)
 	out.EntityMentions = append([]QueryEntityMention(nil), value.EntityMentions...)
+	out.CandidateEntityMentions = append([]QueryEntityMention(nil), value.CandidateEntityMentions...)
 	out.Signals = append([]QuerySignal(nil), value.Signals...)
 	out.Probes = cloneQueryAnchorProbe(value.Probes)
 	out.Decision = cloneQueryAnalysisDecision(value.Decision)
@@ -349,6 +369,9 @@ func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
 	if value.Diagnostics != nil {
 		diagnostics := *value.Diagnostics
 		diagnostics.Signals = append([]string(nil), value.Diagnostics.Signals...)
+		diagnostics.RuleScores = value.Diagnostics.RuleScores
+		diagnostics.SemanticScores = value.Diagnostics.SemanticScores
+		diagnostics.MergedScores = value.Diagnostics.MergedScores
 		diagnostics.RuleDecision = cloneQueryAnalysisDecision(value.Diagnostics.RuleDecision)
 		diagnostics.AdaptiveDecision = cloneQueryAnalysisDecision(value.Diagnostics.AdaptiveDecision)
 		diagnostics.RuleEvidence = cloneQueryAnalysisEvidence(value.Diagnostics.RuleEvidence)
@@ -676,6 +699,9 @@ func queryMemoryDomain(normalized string) MemoryDomain {
 	if containsAny(normalized, "我是谁", "身份", "名字", "昵称", "偏好", "喜欢", "讨厌", "住在", "profile", "preference", "identity") {
 		return MemoryDomainUserProfile
 	}
+	if containsAny(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch", "工作", "上班", "公司", "团队", "同事", "老板", "职业", "岗位", "work", "job", "career", "office", "team") {
+		return MemoryDomainWorkExperience
+	}
 	return MemoryDomainRelationship
 }
 
@@ -768,7 +794,7 @@ func hasRelationshipArcIntent(normalized string) bool {
 }
 
 func ruleConfidence(normalized string, analysis QueryAnalysis) float64 {
-	return ComputeRuleFit(normalized, analysis, analysis.Evidence).ExpectedRetrievalConfidence
+	return ComputeQueryAnalysisScores(normalized, analysis, analysis.Evidence).ExpectedRetrievalConfidence
 }
 
 type ruleConfidenceLegacyResult struct {
@@ -801,6 +827,8 @@ func ruleQueryAnalysisDiagnostics(normalized string, analysis QueryAnalysis, leg
 		Signals:              querySignalsToStrings(analysis.Signals),
 		EntityMentionCount:   len(analysis.EntityMentions),
 		Scores:               scores,
+		RuleScores:           scores,
+		MergedScores:         scores,
 		FieldConfidence:      fieldConfidence,
 		RuleDecision:         cloneQueryAnalysisDecision(analysis.Decision),
 		RuleEvidence:         cloneQueryAnalysisEvidence(analysis.Evidence),
@@ -877,7 +905,7 @@ func appendRuleDomainEvidence(out []QueryAnalysisEvidence, normalized string, an
 	case MemoryDomainUserProfile:
 		return appendRuleEvidence(out, "memory_domain", "profile_domain_keyword", firstContained(normalized, "我是谁", "身份", "名字", "昵称", "偏好", "喜欢", "讨厌", "住在", "profile", "preference", "identity"), 0.84)
 	case MemoryDomainWorkExperience:
-		return appendRuleEvidence(out, "memory_domain", "work_domain_keyword", firstContained(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch"), 0.82)
+		return appendRuleEvidence(out, "memory_domain", "work_domain_keyword", firstContained(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch", "工作", "上班", "公司", "团队", "同事", "老板", "职业", "岗位", "work", "job", "career", "office", "team"), 0.82)
 	case MemoryDomainEnvironmentExperience:
 		return appendRuleEvidence(out, "memory_domain", "environment_domain_keyword", firstContained(normalized, "环境", "路径", "依赖", "python", "uv", "windows", "powershell", "权限", "toolchain", "runtime", "缓存", "cache"), 0.84)
 	case MemoryDomainRelationship:
@@ -943,12 +971,17 @@ func ruleQueryAnalysisDecision(analysis QueryAnalysis, scores QueryAnalysisScore
 	reasonCodes := ruleDecisionReasonCodes(analysis, scores)
 	return QueryAnalysisDecision{
 		UseSemantic:      false,
+		RouteKind:        QueryRouteRuleOnly,
 		SemanticMode:     "none",
 		RetrievalMode:    ruleRetrievalMode(analysis),
 		ReasonCodes:      reasonCodes,
 		ThresholdVersion: "rule_path_explanation.v1",
 		ScorerVersion:    ruleFeatureScorerVersion,
 	}
+}
+
+func ComputeQueryAnalysisDecision(analysis QueryAnalysis, scores QueryAnalysisScores) QueryAnalysisDecision {
+	return ruleQueryAnalysisDecision(analysis, scores)
 }
 
 func ruleRetrievalMode(analysis QueryAnalysis) string {
@@ -1087,6 +1120,7 @@ func (r *RetrievalRepository) probeQueryAnchors(ctx context.Context, personaID s
 	if err := r.probeNarrativeAnchors(ctx, personaID, analysis, policy, &probe); err != nil {
 		probe.Breakdown = append(probe.Breakdown, probeBreakdown("narrative_probe", 0, 0, 0, 0, "", err))
 	}
+	finalizeProbeReliability(&probe)
 	return probe
 }
 
@@ -1470,6 +1504,26 @@ func probeBreakdown(source string, confidence float64, hitCount int, topScore fl
 	return item
 }
 
+func finalizeProbeReliability(probe *QueryAnchorProbe) {
+	if probe == nil {
+		return
+	}
+	total := len(probe.Breakdown)
+	if total == 0 {
+		probe.ProbeReliability = 1
+		probe.UnknownProbeCount = 0
+		return
+	}
+	unknown := 0
+	for _, item := range probe.Breakdown {
+		if item.Status == "unknown" {
+			unknown++
+		}
+	}
+	probe.UnknownProbeCount = unknown
+	probe.ProbeReliability = clamp01(float64(total-unknown) / float64(total))
+}
+
 func sanitizeProbeError(err error) string {
 	if err == nil {
 		return ""
@@ -1486,6 +1540,10 @@ func onlyExactFactSignal(signals []QuerySignal) bool {
 }
 
 func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) QueryAnalysisScores {
+	return ComputeQueryAnalysisScores(normalized, analysis, ev)
+}
+
+func ComputeQueryAnalysisScores(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) QueryAnalysisScores {
 	normalized = strings.TrimSpace(normalized)
 	if len(ev) == 0 {
 		ev = analysis.Evidence
@@ -1502,6 +1560,7 @@ func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 	s.DomainEvidence = scoreDomainEvidence(normalized, analysis.MemoryDomain, ev)
 	s.EvidenceNeedEvidence = scoreEvidenceNeed(normalized, analysis.EvidenceNeed, ev)
 	s.Specificity = scoreLexicalSpecificity(normalized)
+	s.MemoryIntent = scoreMemoryIntent(normalized, analysis)
 	s.Ambiguity = scoreAmbiguity(normalized, analysis, ev)
 	s.Complexity = scoreComplexity(normalized, analysis)
 	s.SafetyRisk = scoreSafetyRisk(normalized, analysis)
@@ -1524,9 +1583,13 @@ func ComputeRuleFit(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 			0.06*s.SensitivityPenalty,
 	)
 	s.AnchorReadiness = ComputeAnchorReadiness(analysis.Probes)
+	anchorGap := 1 - s.AnchorReadiness
+	if analysis.Probes.UnknownProbeCount > 0 && analysis.Probes.ProbeReliability < 0.70 {
+		anchorGap = 0
+	}
 	s.SemanticNeed = clamp01(
 		0.35*(1-s.RuleFit) +
-			0.25*(1-s.AnchorReadiness) +
+			0.25*anchorGap +
 			0.25*s.Complexity +
 			0.15*s.Ambiguity,
 	)
@@ -1755,7 +1818,7 @@ func scoreDomainEvidence(normalized string, domain MemoryDomain, ev []QueryAnaly
 		}
 	case MemoryDomainWorkExperience:
 		score = maxFloat(score, 0.58)
-		if containsAny(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch", "上班", "工作") {
+		if containsAny(normalized, "部署", "上线", "ci", "测试", "命令", "repo", "仓库", "构建", "编译", "工作流", "workflow", "任务", "pr", "commit", "branch", "工作", "上班", "公司", "团队", "同事", "老板", "职业", "岗位", "work", "job", "career", "office", "team") {
 			score = maxFloat(score, 0.82)
 		}
 	case MemoryDomainEnvironmentExperience:
@@ -1840,6 +1903,62 @@ func scoreLexicalSpecificity(normalized string) float64 {
 	return clamp01(score)
 }
 
+func scoreMemoryIntent(normalized string, analysis QueryAnalysis) float64 {
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return 0
+	}
+	score := 0.0
+	switch analysis.MemoryAbility {
+	case MemoryAbilityBoundary:
+		score = 0.95
+	case MemoryAbilityCausalExplain, MemoryAbilityHistorical, MemoryAbilityProvenance, MemoryAbilityPremiseCheck, MemoryAbilityRelationshipArc:
+		score = 0.82
+	case MemoryAbilityWorkflow, MemoryAbilityGotcha, MemoryAbilityDynamicState, MemoryAbilityStaticState, MemoryAbilityPlanning, MemoryAbilitySupportive:
+		score = 0.70
+	case MemoryAbilityDirectFact:
+		score = 0.20
+	default:
+		score = 0.10
+	}
+	if len(analysis.EntityMentions) > 0 {
+		score += 0.35
+	}
+	for _, signal := range analysis.Signals {
+		switch signal {
+		case QuerySignalForgetDelete, QuerySignalSensitivity, QuerySignalCausal, QuerySignalHistorical, QuerySignalProvenance,
+			QuerySignalPremiseCheck, QuerySignalRelationshipArc, QuerySignalPastEventDirectFact, QuerySignalStateTransition,
+			QuerySignalProvenanceSource, QuerySignalCausalChain, QuerySignalPremiseCounterexample, QuerySignalEventBundle,
+			QuerySignalReflectionSummary:
+			score += 0.25
+		case QuerySignalExactFact:
+			if containsExplicitDirectMemoryCue(normalized) {
+				score += 0.45
+			}
+		}
+	}
+	if containsExplicitMemoryCue(normalized) {
+		score += 0.25
+	}
+	if onlyExactFactSignal(analysis.Signals) && len(analysis.EntityMentions) == 0 && !containsExplicitDirectMemoryCue(normalized) {
+		score = minScore(score, 0.30)
+	}
+	return clamp01(score)
+}
+
+func containsExplicitDirectMemoryCue(normalized string) bool {
+	return containsAny(normalized,
+		"我住", "住在哪里", "住在", "哪个城市", "喜欢什么", "不喜欢", "讨厌", "偏好", "叫什么", "名字", "昵称",
+		"记得我", "我之前", "我以前", "上次", "那天", "告诉过你", "说过", "remember", "preference", "where do i live",
+	)
+}
+
+func containsExplicitMemoryCue(normalized string) bool {
+	return containsAny(normalized,
+		"记忆", "记得", "以前", "之前", "上次", "那天", "说过", "告诉过", "回忆", "历史", "长期", "memory", "remember", "previous",
+	)
+}
+
 func scoreAmbiguity(normalized string, analysis QueryAnalysis, ev []QueryAnalysisEvidence) float64 {
 	normalized = strings.TrimSpace(normalized)
 	if normalized == "" {
@@ -1862,13 +1981,56 @@ func scoreAmbiguity(normalized string, analysis QueryAnalysis, ev []QueryAnalysi
 	if scoreMultiIntentConflictPenalty(analysis) > 0 {
 		score += 0.14
 	}
-	if len(ev) > 1 {
-		score += 0.05
+	if hasConflictingRuleEvidence(ev) {
+		score += 0.10
+	}
+	if len(analysis.Alternatives) > 0 {
+		score += 0.08
 	}
 	if len(analysis.EntityMentions) == 1 {
 		score -= 0.12
 	}
 	return clamp01(score)
+}
+
+func hasConflictingRuleEvidence(ev []QueryAnalysisEvidence) bool {
+	if len(ev) <= 1 {
+		return false
+	}
+	seen := map[string]string{}
+	for _, item := range ev {
+		field := strings.TrimSpace(item.Field)
+		signal := strings.TrimSpace(item.Signal)
+		if field == "" || signal == "" {
+			continue
+		}
+		if previous, ok := seen[field]; ok && previous != signal && evidenceSignalsConflict(previous, signal) {
+			return true
+		}
+		seen[field] = signal
+	}
+	return false
+}
+
+func evidenceSignalsConflict(left string, right string) bool {
+	if left == right {
+		return false
+	}
+	pairs := [][2]string{
+		{"direct_fact_fallback", "causal_intent"},
+		{"direct_fact_fallback", "historical_or_transition_intent"},
+		{"direct_fact_fallback", "provenance_source_intent"},
+		{"direct_fact_fallback", "premise_check_intent"},
+		{"default_current_time", "historical_time_marker"},
+		{"default_current_time", "state_transition_time"},
+		{"default_relationship_domain", "work_domain_keyword"},
+	}
+	for _, pair := range pairs {
+		if (left == pair[0] && right == pair[1]) || (left == pair[1] && right == pair[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 func scoreComplexity(normalized string, analysis QueryAnalysis) float64 {
@@ -2102,6 +2264,95 @@ ORDER BY e.id, a.alias`, personaID, allowedSensitivityRank)
 		return mentions[i].EntityID < mentions[j].EntityID
 	})
 	return mentions, nil
+}
+
+func (r *RetrievalRepository) candidateEntityMentions(ctx context.Context, personaID string, policy RetrievalPolicy) []QueryEntityMention {
+	if r == nil || r.db == nil || strings.TrimSpace(personaID) == "" {
+		return nil
+	}
+	allowedSensitivityRank := sensitivityRank(core.SensitivityLevel(policy.SensitivityPermission))
+	rows, err := r.db.QueryContext(ctx, `
+SELECT e.id, e.canonical_name, COALESCE(a.alias, '')
+FROM (
+    SELECT subject_entity_id AS entity_id, MAX(importance) AS importance, MAX(updated_at) AS updated_at
+    FROM facts
+    WHERE persona_id = ?
+      AND subject_entity_id IS NOT NULL
+      AND subject_entity_id != ''
+      AND visibility_status = 'visible'
+      AND searchable = 1
+      AND validity_status != 'invalidated'
+      AND lifecycle_status IN ('active', 'dormant', 'consolidated')
+      AND CASE sensitivity_level
+          WHEN 'normal' THEN 0
+          WHEN 'sensitive' THEN 1
+          WHEN 'highly_sensitive' THEN 2
+          ELSE 3
+      END <= ?
+      AND importance >= 0.7
+    GROUP BY subject_entity_id
+    UNION
+    SELECT object_entity_id AS entity_id, MAX(importance) AS importance, MAX(updated_at) AS updated_at
+    FROM facts
+    WHERE persona_id = ?
+      AND object_entity_id IS NOT NULL
+      AND object_entity_id != ''
+      AND visibility_status = 'visible'
+      AND searchable = 1
+      AND validity_status != 'invalidated'
+      AND lifecycle_status IN ('active', 'dormant', 'consolidated')
+      AND CASE sensitivity_level
+          WHEN 'normal' THEN 0
+          WHEN 'sensitive' THEN 1
+          WHEN 'highly_sensitive' THEN 2
+          ELSE 3
+      END <= ?
+      AND importance >= 0.7
+    GROUP BY object_entity_id
+) ranked
+JOIN entities e
+  ON e.persona_id = ?
+ AND e.id = ranked.entity_id
+LEFT JOIN entity_aliases a
+  ON a.persona_id = e.persona_id
+ AND a.entity_id = e.id
+WHERE e.visibility_status = 'visible'
+  AND e.searchable = 1
+  AND CASE e.sensitivity_level
+      WHEN 'normal' THEN 0
+      WHEN 'sensitive' THEN 1
+      WHEN 'highly_sensitive' THEN 2
+      ELSE 3
+  END <= ?
+ORDER BY ranked.importance DESC, ranked.updated_at DESC, e.id ASC, a.alias ASC
+LIMIT 16`, personaID, allowedSensitivityRank, personaID, allowedSensitivityRank, personaID, allowedSensitivityRank)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	seen := map[string]struct{}{}
+	var out []QueryEntityMention
+	for rows.Next() {
+		var id, canonicalName, alias string
+		if err := rows.Scan(&id, &canonicalName, &alias); err != nil {
+			return nil
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, QueryEntityMention{
+			EntityID:      id,
+			CanonicalName: canonicalName,
+			Alias:         alias,
+			MatchKind:     QueryEntityMentionKindAlias,
+		})
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
 }
 
 func matchedText(normalizedQuery string, value string) string {

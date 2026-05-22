@@ -217,6 +217,7 @@ type QueryAnalysisScores struct {
 	AnchorReadiness             float64
 	ExpectedRetrievalConfidence float64
 	SemanticNeed                float64
+	MemoryIntent                float64
 	Complexity                  float64
 	Ambiguity                   float64
 	Specificity                 float64
@@ -244,6 +245,8 @@ type QueryAnchorProbe struct {
 	Top1Score              float64
 	Top2Score              float64
 	Top1Margin             float64
+	ProbeReliability       float64
+	UnknownProbeCount      int
 	Breakdown              []QueryAnchorProbeBreakdown
 }
 
@@ -259,12 +262,14 @@ type QueryAnchorProbeBreakdown struct {
 }
 
 type QueryAnalysisDecision struct {
-	UseSemantic      bool
-	SemanticMode     string
-	RetrievalMode    string
-	ReasonCodes      []string
-	ThresholdVersion string
-	ScorerVersion    string
+	UseSemantic       bool
+	UseTargetResolver bool
+	RouteKind         string
+	SemanticMode      string
+	RetrievalMode     string
+	ReasonCodes       []string
+	ThresholdVersion  string
+	ScorerVersion     string
 }
 
 type QueryAnalysisEvidence struct {
@@ -303,6 +308,9 @@ type QueryAnalysisDiagnostics struct {
 	Signals                      []string
 	EntityMentionCount           int
 	Scores                       QueryAnalysisScores
+	RuleScores                   QueryAnalysisScores
+	SemanticScores               QueryAnalysisScores
+	MergedScores                 QueryAnalysisScores
 	FieldConfidence              QueryAnalysisConfidence
 	RuleDecision                 QueryAnalysisDecision
 	AdaptiveDecision             QueryAnalysisDecision

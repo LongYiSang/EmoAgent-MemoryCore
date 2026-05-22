@@ -653,6 +653,7 @@ func queryAnalysisScoresPublicToMirror(value QueryAnalysisScores) internalmirror
 		AnchorReadiness:             value.AnchorReadiness,
 		ExpectedRetrievalConfidence: value.ExpectedRetrievalConfidence,
 		SemanticNeed:                value.SemanticNeed,
+		MemoryIntent:                value.MemoryIntent,
 		Complexity:                  value.Complexity,
 		Ambiguity:                   value.Ambiguity,
 		Specificity:                 value.Specificity,
@@ -682,6 +683,8 @@ func queryAnchorProbePublicToMirror(value QueryAnchorProbe) internalmirror.Query
 		Top1Score:              value.Top1Score,
 		Top2Score:              value.Top2Score,
 		Top1Margin:             value.Top1Margin,
+		ProbeReliability:       value.ProbeReliability,
+		UnknownProbeCount:      value.UnknownProbeCount,
 		Breakdown:              queryAnchorProbeBreakdownPublicToMirror(value.Breakdown),
 	}
 }
@@ -708,12 +711,14 @@ func queryAnchorProbeBreakdownPublicToMirror(values []QueryAnchorProbeBreakdown)
 
 func queryAnalysisDecisionPublicToMirror(value QueryAnalysisDecision) internalmirror.QueryAnalysisDecision {
 	return internalmirror.QueryAnalysisDecision{
-		UseSemantic:      value.UseSemantic,
-		SemanticMode:     value.SemanticMode,
-		RetrievalMode:    value.RetrievalMode,
-		ReasonCodes:      append([]string(nil), value.ReasonCodes...),
-		ThresholdVersion: value.ThresholdVersion,
-		ScorerVersion:    value.ScorerVersion,
+		UseSemantic:       value.UseSemantic,
+		UseTargetResolver: value.UseTargetResolver,
+		RouteKind:         value.RouteKind,
+		SemanticMode:      value.SemanticMode,
+		RetrievalMode:     value.RetrievalMode,
+		ReasonCodes:       append([]string(nil), value.ReasonCodes...),
+		ThresholdVersion:  value.ThresholdVersion,
+		ScorerVersion:     value.ScorerVersion,
 	}
 }
 

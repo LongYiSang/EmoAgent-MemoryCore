@@ -463,6 +463,8 @@ type Assertion struct {
 	MaxAnchorReadiness             float64  `yaml:"max_anchor_readiness"`
 	MinSemanticNeed                float64  `yaml:"min_semantic_need"`
 	MaxSemanticNeed                float64  `yaml:"max_semantic_need"`
+	MinMemoryIntent                float64  `yaml:"min_memory_intent"`
+	MaxMemoryIntent                float64  `yaml:"max_memory_intent"`
 	MinExpectedRetrievalConfidence float64  `yaml:"min_expected_retrieval_confidence"`
 	MaxExpectedRetrievalConfidence float64  `yaml:"max_expected_retrieval_confidence"`
 	QueryCount                     int      `yaml:"query_count"`

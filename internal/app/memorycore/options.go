@@ -56,6 +56,7 @@ type QueryAnalysisOptions struct {
 	MinOverrideMargin                float64
 	HighSafetyRiskThreshold          float64
 	MaxSemanticCallsPerSession       int
+	MaxSemanticCallsPerSessionWindow time.Duration
 	MaxSemanticCallsPer1000Queries   int
 	MaxSemanticLatency               time.Duration
 	DiagnosticsConfigured            bool

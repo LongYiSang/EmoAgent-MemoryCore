@@ -106,6 +106,7 @@ type QueryAnalysisScores struct {
 	AnchorReadiness             float64 `json:"anchor_readiness,omitempty"`
 	ExpectedRetrievalConfidence float64 `json:"expected_retrieval_confidence,omitempty"`
 	SemanticNeed                float64 `json:"semantic_need,omitempty"`
+	MemoryIntent                float64 `json:"memory_intent,omitempty"`
 	Complexity                  float64 `json:"complexity,omitempty"`
 	Ambiguity                   float64 `json:"ambiguity,omitempty"`
 	Specificity                 float64 `json:"specificity,omitempty"`
@@ -133,6 +134,8 @@ type QueryAnchorProbe struct {
 	Top1Score              float64                     `json:"top1_score,omitempty"`
 	Top2Score              float64                     `json:"top2_score,omitempty"`
 	Top1Margin             float64                     `json:"top1_margin,omitempty"`
+	ProbeReliability       float64                     `json:"probe_reliability,omitempty"`
+	UnknownProbeCount      int                         `json:"unknown_probe_count,omitempty"`
 	Breakdown              []QueryAnchorProbeBreakdown `json:"breakdown,omitempty"`
 }
 
@@ -148,12 +151,14 @@ type QueryAnchorProbeBreakdown struct {
 }
 
 type QueryAnalysisDecision struct {
-	UseSemantic      bool     `json:"use_semantic,omitempty"`
-	SemanticMode     string   `json:"semantic_mode,omitempty"`
-	RetrievalMode    string   `json:"retrieval_mode,omitempty"`
-	ReasonCodes      []string `json:"reason_codes,omitempty"`
-	ThresholdVersion string   `json:"threshold_version,omitempty"`
-	ScorerVersion    string   `json:"scorer_version,omitempty"`
+	UseSemantic       bool     `json:"use_semantic,omitempty"`
+	UseTargetResolver bool     `json:"use_target_resolver,omitempty"`
+	RouteKind         string   `json:"route_kind,omitempty"`
+	SemanticMode      string   `json:"semantic_mode,omitempty"`
+	RetrievalMode     string   `json:"retrieval_mode,omitempty"`
+	ReasonCodes       []string `json:"reason_codes,omitempty"`
+	ThresholdVersion  string   `json:"threshold_version,omitempty"`
+	ScorerVersion     string   `json:"scorer_version,omitempty"`
 }
 
 type QueryAnalysisEvidence struct {
@@ -188,6 +193,7 @@ type VisibleEntityHint struct {
 	CanonicalName string `json:"canonical_name,omitempty"`
 	Alias         string `json:"alias,omitempty"`
 	MatchText     string `json:"match_text,omitempty"`
+	HintKind      string `json:"hint_kind,omitempty"`
 }
 
 type QueryAnalysisAllowedEnums struct {

@@ -122,13 +122,14 @@ func TestEvaluateRetrievalConfidenceLowAnchorCoverageRequestsSemanticLight(t *te
 	}
 }
 
-func TestEvaluateRetrievalConfidenceLowSourceDiversityRequestsSemanticLight(t *testing.T) {
+func TestEvaluateRetrievalConfidenceLowSourceDiversityDirectFactDoesNotRequestSemanticLight(t *testing.T) {
 	finalCandidates := PreparedFinalCandidates{
 		Query: QueryAnalysis{
-			Raw:           "咖啡相关的长期记忆",
+			Raw:           "我住在哪里？",
 			TimeMode:      QueryTimeModeCurrent,
 			MemoryAbility: MemoryAbilityDirectFact,
 			EvidenceNeed:  EvidenceNeedExactObservation,
+			Scores:        QueryAnalysisScores{MemoryIntent: 0.82},
 		},
 		Policy: RetrievalPolicy{FinalMemoryCount: 4},
 	}
@@ -142,8 +143,82 @@ func TestEvaluateRetrievalConfidenceLowSourceDiversityRequestsSemanticLight(t *t
 	if got.SourceDiversity >= 0.50 {
 		t.Fatalf("source_diversity = %f, want low diversity fixture", got.SourceDiversity)
 	}
+	if got.CorrectiveAction != "" {
+		t.Fatalf("corrective action = %q, want none for direct_fact single-source result", got.CorrectiveAction)
+	}
+}
+
+func TestEvaluateRetrievalConfidenceLowSourceDiversityComplexRouteRequestsSemanticLight(t *testing.T) {
+	finalCandidates := PreparedFinalCandidates{
+		Query: QueryAnalysis{
+			Raw:           "我为什么最近抗拒早会",
+			TimeMode:      QueryTimeModeCurrent,
+			MemoryAbility: MemoryAbilityCausalExplain,
+			EvidenceNeed:  EvidenceNeedStateTransition,
+			Scores:        QueryAnalysisScores{MemoryIntent: 0.90},
+		},
+		Policy: RetrievalPolicy{FinalMemoryCount: 4},
+	}
+	selected := []scoredFact{
+		confidenceFact("a", 0.90, nil, retrievalScoreBreakdown{AnchorEnergy: 0.9, CompletionSource: completionSourceCausal, FinalScore: 0.90}),
+		confidenceFact("b", 0.82, nil, retrievalScoreBreakdown{AnchorEnergy: 0.8, CompletionSource: completionSourceCausal, FinalScore: 0.82}),
+	}
+
+	got := evaluateRetrievalConfidence(finalCandidates, selected, selected, nil, nil)
+
+	if got.SourceDiversity >= 0.50 {
+		t.Fatalf("source_diversity = %f, want low diversity fixture", got.SourceDiversity)
+	}
 	if got.CorrectiveAction != RetrievalCorrectiveActionSemanticLight {
 		t.Fatalf("corrective action = %q, want semantic_light", got.CorrectiveAction)
+	}
+}
+
+func TestEvaluateRetrievalConfidenceUsesRouteSpecificWeightsAndRecall(t *testing.T) {
+	finalCandidates := PreparedFinalCandidates{
+		Query: QueryAnalysis{
+			Raw:           "我住在哪里？",
+			TimeMode:      QueryTimeModeCurrent,
+			MemoryAbility: MemoryAbilityDirectFact,
+			EvidenceNeed:  EvidenceNeedExactObservation,
+			Scores:        QueryAnalysisScores{MemoryIntent: 0.82},
+		},
+		Policy: RetrievalPolicy{FinalMemoryCount: 4},
+	}
+	selected := []scoredFact{
+		confidenceFact("a", 0.90, []AnchorSourceBreakdown{{Source: AnchorSourceSQLiteSparse, Rank: 1, RawScore: 0.90}}, retrievalScoreBreakdown{AnchorEnergy: 0.90, LexicalCoverage: 0.70, FinalScore: 0.90}),
+	}
+
+	got := evaluateRetrievalConfidence(finalCandidates, selected, selected, nil, nil)
+
+	if got.CandidateRecallProxy != 1 {
+		t.Fatalf("candidate recall proxy = %f, want 1 for one desired and selected candidate", got.CandidateRecallProxy)
+	}
+	if got.Overall <= 0.70 {
+		t.Fatalf("overall = %f, want route-specific direct_fact weights not dominated by source diversity", got.Overall)
+	}
+}
+
+func TestEvaluateRetrievalConfidenceNoMemoryIntentDoesNotRequestSemanticLight(t *testing.T) {
+	finalCandidates := PreparedFinalCandidates{
+		Query: QueryAnalysis{
+			Raw:           "继续",
+			TimeMode:      QueryTimeModeCurrent,
+			MemoryAbility: MemoryAbilityDirectFact,
+			EvidenceNeed:  EvidenceNeedExactObservation,
+			Signals:       []QuerySignal{QuerySignalExactFact},
+			Scores:        QueryAnalysisScores{MemoryIntent: 0.10},
+		},
+		Policy: RetrievalPolicy{FinalMemoryCount: 4},
+	}
+	selected := []scoredFact{
+		confidenceFact("weak", 0.30, nil, retrievalScoreBreakdown{FinalScore: 0.30}),
+	}
+
+	got := evaluateRetrievalConfidence(finalCandidates, selected, selected, nil, nil)
+
+	if got.CorrectiveAction != "" {
+		t.Fatalf("corrective action = %q, want none for non-memory chat", got.CorrectiveAction)
 	}
 }
 

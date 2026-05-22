@@ -1,0 +1,25 @@
+schema_version: memory_eval.v0.2
+suite: query_analysis
+allow_stub: false
+case_id: smalltalk_no_memory_no_semantic
+description: Non-empty smalltalk should not be promoted by direct_fact/exact_fact fallback into memory or semantic routing.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+steps:
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 哈哈这个太离谱了
+      policy:
+        final_memory_count: 3
+assertions:
+  - type: query_analysis
+    name: smalltalk has no long-term memory route
+    step: retrieve
+    memory_ability: direct_fact
+    should_use_semantic: false
+    semantic_mode: none
+    max_memory_intent: 0.30

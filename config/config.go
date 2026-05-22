@@ -82,9 +82,10 @@ type QueryAnalysisThresholdsConfig struct {
 }
 
 type QueryAnalysisBudgetConfig struct {
-	MaxSemanticCallsPerSession     int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
-	MaxSemanticCallsPer1000Queries int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
-	MaxSemanticLatencyMS           int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
+	MaxSemanticCallsPerSession         int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
+	MaxSemanticCallsPerSessionWindowMS int `yaml:"max_semantic_calls_per_session_window_ms" json:"max_semantic_calls_per_session_window_ms"`
+	MaxSemanticCallsPer1000Queries     int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
+	MaxSemanticLatencyMS               int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
 }
 
 type QueryAnalysisDiagnosticsConfig struct {
@@ -162,9 +163,10 @@ func Default() Config {
 				HighSafetyRiskThreshold:     0.80,
 			},
 			Budget: QueryAnalysisBudgetConfig{
-				MaxSemanticCallsPerSession:     8,
-				MaxSemanticCallsPer1000Queries: 250,
-				MaxSemanticLatencyMS:           1500,
+				MaxSemanticCallsPerSession:         8,
+				MaxSemanticCallsPerSessionWindowMS: 30 * 60 * 1000,
+				MaxSemanticCallsPer1000Queries:     250,
+				MaxSemanticLatencyMS:               1500,
 			},
 			Diagnostics: QueryAnalysisDiagnosticsConfig{
 				IncludeScoreBreakdown: true,
@@ -564,6 +566,9 @@ func validateQueryAnalysisBudget(budget QueryAnalysisBudgetConfig) error {
 	if budget.MaxSemanticCallsPerSession <= 0 {
 		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_session must be > 0")
 	}
+	if budget.MaxSemanticCallsPerSessionWindowMS <= 0 {
+		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_session_window_ms must be > 0")
+	}
 	if budget.MaxSemanticCallsPer1000Queries <= 0 {
 		return fmt.Errorf("query_analysis.budget.max_semantic_calls_per_1000_queries must be > 0")
 	}
@@ -620,6 +625,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 			MinOverrideMargin:                c.QueryAnalysis.Thresholds.MinOverrideMargin,
 			HighSafetyRiskThreshold:          c.QueryAnalysis.Thresholds.HighSafetyRiskThreshold,
 			MaxSemanticCallsPerSession:       c.QueryAnalysis.Budget.MaxSemanticCallsPerSession,
+			MaxSemanticCallsPerSessionWindow: time.Duration(c.QueryAnalysis.Budget.MaxSemanticCallsPerSessionWindowMS) * time.Millisecond,
 			MaxSemanticCallsPer1000Queries:   c.QueryAnalysis.Budget.MaxSemanticCallsPer1000Queries,
 			MaxSemanticLatency:               time.Duration(c.QueryAnalysis.Budget.MaxSemanticLatencyMS) * time.Millisecond,
 			DiagnosticsConfigured:            true,
@@ -793,9 +799,10 @@ type queryAnalysisThresholdsPatch struct {
 }
 
 type queryAnalysisBudgetPatch struct {
-	MaxSemanticCallsPerSession     *int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
-	MaxSemanticCallsPer1000Queries *int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
-	MaxSemanticLatencyMS           *int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
+	MaxSemanticCallsPerSession         *int `yaml:"max_semantic_calls_per_session" json:"max_semantic_calls_per_session"`
+	MaxSemanticCallsPerSessionWindowMS *int `yaml:"max_semantic_calls_per_session_window_ms" json:"max_semantic_calls_per_session_window_ms"`
+	MaxSemanticCallsPer1000Queries     *int `yaml:"max_semantic_calls_per_1000_queries" json:"max_semantic_calls_per_1000_queries"`
+	MaxSemanticLatencyMS               *int `yaml:"max_semantic_latency_ms" json:"max_semantic_latency_ms"`
 }
 
 type queryAnalysisDiagnosticsPatch struct {
@@ -1002,6 +1009,9 @@ func applyQueryAnalysisBudgetPatch(cfg *QueryAnalysisBudgetConfig, patch queryAn
 	if patch.MaxSemanticCallsPerSession != nil {
 		cfg.MaxSemanticCallsPerSession = *patch.MaxSemanticCallsPerSession
 	}
+	if patch.MaxSemanticCallsPerSessionWindowMS != nil {
+		cfg.MaxSemanticCallsPerSessionWindowMS = *patch.MaxSemanticCallsPerSessionWindowMS
+	}
 	if patch.MaxSemanticCallsPer1000Queries != nil {
 		cfg.MaxSemanticCallsPer1000Queries = *patch.MaxSemanticCallsPer1000Queries
 	}
@@ -1055,6 +1065,9 @@ func applyQueryAnalysisThresholdDefaults(cfg *QueryAnalysisThresholdsConfig, def
 func applyQueryAnalysisBudgetDefaults(cfg *QueryAnalysisBudgetConfig, defaults QueryAnalysisBudgetConfig) {
 	if cfg.MaxSemanticCallsPerSession == 0 {
 		cfg.MaxSemanticCallsPerSession = defaults.MaxSemanticCallsPerSession
+	}
+	if cfg.MaxSemanticCallsPerSessionWindowMS == 0 {
+		cfg.MaxSemanticCallsPerSessionWindowMS = defaults.MaxSemanticCallsPerSessionWindowMS
 	}
 	if cfg.MaxSemanticCallsPer1000Queries == 0 {
 		cfg.MaxSemanticCallsPer1000Queries = defaults.MaxSemanticCallsPer1000Queries

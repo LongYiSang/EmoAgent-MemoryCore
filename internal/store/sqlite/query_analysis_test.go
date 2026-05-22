@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1131,6 +1132,142 @@ func TestScoreAmbiguity(t *testing.T) {
 	}
 }
 
+func TestScoreAmbiguityDoesNotTreatNormalEvidenceVolumeAsConflict(t *testing.T) {
+	analysis := QueryAnalysis{
+		TimeMode:      QueryTimeModeCurrent,
+		MemoryAbility: MemoryAbilityDirectFact,
+		MemoryDomain:  MemoryDomainUserProfile,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+	}
+	evidence := []QueryAnalysisEvidence{
+		{Field: "time_mode", Signal: "default_current_time", Weight: 0.46},
+		{Field: "memory_ability", Signal: "direct_fact_fallback", Weight: 0.42},
+		{Field: "memory_domain", Signal: "profile_domain_keyword", Weight: 0.84},
+		{Field: "evidence_need", Signal: "exact_observation_default", Weight: 0.48},
+	}
+
+	if got := scoreAmbiguity("我喜欢咖啡吗", analysis, evidence); got > 0.22 {
+		t.Fatalf("ambiguity = %v, want normal multi-field evidence not to add conflict ambiguity", got)
+	}
+}
+
+func TestQueryAnalysisDailyWorkLanguageUsesWorkDomain(t *testing.T) {
+	for _, query := range []string{
+		"我为什么最近这么抗拒上班？",
+		"我现在对工作是什么状态？",
+		"最近公司的事为什么让我这么累？",
+	} {
+		t.Run(query, func(t *testing.T) {
+			normalized := strings.ToLower(query)
+			if got := queryMemoryDomain(normalized); got != MemoryDomainWorkExperience {
+				t.Fatalf("queryMemoryDomain(%q) = %q, want %q", query, got, MemoryDomainWorkExperience)
+			}
+			analysis := QueryAnalysis{MemoryDomain: MemoryDomainWorkExperience}
+			if got := scoreDomainEvidence(normalized, MemoryDomainWorkExperience, appendRuleDomainEvidence(nil, normalized, analysis)); got < 0.80 {
+				t.Fatalf("work domain evidence = %v, want strong evidence for daily work wording", got)
+			}
+		})
+	}
+}
+
+func TestComputeQueryAnalysisScoresSeparatesMemoryIntentFromDirectFactFallback(t *testing.T) {
+	smalltalk := QueryAnalysis{
+		Raw:           "哈哈这个太离谱了",
+		Normalized:    "哈哈这个太离谱了",
+		TimeMode:      QueryTimeModeCurrent,
+		MemoryAbility: MemoryAbilityDirectFact,
+		MemoryDomain:  MemoryDomainRelationship,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+		Evidence: []QueryAnalysisEvidence{
+			{Field: "memory_ability", Signal: "direct_fact_fallback", Weight: 0.42},
+			{Field: "entity_resolution", Signal: "no_entity_mention", Weight: 0.20},
+		},
+	}
+	explicit := QueryAnalysis{
+		Raw:           "我住在哪里？",
+		Normalized:    "我住在哪里？",
+		TimeMode:      QueryTimeModeCurrent,
+		MemoryAbility: MemoryAbilityDirectFact,
+		MemoryDomain:  MemoryDomainUserProfile,
+		EvidenceNeed:  EvidenceNeedExactObservation,
+		Signals:       []QuerySignal{QuerySignalExactFact},
+		Probes:        QueryAnchorProbe{PredicateProbeConf: 0.85},
+		Evidence: []QueryAnalysisEvidence{
+			{Field: "memory_ability", Signal: "direct_fact_signal", MatchText: "住在", Weight: 0.62},
+			{Field: "memory_domain", Signal: "profile_domain_keyword", MatchText: "住在", Weight: 0.84},
+			{Field: "evidence_need", Signal: "exact_observation_default", MatchText: "住在哪里", Weight: 0.62},
+		},
+	}
+
+	if got := ComputeQueryAnalysisScores(smalltalk.Normalized, smalltalk, smalltalk.Evidence); got.MemoryIntent > 0.30 {
+		t.Fatalf("smalltalk memory intent = %v, want <= 0.30; scores=%#v", got.MemoryIntent, got)
+	}
+	if got := ComputeQueryAnalysisScores(explicit.Normalized, explicit, explicit.Evidence); got.MemoryIntent < 0.60 {
+		t.Fatalf("explicit memory intent = %v, want >= 0.60; scores=%#v", got.MemoryIntent, got)
+	}
+}
+
+func TestProbeReliabilityDistinguishesUnavailableProbeFromNoHit(t *testing.T) {
+	probe := QueryAnchorProbe{
+		Breakdown: []QueryAnchorProbeBreakdown{
+			probeBreakdown("sparse_probe", 0, 0, 0, 0, "", errProbeTest{}),
+			probeBreakdown("predicate_probe", 0, 0, 0, 0, "no predicate/object match", nil),
+		},
+	}
+	finalizeProbeReliability(&probe)
+
+	if got := ComputeAnchorReadiness(probe); got != 0 {
+		t.Fatalf("anchor readiness = %v, want no hit confidence", got)
+	}
+	if probe.ProbeReliability >= 0.70 || probe.UnknownProbeCount != 1 {
+		t.Fatalf("probe reliability/count = %v/%d, want unavailable probe tracked separately", probe.ProbeReliability, probe.UnknownProbeCount)
+	}
+
+	allUnknown := QueryAnchorProbe{
+		Breakdown: []QueryAnchorProbeBreakdown{
+			probeBreakdown("sparse_probe", 0, 0, 0, 0, "", errProbeTest{}),
+			probeBreakdown("predicate_probe", 0, 0, 0, 0, "", errProbeTest{}),
+		},
+	}
+	finalizeProbeReliability(&allUnknown)
+	if allUnknown.ProbeReliability != 0 || allUnknown.UnknownProbeCount != 2 {
+		t.Fatalf("all unknown reliability/count = %v/%d, want 0/2", allUnknown.ProbeReliability, allUnknown.UnknownProbeCount)
+	}
+}
+
+func TestCandidateEntityMentionsRespectFactAuthority(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+
+	for _, entity := range []struct {
+		id   string
+		name string
+	}{
+		{id: "ent_visible_candidate", name: "可见候选"},
+		{id: "ent_sensitive_candidate", name: "敏感候选"},
+		{id: "ent_invalidated_candidate", name: "失效候选"},
+	} {
+		insertProbeEntity(t, ctx, db.SQLDB(), entity.id, entity.name)
+	}
+	insertCandidateHintFact(t, ctx, db.SQLDB(), "fact_visible_candidate", "ent_visible_candidate", core.SensitivityNormal, core.ValidityValid)
+	insertCandidateHintFact(t, ctx, db.SQLDB(), "fact_sensitive_candidate", "ent_sensitive_candidate", core.SensitivitySensitive, core.ValidityValid)
+	insertCandidateHintFact(t, ctx, db.SQLDB(), "fact_invalidated_candidate", "ent_invalidated_candidate", core.SensitivityNormal, core.ValidityInvalidated)
+
+	got := repo.candidateEntityMentions(ctx, "default", RetrievalPolicy{SensitivityPermission: string(core.SensitivityNormal)})
+
+	if len(got) != 1 || got[0].EntityID != "ent_visible_candidate" {
+		t.Fatalf("candidate entity mentions = %#v, want only authority-allowed visible candidate", got)
+	}
+}
+
+type errProbeTest struct{}
+
+func (errProbeTest) Error() string { return "probe temporarily unavailable" }
+
 func TestScoreComplexity(t *testing.T) {
 	complex := QueryAnalysis{
 		MemoryAbility: MemoryAbilityCausalExplain,
@@ -1484,6 +1621,26 @@ func insertProbeFact(t *testing.T, ctx context.Context, db *sql.DB, value probeF
 		t.Fatalf("insert fact %s: %v", value.id, err)
 	}
 	insertProbeEvidence(t, ctx, db, value.id, value.sensitivity)
+}
+
+func insertCandidateHintFact(t *testing.T, ctx context.Context, db *sql.DB, factID string, entityID string, sensitivity core.SensitivityLevel, validity core.ValidityStatus) {
+	t.Helper()
+	object := "候选事实"
+	if err := NewFactRepository(db).Insert(ctx, core.Fact{
+		ID:                   factID,
+		PersonaID:            "default",
+		SubjectEntityID:      probeStringPtr(entityID),
+		Predicate:            "related_to",
+		ObjectLiteral:        &object,
+		ContentSummary:       "候选实体相关事实。",
+		FactType:             core.FactTypeStablePreference,
+		ExtractionConfidence: core.ExtractionConfidenceExplicit,
+		Importance:           0.95,
+		SensitivityLevel:     sensitivity,
+		ValidityStatus:       validity,
+	}); err != nil {
+		t.Fatalf("insert candidate hint fact %s: %v", factID, err)
+	}
 }
 
 func insertProbeEvidence(t *testing.T, ctx context.Context, db *sql.DB, factID string, sensitivity core.SensitivityLevel) {

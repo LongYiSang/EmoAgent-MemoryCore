@@ -109,6 +109,7 @@ func TestPhase8QueryAnalysisFixturesRunWithShadowAdaptive(t *testing.T) {
 		"forget_target_ambiguous":              {},
 		"sensitive_recall_should_not_semantic": {},
 		"no_memory_chat":                       {},
+		"smalltalk_no_memory_no_semantic":      {},
 	}
 	if len(paths) != len(wantCaseIDs) {
 		t.Fatalf("query_analysis fixture count = %d, want %d", len(paths), len(wantCaseIDs))

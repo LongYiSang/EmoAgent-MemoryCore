@@ -207,11 +207,11 @@ func shouldUseCorrectedRetrieval(original *MemoryContext, corrected *MemoryConte
 	if action == memsqlite.RetrievalCorrectiveActionSemanticLight {
 		return semanticCorrectionImproves(original.RetrievalConfidence, corrected.RetrievalConfidence)
 	}
+	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
+		return sqliteFallbackCorrectionImproves(original.RetrievalConfidence, corrected.RetrievalConfidence, originalIDs, correctedIDs)
+	}
 	if !sameStringSet(originalIDs, correctedIDs) {
 		return false
-	}
-	if action == memsqlite.RetrievalCorrectiveActionSQLiteFallback {
-		return sqliteFallbackCorrectionImproves(original.RetrievalConfidence, corrected.RetrievalConfidence)
 	}
 	return corrected.RetrievalConfidence.Overall+0.000001 >= original.RetrievalConfidence.Overall
 }
@@ -229,8 +229,19 @@ func semanticCorrectionImproves(original *RetrievalConfidence, corrected *Retrie
 		corrected.MMRDiversity >= original.MMRDiversity+semanticCorrectionMinDimensionGain
 }
 
-func sqliteFallbackCorrectionImproves(original *RetrievalConfidence, corrected *RetrievalConfidence) bool {
-	return corrected.AuthorityPassRatio > original.AuthorityPassRatio+retrievalConfidenceComparisonEpsilon &&
+func sqliteFallbackCorrectionImproves(original *RetrievalConfidence, corrected *RetrievalConfidence, originalIDs []string, correctedIDs []string) bool {
+	if len(correctedIDs) == 0 || corrected.SensitivitySafety <= 0 || corrected.TemporalConsistency <= 0 {
+		return false
+	}
+	if !sameStringSet(originalIDs, correctedIDs) && len(correctedIDs) < len(originalIDs) {
+		return false
+	}
+	if corrected.AuthorityPassRatio > original.AuthorityPassRatio+retrievalConfidenceComparisonEpsilon &&
+		corrected.Overall+0.05 >= original.Overall {
+		return true
+	}
+	return sameStringSet(originalIDs, correctedIDs) &&
+		corrected.AuthorityPassRatio > original.AuthorityPassRatio+retrievalConfidenceComparisonEpsilon &&
 		corrected.Overall+0.10 >= original.Overall
 }
 
