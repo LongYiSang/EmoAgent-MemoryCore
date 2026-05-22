@@ -108,7 +108,7 @@ func TestRunExtractBatchMockSkipsSuccessfulFingerprintAndForceReruns(t *testing.
 		"--db", dbPath,
 		"--provider", "mock",
 		"--mode", "dry-run",
-		"--limit", "10",
+		"--session-limit", "10",
 		"--format", "json",
 	)
 	requireContains(t, first, `"processed_count":2`)
@@ -119,7 +119,7 @@ func TestRunExtractBatchMockSkipsSuccessfulFingerprintAndForceReruns(t *testing.
 		"--db", dbPath,
 		"--provider", "mock",
 		"--mode", "dry-run",
-		"--limit", "10",
+		"--session-limit", "10",
 		"--format", "json",
 	)
 	requireContains(t, second, `"processed_count":0`)
@@ -130,7 +130,7 @@ func TestRunExtractBatchMockSkipsSuccessfulFingerprintAndForceReruns(t *testing.
 		"--db", dbPath,
 		"--provider", "mock",
 		"--mode", "dry-run",
-		"--limit", "10",
+		"--session-limit", "10",
 		"--force",
 		"--format", "json",
 	)
@@ -154,7 +154,7 @@ func TestRunExtractBatchSessionAndEpisodeLimits(t *testing.T) {
 	requireContains(t, oneSession, `"processed_count":1`)
 	requireContains(t, oneSession, `"original_episode_count":1`)
 
-	legacyLimit := requireRunText(t,
+	_, stderr, code := runCLI(
 		"extract-batch",
 		"--db", dbPath,
 		"--provider", "mock",
@@ -163,7 +163,10 @@ func TestRunExtractBatchSessionAndEpisodeLimits(t *testing.T) {
 		"--audit", "off",
 		"--format", "json",
 	)
-	requireContains(t, legacyLimit, `"processed_count":1`)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr)
+	}
+	requireContains(t, stderr, "--limit is only supported by extract-run")
 }
 
 func TestRunExtractBatchPartialFailureExitCode(t *testing.T) {

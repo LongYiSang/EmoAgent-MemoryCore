@@ -138,10 +138,6 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 	if strings.TrimSpace(flags.SessionID) != "" {
 		sessionIDs = append(sessionIDs, flags.SessionID)
 	}
-	sessionLimit := flags.Limit
-	if flags.SessionLimit > 0 {
-		sessionLimit = flags.SessionLimit
-	}
 	audit := extractionruntime.NewSQLiteAuditStore(db.SQLDB())
 	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db.SQLDB(), Service: svc, LLM: llm, AuditStore: audit})
 	result, err := runner.RunBatch(ctx, memorycore.ExtractionBatchRequest{
@@ -155,7 +151,7 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 		Temperature:              flags.Temperature,
 		MaxTokens:                flags.MaxTokens,
 		Timeout:                  flags.Timeout,
-		Limit:                    sessionLimit,
+		Limit:                    flags.SessionLimit,
 		EpisodeLimit:             flags.EpisodeLimit,
 		Timezone:                 flags.Timezone,
 		AllowSensitiveExtraction: flags.AllowSensitive,
@@ -189,13 +185,13 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extractionRuntimeFlags {
-	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096}
+	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, SessionLimit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096}
 	addCommonFlags(fs, &flags.commonOptions, defaultFormat)
 	fs.StringVar(&flags.SessionID, "session", "", "session id")
 	fs.Var(&flags.EpisodeIDs, "episode", "episode id; repeatable")
 	fs.StringVar(&flags.Trigger, "trigger", memorycore.ExtractionTriggerSessionEnd, "extraction trigger")
-	fs.IntVar(&flags.Limit, "limit", 50, "single-run episode limit; batch compatibility alias for session limit")
-	fs.IntVar(&flags.SessionLimit, "session-limit", 0, "maximum sessions for extract-batch; overrides --limit")
+	fs.IntVar(&flags.Limit, "limit", 50, "single-run episode limit")
+	fs.IntVar(&flags.SessionLimit, "session-limit", 50, "maximum sessions for extract-batch")
 	fs.IntVar(&flags.EpisodeLimit, "episode-limit", 50, "maximum episodes per session for extract-batch")
 	fs.StringVar(&flags.SinceValue, "since", "", "RFC3339 lower occurrence bound")
 	fs.StringVar(&flags.UntilValue, "until", "", "RFC3339 upper occurrence bound")
@@ -253,6 +249,9 @@ func validateExtractionRuntimeFlags(stderr io.Writer, fs *flag.FlagSet, flags *e
 	}
 	if err := validateOneOf("--audit", flags.Audit, memorycore.ExtractionAuditOn, memorycore.ExtractionAuditOff); err != nil {
 		return usageError(stderr, fs, err.Error())
+	}
+	if batch && explicitFlagNames(fs)["limit"] {
+		return usageError(stderr, fs, "--limit is only supported by extract-run; use --session-limit for extract-batch")
 	}
 	if err := validateExtractionTriggerFlag(flags.Trigger); err != nil {
 		return usageError(stderr, fs, err.Error())
