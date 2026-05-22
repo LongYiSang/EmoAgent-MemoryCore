@@ -476,6 +476,41 @@ func TestQueryAnalysisSemanticFieldMergeUsesConfidenceMarginAndDiagnostics(t *te
 	assertFieldMergeReason(t, got.Diagnostics.FieldMergeDecisions, "evidence_need", "semantic_higher_confidence")
 }
 
+func TestQueryAnalysisDiagnosticsFromStoreCopiesFieldMergeDecisions(t *testing.T) {
+	source := &memsqlite.QueryAnalysisDiagnostics{
+		FieldMergeDecisions: []memsqlite.FieldMergeDecision{{
+			Field:              "memory_domain",
+			RuleValue:          string(memsqlite.MemoryDomainUserProfile),
+			SemanticValue:      string(memsqlite.MemoryDomainWorkExperience),
+			RuleConfidence:     0.62,
+			SemanticConfidence: 0.91,
+			Reason:             "semantic_higher_confidence",
+			Evidence:           []string{"用户明确说到工作项目"},
+			UseSemantic:        true,
+		}},
+	}
+
+	got := queryAnalysisDiagnosticsFromStore(source)
+
+	if got == nil || len(got.FieldMergeDecisions) != 1 {
+		t.Fatalf("field merge decisions = %#v, want one public DTO decision", got)
+	}
+	decision := got.FieldMergeDecisions[0]
+	if decision.Field != "memory_domain" ||
+		decision.RuleValue != string(memsqlite.MemoryDomainUserProfile) ||
+		decision.SemanticValue != string(memsqlite.MemoryDomainWorkExperience) ||
+		decision.Reason != "semantic_higher_confidence" ||
+		!decision.UseSemantic ||
+		len(decision.Evidence) != 1 ||
+		decision.Evidence[0] != "用户明确说到工作项目" {
+		t.Fatalf("field merge decision = %#v, want copied public DTO values", decision)
+	}
+	source.FieldMergeDecisions[0].Evidence[0] = "mutated"
+	if got.FieldMergeDecisions[0].Evidence[0] != "用户明确说到工作项目" {
+		t.Fatalf("field merge evidence aliases store slice: %#v", got.FieldMergeDecisions[0].Evidence)
+	}
+}
+
 func TestQueryAnalysisSemanticMergeDoesNotSynthesizeFieldProposalsFromLegacyConfidence(t *testing.T) {
 	rule := memsqlite.QueryAnalysis{
 		Raw:           "我为什么最近抗拒上班？",
@@ -903,6 +938,31 @@ func TestSanitizedSemanticAnchorsDropsGenericAndLowSpecificityTerms(t *testing.T
 		!containsString(diagnostics.DroppedReasons, "generic_semantic_anchor") ||
 		!containsString(diagnostics.DroppedReasons, "low_specificity_semantic_anchor") {
 		t.Fatalf("diagnostics = %#v, want generic and low-specificity drop reasons", diagnostics)
+	}
+}
+
+func TestSanitizedSemanticAnchorsRecordsEntityAndBudgetDropReasons(t *testing.T) {
+	budget := 0.0
+	got, diagnostics := sanitizedSemanticAnchors([]SemanticAnchor{
+		{Text: "PowerShell ExecutionPolicy", AnchorType: "topic", EntityID: "ent_hidden", Weight: 0.4, Confidence: 0.9},
+		{Text: "项目发布风险", AnchorType: "topic", EntityID: "ent_visible", Weight: 0.4, Confidence: 0.3},
+		{Text: "早会压力来源", AnchorType: "topic", EntityID: "ent_visible", Weight: 0.4, Confidence: 0.9},
+	}, []VisibleEntityHint{{
+		EntityID: "ent_visible",
+	}}, QueryAnalysisOptions{
+		MaxSemanticAnchors:          4,
+		MaxGeneratedDenseWeightSum:  1,
+		MinEntitySemanticConfidence: 0.7,
+	}, &budget)
+
+	if len(got) != 0 {
+		t.Fatalf("semantic anchors = %#v, want all anchors dropped", got)
+	}
+	if diagnostics.DroppedCount != 3 ||
+		!containsString(diagnostics.DroppedReasons, "entity_not_visible") ||
+		!containsString(diagnostics.DroppedReasons, "low_entity_confidence") ||
+		!containsString(diagnostics.DroppedReasons, "semantic_anchor_budget_exhausted") {
+		t.Fatalf("diagnostics = %#v, want entity and budget drop reasons", diagnostics)
 	}
 }
 

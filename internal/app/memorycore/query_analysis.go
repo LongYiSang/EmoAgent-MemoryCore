@@ -43,7 +43,12 @@ const (
 	defaultQueryAnalysisDiagnosticsSampleRate   = 1.0
 )
 
-const rewriteDropReasonLanguageMismatch = "rewrite_language_mismatch"
+const (
+	rewriteDropReasonLanguageMismatch       = "rewrite_language_mismatch"
+	semanticAnchorDropReasonEntityHidden    = "entity_not_visible"
+	semanticAnchorDropReasonLowConfidence   = "low_entity_confidence"
+	semanticAnchorDropReasonBudgetExhausted = "semantic_anchor_budget_exhausted"
+)
 
 type QueryAnalyzer interface {
 	AnalyzeQuery(ctx context.Context, req QueryAnalysisRequest) (memsqlite.QueryAnalysis, error)
@@ -1726,6 +1731,10 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 	if options.MaxSemanticAnchors <= 0 || len(values) == 0 {
 		return nil, diagnostics
 	}
+	recordDrop := func(reason string) {
+		diagnostics.DroppedCount++
+		diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, reason)
+	}
 	visible := visibleEntityKinds(hints)
 	out := make([]memsqlite.SemanticAnchor, 0, minInt(len(values), options.MaxSemanticAnchors))
 	for _, value := range values {
@@ -1737,16 +1746,17 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 			continue
 		}
 		if reason := semanticAnchorDropReason(text); reason != "" {
-			diagnostics.DroppedCount++
-			diagnostics.DroppedReasons = append(diagnostics.DroppedReasons, reason)
+			recordDrop(reason)
 			continue
 		}
 		entityID := strings.TrimSpace(value.EntityID)
 		if entityID != "" {
 			if _, ok := visible[entityID]; !ok {
+				recordDrop(semanticAnchorDropReasonEntityHidden)
 				continue
 			}
 			if value.Confidence < options.MinEntitySemanticConfidence {
+				recordDrop(semanticAnchorDropReasonLowConfidence)
 				continue
 			}
 		}
@@ -1760,6 +1770,7 @@ func sanitizedSemanticAnchors(values []SemanticAnchor, hints []VisibleEntityHint
 		var ok bool
 		weight, ok = consumeGeneratedWeight(weight, 0, budget)
 		if !ok {
+			recordDrop(semanticAnchorDropReasonBudgetExhausted)
 			break
 		}
 		out = append(out, memsqlite.SemanticAnchor{

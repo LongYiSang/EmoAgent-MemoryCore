@@ -464,8 +464,29 @@ func queryAnalysisDiagnosticsFromStore(value *memsqlite.QueryAnalysisDiagnostics
 		DroppedSemanticAnchorReasons: append([]string(nil), value.DroppedSemanticAnchorReasons...),
 		EnglishRewriteCount:          value.EnglishRewriteCount,
 		SemanticDriftCount:           value.SemanticDriftCount,
+		FieldMergeDecisions:          fieldMergeDecisionsFromStore(value.FieldMergeDecisions),
 		SemanticAnalysis:             semanticQueryAnalysisDiagnosticsFromStore(value.SemanticAnalysis),
 	}
+}
+
+func fieldMergeDecisionsFromStore(values []memsqlite.FieldMergeDecision) []FieldMergeDecision {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]FieldMergeDecision, 0, len(values))
+	for _, value := range values {
+		result = append(result, FieldMergeDecision{
+			Field:              value.Field,
+			RuleValue:          value.RuleValue,
+			SemanticValue:      value.SemanticValue,
+			RuleConfidence:     value.RuleConfidence,
+			SemanticConfidence: value.SemanticConfidence,
+			Reason:             value.Reason,
+			Evidence:           append([]string(nil), value.Evidence...),
+			UseSemantic:        value.UseSemantic,
+		})
+	}
+	return result
 }
 
 func semanticQueryAnalysisDiagnosticsFromStore(value *memsqlite.SemanticQueryAnalysisDiagnostics) *SemanticQueryAnalysisDiagnostics {
