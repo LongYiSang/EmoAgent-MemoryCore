@@ -1,73 +1,261 @@
-schema_version: "memorycore.config.v0.1"
-
-enabled: false
+schema_version: memorycore.config.v0.2
+enabled: true
 
 core:
-  db_path: "./data/memory.db"
-  persona_id: "default"
+  db_path: ./data/memory.db
+  persona_id: default
   auto_migrate: true
   enable_fts: true
+  timezone: Asia/Shanghai
+
+providers:
+  llm:
+    - id: default_llm
+      provider: openai
+      protocol: openai_compatible
+      base_url: ${MEMORYCORE_LLM_BASE_URL}
+      api_key_env: MEMORYCORE_LLM_API_KEY
+      enabled: true
+      timeout_ms: 30000
+      retry:
+        max_attempts: 2
+        backoff_ms: 500
+  embedder:
+    - id: default_embedder
+      provider: disabled
+      enabled: false
+  reranker:
+    - id: default_reranker
+      provider: disabled
+      enabled: false
+
+pipelines:
+  prefilter:
+    enabled: false
+    provider_id: default_llm
+    model: configurable
+    params:
+      temperature: 0.0
+      top_p: 1.0
+      max_output_tokens: 1200
+      response_format: json_schema
+    thinking:
+      type: disabled
+    reasoning_effort: high
+
+  extraction:
+    enabled: false
+    provider_id: default_llm
+    model: configurable
+    params:
+      temperature: 0.0
+      top_p: 1.0
+      max_output_tokens: 6000
+      response_format: json_schema
+      stream: false
+      timeout_ms: 30000
+    thinking:
+      type: disabled
+    reasoning_effort: high
+    retry_on_schema_failure: 1
+
+  extraction_repair:
+    enabled: false
+    provider_id: default_llm
+    model: configurable
+
+  query_analysis:
+    enabled: false
+    mode: rule_only
+    runtime_mode: rule_only
+    provider_id: default_llm
+    model: configurable
+    fallback_mode: rule_only
+    timeout_ms: 1500
+    params:
+      temperature: 0.0
+      top_p: 1.0
+      max_output_tokens: 768
+      response_format: json_schema
+    thinking:
+      type: disabled
+    thresholds:
+      min_rule_fit: 0.66
+      min_anchor_readiness: 0.45
+      semantic_need: 0.58
+      min_complexity_for_semantic: 0.50
+      full_semantic_complexity: 0.72
+      decompose_complexity: 0.80
+      min_semantic_field_confidence: 0.70
+      min_override_margin: 0.08
+      high_safety_risk: 0.80
+    budget:
+      max_semantic_calls_per_session: 8
+      max_semantic_calls_per_session_window_ms: 1800000
+      max_semantic_calls_per_1000_queries: 250
+      max_semantic_latency_ms: 1500
+    diagnostics:
+      include_score_breakdown: true
+      include_reason_codes: true
+      sample_rate: 1.0
+
+  embedding:
+    enabled: false
+    provider_id: default_embedder
+    batch_size: 32
+
+  rerank:
+    enabled: false
+    provider_id: default_reranker
+    top_k: 20
+
+  narrative_insight:
+    enabled: false
+    provider_id: default_llm
+    model: configurable
+
+write_policy:
+  triggers:
+    idle_detect:
+      enabled: true
+      min_idle_ms: 8000
+    session_end:
+      enabled: true
+    manual_pin:
+      enabled: true
+    manual_forget:
+      enabled: true
+    work_candidate:
+      enabled: true
+  extraction:
+    allow_inference: true
+    allow_sensitive_extraction: false
+    max_facts_per_request: 12
+    max_links_per_request: 20
+    sensitive_reasoning_max_chars: 0
+  prefilter:
+    min_memory_worthiness: 0.55
+    min_long_term_value: 0.45
+    keep_manual_pin_always: true
+    route_manual_forget_always: true
 
 retrieval:
   use_fts: true
   use_mirror: false
-  final_memory_count: 8
-  context_budget_tokens: 1200
   allow_historical: false
   allow_deep_archive: false
-  sensitivity_permission: "normal"
-
-query_analysis:
-  provider: "none"
-  mode: "rule_only"
-  sidecar_url: "http://127.0.0.1:8765"
-  timeout_ms: 1500
-  scorer_version: "query_analysis_scorer_v1"
-  router_version: "semantic_router_v1"
-  thresholds:
-    min_rule_fit: 0.66
-    min_anchor_readiness: 0.45
-    semantic_need: 0.58
-    min_complexity_for_semantic: 0.50
-    full_semantic_complexity: 0.72
-    decompose_complexity: 0.80
-    min_semantic_field_confidence: 0.70
-    min_override_margin: 0.08
-    high_safety_risk: 0.80
-  budget:
-    max_semantic_calls_per_session: 8
-    max_semantic_calls_per_1000_queries: 250
-    max_semantic_latency_ms: 1500
-  diagnostics:
-    include_score_breakdown: true
-    include_reason_codes: true
-    sample_rate: 1.0
-  max_query_rewrites: 5
-  max_semantic_anchors: 8
-  semantic_total_energy_cap: 5.0
-  max_generated_dense_weight_sum: 3.0
-  include_rationale_summary: false
+  sensitivity_permission: normal
+  final_memory_count: 8
+  context_budget_tokens: 1200
+  anchor:
+    max_entity_anchors: 20
+    max_sparse_anchors: 30
+    max_dense_anchors: 30
+    max_pinned_core_anchors: 10
+    max_recent_anchors: 10
+    max_narrative_anchors: 10
+    entity_exact_min_energy: 0.75
+    pinned_core_min_energy: 0.70
+    seed_energy_cap_per_node: 1.0
+  activation:
+    max_hops: 2
+    max_hops_for_historical_or_causal: 3
+    hop_decay: 0.75
+    teleport_alpha: 0.15
+    min_energy_threshold: 0.015
+    max_active_nodes: 1000
+    hub_power: 0.55
+    allow_negative_edges: true
+  fatigue:
+    window_turns: 5
+    factor: 0.35
+    factor_for_repeated: 0.20
+  cooccurrence:
+    enabled: true
+    max_pairs: 100
+  ranking:
+    candidate_pool_size: 80
+    min_final_score: 0.20
+    agent_affect_weight_cap: 0.03
+  mmr:
+    enabled: true
+    lambda: 0.72
+    duplicate_threshold: 0.88
+  prompt:
+    max_source_episode_quotes: 2
+    quote_by_default: false
 
 sidecar:
   enabled: false
-  url: ""
-  adapter: "trivium"
-  total_timeout_ms: 400
-  mirror_timeout_ms: 80
-  activation_timeout_ms: 150
-  rerank_timeout_ms: 100
-  breaker_enabled: true
-  breaker_window: 20
-  breaker_failure_threshold: 3
-  breaker_open_ms: 60000
-  activation_max_edges_scanned_per_request: 10000
-  activation_max_neighbors_per_node: 100
-  activation_max_wall_ms: 120
+  url: http://127.0.0.1:8765
+  adapter: trivium
+  total_timeout_ms: 2500
+  mirror_timeout_ms: 1200
+  activation_timeout_ms: 1500
+  rerank_timeout_ms: 1200
+  circuit_breaker:
+    enabled: true
+    window: 20
+    failure_threshold: 3
+    open_ms: 60000
+  activation_budget:
+    max_edges_scanned_per_request: 10000
+    max_neighbors_per_node: 100
+    max_wall_ms: 120
+
+mirror:
+  enabled: false
+  sync_limit: 100
+  rebuild_on_start: false
+  stale_lag_threshold_ms: 30000
 
 retention:
   jobs:
-    - "daily_ttl_expiry"
-  deep_archive_after_days: 0
+    lazy_decay: true
+    daily_ttl_expiry: true
+    daily_state_transition: true
+    weekly_compression: false
+    monthly_archive: false
+    mirror_compaction: true
+  thresholds:
+    active_to_dormant: 0.35
+    dormant_to_archived: 0.20
+    archived_to_deep_threshold: 0.18
+    deep_archive_after_days: 0
+  auto_delete: false
 
-mirror:
-  sync_limit: 100
+forgetting_privacy:
+  default_forget_level: soft_forget
+  require_confirmation_for_purge: true
+  require_confirmation_for_topic_scope: true
+  cleanup:
+    delete_trivium_nodes: true
+    delete_sqlite_search_documents: true
+    clean_agent_affect_refs: true
+    recompute_derived: true
+    verify_after_delete: true
+
+agent_affect:
+  enabled: false
+  storage_enabled: true
+  service_mode: local_stub
+  default_profile: default
+  neutral_fallback: true
+  safety:
+    allow_user_fact_writes: false
+    allow_sensitivity_bypass: false
+    allow_forget_bypass: false
+    mood_safety: conservative
+  retrieval:
+    weight_cap: 0.03
+    sensitive_recall: disallow
+    negative_retention_boost: false
+
+observability:
+  metrics_enabled: true
+  include_score_breakdown: false
+  include_activation_paths: false
+  log_sanitized_debug: true
+
+eval:
+  enabled: false

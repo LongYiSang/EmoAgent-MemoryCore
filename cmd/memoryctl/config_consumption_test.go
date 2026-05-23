@@ -120,6 +120,39 @@ sidecar:
 	}
 }
 
+func TestRunRetrieveConfigMirrorWithoutSidecarFallsBackToSQLite(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	requireRunID(t,
+		"consolidate-fact",
+		"--db", dbPath,
+		"--subject", "ent_user",
+		"--predicate", "likes",
+		"--object-literal", "咖啡",
+		"--summary", "用户喜欢咖啡。",
+		"--source-episode", "ep_seed",
+		"--format", "id",
+	)
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+retrieval:
+  use_mirror: true
+sidecar:
+  enabled: false
+`)
+
+	stdout, stderr, code := runCLI("retrieve", "--config", configPath, "--query", "咖啡")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, "用户喜欢咖啡。")
+	requireContains(t, stdout, "mirror_status=adapter_missing")
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
 func TestRunMirrorSyncUsesConfigLimitAndFakeAdapter(t *testing.T) {
 	dbPath := seedCLIConsolidationDB(t)
 	requireRunID(t,
@@ -279,9 +312,10 @@ core:
   db_path: `+yamlSingleQuote(dbPath)+`
 retention:
   jobs:
-    - daily_ttl_expiry
-    - monthly_deep_archive
-  deep_archive_after_days: 180
+    daily_ttl_expiry: true
+    monthly_archive: true
+  thresholds:
+    deep_archive_after_days: 180
 `)
 
 	out := requireRunOK(t, "retention-jobs-run", "--config", configPath, "--now", "2026-08-01T00:00:00Z", "--format", "text")
@@ -298,8 +332,9 @@ core:
   db_path: `+yamlSingleQuote(dbPath)+`
 retention:
   jobs:
-    - monthly_deep_archive
-  deep_archive_after_days: 0
+    monthly_archive: true
+  thresholds:
+    deep_archive_after_days: 0
 `)
 
 	out := requireRunOK(t, "retention-jobs-run", "--config", configPath, "--jobs", "daily_ttl_expiry", "--now", "2026-08-01T00:00:00Z", "--format", "text")

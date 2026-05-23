@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
@@ -35,15 +36,15 @@ func runRetentionJobs(args []string, stdout io.Writer, stderr io.Writer) int {
 		applyCommonConfig(&opts, &cfg, explicit, stderr)
 		if explicit["jobs"] {
 			warnConfigOverride(stderr, "jobs", "retention.jobs")
-			cfg.Retention.Jobs = splitRetentionJobNames(jobsValue)
+			cfg.Retention.Jobs = retentionJobsConfigFromNames(splitRetentionJobNames(jobsValue))
 		} else {
-			jobsValue = joinRetentionJobs(cfg.Retention.Jobs)
+			jobsValue = joinRetentionJobNames(cfg.RetentionJobs())
 		}
 		if explicit["deep-archive-after-days"] {
-			warnConfigOverride(stderr, "deep-archive-after-days", "retention.deep_archive_after_days")
-			cfg.Retention.DeepArchiveAfterDays = deepArchiveAfterDays
+			warnConfigOverride(stderr, "deep-archive-after-days", "retention.thresholds.deep_archive_after_days")
+			cfg.Retention.Thresholds.DeepArchiveAfterDays = deepArchiveAfterDays
 		} else {
-			deepArchiveAfterDays = cfg.Retention.DeepArchiveAfterDays
+			deepArchiveAfterDays = cfg.Retention.Thresholds.DeepArchiveAfterDays
 		}
 		if err := cfg.Validate(); err != nil {
 			return usageError(stderr, fs, err.Error())
@@ -133,6 +134,27 @@ func splitRetentionJobNames(value string) []string {
 		jobs = append(jobs, strings.TrimSpace(part))
 	}
 	return jobs
+}
+
+func retentionJobsConfigFromNames(names []string) memconfig.RetentionJobsConfig {
+	cfg := memconfig.RetentionJobsConfig{}
+	for _, name := range names {
+		switch memorycore.RetentionJobName(name) {
+		case memorycore.RetentionJobDailyTTLExpiry:
+			cfg.DailyTTLExpiry = true
+		case memorycore.RetentionJobMonthlyDeepArchive:
+			cfg.MonthlyArchive = true
+		}
+	}
+	return cfg
+}
+
+func joinRetentionJobNames(jobs []memorycore.RetentionJobName) string {
+	names := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		names = append(names, string(job))
+	}
+	return strings.Join(names, ",")
 }
 
 func hasRetentionJob(jobs []memorycore.RetentionJobName, target memorycore.RetentionJobName) bool {

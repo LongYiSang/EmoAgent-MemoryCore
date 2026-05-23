@@ -30,10 +30,10 @@ func runRetention(args []string, stdout io.Writer, stderr io.Writer) int {
 	if hasConfig {
 		applyCommonConfig(&opts, &cfg, explicit, stderr)
 		if explicit["deep-archive-after-days"] {
-			warnConfigOverride(stderr, "deep-archive-after-days", "retention.deep_archive_after_days")
-			cfg.Retention.DeepArchiveAfterDays = deepArchiveAfterDays
+			warnConfigOverride(stderr, "deep-archive-after-days", "retention.thresholds.deep_archive_after_days")
+			cfg.Retention.Thresholds.DeepArchiveAfterDays = deepArchiveAfterDays
 		} else {
-			deepArchiveAfterDays = cfg.Retention.DeepArchiveAfterDays
+			deepArchiveAfterDays = cfg.Retention.Thresholds.DeepArchiveAfterDays
 		}
 		if err := cfg.Validate(); err != nil {
 			return usageError(stderr, fs, err.Error())

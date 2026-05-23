@@ -122,7 +122,8 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	sidecarURL = strings.TrimSpace(sidecarURL)
 	useFakeMirrorConfig := hasConfig && cfg.Sidecar.Enabled && cfg.Sidecar.Adapter == "fake" && !explicit["sidecar-url"]
-	if useMirror && sidecarURL == "" && !useFakeMirrorConfig {
+	useConfigMirrorFallback := hasConfig && useMirror && !cfg.Sidecar.Enabled && !explicit["use-mirror"] && !explicit["sidecar-url"]
+	if useMirror && sidecarURL == "" && !useFakeMirrorConfig && !useConfigMirrorFallback {
 		return usageError(stderr, fs, "--sidecar-url is required when --use-mirror is set")
 	}
 	if useMirror && sidecarURL != "" && !useFakeMirrorConfig {

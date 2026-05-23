@@ -1,0 +1,5 @@
+schema_version: memorycore.config.v0.2
+enabled: true
+
+core:
+  db_path: ./data/memory.db

@@ -55,16 +55,17 @@ func loadYAMLBytes(data []byte, validate bool) (Config, error) {
 		}
 		return cfg, nil
 	}
-	var patch configPatch
+	type plain Config
+	decoded := plain(cfg)
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
-	if err := decoder.Decode(&patch); err != nil {
+	if err := decoder.Decode(&decoded); err != nil {
 		if errors.Is(err, io.EOF) {
 			return cfg, cfg.Validate()
 		}
 		return Config{}, err
 	}
-	applyConfigPatch(&cfg, patch)
+	cfg = Config(decoded)
 	if validate {
 		if err := cfg.Validate(); err != nil {
 			return Config{}, err
@@ -81,10 +82,11 @@ func loadJSONBytes(data []byte, validate bool) (Config, error) {
 		}
 		return cfg, nil
 	}
-	var patch configPatch
+	type plain Config
+	decoded := plain(cfg)
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&patch); err != nil {
+	if err := decoder.Decode(&decoded); err != nil {
 		if errors.Is(err, io.EOF) {
 			if validate {
 				return cfg, cfg.Validate()
@@ -93,7 +95,7 @@ func loadJSONBytes(data []byte, validate bool) (Config, error) {
 		}
 		return Config{}, err
 	}
-	applyConfigPatch(&cfg, patch)
+	cfg = Config(decoded)
 	if validate {
 		if err := cfg.Validate(); err != nil {
 			return Config{}, err
