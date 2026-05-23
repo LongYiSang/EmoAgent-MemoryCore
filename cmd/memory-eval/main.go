@@ -11,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	memoryeval "github.com/longyisang/emoagent-memorycore/internal/memory/eval"
 )
 
 type options struct {
+	configPath               string
 	mode                     string
 	reportMode               memoryeval.QualityBenchmarkMode
 	suite                    string
@@ -27,6 +29,8 @@ type options struct {
 	strictCapabilities       bool
 	allowSkipMissingProvider bool
 	sidecarURL               string
+	mirrorAdapter            memorycore.MirrorAdapter
+	sidecarResilience        memorycore.SidecarResilienceOptions
 	mirrorArtifactDir        string
 	embeddingCacheMode       string
 	reuseMirror              string
@@ -129,6 +133,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 		report := memoryeval.NewMatrixRunner(memoryeval.MatrixRunnerOptions{
 			TempDir:                  opts.tempDir,
 			Profiles:                 opts.profiles,
+			MirrorAdapter:            opts.mirrorAdapter,
 			SidecarURL:               opts.sidecarURL,
 			Strict:                   opts.strictCapabilities,
 			AllowSkipMissingProvider: opts.allowSkipMissingProvider,
@@ -137,6 +142,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			ReuseMirror:              opts.reuseMirror,
 			ReportDir:                reportDir,
 			QueryAnalysis:            opts.queryAnalysis,
+			SidecarResilience:        opts.sidecarResilience,
 		}).Run(ctx, fixture)
 		outputs = append(outputs, matrixRunOutput{Fixture: fixture, Report: report})
 		if index > 0 {
@@ -218,6 +224,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.StringVar(&opts.configPath, "config", "", "MemoryCore config path")
 	fs.StringVar(&rawMode, "mode", string(memoryeval.QualityBenchmarkModeBrief), "output mode: brief, full, or matrix")
 	fs.StringVar(&opts.suite, "suite", opts.suite, "quality suite under testdata/memory_eval/quality")
 	fs.StringVar(&opts.root, "root", "", "directory containing quality benchmark fixtures")
@@ -238,6 +245,18 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.IntVar(&queryAnalysisMaxSemanticLatencyMS, "query-analysis-max-semantic-latency-ms", 0, "maximum semantic provider latency budget in milliseconds; 0 uses query-analysis default")
 	if err := fs.Parse(args); err != nil {
 		return options{}, false
+	}
+	explicit := explicitFlagNames(fs)
+	if strings.TrimSpace(opts.configPath) != "" {
+		cfg, err := loadMemoryEvalConfig(opts.configPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return options{}, false
+		}
+		if err := applyMemoryEvalConfig(&opts, &cfg, explicit, &queryAnalysisMode, &queryAnalysisTimeoutMS, &queryAnalysisMaxSemanticLatencyMS); err != nil {
+			fmt.Fprintln(stderr, err)
+			return options{}, false
+		}
 	}
 	mode, reportMode, ok := parseMode(rawMode)
 	if !ok {
@@ -271,6 +290,66 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 		opts.root = defaultSuiteRoot(repoRoot, opts.suite)
 	}
 	return opts, true
+}
+
+func explicitFlagNames(fs *flag.FlagSet) map[string]bool {
+	names := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		names[f.Name] = true
+	})
+	return names
+}
+
+func loadMemoryEvalConfig(path string) (memconfig.Config, error) {
+	opts := memconfig.LoadOptions{SkipValidate: true}
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return memconfig.LoadJSONWithOptions(path, opts)
+	}
+	return memconfig.LoadYAMLWithOptions(path, opts)
+}
+
+func applyMemoryEvalConfig(opts *options, cfg *memconfig.Config, explicit map[string]bool, queryAnalysisMode *string, queryAnalysisTimeoutMS *int, queryAnalysisMaxSemanticLatencyMS *int) error {
+	if explicit["sidecar-url"] {
+		cfg.Sidecar.Enabled = true
+		cfg.Sidecar.URL = opts.sidecarURL
+	}
+	if explicit["query-analysis-mode"] {
+		cfg.Pipelines.QueryAnalysis.RuntimeMode = *queryAnalysisMode
+	}
+	if explicit["query-analysis-timeout-ms"] && *queryAnalysisTimeoutMS > 0 {
+		cfg.Pipelines.QueryAnalysis.TimeoutMS = *queryAnalysisTimeoutMS
+	}
+	if explicit["query-analysis-max-semantic-latency-ms"] && *queryAnalysisMaxSemanticLatencyMS > 0 {
+		cfg.Pipelines.QueryAnalysis.Budget.MaxSemanticLatencyMS = *queryAnalysisMaxSemanticLatencyMS
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	runtimeOptions, err := cfg.ToOptions()
+	if err != nil {
+		return err
+	}
+	if !explicit["sidecar-url"] && cfg.Sidecar.Enabled {
+		opts.sidecarURL = strings.TrimSpace(runtimeOptions.QueryAnalysis.SidecarURL)
+	}
+	opts.mirrorAdapter = runtimeOptions.MirrorAdapter
+	opts.sidecarResilience = runtimeOptions.SidecarResilience
+	if !explicit["query-analysis-mode"] {
+		if mode := strings.TrimSpace(string(runtimeOptions.QueryAnalysis.Mode)); mode != "" {
+			*queryAnalysisMode = mode
+		}
+	}
+	if !explicit["query-analysis-timeout-ms"] && runtimeOptions.QueryAnalysis.Timeout > 0 {
+		*queryAnalysisTimeoutMS = durationMilliseconds(runtimeOptions.QueryAnalysis.Timeout)
+	}
+	if !explicit["query-analysis-max-semantic-latency-ms"] && runtimeOptions.QueryAnalysis.MaxSemanticLatency > 0 {
+		*queryAnalysisMaxSemanticLatencyMS = durationMilliseconds(runtimeOptions.QueryAnalysis.MaxSemanticLatency)
+	}
+	return nil
+}
+
+func durationMilliseconds(value time.Duration) int {
+	return int(value / time.Millisecond)
 }
 
 func defaultSuiteRoot(repoRoot string, suite string) string {

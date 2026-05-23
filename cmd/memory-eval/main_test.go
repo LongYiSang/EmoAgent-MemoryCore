@@ -227,6 +227,257 @@ func TestParseOptionsRejectsInvalidEmbeddingCacheMode(t *testing.T) {
 	}
 }
 
+func TestParseOptionsLoadsConfigRuntimeDefaults(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+providers:
+  llm:
+    - id: default_llm
+      provider: openai
+      protocol: openai_compatible
+      enabled: true
+      timeout_ms: 30000
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+pipelines:
+  query_analysis:
+    enabled: true
+    provider_id: default_llm
+    mode: sidecar
+    runtime_mode: semantic_always
+    timeout_ms: 2300
+    budget:
+      max_semantic_latency_ms: 700
+`)
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--config", configPath,
+		"--mode", "matrix",
+		"--profiles", "mirror_real_dense",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.sidecarURL != "http://127.0.0.1:8765" {
+		t.Fatalf("sidecarURL = %q", opts.sidecarURL)
+	}
+	if opts.queryAnalysis.Mode != "semantic_always" || opts.queryAnalysis.Provider != "sidecar" {
+		t.Fatalf("query analysis options = %#v", opts.queryAnalysis)
+	}
+	if opts.queryAnalysis.Timeout != 2300*time.Millisecond {
+		t.Fatalf("query analysis timeout = %s, want 2300ms", opts.queryAnalysis.Timeout)
+	}
+	if opts.queryAnalysis.MaxSemanticLatency != 700*time.Millisecond {
+		t.Fatalf("query analysis max semantic latency = %s, want 700ms", opts.queryAnalysis.MaxSemanticLatency)
+	}
+}
+
+func TestParseOptionsCLIFlagsOverrideConfigRuntimeDefaults(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+providers:
+  llm:
+    - id: default_llm
+      provider: openai
+      protocol: openai_compatible
+      enabled: true
+      timeout_ms: 30000
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+pipelines:
+  query_analysis:
+    enabled: true
+    provider_id: default_llm
+    mode: sidecar
+    runtime_mode: semantic_always
+    timeout_ms: 2300
+    budget:
+      max_semantic_latency_ms: 700
+`)
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--config", configPath,
+		"--mode", "matrix",
+		"--profiles", "mirror_real_dense",
+		"--sidecar-url", "http://127.0.0.1:9999",
+		"--query-analysis-mode", "semantic_rewrite_only",
+		"--query-analysis-timeout-ms", "3100",
+		"--query-analysis-max-semantic-latency-ms", "1200",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.sidecarURL != "http://127.0.0.1:9999" {
+		t.Fatalf("sidecarURL = %q", opts.sidecarURL)
+	}
+	if opts.queryAnalysis.Mode != "semantic_rewrite_only" {
+		t.Fatalf("query analysis mode = %q", opts.queryAnalysis.Mode)
+	}
+	if opts.queryAnalysis.Timeout != 3100*time.Millisecond {
+		t.Fatalf("query analysis timeout = %s, want 3100ms", opts.queryAnalysis.Timeout)
+	}
+	if opts.queryAnalysis.MaxSemanticLatency != 1200*time.Millisecond {
+		t.Fatalf("query analysis max semantic latency = %s, want 1200ms", opts.queryAnalysis.MaxSemanticLatency)
+	}
+}
+
+func TestParseOptionsConfigDoesNotInferProfiles(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+providers:
+  llm:
+    - id: default_llm
+      provider: openai
+      protocol: openai_compatible
+      enabled: true
+      timeout_ms: 30000
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+mirror:
+  enabled: true
+pipelines:
+  query_analysis:
+    runtime_mode: rule_only
+`)
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{"--config", configPath}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if len(opts.profiles) != 1 || opts.profiles[0] != "sqlite_go" {
+		t.Fatalf("profiles = %#v, want sqlite_go only", opts.profiles)
+	}
+}
+
+func TestParseOptionsLoadsConfigRuntimeModeWhenPipelineDisabled(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+pipelines:
+  query_analysis:
+    runtime_mode: shadow_adaptive
+    timeout_ms: 1900
+    budget:
+      max_semantic_latency_ms: 800
+`)
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{
+		"--config", configPath,
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+	}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.queryAnalysis.Mode != "shadow_adaptive" {
+		t.Fatalf("query analysis mode = %q, want shadow_adaptive", opts.queryAnalysis.Mode)
+	}
+}
+
+func TestParseOptionsLoadsConfigMirrorRuntimeOptions(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+  total_timeout_ms: 3600
+  mirror_timeout_ms: 1700
+  activation_timeout_ms: 1800
+  rerank_timeout_ms: 1900
+`)
+	var stderr bytes.Buffer
+	opts, ok := parseOptions([]string{"--config", configPath}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseOptions failed: %s", stderr.String())
+	}
+	if opts.mirrorAdapter == nil {
+		t.Fatal("mirrorAdapter is nil, want config-derived adapter")
+	}
+	if opts.sidecarResilience.Timeouts.Total != 3600*time.Millisecond {
+		t.Fatalf("total timeout = %s, want 3600ms", opts.sidecarResilience.Timeouts.Total)
+	}
+	if opts.sidecarResilience.Timeouts.Mirror != 1700*time.Millisecond {
+		t.Fatalf("mirror timeout = %s, want 1700ms", opts.sidecarResilience.Timeouts.Mirror)
+	}
+	if opts.sidecarResilience.Timeouts.Activation != 1800*time.Millisecond {
+		t.Fatalf("activation timeout = %s, want 1800ms", opts.sidecarResilience.Timeouts.Activation)
+	}
+	if opts.sidecarResilience.Timeouts.Rerank != 1900*time.Millisecond {
+		t.Fatalf("rerank timeout = %s, want 1900ms", opts.sidecarResilience.Timeouts.Rerank)
+	}
+}
+
+func TestParseOptionsRejectsMissingConfigFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	var stderr bytes.Buffer
+	_, ok := parseOptions([]string{"--config", missing}, &stderr)
+
+	if ok {
+		t.Fatal("parseOptions accepted missing config file")
+	}
+	if !strings.Contains(stderr.String(), "missing.yaml") {
+		t.Fatalf("stderr = %q, want missing config path", stderr.String())
+	}
+}
+
+func TestParseOptionsRejectsInvalidConfigFormat(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "memorycore.yaml")
+	if err := os.WriteFile(configPath, []byte("sidecar: ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	_, ok := parseOptions([]string{"--config", configPath}, &stderr)
+
+	if ok {
+		t.Fatal("parseOptions accepted invalid config format")
+	}
+	if !strings.Contains(stderr.String(), "load yaml config") {
+		t.Fatalf("stderr = %q, want config load error", stderr.String())
+	}
+}
+
+func TestParseOptionsRejectsConfigSemanticQueryAnalysisWithoutMirrorProfile(t *testing.T) {
+	configPath := writeMemoryEvalConfig(t, `
+schema_version: memorycore.config.v0.2
+providers:
+  llm:
+    - id: default_llm
+      provider: openai
+      protocol: openai_compatible
+      enabled: true
+      timeout_ms: 30000
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+pipelines:
+  query_analysis:
+    enabled: true
+    provider_id: default_llm
+    mode: sidecar
+    runtime_mode: semantic_always
+`)
+	var stderr bytes.Buffer
+	_, ok := parseOptions([]string{
+		"--config", configPath,
+		"--mode", "matrix",
+		"--profiles", "sqlite_go",
+	}, &stderr)
+
+	if ok {
+		t.Fatal("parseOptions accepted semantic query analysis without a mirror profile")
+	}
+	if !strings.Contains(stderr.String(), "query-analysis-mode requires at least one mirror/semantic profile") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestParseOptionsAcceptsSemanticQueryAnalysisForMirrorProfiles(t *testing.T) {
 	var stderr bytes.Buffer
 	opts, ok := parseOptions([]string{
@@ -342,6 +593,15 @@ func TestParseOptionsDefaultsQueryAnalysisSuiteRoot(t *testing.T) {
 	if strings.Contains(filepath.Clean(opts.root), filepath.Join("quality", "query_analysis")) {
 		t.Fatalf("root = %q, should not point at quality/query_analysis", opts.root)
 	}
+}
+
+func writeMemoryEvalConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "memorycore.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(content)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func minimalCLIQualityFixture() string {
