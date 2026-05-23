@@ -7,6 +7,8 @@ param(
 
     [string]$RunRoot = "",
 
+    [string]$Config = "",
+
     [string]$KeyFile = "",
 
     [int]$Port = 8765,
@@ -150,6 +152,12 @@ function Get-MemoryEvalProfileClassification {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $sidecarDir = Join-Path $repoRoot "sidecar"
+if ($Config) {
+    if (-not [System.IO.Path]::IsPathRooted($Config)) {
+        $Config = Join-Path $repoRoot $Config
+    }
+    $Config = [System.IO.Path]::GetFullPath($Config)
+}
 $profileList = $Profiles.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $profileClassification = Get-MemoryEvalProfileClassification -ProfileList $profileList
 if ($ClassifyProfilesOnly) {
@@ -294,6 +302,9 @@ try {
         "--quality-no-stub",
         "--strict-capabilities"
     )
+    if ($Config) {
+        $args += @("--config", $Config)
+    }
     if ($Fixture) {
         $args += @("--fixture", $Fixture)
     }
