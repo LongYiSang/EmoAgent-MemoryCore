@@ -180,7 +180,7 @@ go run ./cmd/memoryctl init-db --db ./data/memory.db
 
 ### 配置契约
 
-MemoryCore 提供可嵌入的 v0.1 配置契约，示例见 `examples/config/memorycore.yaml`。部署前可用 CLI 校验配置或导出字段参考：
+MemoryCore 提供可嵌入的 v0.2 配置契约，示例见 `examples/config/memorycore.yaml`。部署前可用 CLI 校验配置或导出字段参考：
 
 ```bash
 go run ./cmd/memoryctl validate-config --config examples/config/memorycore.yaml
@@ -192,6 +192,10 @@ go run ./cmd/memoryctl config-docs --format markdown
 `query_analysis` 默认 `provider: none` / `mode: rule_only`，即只使用 Go 规则分析。启用 sidecar provider 时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic timeout、budget exhausted、degraded 或非法响应都会回退到 rule-only，不阻断 retrieval。
 
 Phase 9 后的灰度模式是 `legacy_only`、`shadow_adaptive`、`adaptive_safe`、`adaptive_full`。Adaptive 路由阈值使用 `query_analysis.thresholds.*`，调用上限使用 `query_analysis.budget.*`，并用 `query_analysis.diagnostics.*` 控制 score breakdown / reason codes 的输出采样。
+
+### EmoAgent 外部接入
+
+供 EmoAgent 主仓库嵌入使用的当前接口文档见 [docs/emoagent_integration.md](docs/emoagent_integration.md)。该文档覆盖 Go facade、配置加载、对话生命周期、检索、抽取运行时、遗忘、Sidecar 可选增强和 CLI 运维边界。
 
 ### 检索质量评测
 
