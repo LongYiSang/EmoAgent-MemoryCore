@@ -29,7 +29,9 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.Pipelines.Extraction.Params.TopP != 1 ||
 		cfg.Pipelines.Extraction.Params.MaxOutputTokens != 6000 ||
 		cfg.Pipelines.Extraction.Params.ResponseFormat != "json_schema" ||
-		cfg.Pipelines.Extraction.RetryOnSchemaFailure != 1 {
+		cfg.Pipelines.Extraction.RetryOnSchemaFailure != 1 ||
+		cfg.Pipelines.Extraction.RawLog.Enabled ||
+		cfg.Pipelines.Extraction.RawLog.Directory != "" {
 		t.Fatalf("extraction defaults = %#v", cfg.Pipelines.Extraction)
 	}
 	if cfg.Pipelines.QueryAnalysis.FallbackMode != "rule_only" {
@@ -73,6 +75,8 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 	if cfg.Pipelines.Extraction.Model != "gpt-5.4" ||
 		cfg.Pipelines.Extraction.Params.MaxOutputTokens != 7000 ||
 		cfg.Pipelines.Extraction.Thinking.Type != "disabled" ||
+		!cfg.Pipelines.Extraction.RawLog.Enabled ||
+		cfg.Pipelines.Extraction.RawLog.Directory != "./debug/extraction_raw" ||
 		cfg.Pipelines.QueryAnalysis.Mode != "rule_then_llm" ||
 		cfg.Pipelines.QueryAnalysis.ProviderID != "llm_main" ||
 		cfg.Pipelines.QueryAnalysis.FallbackMode != "rule_only" ||
@@ -210,6 +214,12 @@ providers:
 		cfg.Pipelines.QueryAnalysis.Mode = "rule_then_llm"
 		requireErrorContains(t, cfg.Validate(), "pipelines.query_analysis.provider_id")
 	})
+
+	t.Run("extraction raw log directory required when enabled", func(t *testing.T) {
+		cfg := memconfig.DefaultConfig()
+		cfg.Pipelines.Extraction.RawLog.Enabled = true
+		requireErrorContains(t, cfg.Validate(), "pipelines.extraction.raw_log.directory")
+	})
 }
 
 func TestValidateRuntimeChecksEnvBackedProviders(t *testing.T) {
@@ -344,6 +354,8 @@ func TestDocsDescriptorIsStableAndJSONSerializable(t *testing.T) {
 		"schema_version",
 		"providers.llm[].api_key_env",
 		"pipelines.extraction.params.max_output_tokens",
+		"pipelines.extraction.raw_log.enabled",
+		"pipelines.extraction.raw_log.directory",
 		"write_policy.triggers.manual_forget.enabled",
 		"retrieval.activation.max_hops",
 		"forgetting_privacy.cleanup.delete_trivium_nodes",
@@ -419,6 +431,9 @@ pipelines:
       type: disabled
     reasoning_effort: high
     retry_on_schema_failure: 1
+    raw_log:
+      enabled: true
+      directory: ./debug/extraction_raw
   extraction_repair:
     enabled: true
     provider_id: llm_main

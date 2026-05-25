@@ -39,6 +39,8 @@ func FieldDescriptors() []FieldDescriptor {
 		{"pipelines.extraction.params.max_output_tokens", "int", "6000", ">= 0", "always", "Extraction output cap."},
 		{"pipelines.extraction.params.response_format", "string", "json_schema", "text|json_object|json_schema", "always", "Expected extraction response format."},
 		{"pipelines.extraction.retry_on_schema_failure", "int", "1", ">= 0", "always", "Schema repair attempts after malformed extraction output."},
+		{"pipelines.extraction.raw_log.enabled", "bool", "false", "true|false", "always", "Write full raw extraction debug artifacts. Contains sensitive source text and prompts."},
+		{"pipelines.extraction.raw_log.directory", "string", "", "directory path", "raw_log.enabled=true", "Directory for per-run raw extraction debug JSON files."},
 		{"pipelines.query_analysis.mode", "string", "rule_only", "rule_only|rule_then_llm|llm_only|sidecar", "always", "Query-analysis orchestration mode; rule_only fallback is mandatory."},
 		{"pipelines.query_analysis.runtime_mode", "string", "rule_only", "rule_only|shadow_adaptive|adaptive|adaptive_safe|adaptive_full|semantic_always|semantic_on_low_confidence|semantic_rewrite_only|legacy_only", "always", "Projection into the current Go runtime query-analysis mode."},
 		{"pipelines.query_analysis.fallback_mode", "string", "rule_only", "rule_only", "always", "Safe retrieval fallback when LLM or sidecar query analysis fails."},

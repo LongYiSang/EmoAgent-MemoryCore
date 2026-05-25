@@ -554,6 +554,11 @@ mirror:
   sync_limit: 100
 
 pipelines:
+  extraction:
+    raw_log:
+      enabled: false
+      directory: ""
+
   query_analysis:
     enabled: false
     mode: rule_only
@@ -576,6 +581,7 @@ go run ./cmd/memoryctl config-docs --format markdown
 - 密钥不要写入 YAML；只写 `api_key_env`，由宿主进程环境提供实际值。
 - `enabled: false` 是宿主嵌入开关；显式运行 `memoryctl --config` 不会因为它被拦截。
 - CLI 对 config 的消费仍是命令级部分覆盖，不等于所有命令都完整走 `config.Open`。
+- `pipelines.extraction.raw_log.enabled` 默认关闭；开启后每次抽取都会写完整原始 request、prompt、provider request/response 和结果，只用于显式调试，目录不能为空。
 
 ## Sidecar 配置方案
 

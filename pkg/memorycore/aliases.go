@@ -48,6 +48,7 @@ type (
 	ExtractionPredicateSchema           = appcore.ExtractionPredicateSchema
 	ExtractionPreFilterEpisode          = appcore.ExtractionPreFilterEpisode
 	ExtractionPreFilterResponse         = appcore.ExtractionPreFilterResponse
+	ExtractionRawLogOptions             = appcore.ExtractionRawLogOptions
 	ExtractionRequest                   = appcore.ExtractionRequest
 	ExtractionResponse                  = appcore.ExtractionResponse
 	ExtractionRunAuditRecord            = appcore.ExtractionRunAuditRecord

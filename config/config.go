@@ -66,13 +66,13 @@ type RetryConfig struct {
 }
 
 type PipelinesConfig struct {
-	Prefilter        LLMPipelineConfig       `yaml:"prefilter" json:"prefilter"`
-	Extraction       LLMPipelineConfig       `yaml:"extraction" json:"extraction"`
-	ExtractionRepair LLMPipelineConfig       `yaml:"extraction_repair" json:"extraction_repair"`
-	QueryAnalysis    QueryAnalysisPipeline   `yaml:"query_analysis" json:"query_analysis"`
-	Embedding        EmbeddingPipelineConfig `yaml:"embedding" json:"embedding"`
-	Rerank           RerankPipelineConfig    `yaml:"rerank" json:"rerank"`
-	NarrativeInsight LLMPipelineConfig       `yaml:"narrative_insight" json:"narrative_insight"`
+	Prefilter        LLMPipelineConfig        `yaml:"prefilter" json:"prefilter"`
+	Extraction       ExtractionPipelineConfig `yaml:"extraction" json:"extraction"`
+	ExtractionRepair LLMPipelineConfig        `yaml:"extraction_repair" json:"extraction_repair"`
+	QueryAnalysis    QueryAnalysisPipeline    `yaml:"query_analysis" json:"query_analysis"`
+	Embedding        EmbeddingPipelineConfig  `yaml:"embedding" json:"embedding"`
+	Rerank           RerankPipelineConfig     `yaml:"rerank" json:"rerank"`
+	NarrativeInsight LLMPipelineConfig        `yaml:"narrative_insight" json:"narrative_insight"`
 }
 
 type LLMPipelineConfig struct {
@@ -84,6 +84,16 @@ type LLMPipelineConfig struct {
 	ReasoningEffort      string            `yaml:"reasoning_effort" json:"reasoning_effort"`
 	RetryOnSchemaFailure int               `yaml:"retry_on_schema_failure" json:"retry_on_schema_failure"`
 	Config               map[string]any    `yaml:"config,omitempty" json:"config,omitempty"`
+}
+
+type ExtractionPipelineConfig struct {
+	LLMPipelineConfig `yaml:",inline" json:",inline"`
+	RawLog            ExtractionRawLogConfig `yaml:"raw_log" json:"raw_log"`
+}
+
+type ExtractionRawLogConfig struct {
+	Enabled   bool   `yaml:"enabled" json:"enabled"`
+	Directory string `yaml:"directory" json:"directory"`
 }
 
 type QueryAnalysisPipeline struct {
@@ -500,11 +510,13 @@ func DefaultConfig() Config {
 				Params:   defaultParams(1200),
 				Thinking: ThinkingConfig{Type: "disabled"},
 			},
-			Extraction: LLMPipelineConfig{
-				Enabled:              false,
-				Params:               defaultParams(6000),
-				Thinking:             ThinkingConfig{Type: "disabled"},
-				RetryOnSchemaFailure: 1,
+			Extraction: ExtractionPipelineConfig{
+				LLMPipelineConfig: LLMPipelineConfig{
+					Enabled:              false,
+					Params:               defaultParams(6000),
+					Thinking:             ThinkingConfig{Type: "disabled"},
+					RetryOnSchemaFailure: 1,
+				},
 			},
 			ExtractionRepair: LLMPipelineConfig{
 				Enabled:  false,
@@ -833,8 +845,11 @@ func (c Config) validatePipelines() error {
 	if err := validateLLMPipeline("pipelines.prefilter", c.Pipelines.Prefilter, c, false); err != nil {
 		return err
 	}
-	if err := validateLLMPipeline("pipelines.extraction", c.Pipelines.Extraction, c, false); err != nil {
+	if err := validateLLMPipeline("pipelines.extraction", c.Pipelines.Extraction.LLMPipelineConfig, c, false); err != nil {
 		return err
+	}
+	if c.Pipelines.Extraction.RawLog.Enabled && strings.TrimSpace(c.Pipelines.Extraction.RawLog.Directory) == "" {
+		return fmt.Errorf("pipelines.extraction.raw_log.directory is required when raw_log.enabled is true")
 	}
 	if err := validateLLMPipeline("pipelines.extraction_repair", c.Pipelines.ExtractionRepair, c, false); err != nil {
 		return err
@@ -1312,7 +1327,7 @@ func (c *Config) ApplyOverrides(overrides ConfigOverrides) {
 	}
 	if overrides.Pipelines != nil {
 		if overrides.Pipelines.Extraction != nil {
-			applyLLMPipelineOverrides(&c.Pipelines.Extraction, *overrides.Pipelines.Extraction)
+			applyLLMPipelineOverrides(&c.Pipelines.Extraction.LLMPipelineConfig, *overrides.Pipelines.Extraction)
 		}
 		if overrides.Pipelines.QueryAnalysis != nil {
 			applyLLMPipelineOverrides(&c.Pipelines.QueryAnalysis.LLMPipelineConfig, *overrides.Pipelines.QueryAnalysis)

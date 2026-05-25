@@ -131,26 +131,32 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		OriginalEpisodeCount: len(runReq.Request.Episodes),
 		KeptEpisodeCount:     len(runReq.Request.Episodes),
 	}
+	trace := newRawLogTrace(start, runReq)
+	finish := func(result memorycore.ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *memorycore.LLMUsage, safe *safeError) (memorycore.ExtractionRunResult, error) {
+		return r.finish(ctx, start, runReq, result, promptHash, responseHash, repairedHash, prefilterHash, usage, safe, trace)
+	}
+	if runReq.RawLog.Enabled && strings.TrimSpace(runReq.RawLog.Directory) == "" {
+		return finish(result, "", "", "", "", nil, sanitizedError("raw_log_directory_required", "raw log directory is required"))
+	}
 	if r.llm == nil {
-		return r.finish(ctx, start, runReq, result, "", "", "", "", nil, sanitizedError("llm_required", "LLM is required"))
+		return finish(result, "", "", "", "", nil, sanitizedError("llm_required", "LLM is required"))
 	}
 	fingerprint, err := r.fingerprint(ctx, runReq)
 	if err != nil {
 		safe := sanitizedError("fingerprint_failed", "could not compute extraction fingerprint")
-		return r.finish(ctx, start, runReq, result, "", "", "", "", nil, safe)
+		return finish(result, "", "", "", "", nil, safe)
 	}
 	result.Fingerprint = fingerprint
 	if runReq.Audit != memorycore.ExtractionAuditOff && r.audit != nil && !runReq.Force {
 		previous, err := r.audit.FindSuccessfulRun(ctx, fingerprint, runReq.Mode)
 		if err != nil {
 			safe := sanitizedError("audit_lookup_failed", "could not read extraction audit state")
-			return r.finish(ctx, start, runReq, result, "", "", "", "", nil, safe)
+			return finish(result, "", "", "", "", nil, safe)
 		}
 		if previous != nil {
 			result.Status = memorycore.ExtractionRunStatusSkipped
 			result.SkippedByFingerprint = true
-			result.DurationMS = time.Since(start).Milliseconds()
-			return result, nil
+			return finish(result, "", "", "", "", nil, nil)
 		}
 	}
 
@@ -158,48 +164,56 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	var prefilterHash string
 	var usage memorycore.LLMUsage
 	if runReq.UsePreFilter {
-		filtered, pfHash, pfUsage, pfReview, pfErr := r.runPreFilter(ctx, req, runReq)
+		filtered, pfHash, pfUsage, pfReview, pfErr := r.runPreFilter(ctx, req, runReq, trace)
 		prefilterHash = pfHash
 		usage = addUsage(usage, pfUsage)
 		result.PreFilterReviewCount = pfReview
 		if pfErr != nil {
 			safe := sanitizedError("prefilter_failed", "prefilter response was not usable")
-			return r.finish(ctx, start, runReq, result, "", "", "", prefilterHash, &usage, safe)
+			return finish(result, "", "", "", prefilterHash, &usage, safe)
 		}
 		req = filtered
 		result.KeptEpisodeCount = len(req.Episodes)
 		result.SkippedEpisodeCount = result.OriginalEpisodeCount - result.KeptEpisodeCount
 		if len(req.Episodes) == 0 {
 			result.Status = memorycore.ExtractionRunStatusSkipped
-			return r.finish(ctx, start, runReq, result, "", "", "", prefilterHash, &usage, nil)
+			return finish(result, "", "", "", prefilterHash, &usage, nil)
 		}
 	}
 
 	llmReq := r.buildExtractionLLMRequest(req, runReq)
+	trace.recordExtractionRequest(llmReq)
+	promptHash := hashText(llmReq.SystemPrompt + "\n" + llmReq.DeveloperPrompt + "\n" + llmReq.UserPrompt)
 	raw, err := r.llm.CompleteJSON(ctx, llmReq)
+	trace.recordExtractionResponse(raw)
 	usage = addUsage(usage, raw.Usage)
 	if err != nil {
 		safe := sanitizedError("provider_failed", sanitizeProviderMessage(err))
-		return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), "", "", prefilterHash, &usage, safe)
+		return finish(result, promptHash, "", "", prefilterHash, &usage, safe)
 	}
 	responseHash := hashText(raw.Text)
 	resp, parseErr := extraction.ParseResponse(strings.NewReader(raw.Text))
 	var repairedHash string
 	if parseErr != nil && runReq.RepairEnabled {
+		trace.recordExtractionParseError(parseErr)
 		repairReq := r.buildRepairLLMRequest(raw.Text, runReq)
+		trace.recordRepairRequest(repairReq)
 		repairRaw, repairErr := r.llm.CompleteJSON(ctx, repairReq)
+		trace.recordRepairResponse(repairRaw)
 		usage = addUsage(usage, repairRaw.Usage)
 		if repairErr != nil {
 			safe := sanitizedError("repair_provider_failed", sanitizeProviderMessage(repairErr))
-			return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, "", prefilterHash, &usage, safe)
+			return finish(result, promptHash, responseHash, "", prefilterHash, &usage, safe)
 		}
 		repairedHash = hashText(repairRaw.Text)
 		resp, parseErr = extraction.ParseResponse(strings.NewReader(repairRaw.Text))
+		trace.recordRepairParseError(parseErr)
 		result.Repaired = true
 	}
 	if parseErr != nil {
+		trace.recordExtractionParseError(parseErr)
 		safe := sanitizedError("parse_failed", "model response was not valid extraction JSON")
-		return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, repairedHash, prefilterHash, &usage, safe)
+		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 	}
 
 	gate := extraction.ValidateExtraction(req, resp)
@@ -212,7 +226,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	result.Usage = usage
 	if gate.Status == "blocked" {
 		result.Status = memorycore.ExtractionRunStatusBlocked
-		return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, repairedHash, prefilterHash, &usage, nil)
+		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 	}
 
 	switch runReq.Mode {
@@ -226,7 +240,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		if runReq.RequireCleanGate && (gate.Summary.NeedsReviewCount > 0 || gate.Summary.RejectedCount > 0) {
 			result.Status = memorycore.ExtractionRunStatusFailed
 			safe := sanitizedError("unclean_gate", "gate contains review or rejected candidates")
-			return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, repairedHash, prefilterHash, &usage, safe)
+			return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 		}
 		apply := extraction.ApplyAcceptedFacts(ctx, r.service, r.db, req, resp, gate)
 		result.ApplyResult = &apply
@@ -242,12 +256,12 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		}
 	default:
 		safe := sanitizedError("invalid_mode", "mode must be validate, dry-run, or apply")
-		return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, repairedHash, prefilterHash, &usage, safe)
+		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 	}
-	return r.finish(ctx, start, runReq, result, hashText(llmReq.SystemPrompt+"\n"+llmReq.DeveloperPrompt+"\n"+llmReq.UserPrompt), responseHash, repairedHash, prefilterHash, &usage, nil)
+	return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 }
 
-func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.ExtractionRunRequest, result memorycore.ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *memorycore.LLMUsage, safe *safeError) (memorycore.ExtractionRunResult, error) {
+func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.ExtractionRunRequest, result memorycore.ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *memorycore.LLMUsage, safe *safeError, trace *rawLogTrace) (memorycore.ExtractionRunResult, error) {
 	result.DurationMS = time.Since(start).Milliseconds()
 	if usage != nil {
 		result.Usage = *usage
@@ -299,6 +313,21 @@ func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.
 			result.Status = memorycore.ExtractionRunStatusFailed
 			result.SanitizedErrorCode = "audit_write_failed"
 			result.SanitizedErrorMessage = "could not write extraction audit state"
+			safe = sanitizedError(result.SanitizedErrorCode, result.SanitizedErrorMessage)
+		}
+	}
+	if runReq.RawLog.Enabled && strings.TrimSpace(runReq.RawLog.Directory) != "" {
+		audit := rawLogAudit{
+			Fingerprint:          result.Fingerprint,
+			PromptHash:           promptHash,
+			ResponseHash:         responseHash,
+			RepairedResponseHash: repairedHash,
+			PreFilterHash:        prefilterHash,
+		}
+		if err := writeRawLog(runReq.RawLog.Directory, result, trace, audit); err != nil {
+			result.Status = memorycore.ExtractionRunStatusFailed
+			result.SanitizedErrorCode = "raw_log_write_failed"
+			result.SanitizedErrorMessage = "could not write extraction raw log"
 			return result, errors.New(result.SanitizedErrorMessage)
 		}
 	}
@@ -452,11 +481,14 @@ func requestMetadata(purpose string, requestID string, promptVersion string, sch
 }
 
 func extractionSystemPrompt(version string) string {
-	return fmt.Sprintf("MemoryCore extraction runtime %s. Extract candidate JSON only. Go gates decide validity and persistence.", version)
+	return fmt.Sprintf(`MemoryCore extraction runtime %s. Extract candidate JSON only. Go gates decide validity and persistence.
+Return exactly one JSON object and no prose, markdown, code fences, or wrapper text.
+FORMAT ONLY JSON EXAMPLE:
+{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[{"candidate_id":"f1","subject_entity_candidate_id":"user","predicate":"likes","object_entity_candidate_id":null,"object_literal":"hand drip coffee","content_summary":"User likes hand drip coffee.","fact_type":"stable_preference","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.7,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"Explicit user statement.","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":["explicit_user_statement"]}],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":1,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"ok"}}`, version, memorycore.ExtractionResponseSchemaVersion)
 }
 
 func extractionDeveloperPrompt() string {
-	return "Return strict JSON matching memory_extraction_protocol.v0.1. Do not write prose or markdown."
+	return "Return strict JSON matching schema " + memorycore.ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message."
 }
 
 func repairSystemPrompt(version string) string {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	memconfig "github.com/longyisang/emoagent-memorycore/config"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore/extractionruntime"
@@ -44,6 +45,8 @@ type extractionRuntimeFlags struct {
 	Repair              bool
 	Audit               string
 	Force               bool
+	RawLog              bool
+	RawLogDir           string
 	StopOnError         bool
 	AllowPartialFailure bool
 	RequireCleanGate    bool
@@ -54,6 +57,19 @@ func runExtractRun(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := parseExtractionRuntimeFlags(fs, formatJSON)
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(flags.commonOptions)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyExtractionRuntimeConfig(flags, &cfg, explicit, stderr)
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
+	} else if explicit["raw-log-dir"] {
+		flags.RawLog = true
 	}
 	if code := validateExtractionRuntimeFlags(stderr, fs, flags, false); code != 0 {
 		return code
@@ -88,6 +104,7 @@ func runExtractRun(args []string, stdout io.Writer, stderr io.Writer) int {
 		RequireCleanGate: flags.RequireCleanGate,
 		Audit:            flags.Audit,
 		Force:            flags.Force,
+		RawLog:           memorycore.ExtractionRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
 		Window: memorycore.ExtractionRunWindow{
 			EpisodeIDs: []string(flags.EpisodeIDs),
 			Limit:      flags.Limit,
@@ -112,6 +129,19 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := parseExtractionRuntimeFlags(fs, formatJSON)
 	if !parseFlags(fs, args) {
 		return 2
+	}
+	explicit := explicitFlagNames(fs)
+	cfg, hasConfig, err := loadCommandConfig(flags.commonOptions)
+	if err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if hasConfig {
+		applyExtractionRuntimeConfig(flags, &cfg, explicit, stderr)
+		if err := cfg.Validate(); err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
+	} else if explicit["raw-log-dir"] {
+		flags.RawLog = true
 	}
 	if code := validateExtractionRuntimeFlags(stderr, fs, flags, true); code != 0 {
 		return code
@@ -169,6 +199,7 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 		Force:                    flags.Force,
 		StopOnError:              flags.StopOnError,
 		AllowPartialFailure:      flags.AllowPartialFailure,
+		RawLog:                   memorycore.ExtractionRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
 	})
 	if flags.Format == formatJSON {
 		writeJSON(stdout, result, flags.Pretty)
@@ -187,6 +218,7 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extractionRuntimeFlags {
 	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, SessionLimit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096}
 	addCommonFlags(fs, &flags.commonOptions, defaultFormat)
+	addConfigFlag(fs, &flags.commonOptions)
 	fs.StringVar(&flags.SessionID, "session", "", "session id")
 	fs.Var(&flags.EpisodeIDs, "episode", "episode id; repeatable")
 	fs.StringVar(&flags.Trigger, "trigger", memorycore.ExtractionTriggerSessionEnd, "extraction trigger")
@@ -214,6 +246,8 @@ func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extrac
 	fs.BoolVar(&flags.Repair, "repair", true, "repair invalid JSON once")
 	fs.StringVar(&flags.Audit, "audit", memorycore.ExtractionAuditOn, "on|off; dry-run does not write memory but may write audit rows")
 	fs.BoolVar(&flags.Force, "force", false, "rerun even if the fingerprint already succeeded")
+	fs.BoolVar(&flags.RawLog, "raw-log", false, "write one raw extraction debug log JSON file per run")
+	fs.StringVar(&flags.RawLogDir, "raw-log-dir", "", "directory for raw extraction debug log JSON files")
 	fs.BoolVar(&flags.StopOnError, "stop-on-error", false, "stop batch at first error")
 	fs.BoolVar(&flags.AllowPartialFailure, "allow-partial-failure", false, "return zero for extract-batch partial_failure")
 	fs.BoolVar(&flags.RequireCleanGate, "require-clean-gate", false, "apply only if gate has no review or rejected candidates")
@@ -223,6 +257,12 @@ func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extrac
 func validateExtractionRuntimeFlags(stderr io.Writer, fs *flag.FlagSet, flags *extractionRuntimeFlags, batch bool) int {
 	if !requireDB(stderr, fs, flags.DBPath) {
 		return 2
+	}
+	if strings.TrimSpace(flags.RawLogDir) != "" {
+		flags.RawLog = true
+	}
+	if flags.RawLog && strings.TrimSpace(flags.RawLogDir) == "" {
+		return usageError(stderr, fs, "--raw-log-dir is required when --raw-log is set")
 	}
 	if err := validateFormat(flags.Format, formatText, formatJSON); err != nil {
 		return usageError(stderr, fs, err.Error())
@@ -260,6 +300,24 @@ func validateExtractionRuntimeFlags(stderr io.Writer, fs *flag.FlagSet, flags *e
 		return usageError(stderr, fs, "--session or --episode is required")
 	}
 	return 0
+}
+
+func applyExtractionRuntimeConfig(flags *extractionRuntimeFlags, cfg *memconfig.Config, explicit map[string]bool, stderr io.Writer) {
+	applyCommonConfig(&flags.commonOptions, cfg, explicit, stderr)
+	if explicit["raw-log"] {
+		warnConfigOverride(stderr, "raw-log", "pipelines.extraction.raw_log.enabled")
+		cfg.Pipelines.Extraction.RawLog.Enabled = flags.RawLog
+	} else {
+		flags.RawLog = cfg.Pipelines.Extraction.RawLog.Enabled
+	}
+	if explicit["raw-log-dir"] {
+		warnConfigOverride(stderr, "raw-log-dir", "pipelines.extraction.raw_log.directory")
+		flags.RawLog = true
+		cfg.Pipelines.Extraction.RawLog.Enabled = true
+		cfg.Pipelines.Extraction.RawLog.Directory = flags.RawLogDir
+	} else {
+		flags.RawLogDir = cfg.Pipelines.Extraction.RawLog.Directory
+	}
 }
 
 func openRuntimeDBAndService(ctx context.Context, opts commonOptions) (*memsqlite.DB, memorycore.Service, func(), error) {

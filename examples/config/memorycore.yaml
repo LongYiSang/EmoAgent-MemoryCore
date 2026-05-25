@@ -58,6 +58,9 @@ pipelines:
       type: disabled
     reasoning_effort: high
     retry_on_schema_failure: 1
+    raw_log:
+      enabled: false
+      directory: ""
 
   extraction_repair:
     enabled: false

@@ -12,25 +12,32 @@ import (
 
 var errPreFilterEnvelope = errors.New("prefilter envelope mismatch")
 
-func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequest, runReq memorycore.ExtractionRunRequest) (memorycore.ExtractionRequest, string, memorycore.LLMUsage, int, error) {
+func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequest, runReq memorycore.ExtractionRunRequest, trace *rawLogTrace) (memorycore.ExtractionRequest, string, memorycore.LLMUsage, int, error) {
 	llmReq := r.buildPreFilterLLMRequest(req, runReq)
+	trace.recordPreFilterRequest(llmReq)
 	raw, err := r.llm.CompleteJSON(ctx, llmReq)
+	trace.recordPreFilterResponse(raw)
 	if err != nil {
 		return req, "", raw.Usage, 0, err
 	}
 	prefilterHash := hashText(raw.Text)
 	resp, err := extraction.ParsePreFilterResponse(strings.NewReader(raw.Text))
 	if err != nil && runReq.RepairEnabled {
+		trace.recordPreFilterParseError(err)
 		repairReq := r.buildPreFilterRepairLLMRequest(raw.Text, runReq)
+		trace.recordPreFilterRepairRequest(repairReq)
 		repaired, repairErr := r.llm.CompleteJSON(ctx, repairReq)
+		trace.recordPreFilterRepairResponse(repaired)
 		raw.Usage = addUsage(raw.Usage, repaired.Usage)
 		if repairErr != nil {
 			return req, prefilterHash, raw.Usage, 0, repairErr
 		}
 		prefilterHash = hashText(repaired.Text)
 		resp, err = extraction.ParsePreFilterResponse(strings.NewReader(repaired.Text))
+		trace.recordPreFilterRepairParseError(err)
 	}
 	if err != nil {
+		trace.recordPreFilterParseError(err)
 		return req, prefilterHash, raw.Usage, 0, err
 	}
 	if err := validatePreFilterEnvelope(req, resp); err != nil {

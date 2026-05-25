@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"os"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -55,6 +56,73 @@ func TestRunExtractRunOpenAIProviderMissingKeyIsSanitized(t *testing.T) {
 	requireContains(t, stderr, "MEMORYCORE_LLM_API_KEY_FOR_TEST")
 	requireNotContains(t, stderr, "Bearer")
 	requireNotContains(t, stderr, "api_key")
+}
+
+func TestRunExtractRunRawLogUsesConfig(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	rawDir := t.TempDir()
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+pipelines:
+  extraction:
+    raw_log:
+      enabled: true
+      directory: `+yamlSingleQuote(rawDir)+`
+`)
+
+	stdout, stderr, code := runCLI(
+		"extract-run",
+		"--config", configPath,
+		"--session", "session_seed",
+		"--provider", "mock",
+		"--audit", "off",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"dry_run"`)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	requireRawLogFileCount(t, rawDir, 1)
+}
+
+func TestRunExtractRunRawLogFlagOverridesConfigAndWarns(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	configDir := t.TempDir()
+	flagDir := t.TempDir()
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+pipelines:
+  extraction:
+    raw_log:
+      enabled: true
+      directory: `+yamlSingleQuote(configDir)+`
+`)
+
+	stdout, stderr, code := runCLI(
+		"extract-run",
+		"--config", configPath,
+		"--session", "session_seed",
+		"--provider", "mock",
+		"--audit", "off",
+		"--raw-log-dir", flagDir,
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"dry_run"`)
+	requireContains(t, stderr, "warning: --raw-log-dir overrides memory.pipelines.extraction.raw_log.directory from config")
+	requireRawLogFileCount(t, configDir, 0)
+	requireRawLogFileCount(t, flagDir, 1)
 }
 
 func TestRunExtractOpenAIProviderValidationIsEarlyAndSanitized(t *testing.T) {
@@ -169,6 +237,28 @@ func TestRunExtractBatchSessionAndEpisodeLimits(t *testing.T) {
 	requireContains(t, stderr, "--limit is only supported by extract-run")
 }
 
+func TestRunExtractBatchRawLogWritesOneFilePerSession(t *testing.T) {
+	dbPath := seedCLIBatchDB(t)
+	rawDir := t.TempDir()
+
+	stdout, stderr, code := runCLI(
+		"extract-batch",
+		"--db", dbPath,
+		"--provider", "mock",
+		"--mode", "dry-run",
+		"--session-limit", "10",
+		"--audit", "off",
+		"--raw-log",
+		"--raw-log-dir", rawDir,
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"processed_count":2`)
+	requireRawLogFileCount(t, rawDir, 2)
+}
+
 func TestRunExtractBatchPartialFailureExitCode(t *testing.T) {
 	dbPath := seedCLIConsolidationDB(t)
 
@@ -237,5 +327,16 @@ func requireAuditRows(t *testing.T, dbPath string, wantAtLeast int) {
 	}
 	if got < wantAtLeast {
 		t.Fatalf("audit rows = %d, want at least %d", got, wantAtLeast)
+	}
+}
+
+func requireRawLogFileCount(t *testing.T, dir string, want int) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read raw log dir: %v", err)
+	}
+	if len(entries) != want {
+		t.Fatalf("raw log file count = %d, want %d", len(entries), want)
 	}
 }

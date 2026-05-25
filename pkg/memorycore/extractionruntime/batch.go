@@ -82,6 +82,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 			RequireCleanGate: batch.RequireCleanGate,
 			Audit:            batch.Audit,
 			Force:            batch.Force,
+			RawLog:           batch.RawLog,
 			Window: memorycore.ExtractionRunWindow{
 				Since: batch.Since,
 				Until: batch.Until,

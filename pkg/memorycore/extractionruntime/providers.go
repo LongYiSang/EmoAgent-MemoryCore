@@ -171,7 +171,12 @@ type OpenAICompatibleOptions struct {
 	Timeout     time.Duration
 	Temperature float64
 	MaxTokens   int
+	Thinking    *OpenAICompatibleThinkingOptions
 	HTTPClient  *http.Client
+}
+
+type OpenAICompatibleThinkingOptions struct {
+	Type string
 }
 
 type OpenAICompatibleLLM struct {
@@ -216,6 +221,12 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req memorycore.E
 			"type": "json_object",
 		},
 	}
+	if thinking, err := thinkingPayload(l.opts.Thinking); err != nil {
+		return memorycore.ExtractionLLMResponse{}, err
+	} else if thinking != nil {
+		payload["thinking"] = thinking
+	}
+	providerResp := memorycore.ExtractionLLMResponse{ProviderRequestBody: payload}
 	data, _ := json.Marshal(payload)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(data))
 	if err != nil {
@@ -229,8 +240,9 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req memorycore.E
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	providerResp.ProviderRawResponse = string(body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return memorycore.ExtractionLLMResponse{}, fmt.Errorf("provider returned status %d", resp.StatusCode)
+		return providerResp, fmt.Errorf("provider returned status %d", resp.StatusCode)
 	}
 	var decoded struct {
 		Model   string `json:"model"`
@@ -247,21 +259,40 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req memorycore.E
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return memorycore.ExtractionLLMResponse{}, fmt.Errorf("provider response decode failed")
+		return providerResp, fmt.Errorf("provider response decode failed")
 	}
 	if len(decoded.Choices) == 0 {
-		return memorycore.ExtractionLLMResponse{}, fmt.Errorf("provider response had no choices")
+		return providerResp, fmt.Errorf("provider response had no choices")
 	}
-	return memorycore.ExtractionLLMResponse{
-		Text:            decoded.Choices[0].Message.Content,
-		Model:           firstNonEmpty(decoded.Model, model),
-		RawFinishReason: decoded.Choices[0].FinishReason,
-		Usage: memorycore.LLMUsage{
-			PromptTokens:     decoded.Usage.PromptTokens,
-			CompletionTokens: decoded.Usage.CompletionTokens,
-			TotalTokens:      decoded.Usage.TotalTokens,
-		},
-	}, nil
+	content := decoded.Choices[0].Message.Content
+	providerResp.Text = content
+	providerResp.Model = firstNonEmpty(decoded.Model, model)
+	providerResp.RawFinishReason = decoded.Choices[0].FinishReason
+	providerResp.Usage = memorycore.LLMUsage{
+		PromptTokens:     decoded.Usage.PromptTokens,
+		CompletionTokens: decoded.Usage.CompletionTokens,
+		TotalTokens:      decoded.Usage.TotalTokens,
+	}
+	if strings.TrimSpace(content) == "" {
+		return providerResp, fmt.Errorf("provider response content was empty")
+	}
+	return providerResp, nil
+}
+
+func thinkingPayload(opts *OpenAICompatibleThinkingOptions) (map[string]string, error) {
+	if opts == nil {
+		return nil, nil
+	}
+	switch strings.TrimSpace(strings.ToLower(opts.Type)) {
+	case "enabled":
+		return map[string]string{"type": "enabled"}, nil
+	case "disabled":
+		return map[string]string{"type": "disabled"}, nil
+	case "":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("thinking.type must be enabled or disabled")
+	}
 }
 
 func firstNonEmpty(values ...string) string {

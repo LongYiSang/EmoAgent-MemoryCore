@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -441,6 +444,233 @@ func TestDeterministicMockLLMParsesRequestFromUserPromptWithoutMetadata(t *testi
 	}
 }
 
+func TestExtractionLLMRequestCarriesJSONContractAndRawUserPrompt(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{extractText: validRuntimeResponse(t, req)}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	if _, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request: req,
+		Mode:    memorycore.ExtractionRunModeDryRun,
+		Audit:   memorycore.ExtractionAuditOff,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(llm.requests) != 1 {
+		t.Fatalf("captured request count = %d, want 1", len(llm.requests))
+	}
+	captured := llm.requests[0]
+	if !strings.Contains(captured.SystemPrompt, "FORMAT ONLY JSON EXAMPLE") {
+		t.Fatalf("system prompt missing JSON example: %s", captured.SystemPrompt)
+	}
+	if !strings.Contains(captured.DeveloperPrompt, memorycore.ExtractionResponseSchemaVersion) {
+		t.Fatalf("developer prompt missing response schema: %s", captured.DeveloperPrompt)
+	}
+	if !strings.Contains(captured.SystemPrompt+captured.DeveloperPrompt, `"facts"`) {
+		t.Fatalf("prompt missing response field contract: %s\n%s", captured.SystemPrompt, captured.DeveloperPrompt)
+	}
+	var promptReq memorycore.ExtractionRequest
+	if err := json.Unmarshal([]byte(captured.UserPrompt), &promptReq); err != nil {
+		t.Fatalf("user prompt is not raw ExtractionRequest JSON: %v", err)
+	}
+	if promptReq.RequestID != req.RequestID {
+		t.Fatalf("user prompt request_id = %q, want %q", promptReq.RequestID, req.RequestID)
+	}
+	if strings.Contains(captured.UserPrompt, "output_contract") {
+		t.Fatalf("user prompt wrapped request instead of raw ExtractionRequest JSON: %s", captured.UserPrompt)
+	}
+}
+
+func TestOpenAICompatibleLLMSendsConfiguredThinkingType(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"thinking-model","choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "thinking-model",
+		Thinking:  &extractionruntime.OpenAICompatibleThinkingOptions{Type: "disabled"},
+	})
+
+	if _, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeExtraction,
+		UserPrompt: "{}",
+	}); err != nil {
+		t.Fatalf("CompleteJSON: %v", err)
+	}
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want object", payload["thinking"])
+	}
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking.type = %#v, want disabled", thinking["type"])
+	}
+	responseFormat, ok := payload["response_format"].(map[string]any)
+	if !ok || responseFormat["type"] != "json_object" {
+		t.Fatalf("response_format = %#v, want json_object", payload["response_format"])
+	}
+}
+
+func TestOpenAICompatibleLLMRejectsEmptyProviderContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"empty-model","choices":[{"finish_reason":"stop","message":{"content":""}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "empty-model",
+	})
+	if _, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeExtraction,
+		UserPrompt: "{}",
+	}); err == nil || !strings.Contains(err.Error(), "provider response content was empty") {
+		t.Fatalf("CompleteJSON error = %v, want empty content error", err)
+	}
+}
+
+func TestRunnerRawLogWritesFullDebugArtifactWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		extractText:         validRuntimeResponse(t, req),
+		providerRequestBody: map[string]any{"model": "fake-model"},
+		providerRawResponse: `{"choices":[{"message":{"content":"ok"}}]}`,
+	}
+	rawDir := t.TempDir()
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request: req,
+		Mode:    memorycore.ExtractionRunModeDryRun,
+		Audit:   memorycore.ExtractionAuditOff,
+		RawLog:  memorycore.ExtractionRawLogOptions{Enabled: true, Directory: rawDir},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != memorycore.ExtractionRunStatusDryRun {
+		t.Fatalf("status = %q", result.Status)
+	}
+	artifact := readSingleRawLogArtifact(t, rawDir)
+	if artifact["schema_version"] != "memory_extraction_raw_log.v0.1" {
+		t.Fatalf("schema_version = %#v", artifact["schema_version"])
+	}
+	request := requireMap(t, artifact["request"])
+	episodes := requireSlice(t, request["episodes"])
+	firstEpisode := requireMap(t, episodes[0])
+	if firstEpisode["content"] != req.Episodes[0].Content {
+		t.Fatalf("logged episode content = %#v", firstEpisode["content"])
+	}
+	llmLog := requireMap(t, artifact["llm"])
+	extraction := requireMap(t, llmLog["extraction"])
+	llmReq := requireMap(t, extraction["request"])
+	if !strings.Contains(llmReq["user_prompt"].(string), req.Episodes[0].Content) {
+		t.Fatalf("logged user prompt missing raw episode: %#v", llmReq["user_prompt"])
+	}
+	llmResp := requireMap(t, extraction["response"])
+	if llmResp["provider_raw_response"] != `{"choices":[{"message":{"content":"ok"}}]}` {
+		t.Fatalf("provider raw response = %#v", llmResp["provider_raw_response"])
+	}
+	audit := requireMap(t, artifact["audit"])
+	if audit["prompt_hash"] == "" || audit["response_hash"] == "" {
+		t.Fatalf("audit hashes missing: %#v", audit)
+	}
+	finalResult := requireMap(t, artifact["result"])
+	if finalResult["status"] != "dry_run" {
+		t.Fatalf("logged result status = %#v", finalResult["status"])
+	}
+}
+
+func TestRunnerRawLogRecordsRepairAttempt(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		extractText: "```json\n{}\n```",
+		repairText:  validRuntimeResponse(t, req),
+	}
+	rawDir := t.TempDir()
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:       req,
+		Mode:          memorycore.ExtractionRunModeDryRun,
+		Audit:         memorycore.ExtractionAuditOff,
+		RepairEnabled: true,
+		RawLog:        memorycore.ExtractionRawLogOptions{Enabled: true, Directory: rawDir},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !result.Repaired {
+		t.Fatal("result was not marked repaired")
+	}
+	artifact := readSingleRawLogArtifact(t, rawDir)
+	llmLog := requireMap(t, artifact["llm"])
+	extraction := requireMap(t, llmLog["extraction"])
+	if parseErr := extraction["parse_error"].(string); !strings.Contains(parseErr, "markdown code fences") {
+		t.Fatalf("extraction parse_error = %q", parseErr)
+	}
+	repair := requireMap(t, llmLog["repair"])
+	repairReq := requireMap(t, repair["request"])
+	if repairReq["purpose"] != memorycore.ExtractionLLMPurposeRepair {
+		t.Fatalf("repair purpose = %#v", repairReq["purpose"])
+	}
+	finalResult := requireMap(t, artifact["result"])
+	if finalResult["repaired"] != true {
+		t.Fatalf("logged repaired = %#v", finalResult["repaired"])
+	}
+}
+
+func TestRunnerRawLogWriteFailureDoesNotRollbackApply(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	blockingFile := filepath.Join(t.TempDir(), "raw-log-file")
+	if err := os.WriteFile(blockingFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	llm := &fakeExtractionLLM{extractText: validRuntimeResponse(t, req)}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request: req,
+		Mode:    memorycore.ExtractionRunModeApply,
+		Audit:   memorycore.ExtractionAuditOff,
+		RawLog:  memorycore.ExtractionRawLogOptions{Enabled: true, Directory: blockingFile},
+	})
+	if err == nil {
+		t.Fatal("run err = nil, want raw log write failure")
+	}
+	if result.SanitizedErrorCode != "raw_log_write_failed" {
+		t.Fatalf("sanitized error code = %q", result.SanitizedErrorCode)
+	}
+	assertFactCount(t, db, 1)
+}
+
 func TestRunBatchPropagatesBuildRequestOptions(t *testing.T) {
 	ctx := context.Background()
 	svc, db := seedRuntimeDB(t, ctx, "我不喜欢早上八点开会。")
@@ -486,27 +716,37 @@ func TestRunBatchPropagatesBuildRequestOptions(t *testing.T) {
 }
 
 type fakeExtractionLLM struct {
-	prefilterText  string
-	extractText    string
-	repairText     string
-	prefilterCalls int
-	extractCalls   int
-	repairCalls    int
-	requests       []memorycore.ExtractionLLMRequest
+	prefilterText       string
+	extractText         string
+	repairText          string
+	providerRequestBody map[string]any
+	providerRawResponse string
+	prefilterCalls      int
+	extractCalls        int
+	repairCalls         int
+	requests            []memorycore.ExtractionLLMRequest
 }
 
 func (f *fakeExtractionLLM) CompleteJSON(ctx context.Context, req memorycore.ExtractionLLMRequest) (memorycore.ExtractionLLMResponse, error) {
 	f.requests = append(f.requests, req)
+	resp := memorycore.ExtractionLLMResponse{
+		Model:               "fake",
+		ProviderRequestBody: f.providerRequestBody,
+		ProviderRawResponse: f.providerRawResponse,
+	}
 	switch req.Purpose {
 	case memorycore.ExtractionLLMPurposePreFilter:
 		f.prefilterCalls++
-		return memorycore.ExtractionLLMResponse{Text: f.prefilterText, Model: "fake"}, nil
+		resp.Text = f.prefilterText
+		return resp, nil
 	case memorycore.ExtractionLLMPurposeRepair:
 		f.repairCalls++
-		return memorycore.ExtractionLLMResponse{Text: f.repairText, Model: "fake"}, nil
+		resp.Text = f.repairText
+		return resp, nil
 	default:
 		f.extractCalls++
-		return memorycore.ExtractionLLMResponse{Text: f.extractText, Model: "fake"}, nil
+		resp.Text = f.extractText
+		return resp, nil
 	}
 }
 
@@ -736,6 +976,44 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatalf("marshal json: %v", err)
 	}
 	return string(data)
+}
+
+func readSingleRawLogArtifact(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read raw log dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("raw log file count = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read raw log file: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode raw log file: %v\n%s", err, string(data))
+	}
+	return out
+}
+
+func requireMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	out, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("value = %#v, want object", value)
+	}
+	return out
+}
+
+func requireSlice(t *testing.T, value any) []any {
+	t.Helper()
+	out, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value = %#v, want array", value)
+	}
+	return out
 }
 
 var _ = time.Time{}

@@ -35,10 +35,12 @@ type ExtractionLLMRequest struct {
 }
 
 type ExtractionLLMResponse struct {
-	Text            string   `json:"text"`
-	Model           string   `json:"model,omitempty"`
-	Usage           LLMUsage `json:"usage,omitempty"`
-	RawFinishReason string   `json:"raw_finish_reason,omitempty"`
+	Text                string   `json:"text"`
+	Model               string   `json:"model,omitempty"`
+	Usage               LLMUsage `json:"usage,omitempty"`
+	RawFinishReason     string   `json:"raw_finish_reason,omitempty"`
+	ProviderRequestBody any      `json:"provider_request_body,omitempty"`
+	ProviderRawResponse string   `json:"provider_raw_response,omitempty"`
 }
 
 type LLMUsage struct {
@@ -69,20 +71,26 @@ const (
 )
 
 type ExtractionRunRequest struct {
-	Request          ExtractionRequest   `json:"request"`
-	Mode             ExtractionRunMode   `json:"mode"`
-	ProviderID       string              `json:"provider_id,omitempty"`
-	ProviderKind     string              `json:"provider_kind,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Temperature      float64             `json:"temperature,omitempty"`
-	MaxTokens        int                 `json:"max_tokens,omitempty"`
-	Timeout          time.Duration       `json:"timeout,omitempty"`
-	UsePreFilter     bool                `json:"use_prefilter,omitempty"`
-	RepairEnabled    bool                `json:"repair_enabled,omitempty"`
-	RequireCleanGate bool                `json:"require_clean_gate,omitempty"`
-	Audit            string              `json:"audit,omitempty"`
-	Force            bool                `json:"force,omitempty"`
-	Window           ExtractionRunWindow `json:"window,omitempty"`
+	Request          ExtractionRequest       `json:"request"`
+	Mode             ExtractionRunMode       `json:"mode"`
+	ProviderID       string                  `json:"provider_id,omitempty"`
+	ProviderKind     string                  `json:"provider_kind,omitempty"`
+	Model            string                  `json:"model,omitempty"`
+	Temperature      float64                 `json:"temperature,omitempty"`
+	MaxTokens        int                     `json:"max_tokens,omitempty"`
+	Timeout          time.Duration           `json:"timeout,omitempty"`
+	UsePreFilter     bool                    `json:"use_prefilter,omitempty"`
+	RepairEnabled    bool                    `json:"repair_enabled,omitempty"`
+	RequireCleanGate bool                    `json:"require_clean_gate,omitempty"`
+	Audit            string                  `json:"audit,omitempty"`
+	Force            bool                    `json:"force,omitempty"`
+	Window           ExtractionRunWindow     `json:"window,omitempty"`
+	RawLog           ExtractionRawLogOptions `json:"raw_log,omitempty"`
+}
+
+type ExtractionRawLogOptions struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	Directory string `json:"directory,omitempty"`
 }
 
 type ExtractionRunWindow struct {
@@ -140,34 +148,35 @@ type ExtractionPreFilterEpisode struct {
 }
 
 type ExtractionBatchRequest struct {
-	PersonaID                string            `json:"persona_id,omitempty"`
-	SessionIDs               []string          `json:"session_ids,omitempty"`
-	Trigger                  string            `json:"trigger,omitempty"`
-	Mode                     ExtractionRunMode `json:"mode"`
-	ProviderID               string            `json:"provider_id,omitempty"`
-	ProviderKind             string            `json:"provider_kind,omitempty"`
-	Model                    string            `json:"model,omitempty"`
-	Temperature              float64           `json:"temperature,omitempty"`
-	MaxTokens                int               `json:"max_tokens,omitempty"`
-	Timeout                  time.Duration     `json:"timeout,omitempty"`
-	Limit                    int               `json:"limit,omitempty"`
-	EpisodeLimit             int               `json:"episode_limit,omitempty"`
-	Timezone                 string            `json:"timezone,omitempty"`
-	AllowSensitiveExtraction bool              `json:"allow_sensitive_extraction,omitempty"`
-	AllowInference           bool              `json:"allow_inference,omitempty"`
-	ManualPin                bool              `json:"manual_pin,omitempty"`
-	ManualForget             bool              `json:"manual_forget,omitempty"`
-	MaxFacts                 int               `json:"max_facts,omitempty"`
-	MaxLinks                 int               `json:"max_links,omitempty"`
-	Since                    *time.Time        `json:"since,omitempty"`
-	Until                    *time.Time        `json:"until,omitempty"`
-	UsePreFilter             bool              `json:"use_prefilter,omitempty"`
-	RepairEnabled            bool              `json:"repair_enabled,omitempty"`
-	RequireCleanGate         bool              `json:"require_clean_gate,omitempty"`
-	Audit                    string            `json:"audit,omitempty"`
-	Force                    bool              `json:"force,omitempty"`
-	StopOnError              bool              `json:"stop_on_error,omitempty"`
-	AllowPartialFailure      bool              `json:"allow_partial_failure,omitempty"`
+	PersonaID                string                  `json:"persona_id,omitempty"`
+	SessionIDs               []string                `json:"session_ids,omitempty"`
+	Trigger                  string                  `json:"trigger,omitempty"`
+	Mode                     ExtractionRunMode       `json:"mode"`
+	ProviderID               string                  `json:"provider_id,omitempty"`
+	ProviderKind             string                  `json:"provider_kind,omitempty"`
+	Model                    string                  `json:"model,omitempty"`
+	Temperature              float64                 `json:"temperature,omitempty"`
+	MaxTokens                int                     `json:"max_tokens,omitempty"`
+	Timeout                  time.Duration           `json:"timeout,omitempty"`
+	Limit                    int                     `json:"limit,omitempty"`
+	EpisodeLimit             int                     `json:"episode_limit,omitempty"`
+	Timezone                 string                  `json:"timezone,omitempty"`
+	AllowSensitiveExtraction bool                    `json:"allow_sensitive_extraction,omitempty"`
+	AllowInference           bool                    `json:"allow_inference,omitempty"`
+	ManualPin                bool                    `json:"manual_pin,omitempty"`
+	ManualForget             bool                    `json:"manual_forget,omitempty"`
+	MaxFacts                 int                     `json:"max_facts,omitempty"`
+	MaxLinks                 int                     `json:"max_links,omitempty"`
+	Since                    *time.Time              `json:"since,omitempty"`
+	Until                    *time.Time              `json:"until,omitempty"`
+	UsePreFilter             bool                    `json:"use_prefilter,omitempty"`
+	RepairEnabled            bool                    `json:"repair_enabled,omitempty"`
+	RequireCleanGate         bool                    `json:"require_clean_gate,omitempty"`
+	Audit                    string                  `json:"audit,omitempty"`
+	Force                    bool                    `json:"force,omitempty"`
+	StopOnError              bool                    `json:"stop_on_error,omitempty"`
+	AllowPartialFailure      bool                    `json:"allow_partial_failure,omitempty"`
+	RawLog                   ExtractionRawLogOptions `json:"raw_log,omitempty"`
 }
 
 type ExtractionBatchResult struct {
