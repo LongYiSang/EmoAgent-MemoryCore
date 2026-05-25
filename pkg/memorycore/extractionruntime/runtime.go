@@ -196,7 +196,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	var repairedHash string
 	if parseErr != nil && runReq.RepairEnabled {
 		trace.recordExtractionParseError(parseErr)
-		repairReq := r.buildRepairLLMRequest(raw.Text, runReq)
+		repairReq := r.buildRepairLLMRequest(raw.Text, parseErr, runReq)
 		trace.recordRepairRequest(repairReq)
 		repairRaw, repairErr := r.llm.CompleteJSON(ctx, repairReq)
 		trace.recordRepairResponse(repairRaw)
@@ -452,14 +452,14 @@ func (r *Runner) buildExtractionLLMRequest(req memorycore.ExtractionRequest, run
 	}
 }
 
-func (r *Runner) buildRepairLLMRequest(raw string, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
+func (r *Runner) buildRepairLLMRequest(raw string, parseErr error, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
 	return memorycore.ExtractionLLMRequest{
 		Purpose:         memorycore.ExtractionLLMPurposeRepair,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
 		SystemPrompt:    repairSystemPrompt(r.promptVersions.Repair),
-		DeveloperPrompt: "Return only one strict JSON object for schema " + memorycore.ExtractionResponseSchemaVersion + ". Do not include markdown fences.",
+		DeveloperPrompt: repairDeveloperPrompt(parseErr),
 		UserPrompt:      raw,
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
@@ -484,13 +484,30 @@ func extractionSystemPrompt(version string) string {
 	return fmt.Sprintf(`MemoryCore extraction runtime %s. Extract candidate JSON only. Go gates decide validity and persistence.
 Return exactly one JSON object and no prose, markdown, code fences, or wrapper text.
 FORMAT ONLY JSON EXAMPLE:
-{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[{"candidate_id":"f1","subject_entity_candidate_id":"user","predicate":"likes","object_entity_candidate_id":null,"object_literal":"hand drip coffee","content_summary":"User likes hand drip coffee.","fact_type":"stable_preference","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.7,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"Explicit user statement.","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":["explicit_user_statement"]}],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":1,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"ok"}}`, version, memorycore.ExtractionResponseSchemaVersion)
+{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[{"candidate_id":"f1","subject_entity_candidate_id":"user","predicate":"likes","object_entity_candidate_id":null,"object_literal":"手冲咖啡","content_summary":"用户喜欢手冲咖啡。","fact_type":"stable_preference","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.7,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"用户直接表达喜欢手冲咖啡。","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":["explicit_user_statement"]}],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":1,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"通过"}}`, version, memorycore.ExtractionResponseSchemaVersion)
 }
 
 func extractionDeveloperPrompt() string {
-	return "Return strict JSON matching schema " + memorycore.ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message."
+	return "Return strict JSON matching schema " + memorycore.ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message.\n" + extractionFieldContract()
 }
 
 func repairSystemPrompt(version string) string {
 	return fmt.Sprintf("MemoryCore JSON repair %s. Repair formatting/schema JSON only. Do not infer or add evidence.", version)
+}
+
+func repairDeveloperPrompt(parseErr error) string {
+	message := ""
+	if parseErr != nil {
+		message = " Parser error to fix: " + parseErr.Error()
+	}
+	return "Return only one strict JSON object for schema " + memorycore.ExtractionResponseSchemaVersion + ". Do not include markdown fences." + message + "\n" + extractionFieldContract()
+}
+
+func extractionFieldContract() string {
+	return `Field contract:
+- Use Chinese for human-readable summaries and notes when the source conversation is Chinese: content_summary, evidence_notes, reasoning, gate_summary.notes, pin_reason, target_description, corrected_topic, and rejection reasons. Keep JSON field names, IDs, enum values, fact_type, operation_hint, quality_decision, sensitivity_level, and confidence labels as protocol values.
+- Do not copy request.known_entities into response.entities. entity_id is input-only. Do not return entity_id; use "known_entity_id" for an existing entity or omit entities when using special ids "user" or "agent".
+- response.entities fields only: "candidate_id", "canonical_name", "entity_type", "aliases", "description", "confidence", "source_episode_ids", "merge_hint", "known_entity_id", "sensitivity_level", "reasoning".
+- response.affect_events fields only: "candidate_id", "scope", "label", "valence", "arousal", "source_episode_ids", "confidence", "reasoning". Do not return subject_entity_candidate_id, affect_type, intensity, trigger, context, operation_hint, quality_decision, or quality_reasons in affect_events.
+- response.facts fields only: "candidate_id", "subject_entity_candidate_id", "predicate", "object_entity_candidate_id", "object_literal", "content_summary", "fact_type", "valid_from", "valid_to", "temporal_precision", "extraction_confidence", "extraction_confidence_score", "importance", "valence", "arousal", "sensitivity_level", "source_episode_ids", "evidence_notes", "reasoning", "operation_hint", "pinned", "user_requested", "searchable_hint", "quality_decision", "quality_reasons".`
 }

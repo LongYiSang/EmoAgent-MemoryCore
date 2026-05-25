@@ -467,11 +467,32 @@ func TestExtractionLLMRequestCarriesJSONContractAndRawUserPrompt(t *testing.T) {
 	if !strings.Contains(captured.SystemPrompt, "FORMAT ONLY JSON EXAMPLE") {
 		t.Fatalf("system prompt missing JSON example: %s", captured.SystemPrompt)
 	}
+	if !strings.Contains(captured.SystemPrompt, `"content_summary":"用户喜欢手冲咖啡。"`) {
+		t.Fatalf("system prompt example should keep human-readable summary in Chinese: %s", captured.SystemPrompt)
+	}
+	if strings.Contains(captured.SystemPrompt, `"content_summary":"User likes hand drip coffee."`) {
+		t.Fatalf("system prompt example should not encourage English summaries: %s", captured.SystemPrompt)
+	}
 	if !strings.Contains(captured.DeveloperPrompt, memorycore.ExtractionResponseSchemaVersion) {
 		t.Fatalf("developer prompt missing response schema: %s", captured.DeveloperPrompt)
 	}
 	if !strings.Contains(captured.SystemPrompt+captured.DeveloperPrompt, `"facts"`) {
 		t.Fatalf("prompt missing response field contract: %s\n%s", captured.SystemPrompt, captured.DeveloperPrompt)
+	}
+	contract := captured.SystemPrompt + "\n" + captured.DeveloperPrompt
+	for _, want := range []string{
+		"Do not copy request.known_entities",
+		"entity_id is input-only",
+		`"known_entity_id"`,
+		`"merge_hint"`,
+		`affect_events fields`,
+		`"scope"`,
+		`"label"`,
+		"Use Chinese for human-readable summaries",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("prompt contract missing %q: %s", want, contract)
+		}
 	}
 	var promptReq memorycore.ExtractionRequest
 	if err := json.Unmarshal([]byte(captured.UserPrompt), &promptReq); err != nil {
@@ -640,6 +661,65 @@ func TestRunnerRawLogRecordsRepairAttempt(t *testing.T) {
 	finalResult := requireMap(t, artifact["result"])
 	if finalResult["repaired"] != true {
 		t.Fatalf("logged repaired = %#v", finalResult["repaired"])
+	}
+}
+
+func TestRunnerRepairPromptIncludesParserErrorAndSchemaHints(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我喜欢手冲咖啡。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	bad := responseMap(t, validRuntimeResponse(t, req))
+	bad["entities"] = []any{map[string]any{
+		"candidate_id":          "user",
+		"entity_id":             "ent_user",
+		"canonical_name":        "User",
+		"entity_type":           memorycore.EntityTypeUser,
+		"visibility_status":     "visible",
+		"sensitivity_level":     memorycore.SensitivityNormal,
+		"source_episode_ids":    []string{req.Episodes[0].EpisodeID},
+		"operation_hint":        "use_existing",
+		"quality_decision":      "accept",
+		"quality_reasons":       []string{"copied_known_entity"},
+		"extraction_confidence": "explicit",
+	}}
+	llm := &fakeExtractionLLM{
+		extractText: mustJSON(t, bad),
+		repairText:  validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:       req,
+		Mode:          memorycore.ExtractionRunModeDryRun,
+		Audit:         memorycore.ExtractionAuditOff,
+		RepairEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !result.Repaired {
+		t.Fatal("result was not repaired")
+	}
+	if len(llm.requests) < 2 {
+		t.Fatalf("captured request count = %d, want extraction and repair", len(llm.requests))
+	}
+	repairReq := llm.requests[1]
+	if repairReq.Purpose != memorycore.ExtractionLLMPurposeRepair {
+		t.Fatalf("repair purpose = %q", repairReq.Purpose)
+	}
+	for _, want := range []string{
+		`json: unknown field "entity_id"`,
+		"Do not return entity_id",
+		`"known_entity_id"`,
+		`affect_events fields`,
+		`"scope"`,
+		`"label"`,
+	} {
+		if !strings.Contains(repairReq.DeveloperPrompt, want) {
+			t.Fatalf("repair developer prompt missing %q: %s", want, repairReq.DeveloperPrompt)
+		}
 	}
 }
 
