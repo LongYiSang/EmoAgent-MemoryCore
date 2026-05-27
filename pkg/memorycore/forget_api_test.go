@@ -115,6 +115,169 @@ WHERE id = ?`, fact.ID).Scan(
 	}
 }
 
+func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢安静的早晨。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "安静的早晨", "用户喜欢安静的早晨。", episode.ID).Fact
+
+	previewReq := memorycore.ForgetPreviewRequest{
+		ScopeMode: memorycore.ForgetScopeEntity,
+		EntityID:  userID,
+	}
+	preview, err := svc.PreviewForget(ctx, previewReq)
+	if err != nil {
+		t.Fatalf("preview entity forget: %v", err)
+	}
+	if !preview.RequiresConfirmation || len(preview.Targets) != 1 || preview.Targets[0].NodeID != fact.ID {
+		t.Fatalf("entity preview = %#v, want one confirmed fact target %s", preview, fact.ID)
+	}
+
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:          memorycore.ForgetLevelHard,
+		PreviewRequest: previewReq,
+		Preview:        *preview,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("execute entity forget without confirmation error = %v, want ErrInvalidRequest", err)
+	}
+
+	executed, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:          memorycore.ForgetLevelHard,
+		PreviewRequest: previewReq,
+		Preview:        *preview,
+		Confirmed:      true,
+	})
+	if err != nil {
+		t.Fatalf("execute entity forget: %v", err)
+	}
+	if executed.Executed != 1 {
+		t.Fatalf("executed = %d, want 1", executed.Executed)
+	}
+
+	verified, err := svc.VerifyForget(ctx, memorycore.ForgetVerifyRequest{Targets: preview.Targets})
+	if err != nil {
+		t.Fatalf("verify entity forget: %v", err)
+	}
+	if !verified.Passed || len(verified.Targets) != 1 || !verified.Targets[0].Passed {
+		t.Fatalf("verify entity forget = %#v, want passed target", verified)
+	}
+}
+
+func TestServiceForgetResolverRecentPromptItemAndEpisodeWindow(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我住在新加坡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "新加坡", "用户喜欢新加坡。", episode.ID).Fact
+
+	promptReq := memorycore.ForgetPreviewRequest{
+		ScopeMode: memorycore.ForgetScopeRecentPromptItem,
+		NodeType:  memorycore.ForgetNodeFact,
+		NodeID:    fact.ID,
+		RecentPromptItems: []memorycore.ForgetPromptItem{{
+			NodeType: memorycore.ForgetNodeFact,
+			NodeID:   fact.ID,
+			Summary:  fact.ContentSummary,
+		}},
+	}
+	promptPreview, err := svc.PreviewForget(ctx, promptReq)
+	if err != nil {
+		t.Fatalf("preview recent prompt item: %v", err)
+	}
+	if promptPreview.RequiresConfirmation || len(promptPreview.Targets) != 1 || promptPreview.Targets[0].NodeID != fact.ID {
+		t.Fatalf("recent prompt preview = %#v, want direct fact target %s", promptPreview, fact.ID)
+	}
+
+	windowReq := memorycore.ForgetPreviewRequest{
+		ScopeMode: memorycore.ForgetScopeRecentEpisodeWindow,
+		SessionID: sessionID,
+		Limit:     1,
+	}
+	windowPreview, err := svc.PreviewForget(ctx, windowReq)
+	if err != nil {
+		t.Fatalf("preview recent episode window: %v", err)
+	}
+	if !windowPreview.RequiresConfirmation || len(windowPreview.Targets) != 1 || windowPreview.Targets[0].NodeID != episode.ID {
+		t.Fatalf("recent episode window preview = %#v, want confirmed episode target %s", windowPreview, episode.ID)
+	}
+}
+
+func TestServiceForgetResolverBroadTopicPreviewIsSafeAndNotExecutable(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我的银行卡尾号是4111。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "银行卡尾号4111", "用户的银行卡尾号是4111。", episode.ID).Fact
+
+	previewReq := memorycore.ForgetPreviewRequest{
+		ScopeMode: memorycore.ForgetScopeBroadTopic,
+		Topic:     "4111",
+		Limit:     5,
+	}
+	preview, err := svc.PreviewForget(ctx, previewReq)
+	if err != nil {
+		t.Fatalf("preview broad topic: %v", err)
+	}
+	if !preview.RequiresConfirmation || len(preview.Targets) != 1 || preview.Targets[0].NodeID != fact.ID {
+		t.Fatalf("broad topic preview = %#v, want one confirmed fact target %s", preview, fact.ID)
+	}
+	if strings.Contains(preview.Targets[0].Summary, "4111") || strings.Contains(preview.Targets[0].SafeSummary, "4111") {
+		t.Fatalf("broad topic preview leaked raw semantic text: %#v", preview.Targets[0])
+	}
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:          memorycore.ForgetLevelHard,
+		PreviewRequest: previewReq,
+		Preview:        *preview,
+		Confirmed:      true,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("execute broad topic error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡和茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	coffee := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	tea := consolidateLiteral(t, ctx, svc, userID, "likes", "茶", "用户喜欢茶。", episode.ID).Fact
+
+	req := memorycore.ForgetPreviewRequest{
+		ScopeMode: memorycore.ForgetScopeExactNode,
+		NodeType:  memorycore.ForgetNodeFact,
+		NodeID:    coffee.ID,
+	}
+	preview, err := svc.PreviewForget(ctx, req)
+	if err != nil {
+		t.Fatalf("preview exact forget: %v", err)
+	}
+	forged := *preview
+	forged.Targets = []memorycore.ForgetResolvedTarget{{NodeType: memorycore.ForgetNodeFact, NodeID: tea.ID}}
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:          memorycore.ForgetLevelHard,
+		PreviewRequest: req,
+		Preview:        forged,
+		Confirmed:      true,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("execute forged preview error = %v, want ErrInvalidRequest", err)
+	}
+
+	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "茶"})
+	if err != nil {
+		t.Fatalf("retrieve tea after forged execute: %v", err)
+	}
+	requireMemoryItem(t, retrieved, tea.ID, tea.ContentSummary, "")
+}
+
 func isFTSTablePresent(t *testing.T, db *sql.DB) bool {
 	t.Helper()
 

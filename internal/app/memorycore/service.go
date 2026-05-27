@@ -27,6 +27,9 @@ type Service interface {
 	RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error)
 	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
+	PreviewForget(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error)
+	ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (*ForgetExecuteResult, error)
+	VerifyForget(ctx context.Context, req ForgetVerifyRequest) (*ForgetVerifyResult, error)
 	RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
 	RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (*RebuildMirrorResult, error)
 }

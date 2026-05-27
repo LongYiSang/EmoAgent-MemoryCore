@@ -67,6 +67,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runExtractRun(args[1:], stdout, stderr)
 	case "extract-batch":
 		return runExtractBatch(args[1:], stdout, stderr)
+	case "debug-cleanup":
+		return runDebugCleanup(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2
