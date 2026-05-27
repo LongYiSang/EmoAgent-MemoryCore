@@ -9,6 +9,7 @@ artifacts/
 *.db-*
 
 # ── IDE / 编辑器 ──
+.claude/
 .idea/
 .vscode/
 *.swp
@@ -48,8 +49,9 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ── 暂不开放 ──
+# ── 其他 ──
 /docs/architecture/
 /docs/TODO/
 /docs/Phase5参考/
 /docs/refactor/
+/reports/

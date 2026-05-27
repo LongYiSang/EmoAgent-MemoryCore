@@ -74,10 +74,10 @@ func TestScoringPrefetchAuthorityEvidenceAndFatigue(t *testing.T) {
 	}
 	addPrefetchEvidence(t, ctx, db, "link_hidden_episode", "fact_hidden_episode", "ep_hidden")
 	addPrefetchEvidence(t, ctx, db, "link_pinned_hidden_episode", "fact_pinned_hidden_episode", "ep_hidden")
-	addPrefetchAccessEvent(t, db, "event_same_session", "s1", "fact_visible", "retrieved")
-	addPrefetchAccessEvent(t, db, "event_other_session", "s2", "fact_visible", "retrieved")
+	addPrefetchAccessEvent(t, db, "event_same_session", "s1", "fact_visible", "prompt_injected")
+	addPrefetchAccessEvent(t, db, "event_other_session", "s2", "fact_visible", "prompt_injected")
 	addPrefetchAccessEvent(t, db, "event_suppressed", "s1", "fact_visible", "suppressed")
-	addPrefetchAccessEvent(t, db, "event_other_node", "s1", "fact_hidden_entity", "retrieved")
+	addPrefetchAccessEvent(t, db, "event_other_node", "s1", "fact_hidden_entity", "prompt_injected")
 
 	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
 	candidates := map[string]retrievalCandidate{}
@@ -123,7 +123,7 @@ func TestScoringPrefetchAuthorityEvidenceAndFatigue(t *testing.T) {
 		t.Fatalf("evidence strength = %.6f, want 0.785", strength)
 	}
 	if got := pf.fatigue["fact_visible"]; got != 1 {
-		t.Fatalf("fatigue count = %d, want 1 same-session retrieved event", got)
+		t.Fatalf("fatigue count = %d, want 1 same-session prompt_injected event", got)
 	}
 	if got := pf.fatigue["fact_hidden_entity"]; got != 1 {
 		t.Fatalf("fatigue count for other fact = %d, want 1", got)
@@ -198,7 +198,9 @@ func TestRetrievalBatchPrefetchGoldenBehavior(t *testing.T) {
 	addPrefetchEvidence(t, ctx, db, "link_hidden_source_batch", "fact_hidden_source_batch", "ep_hidden_batch")
 	addPrefetchFactLink(t, ctx, db, "link_visible_related_batch", "fact_visible_batch", "CAUSED_BY", "fact_related_batch", 1.0)
 	addPrefetchFactLink(t, ctx, db, "link_related_superseded_batch", "fact_related_new_batch", "SUPERSEDES", "fact_related_batch", 1.0)
-	addPrefetchAccessEvent(t, db, "event_fatigue_batch", "s1", "fact_fatigue_batch", "retrieved")
+	addPrefetchAccessEvent(t, db, "event_fatigue_batch_1", "s1", "fact_fatigue_batch", "prompt_injected")
+	addPrefetchAccessEvent(t, db, "event_fatigue_batch_2", "s1", "fact_fatigue_batch", "prompt_injected")
+	addPrefetchAccessEvent(t, db, "event_fatigue_batch_3", "s1", "fact_fatigue_batch", "prompt_injected")
 
 	mirrorDiagnostics := &MirrorDiagnostics{Candidates: []MirrorCandidateDiagnostic{{
 		TriviumNodeID: 101,
@@ -455,18 +457,32 @@ func TestBatchPrefetchFatigueQueryPlanUsesSessionNodeAccessIndex(t *testing.T) {
 	db := openPrefetchTestDB(t, ctx)
 	defer db.Close()
 	seedPrefetchGraph(t, ctx, db)
-	addPrefetchAccessEvent(t, db, "event_plan", "s1", "fact_plan", "retrieved")
+	addPrefetchAccessEvent(t, db, "event_plan", "s1", "fact_plan", "prompt_injected")
 
 	rows, err := db.SQLDB().QueryContext(ctx, `
 EXPLAIN QUERY PLAN
 SELECT node_id, COUNT(*)
-FROM memory_access_events
-WHERE session_id = ?
-  AND node_type = 'fact'
-  AND access_type = 'retrieved'
-  AND node_id IN (?)
+FROM (
+  SELECT e.node_id
+  FROM memory_access_events e
+  WHERE e.persona_id = ?
+    AND e.session_id = ?
+    AND e.node_type = 'fact'
+    AND e.access_type = 'prompt_injected'
+    AND e.node_id IN (?)
+    AND (
+      SELECT COUNT(*)
+      FROM memory_access_events recent
+      WHERE recent.persona_id = e.persona_id
+        AND recent.session_id = e.session_id
+        AND recent.node_type = e.node_type
+        AND recent.node_id = e.node_id
+        AND recent.access_type = e.access_type
+        AND recent.rowid >= e.rowid
+    ) <= ?
+)
 GROUP BY node_id
-ORDER BY node_id ASC`, "s1", "fact_plan")
+ORDER BY node_id ASC`, "default", "s1", "fact_plan", fatigueRecentWindow)
 	if err != nil {
 		t.Fatalf("explain fatigue query: %v", err)
 	}
@@ -487,6 +503,34 @@ ORDER BY node_id ASC`, "s1", "fact_plan")
 	plan := strings.Join(details, "\n")
 	if !strings.Contains(plan, "idx_memory_access_events_session_node_access") {
 		t.Fatalf("fatigue query plan = %q, want idx_memory_access_events_session_node_access", plan)
+	}
+}
+
+func TestBatchPrefetchFatigueCountsRecentRowsPerFact(t *testing.T) {
+	ctx := context.Background()
+	db := openPrefetchTestDB(t, ctx)
+	defer db.Close()
+	seedPrefetchGraph(t, ctx, db)
+	insertPrefetchFact(t, ctx, db, prefetchFact("fact_target", "target fatigue fact", ptrForPrefetch("ent_user")))
+	insertPrefetchFact(t, ctx, db, prefetchFact("fact_other", "other fatigue fact", ptrForPrefetch("ent_user")))
+
+	for i := 0; i < 3; i++ {
+		addPrefetchAccessEvent(t, db, "event_target_"+string(rune('a'+i)), "s1", "fact_target", "prompt_injected")
+	}
+	for i := 0; i < 8; i++ {
+		addPrefetchAccessEvent(t, db, "event_other_"+string(rune('a'+i)), "s1", "fact_other", "prompt_injected")
+	}
+
+	repo := NewRetrievalRepository(db.SQLDB(), nil, prefetchNow)
+	counts, err := repo.loadFatigueCounts(ctx, "default", ptrForPrefetch("s1"), []string{"fact_target", "fact_other"})
+	if err != nil {
+		t.Fatalf("load fatigue counts: %v", err)
+	}
+	if counts["fact_target"] != 3 {
+		t.Fatalf("target fatigue count = %d, want 3 even when other facts have newer rows", counts["fact_target"])
+	}
+	if counts["fact_other"] != fatigueRecentWindow {
+		t.Fatalf("other fatigue count = %d, want cap %d", counts["fact_other"], fatigueRecentWindow)
 	}
 }
 

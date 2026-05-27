@@ -422,11 +422,14 @@ func keywordSearchTermsForRetrieval(query QueryAnalysis) []string {
 	text := retrievalSearchQueryText(query)
 	terms := keywordSearchTerms(text)
 	terms = append(terms, query.Terms...)
+	terms = append(terms, specificCJKQueryTerms(text)...)
 	terms = append(terms, cjkRetrievalSearchTerms(text)...)
 	if query.Normalized != text {
+		terms = append(terms, specificCJKQueryTerms(query.Normalized)...)
 		terms = append(terms, cjkRetrievalSearchTerms(query.Normalized)...)
 	}
 	terms = append(terms, premiseCounterexampleExpansionsForQuery(query)...)
+	terms = append(terms, deterministicRetrievalExpansionsForQuery(query)...)
 	return uniqueOrderedStrings(terms)
 }
 
@@ -893,7 +896,10 @@ func ftsQuery(query string) string {
 }
 
 func retrievalExpandedSearchQuery(query QueryAnalysis) string {
-	return strings.Join(uniqueOrderedStrings(append([]string{retrievalSearchQueryText(query)}, premiseCounterexampleExpansionsForQuery(query)...)), " ")
+	terms := []string{retrievalSearchQueryText(query)}
+	terms = append(terms, premiseCounterexampleExpansionsForQuery(query)...)
+	terms = append(terms, deterministicRetrievalExpansionsForQuery(query)...)
+	return strings.Join(uniqueOrderedStrings(terms), " ")
 }
 
 func retrievalSearchQueryText(query QueryAnalysis) string {

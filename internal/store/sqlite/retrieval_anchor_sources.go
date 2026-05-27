@@ -449,12 +449,24 @@ func queryAllowsNarrativeInsightAnchors(query QueryAnalysis) bool {
 	case MemoryAbilityCausalExplain,
 		MemoryAbilitySupportive,
 		MemoryAbilityProvenance,
-		MemoryAbilityPlanning,
-		MemoryAbilityPremiseCheck:
+		MemoryAbilityPlanning:
 		return true
+	case MemoryAbilityPremiseCheck:
+		return queryAllowsPremiseNarrativeAnchors(query)
 	default:
 		return false
 	}
+}
+
+func queryAllowsPremiseNarrativeAnchors(query QueryAnalysis) bool {
+	if query.MemoryDomain == MemoryDomainUserProfile {
+		return false
+	}
+	text := strings.ToLower(strings.Join(nonEmptyStrings(query.Raw, query.Normalized, strings.Join(query.Terms, " ")), " "))
+	if containsAny(text, "ai", "助手", "小星", "agent", "assistant") {
+		return false
+	}
+	return true
 }
 
 func searchDocumentAuthorityAllows(doc core.SearchDocument, policy RetrievalPolicy) bool {

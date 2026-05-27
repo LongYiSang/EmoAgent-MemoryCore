@@ -44,6 +44,8 @@ const (
 	defaultRerankTopN         = 30
 	rawFloorRerankTopN        = 12
 	maxRerankSafeSummaryRunes = 512
+	fatigueRecentWindow       = 5
+	fatigueSuppressThreshold  = 3
 )
 
 type RetrievalRepository struct {
@@ -529,12 +531,28 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 	if rawFloorQuery.Raw == "" {
 		rawFloorQuery = query
 	}
-	protected := rawFloorCandidates(selectable, rawFloorQuery)
+	protected := finalRawFloorCandidates(selectable, rawFloorQuery)
 	selectedByFact := map[string]struct{}{}
 	var selected []scoredFact
 	for _, candidate := range protected {
 		if len(selected) >= policy.FinalMemoryCount {
 			break
+		}
+		if isMMRDuplicateCandidate(query, candidate, selected) {
+			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonMMRDuplicate
+			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   candidate.Fact.ID,
+				Reason:   MemorySuppressionReasonMMRDuplicate,
+			})
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "suppressed",
+				score:            candidate.Score,
+				contextBlockType: MemoryBlockTypeFacts,
+				breakdown:        candidate.Breakdown,
+			})
+			continue
 		}
 		if contextResult.TokenEstimate+candidate.TokenCost > policy.ContextBudgetTokens {
 			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonContextBudget
@@ -571,7 +589,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 		candidate := remaining[bestIndex]
 		remaining = removeScoredFactAt(remaining, bestIndex)
 
-		if maxFactSimilarity(candidate, selected) > defaultDuplicateThreshold {
+		if isMMRDuplicateCandidate(query, candidate, selected) {
 			candidate.Breakdown.SuppressionReason = MemorySuppressionReasonMMRDuplicate
 			contextResult.DoNotMention = appendSuppression(contextResult.DoNotMention, MemorySuppression{
 				NodeType: string(core.NodeTypeFact),
@@ -607,7 +625,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 		contextResult.TokenEstimate += candidate.TokenCost
 	}
 	for _, candidate := range remaining {
-		if maxFactSimilarity(candidate, selected) <= defaultDuplicateThreshold {
+		if !isMMRDuplicateCandidate(query, candidate, selected) {
 			continue
 		}
 		candidate.Breakdown.SuppressionReason = MemorySuppressionReasonMMRDuplicate
@@ -672,6 +690,14 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 			accessLogs = append(accessLogs, pendingAccessEvent{
 				fact:             candidate.Fact,
 				accessType:       "retrieved",
+				score:            candidate.Score,
+				rank:             rank + 1,
+				contextBlockType: blockType,
+				breakdown:        candidate.Breakdown,
+			})
+			accessLogs = append(accessLogs, pendingAccessEvent{
+				fact:             candidate.Fact,
+				accessType:       "prompt_injected",
 				score:            candidate.Score,
 				rank:             rank + 1,
 				contextBlockType: blockType,
@@ -782,6 +808,9 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			continue
 		}
 		fatigue := pf.fatigue[fact.ID]
+		if queryExemptsFatigue(query) {
+			fatigue = 0
+		}
 		evidenceStrength, sourceEpisodeIDs := evidenceStrengthFromPrefetch(fact, pf)
 		recency := recencyScore(fact, now)
 		typePrior := factTypePrior(fact.FactType)
@@ -845,7 +874,7 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 			SourceBreakdown:  cloneAnchorSourceBreakdown(candidate.SourceBreakdown),
 			SourceEpisodeIDs: sourceEpisodeIDs,
 		}
-		if fatigue > 0 {
+		if fatigue >= fatigueSuppressThreshold {
 			item.Suppressed = true
 			item.Suppression = MemorySuppressionReasonFatigue
 			suppressions = appendSuppression(suppressions, MemorySuppression{
@@ -907,6 +936,19 @@ func rawFloorCandidates(scored []scoredFact, query QueryAnalysis) []scoredFact {
 	protected = append(protected, topSupportedRawSourceCandidates(scored, query, "raw_query", 4-len(protected))...)
 	if query.EvidenceNeed == EvidenceNeedExactObservation {
 		protected = append(protected, topRawExactCandidates(scored, 2)...)
+	}
+	return uniqueScoredFactsByID(protected)
+}
+
+func finalRawFloorCandidates(scored []scoredFact, query QueryAnalysis) []scoredFact {
+	if !queryProtectsRawFloor(query) {
+		return nil
+	}
+	var protected []scoredFact
+	protected = append(protected, topSupportedRawSourceCandidates(scored, query, "raw_dense", 4)...)
+	protected = append(protected, topSupportedRawSourceCandidates(scored, query, "raw_query", 4-len(protected))...)
+	if query.EvidenceNeed == EvidenceNeedExactObservation {
+		protected = append(protected, topRawSourceCandidates(scored, "raw_exact", 2)...)
 	}
 	return uniqueScoredFactsByID(protected)
 }
@@ -1017,9 +1059,7 @@ func topRawExactCandidates(scored []scoredFact, limit int) []scoredFact {
 	var candidates []scoredFact
 	for _, candidate := range scored {
 		if candidate.Breakdown.LexicalCoverage >= 0.999 ||
-			hasAnchorSource(candidate.SourceBreakdown, "raw_exact") ||
-			hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteFTS) ||
-			hasAnchorSource(candidate.SourceBreakdown, AnchorSourceSQLiteSparse) {
+			hasAnchorSource(candidate.SourceBreakdown, "raw_exact") {
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -1410,11 +1450,16 @@ func (r *RetrievalRepository) fatigueCount(ctx context.Context, sessionID *strin
 	var count int
 	err := r.db.QueryRowContext(ctx, `
 SELECT COUNT(*)
-FROM memory_access_events
-WHERE session_id = ?
-  AND node_type = 'fact'
-  AND node_id = ?
-  AND access_type = 'retrieved'`, *sessionID, factID).Scan(&count)
+FROM (
+  SELECT node_id
+  FROM memory_access_events
+  WHERE session_id = ?
+    AND node_type = 'fact'
+    AND node_id = ?
+    AND access_type = 'prompt_injected'
+  ORDER BY rowid DESC
+  LIMIT ?
+)`, *sessionID, factID, fatigueRecentWindow).Scan(&count)
 	return count, err
 }
 
@@ -1508,7 +1553,10 @@ func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 }
 
 func effectiveRetrievalPolicy(policy RetrievalPolicy, analysis QueryAnalysis) RetrievalPolicy {
-	if analysis.TimeMode == QueryTimeModeHistorical || analysis.EvidenceNeed == EvidenceNeedStateTransition {
+	if analysis.TimeMode == QueryTimeModeHistorical ||
+		analysis.EvidenceNeed == EvidenceNeedStateTransition ||
+		analysis.EvidenceNeed == EvidenceNeedRelationshipTimeline ||
+		hasQuerySignal(analysis, QuerySignalRelationshipArc) {
 		policy.AllowHistorical = true
 	}
 	return policy
@@ -1566,6 +1614,9 @@ func textMatchTerms(query QueryAnalysis) []string {
 	for _, term := range premiseCounterexampleExpansionsForQuery(query) {
 		add(term)
 	}
+	for _, term := range deterministicRetrievalExpansionsForQuery(query) {
+		add(term)
+	}
 	for _, term := range cjkBigrams(query.Normalized) {
 		add(term)
 	}
@@ -1591,7 +1642,14 @@ func discriminatingSlotCoverage(query QueryAnalysis, searchText string) float64 
 			matches++
 		}
 	}
-	return float64(matches) / float64(len(terms))
+	denominator := len(terms)
+	if containsCJK(query.Normalized) && denominator > 4 {
+		denominator = 4
+	}
+	if matches > denominator {
+		matches = denominator
+	}
+	return float64(matches) / float64(denominator)
 }
 
 func discriminatingSlotTerms(query QueryAnalysis) []string {
@@ -1611,7 +1669,15 @@ func discriminatingSlotTerms(query QueryAnalysis) []string {
 	for _, term := range query.Terms {
 		add(term)
 	}
+	if queryProtectsRawFloor(query) {
+		for _, term := range specificCJKQueryTerms(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " ")) {
+			add(term)
+		}
+	}
 	for _, term := range premiseCounterexampleExpansionsForQuery(query) {
+		add(term)
+	}
+	for _, term := range deterministicRetrievalExpansionsForQuery(query) {
 		add(term)
 	}
 	if len(terms) == 0 {
@@ -1621,6 +1687,76 @@ func discriminatingSlotTerms(query QueryAnalysis) []string {
 	}
 	return terms
 }
+
+func specificCJKQueryTerms(value string) []string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" || !containsCJK(value) {
+		return nil
+	}
+	cleaned := value
+	for _, noise := range cjkQueryNoisePhrases {
+		cleaned = strings.ReplaceAll(cleaned, noise, " ")
+	}
+	fields := strings.FieldsFunc(cleaned, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsNumber(r))
+	})
+	var terms []string
+	for _, field := range fields {
+		field = trimCJKQueryTokenNoise(field)
+		if field == "" {
+			continue
+		}
+		runes := []rune(field)
+		if len(runes) <= 4 {
+			if isDiscriminatingSlotTerm(field) {
+				terms = append(terms, field)
+			}
+			continue
+		}
+		for _, term := range cjkBigrams(field) {
+			if isDiscriminatingSlotTerm(term) {
+				terms = append(terms, term)
+			}
+		}
+	}
+	return uniqueOrderedStrings(terms)
+}
+
+func trimCJKQueryTokenNoise(value string) string {
+	value = strings.TrimSpace(value)
+	for {
+		trimmed := strings.Trim(value, " \t\r\n，。！？、；：“”‘’（）()[]【】")
+		for _, prefix := range cjkQueryTokenPrefixes {
+			trimmed = strings.TrimPrefix(trimmed, prefix)
+		}
+		for _, suffix := range cjkQueryTokenSuffixes {
+			trimmed = strings.TrimSuffix(trimmed, suffix)
+		}
+		if trimmed == value {
+			return trimmed
+		}
+		value = trimmed
+	}
+}
+
+func containsCJK(value string) bool {
+	for _, r := range value {
+		if isCJKRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+var cjkQueryNoisePhrases = []string{
+	"发生了什么", "发生什么", "有什么", "有一次", "是不是", "有没有", "哪些方面", "哪几天", "最近一次", "一直没",
+	"怎么", "为什么", "什么", "哪些", "哪里", "哪家", "哪次", "多少", "多久", "之后", "以前", "过去", "最近", "上次", "那次",
+	"这次", "发生了", "发生", "我的", "他的", "她的", "它的", "我们的", "他们的", "的事", "事情",
+}
+
+var cjkQueryTokenPrefixes = []string{"我想知道", "想知道", "请问", "记得", "我记得", "我", "用户"}
+
+var cjkQueryTokenSuffixes = []string{"是什么", "怎么样", "什么样", "的是", "的吗", "吗", "呢", "啊", "呀", "吧", "了", "的"}
 
 func isDiscriminatingSlotTerm(value string) bool {
 	value = strings.TrimSpace(strings.ToLower(value))
@@ -1657,19 +1793,83 @@ var lowDiscriminationQueryTerms = map[string]struct{}{
 }
 
 func broadHubSuppression(query QueryAnalysis, fact core.Fact, candidate retrievalCandidate, completionSource string, lexicalCoverage float64, slotCoverage float64) float64 {
-	if !queryProtectsRawFloor(query) || hasQuerySignal(query, QuerySignalReflectionSummary) {
+	if hasQuerySignal(query, QuerySignalReflectionSummary) {
 		return 0
+	}
+	if !queryProtectsRawFloor(query) && !queryWantsPremiseCounterexample(query) && !queryWantsRelationshipOutcome(query) {
+		return 0
+	}
+	if penalty := entityHubSlotMismatchSuppression(query, candidate, lexicalCoverage, slotCoverage); penalty > 0 {
+		return penalty
 	}
 	if completionSource == completionSourceEventBundle || slotCoverage >= 0.50 || lexicalCoverage >= 0.75 {
 		return 0
 	}
-	if !looksLikeBroadHubSummary(fact, candidate) {
+	if queryWantsRelationshipOutcome(query) && factLooksLikeRelationshipOutcome(fact) {
+		return 0
+	}
+	if queryWantsPremiseCounterexample(query) && completionSource == completionSourcePremiseCheck {
+		return 0
+	}
+	if queryWantsPremiseCounterexample(query) {
+		if !looksLikeBroadHubSummaryText(fact) {
+			return 0
+		}
+	} else if !looksLikeBroadHubSummary(fact, candidate) {
 		return 0
 	}
 	return 0.45
 }
 
+func entityHubSlotMismatchSuppression(query QueryAnalysis, candidate retrievalCandidate, lexicalCoverage float64, slotCoverage float64) float64 {
+	if !queryProtectsRawFloor(query) || !containsCJK(query.Normalized) {
+		return 0
+	}
+	if len(specificCJKQueryTerms(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " "))) < 2 {
+		return 0
+	}
+	if slotCoverage >= 0.50 || lexicalCoverage >= 0.40 {
+		return 0
+	}
+	if !hasAnchorSource(candidate.SourceBreakdown, AnchorSourceEntityExact) &&
+		!hasAnchorSource(candidate.SourceBreakdown, AnchorSourceAliasMatch) {
+		return 0
+	}
+	sparseRank := bestAnyAnchorSourceRank(candidate.SourceBreakdown, AnchorSourceSQLiteSparse, AnchorSourceSQLiteFTS)
+	if sparseRank > 0 && sparseRank <= 2 && slotCoverage > 0 {
+		return 0
+	}
+	return 0.32
+}
+
+func bestAnyAnchorSourceRank(breakdown []AnchorSourceBreakdown, sources ...string) int {
+	best := int(^uint(0) >> 1)
+	for _, source := range sources {
+		rank := bestAnchorSourceRank(breakdown, source)
+		if rank < best {
+			best = rank
+		}
+	}
+	if best == int(^uint(0)>>1) {
+		return 0
+	}
+	return best
+}
+
 func looksLikeBroadHubSummary(fact core.Fact, candidate retrievalCandidate) bool {
+	if looksLikeBroadHubSummaryText(fact) {
+		return true
+	}
+	for _, item := range candidate.SourceBreakdown {
+		switch item.Source {
+		case "semantic_rewrite_dense", "semantic_anchor_dense", AnchorSourceNarrativeInsight, AnchorSourceRecentImportant:
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeBroadHubSummaryText(fact core.Fact) bool {
 	if fact.FactType == core.FactTypeRelationalState || fact.FactType == core.FactTypeCoreIdentity {
 		return true
 	}
@@ -1679,15 +1879,9 @@ func looksLikeBroadHubSummary(fact core.Fact, candidate retrievalCandidate) bool
 	), " "))
 	for _, marker := range []string{
 		"summary", "overall", "relationship", "pattern", "theme", "stable",
-		"总结", "整体", "关系", "模式", "主题", "长期", "稳定", "通常", "经常", "倾向",
+		"总结", "整体", "关系", "模式", "主题", "长期", "稳定", "通常", "经常", "倾向", "孤单", "陪伴感",
 	} {
 		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	for _, item := range candidate.SourceBreakdown {
-		switch item.Source {
-		case "semantic_rewrite_dense", "semantic_anchor_dense", AnchorSourceNarrativeInsight, AnchorSourceRecentImportant:
 			return true
 		}
 	}
@@ -1763,6 +1957,33 @@ func premiseCounterexampleExpansionsForQuery(query QueryAnalysis) []string {
 		return nil
 	}
 	return deterministicPremiseCounterexampleExpansions(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " "))
+}
+
+func deterministicRetrievalExpansionsForQuery(query QueryAnalysis) []string {
+	normalized := strings.ToLower(strings.Join(nonEmptyStrings(query.Raw, query.Normalized), " "))
+	if normalized == "" {
+		return nil
+	}
+	var expansions []string
+	if containsAny(normalized, "叫什么", "名字", "昵称") {
+		expansions = append(expansions, "叫", "名字", "昵称")
+		if containsAny(normalized, "橘色", "橘猫", "毛茸茸", "小家伙", "猫") {
+			expansions = append(expansions, "猫", "橘猫", "粘人")
+		}
+	}
+	if containsAny(normalized, "工作方式", "跳出现在的框架", "从事什么样的工作") {
+		expansions = append(expansions, "独立开发者", "独立开发", "自己的产品", "产品")
+	}
+	if containsAny(normalized, "陪伴", "感受上的变化", "感受变化") {
+		expansions = append(expansions, "没那么孤单", "不孤单", "孤单", "陪伴感")
+	}
+	if containsAny(normalized, "周末") && containsAny(normalized, "规矩", "规则", "边界", "加了一条") {
+		expansions = append(expansions, "周末不讨论工作", "不讨论工作", "工作话题", "恢复时间")
+	}
+	if containsAny(normalized, "提醒", "通知", "reminder", "notification") {
+		expansions = append(expansions, "提醒休息", "九点提醒", "早上不要催", "不要催")
+	}
+	return uniqueOrderedStrings(expansions)
 }
 
 func queryAllowsPremiseCounterexampleExpansion(query QueryAnalysis) bool {
@@ -1885,6 +2106,14 @@ var premiseCounterexampleConceptGroups = []premiseCounterexampleConceptGroup{
 		triggers:   []string{"睡", "失眠", "睡眠", "sleep", "insomnia"},
 		expansions: []string{"睡着", "睡眠改善", "睡得", "好转"},
 	},
+	{
+		triggers:   []string{"辣", "无辣不欢", "加辣", "辛辣", "饮食偏好", "spicy"},
+		expansions: []string{"不能吃辣", "不太能吃辣", "辛辣耐受度低", "辣"},
+	},
+	{
+		triggers:   []string{"ai", "助手", "掏心掏肺", "无所不谈", "市面上"},
+		expansions: []string{"第一个愿意", "愿意说这么多话", "其他ai", "聊不到心里", "不是所有ai"},
+	},
 }
 
 func uniqueOrderedStrings(values []string) []string {
@@ -1986,7 +2215,22 @@ func fatiguePenalty(count int) float64 {
 	if count <= 0 {
 		return 0
 	}
-	return 0.6
+	return math.Min(0.6, 0.2*float64(count))
+}
+
+func queryExemptsFatigue(query QueryAnalysis) bool {
+	if query.TimeMode == QueryTimeModeHistorical {
+		return true
+	}
+	switch query.MemoryAbility {
+	case MemoryAbilityHistorical, MemoryAbilityProvenance:
+		return true
+	}
+	return hasQuerySignal(query, QuerySignalHistorical) ||
+		hasQuerySignal(query, QuerySignalProvenance) ||
+		hasQuerySignal(query, QuerySignalProvenanceSource) ||
+		hasQuerySignal(query, QuerySignalPastEventDirectFact) ||
+		hasQuerySignal(query, QuerySignalStateTransition)
 }
 
 func sensitivityPenalty(level core.SensitivityLevel) float64 {

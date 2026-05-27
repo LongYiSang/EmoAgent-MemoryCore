@@ -107,6 +107,9 @@ func queryWantsHistoricalTransitionMemory(query QueryAnalysis, fact core.Fact, p
 	if hasAuthorizedSupersedesEvidence(fact, policy, pf) {
 		return true
 	}
+	if queryWantsRelevantCausalMemory(query) {
+		return false
+	}
 	if queryUsesDirectFactBlock(query) {
 		return false
 	}
@@ -190,6 +193,9 @@ func hasAuthorizedSupersedesEvidence(fact core.Fact, policy RetrievalPolicy, pf 
 }
 
 func queryUsesExperienceContext(query QueryAnalysis, fact core.Fact) bool {
+	if query.MemoryAbility == MemoryAbilityGotcha && query.EvidenceNeed == EvidenceNeedGotchaNote {
+		return true
+	}
 	if query.MemoryDomain != MemoryDomainWorkExperience && query.MemoryDomain != MemoryDomainEnvironmentExperience {
 		return false
 	}

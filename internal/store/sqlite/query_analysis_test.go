@@ -788,6 +788,7 @@ func TestQueryAnalysisStrongPremiseMarkersStillRouteToCounterexample(t *testing.
 		"我是不是一直都不喜欢早会？",
 		"我从来没有自己下过厨房吗？",
 		"我总是跟每个朋友都闹矛盾吗？",
+		"结对调试 是不是 一直 讨厌 上班",
 	}
 
 	for _, query := range tests {
@@ -806,6 +807,82 @@ func TestQueryAnalysisStrongPremiseMarkersStillRouteToCounterexample(t *testing.
 				if !hasQuerySignal(QueryAnalysis{Signals: signals}, want) {
 					t.Fatalf("querySignals(%q) = %#v, missing %q", query, signals, want)
 				}
+			}
+		})
+	}
+}
+
+func TestQueryAnalysisRetrievalQualityRouteRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		query        string
+		wantAbility  MemoryAbility
+		wantEvidence EvidenceNeed
+	}{
+		{
+			name:         "causal every time is not universal premise",
+			query:        "为什么每次团子凑过来蹭我的时候，我就容易陷入对奶奶的回忆？",
+			wantAbility:  MemoryAbilityCausalExplain,
+			wantEvidence: EvidenceNeedExactObservation,
+		},
+		{
+			name:         "conflation premise",
+			query:        "从我的恐惧和个人偏好看，我怕黑，所以是不是也对猫这种夜行动物有恐惧感？",
+			wantAbility:  MemoryAbilityPremiseCheck,
+			wantEvidence: EvidenceNeedPremiseCounterexample,
+		},
+		{
+			name:         "redacted source exposure premise",
+			query:        "episode redacted 是否 暴露 原文",
+			wantAbility:  MemoryAbilityPremiseCheck,
+			wantEvidence: EvidenceNeedPremiseCounterexample,
+		},
+		{
+			name:         "reminder overgeneralization gotcha",
+			query:        "我是不是完全不想让小星给我发任何提醒和通知？",
+			wantAbility:  MemoryAbilityGotcha,
+			wantEvidence: EvidenceNeedGotchaNote,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := queryMemoryAbility(tt.query); got != tt.wantAbility {
+				t.Fatalf("queryMemoryAbility(%q) = %q, want %q", tt.query, got, tt.wantAbility)
+			}
+			if got := queryEvidenceNeed(tt.query); got != tt.wantEvidence {
+				t.Fatalf("queryEvidenceNeed(%q) = %q, want %q", tt.query, got, tt.wantEvidence)
+			}
+		})
+	}
+}
+
+func TestAnalyzeQueryHistoricalPolicyPromotesOldStateLookups(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryProbeDB(t, ctx, true)
+	defer db.Close()
+	repo := NewRetrievalRepository(db.SQLDB(), nil, nil)
+
+	for _, query := range []string{
+		"青禾园 以前住在哪里",
+		"以前 早期评估 sidecar 候选误当成权威结果",
+	} {
+		t.Run(query, func(t *testing.T) {
+			got, err := repo.AnalyzeQuery(ctx, "default", query, RetrievalPolicy{
+				AllowHistorical:       true,
+				SensitivityPermission: string(core.SensitivityNormal),
+			})
+			if err != nil {
+				t.Fatalf("analyze query: %v", err)
+			}
+			if got.MemoryAbility != MemoryAbilityHistorical {
+				t.Fatalf("memory ability = %q, want %q", got.MemoryAbility, MemoryAbilityHistorical)
+			}
+			if got.EvidenceNeed != EvidenceNeedStateTransition {
+				t.Fatalf("evidence need = %q, want %q", got.EvidenceNeed, EvidenceNeedStateTransition)
+			}
+			if !hasQuerySignal(got, QuerySignalStateTransition) {
+				t.Fatalf("signals = %#v, want state_transition", got.Signals)
 			}
 		})
 	}

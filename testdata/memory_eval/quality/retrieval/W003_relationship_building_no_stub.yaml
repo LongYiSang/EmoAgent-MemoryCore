@@ -902,7 +902,7 @@ assertions:
     step: q006_source_music
     memory_ability: provenance
     evidence_need: provenance_source
-    signals: [provenance]
+    signals: [provenance, provenance_source]
   - type: selected_chain_correct
     name: q006 no-stub provenance keeps source ref for Laufey fact
     step: q006_source_music

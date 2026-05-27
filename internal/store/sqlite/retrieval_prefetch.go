@@ -97,7 +97,7 @@ func (r *RetrievalRepository) buildScoringPrefetchForFactIDs(ctx context.Context
 	if err != nil {
 		return scoringPrefetch{}, err
 	}
-	fatigue, err := r.loadFatigueCounts(ctx, sessionID, factIDs)
+	fatigue, err := r.loadFatigueCounts(ctx, personaID, sessionID, factIDs)
 	if err != nil {
 		return scoringPrefetch{}, err
 	}
@@ -264,23 +264,41 @@ ORDER BY l.from_node_id ASC, e.occurred_at ASC, e.id ASC`, args...)
 	return provenance, nil
 }
 
-func (r *RetrievalRepository) loadFatigueCounts(ctx context.Context, sessionID *string, factIDs []string) (map[string]int, error) {
+func (r *RetrievalRepository) loadFatigueCounts(ctx context.Context, personaID string, sessionID *string, factIDs []string) (map[string]int, error) {
 	counts := map[string]int{}
 	if sessionID == nil || strings.TrimSpace(*sessionID) == "" {
 		return counts, nil
 	}
 	ids := uniqueSortedStrings(factIDs)
 	for _, chunk := range chunkedIDs(ids, sqliteInChunkSize) {
-		args := stringArgs(*sessionID, chunk)
+		args := make([]any, 0, len(chunk)+2)
+		args = append(args, personaID, *sessionID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
 		rows, err := r.db.QueryContext(ctx, `
 SELECT node_id, COUNT(*)
-FROM memory_access_events
-WHERE session_id = ?
-  AND node_type = 'fact'
-  AND access_type = 'retrieved'
-  AND node_id IN (`+placeholders(len(chunk))+`)
+FROM (
+  SELECT e.node_id
+  FROM memory_access_events e
+  WHERE e.persona_id = ?
+    AND e.session_id = ?
+    AND e.node_type = 'fact'
+    AND e.access_type = 'prompt_injected'
+    AND e.node_id IN (`+placeholders(len(chunk))+`)
+    AND (
+      SELECT COUNT(*)
+      FROM memory_access_events recent
+      WHERE recent.persona_id = e.persona_id
+        AND recent.session_id = e.session_id
+        AND recent.node_type = e.node_type
+        AND recent.node_id = e.node_id
+        AND recent.access_type = e.access_type
+        AND recent.rowid >= e.rowid
+    ) <= ?
+)
 GROUP BY node_id
-ORDER BY node_id ASC`, args...)
+ORDER BY node_id ASC`, append(args, fatigueRecentWindow)...)
 		if err != nil {
 			return nil, err
 		}

@@ -397,7 +397,7 @@ func TestRetrievalRepositoryFallsBackToLIKEAndLogsAccessEvents(t *testing.T) {
 		t.Fatalf("rebuild search documents: %v", err)
 	}
 
-	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalID, fixedRetrievalNow)
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
 		PersonaID: "default",
 		SessionID: ptr("s1"),
@@ -435,7 +435,7 @@ func TestRetrievalRepositoryQueryAnalysisUsesEntityMentionsForCandidates(t *test
 	insertSearchFact(t, ctx, db.SQLDB(), "fact_alias_only", "用户喜欢不在查询中的乌龙茶。", core.LifecycleActive)
 	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_alias_only", "fact_alias_only")
 
-	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalID, fixedRetrievalNow)
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
 	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
 		PersonaID: "default",
 		QueryText: "LongYi",
@@ -1156,6 +1156,50 @@ func TestRetrievalRepositoryFinalRawFloorKeepsLexicallySupportedDirectCandidate(
 	}
 }
 
+func TestRetrievalRepositoryFinalRawFloorDoesNotLetSparseExactOverrideMirror(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_latte_target", "User likes latte.", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_latte_sparse_distractor", "User likes latte calibration checklist.", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_latte_target", "fact_latte_target")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_latte_sparse_distractor", "fact_latte_sparse_distractor")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "latte calibration",
+		Normalized:    "latte calibration",
+		Terms:         []string{"latte", "calibration"},
+		TimeMode:      memsqlite.QueryTimeModeCurrent,
+		MemoryDomain:  memsqlite.MemoryDomainRelationship,
+		MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+		EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalExactFact},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			UseFTS:           false,
+			FinalMemoryCount: 1,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_latte_target", TriviumNodeID: 9720, Score: 0.97, Source: "eval_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_latte_target" {
+		t.Fatalf("selected items = %#v, want mirror target over sparse exact distractor", items)
+	}
+}
+
 func TestRetrievalRepositoryReflectionSummaryUsesNarrativeGrowthFact(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1713,6 +1757,55 @@ func TestRetrievalCompletesHistoricalRelationshipStateTransitionIntoHistoricalBl
 	requireBlockItem(t, historicalBlock, "fact_current_relationship_trust")
 }
 
+func TestRetrievalRelationshipTimelineEnablesHistoricalSupersedesCompletionByDefault(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_current_xiaoli_trust", "Long 后来开始信任小李。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_old_xiaoli_coworker", "Long 和小李一开始只是普通同事。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_current_xiaoli_trust_evidence", "fact_current_xiaoli_trust")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_old_xiaoli_coworker_evidence", "fact_old_xiaoli_coworker")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_current_xiaoli_trust", "fact_type", string(core.FactTypeRelationalState))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_xiaoli_coworker", "fact_type", string(core.FactTypeRelationalState))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_xiaoli_coworker", "validity_status", string(core.ValidityInvalidated))
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_old_xiaoli_coworker", "valid_to", fixedRetrievalNow().Add(-24*time.Hour).Format(time.RFC3339))
+	insertFactLink(t, ctx, db.SQLDB(), "link_current_xiaoli_supersedes_old", "fact_current_xiaoli_trust", "SUPERSEDES", "fact_old_xiaoli_coworker")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "我和小李的关系变化是什么？",
+		Normalized:    "我和小李的关系变化是什么？",
+		Terms:         []string{"小李", "关系", "变化"},
+		MemoryAbility: memsqlite.MemoryAbilityRelationshipArc,
+		EvidenceNeed:  memsqlite.EvidenceNeedRelationshipTimeline,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalRelationshipArc},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			UseMirror:        true,
+			FinalMemoryCount: 2,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_current_xiaoli_trust", TriviumNodeID: 9052, Score: 0.99, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve relationship timeline: %v", err)
+	}
+
+	historicalBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeHistoricalTransitionMemory)
+	oldItem := requireBlockItem(t, historicalBlock, "fact_old_xiaoli_coworker")
+	if oldItem.HistoricalStatus != memsqlite.MemoryHistoricalStatusSuperseded {
+		t.Fatalf("old relationship status = %q, want superseded", oldItem.HistoricalStatus)
+	}
+	requireRelatedFact(t, oldItem, "fact_current_xiaoli_trust", "SUPERSEDES", "inbound", memsqlite.MemoryHistoricalStatusCurrent)
+}
+
 func TestRetrievalEventBundleCompletesSameEpisodeSiblingFacts(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -2121,6 +2214,49 @@ func TestRetrievalProvenanceSourceCompletionBoostsSourcedCandidate(t *testing.T)
 	}
 }
 
+func TestRetrievalProvenanceDoesNotHardCapSamePredicateObject(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_how", "用户第一次在周五晚餐时提到火锅。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_provenance_followup", "用户后来补充火锅排队等了四十分钟。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_provenance_how_evidence", "fact_provenance_how")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_provenance_followup_evidence", "fact_provenance_followup")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_provenance_how", "object_literal", "火锅")
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_provenance_followup", "object_literal", "火锅")
+
+	query := memsqlite.QueryAnalysis{
+		Raw:           "这些火锅记忆分别从哪里知道的？",
+		Normalized:    "这些火锅记忆分别从哪里知道的？",
+		Terms:         []string{"火锅", "哪里", "知道"},
+		MemoryAbility: memsqlite.MemoryAbilityProvenance,
+		EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+		Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalProvenanceSource},
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID:                "default",
+		QueryText:                query.Raw,
+		PrecomputedQueryAnalysis: &query,
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_provenance_how", TriviumNodeID: 9123, Score: 0.90, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_provenance_followup", TriviumNodeID: 9124, Score: 0.88, Source: "trivium_dense", Rank: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve provenance facts: %v", err)
+	}
+	provenanceBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeProvenanceMemory)
+	requireBlockItem(t, provenanceBlock, "fact_provenance_how")
+	requireBlockItem(t, provenanceBlock, "fact_provenance_followup")
+}
+
 func TestRetrievalProvenanceSourceCompletionSkipsUnrelatedSourcedCandidate(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -2480,6 +2616,57 @@ func TestRetrievalRepositoryDirectChineseRecallUsesSparseCJKTerms(t *testing.T) 
 	requireBlockItem(t, factsBlock, "fact_home_recipe_direct")
 }
 
+func TestRetrievalRepositoryDirectChineseRecallUsesSpecificSlotsOverEntityHub(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchEntity(t, ctx, db.SQLDB(), "friend_chen", "小陈", core.VisibilityVisible, core.SensitivityNormal, true)
+	insertFact := func(id string, subjectEntityID *string, predicate string, objectEntityID *string, objectLiteral string, summary string, importance float64) {
+		t.Helper()
+		if err := memsqlite.NewFactRepository(db.SQLDB()).Insert(ctx, core.Fact{
+			ID:                   id,
+			PersonaID:            "default",
+			SubjectEntityID:      subjectEntityID,
+			Predicate:            predicate,
+			ObjectEntityID:       objectEntityID,
+			ObjectLiteral:        ptr(objectLiteral),
+			ContentSummary:       summary,
+			FactType:             core.FactTypeSignificantEvent,
+			ExtractionConfidence: core.ExtractionConfidenceExplicit,
+			Importance:           importance,
+			LifecycleStatus:      core.LifecycleActive,
+		}); err != nil {
+			t.Fatalf("insert fact %s: %v", id, err)
+		}
+		insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_"+id, id)
+		if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", id); err != nil {
+			t.Fatalf("upsert search document %s: %v", id, err)
+		}
+	}
+	insertFact("fact_chen_advice_white_noise", ptr("friend_chen"), "suggested", nil, "睡前听白噪音助眠", "小陈建议用户睡前放下手机听白噪音，说他之前失眠也是这样调整过来的。", 0.9)
+	insertFact("fact_hotpot_with_chen", ptr("ent_user"), "dined_with", ptr("friend_chen"), "", "用户和小陈去吃了蜀九香火锅，毛肚鹅肠很新鲜。", 0.85)
+	insertFact("fact_zhoushan_trip_plan", ptr("ent_user"), "planned_trip_with", ptr("friend_chen"), "", "用户和小陈、小李计划下个月去舟山海岛玩，已经订好民宿。", 0.82)
+	insertFact("fact_cooking_photo_chen", ptr("ent_user"), "shared_photo_with", ptr("friend_chen"), "", "用户做糖醋排骨后发照片给小陈看。", 0.8)
+	insertFact("fact_weight_comment_chen", ptr("ent_user"), "received_comment_from", ptr("friend_chen"), "", "用户瘦了三公斤，小陈说他看起来脸都变小了。", 0.78)
+	insertFact("fact_sore_legs_penguin", ptr("ent_user"), "experienced", nil, "练腿太猛走路像企鹅", "用户练腿练太猛导致走路困难，被小陈笑像企鹅。", 0.7)
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "有一次练腿之后发生了什么搞笑的事，小陈怎么笑话我的？",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	factsBlock := requireBlock(t, result, memsqlite.MemoryBlockTypeFacts)
+	requireBlockItem(t, factsBlock, "fact_sore_legs_penguin")
+}
+
 func TestRetrievalForgetDeleteSkipsEntityAnchorOperationTarget(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -2577,7 +2764,7 @@ func TestRetrievalForgetDeleteSkipsPinnedCoreOperationTarget(t *testing.T) {
 	}
 }
 
-func TestRetrievalRepositoryFatigueSuppressionWritesScoreBreakdown(t *testing.T) {
+func TestRetrievalRepositoryFatigueUsesPromptInjectedAndDoesNotSuppressAfterOnePriorRetrieval(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
 	defer db.Close()
@@ -2590,24 +2777,123 @@ func TestRetrievalRepositoryFatigueSuppressionWritesScoreBreakdown(t *testing.T)
 	}
 
 	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
-	for i := 0; i < 2; i++ {
-		if _, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
-			PersonaID: "default",
-			SessionID: ptr("s1"),
-			QueryText: "咖啡",
-			Policy: memsqlite.RetrievalPolicy{
-				UseFTS:           true,
-				FinalMemoryCount: 1,
-			},
-		}); err != nil {
-			t.Fatalf("retrieve %d: %v", i+1, err)
-		}
+	if _, err := db.SQLDB().Exec(`
+INSERT INTO memory_access_events(id, persona_id, session_id, node_type, node_id, access_type)
+VALUES ('000_retrieved_should_not_fatigue', 'default', 's1', 'fact', 'fact_fatigue_breakdown', 'retrieved')`); err != nil {
+		t.Fatalf("seed retrieved event: %v", err)
 	}
-	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_fatigue_breakdown", "suppressed")
-	if got := breakdown["suppression_reason"]; got != "fatigue" {
-		t.Fatalf("suppression_reason = %#v, want fatigue", got)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		SessionID: ptr("s1"),
+		QueryText: "咖啡",
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
 	}
-	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0.6)
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_fatigue_breakdown" {
+		t.Fatalf("items = %#v, want fatigue candidate still selected", items)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_fatigue_breakdown", "retrieved")
+	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0)
+	requireAccessEventRow(t, db.SQLDB(), "fact_fatigue_breakdown", "prompt_injected", 1)
+}
+
+func TestRetrievalRepositoryFatiguePenalizesRecentPromptInjectedButExemptsProvenance(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_prompt_fatigue", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_prompt_fatigue", "fact_prompt_fatigue")
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_prompt_fatigue"); err != nil {
+		t.Fatalf("upsert fact search document: %v", err)
+	}
+	if _, err := db.SQLDB().Exec(`
+INSERT INTO memory_access_events(id, persona_id, session_id, node_type, node_id, access_type)
+VALUES ('prompt_fatigue_1', 'default', 's1', 'fact', 'fact_prompt_fatigue', 'prompt_injected')`); err != nil {
+		t.Fatalf("seed prompt injected event: %v", err)
+	}
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	_, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		SessionID: ptr("s1"),
+		QueryText: "咖啡",
+		Policy: memsqlite.RetrievalPolicy{
+			UseFTS:           true,
+			FinalMemoryCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with prompt fatigue: %v", err)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_prompt_fatigue", "retrieved")
+	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0.2)
+
+	_, err = retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		SessionID: ptr("s1"),
+		QueryText: "这条咖啡记忆来自哪里",
+		Policy:    memsqlite.RetrievalPolicy{UseFTS: true, FinalMemoryCount: 1},
+		PrecomputedQueryAnalysis: &memsqlite.QueryAnalysis{
+			Raw:           "这条咖啡记忆来自哪里",
+			Normalized:    "这条咖啡记忆来自哪里",
+			Terms:         []string{"咖啡"},
+			MemoryAbility: memsqlite.MemoryAbilityProvenance,
+			EvidenceNeed:  memsqlite.EvidenceNeedProvenanceSource,
+			Signals:       []memsqlite.QuerySignal{memsqlite.QuerySignalProvenance, memsqlite.QuerySignalProvenanceSource},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve provenance: %v", err)
+	}
+	breakdown = requireScoreBreakdown(t, db.SQLDB(), "fact_prompt_fatigue", "retrieved")
+	requireBreakdownNumber(t, breakdown, "fatigue_penalty", 0)
+}
+
+func TestRetrievalRepositoryMMRHardCapsSamePredicateObjectKey(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_same_object_primary", "用户喜欢咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_same_object_verbose", "咖啡是用户非常喜欢的饮品之一。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_distinct_object", "用户喜欢茶。", core.LifecycleActive)
+	updateFactRetrievalColumn(t, db.SQLDB(), "fact_same_object_verbose", "object_literal", "用户喜欢咖啡。")
+	setFactRetrievalGate(t, db.SQLDB(), "fact_same_object_verbose", string(core.ValidityUncertain), string(core.LifecycleActive))
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_same_object_primary", "fact_same_object_primary")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_same_object_verbose", "fact_same_object_verbose")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_distinct_object", "fact_distinct_object")
+
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Retrieve(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy: memsqlite.RetrievalPolicy{
+			FinalMemoryCount: 2,
+			UseMirror:        true,
+		},
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_same_object_primary", TriviumNodeID: 8101, Score: 0.99, Source: "trivium_dense", Rank: 1},
+			{FactID: "fact_same_object_verbose", TriviumNodeID: 8102, Score: 0.98, Source: "trivium_dense", Rank: 2},
+			{FactID: "fact_distinct_object", TriviumNodeID: 8103, Score: 0.97, Source: "trivium_dense", Rank: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 2 || items[0].NodeID != "fact_same_object_primary" || items[1].NodeID != "fact_distinct_object" {
+		t.Fatalf("selected items = %#v, want same predicate/object capped before distinct object", items)
+	}
+	requireSuppression(t, result.DoNotMention, "fact_same_object_verbose", memsqlite.MemorySuppressionReasonMMRDuplicate)
 }
 
 func TestRetrievalPremiseCounterexampleBoostSelectsLowSpicyTolerance(t *testing.T) {
@@ -3486,7 +3772,7 @@ func updateFactRetrievalColumn(t *testing.T, db *sql.DB, factID string, column s
 	t.Helper()
 
 	switch column {
-	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "valid_to", "fact_type", "importance", "pinned":
+	case "visibility_status", "searchable", "lifecycle_status", "validity_status", "sensitivity_level", "valid_to", "fact_type", "importance", "pinned", "object_literal":
 	default:
 		t.Fatalf("unsupported fact column %q", column)
 	}

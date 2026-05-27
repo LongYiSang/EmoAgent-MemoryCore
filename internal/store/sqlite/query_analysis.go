@@ -335,6 +335,7 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 		Source:        QueryAnalysisSourceRuleOnly,
 	}
 	analysis.Signals = querySignals(normalized, analysis.TimeMode)
+	applyPolicyQueryAnalysisOverrides(&analysis, normalized, policy)
 	mentions, err := r.matchEntityMentions(ctx, personaID, normalized, policy)
 	if err != nil {
 		return QueryAnalysis{}, err
@@ -351,6 +352,29 @@ func (r *RetrievalRepository) analyzeQuery(ctx context.Context, personaID string
 	analysis.Decision = ruleQueryAnalysisDecision(analysis, analysis.Scores)
 	analysis.Diagnostics = ruleQueryAnalysisDiagnostics(normalized, analysis, legacy, analysis.Scores, analysis.FieldConfidence)
 	return analysis, nil
+}
+
+func applyPolicyQueryAnalysisOverrides(analysis *QueryAnalysis, normalized string, policy RetrievalPolicy) {
+	if analysis == nil {
+		return
+	}
+	if policy.AllowHistorical &&
+		analysis.TimeMode == QueryTimeModeHistorical &&
+		analysis.MemoryAbility == MemoryAbilityDirectFact &&
+		hasHistoricalStateLookupIntent(normalized) {
+		analysis.MemoryAbility = MemoryAbilityHistorical
+		analysis.EvidenceNeed = EvidenceNeedStateTransition
+		analysis.Signals = appendUniqueQuerySignal(analysis.Signals, QuerySignalStateTransition)
+	}
+}
+
+func appendUniqueQuerySignal(signals []QuerySignal, signal QuerySignal) []QuerySignal {
+	for _, existing := range signals {
+		if existing == signal {
+			return signals
+		}
+	}
+	return append(signals, signal)
 }
 
 func cloneQueryAnalysis(value QueryAnalysis) QueryAnalysis {
@@ -584,7 +608,7 @@ func hasReflectionSummaryIntent(normalized string) bool {
 }
 
 func hasUniversalPremiseIntent(normalized string) bool {
-	return containsAny(
+	if containsAny(
 		normalized,
 		"是不是完全",
 		"是否完全",
@@ -606,18 +630,29 @@ func hasUniversalPremiseIntent(normalized string) bool {
 		"必须",
 		"从头到尾",
 		"总是",
-		"每次",
 		"永远",
 		"always",
 		"never",
 		"every time",
-	)
+	) {
+		return true
+	}
+	if strings.Contains(normalized, "一直") && containsAny(normalized, "是不是", "是否") {
+		return true
+	}
+	return strings.Contains(normalized, "每次") &&
+		containsAny(normalized, "是不是", "是否", "都会", "都要", "都必须", "总是", "永远")
 }
 
 func hasPremiseCheckIntent(normalized string) bool {
+	if hasReminderGotchaIntent(normalized) {
+		return false
+	}
 	return hasUniversalPremiseIntent(normalized) ||
 		hasConditionalPremiseCheckIntent(normalized) ||
-		hasPremiseChallengeEvidenceIntent(normalized)
+		hasPremiseChallengeEvidenceIntent(normalized) ||
+		hasConflationPremiseIntent(normalized) ||
+		hasSourceRedactionPremiseIntent(normalized)
 }
 
 func hasConditionalPremiseCheckIntent(normalized string) bool {
@@ -655,6 +690,28 @@ func hasPremiseChallengeEvidenceIntent(normalized string) bool {
 		"disprove",
 		"exception",
 	)
+}
+
+func hasConflationPremiseIntent(normalized string) bool {
+	return containsAny(normalized, "所以是不是", "所以 是否", "是不是也", "是否也")
+}
+
+func hasSourceRedactionPremiseIntent(normalized string) bool {
+	if !containsAny(normalized, "redacted", "redact", "source_redact", "脱敏", "打码", "已清除") {
+		return false
+	}
+	return containsAny(normalized, "是否", "是不是", "会不会", "还能", "can ", "will ") &&
+		containsAny(normalized, "暴露", "泄露", "原文", "来源", "source", "raw")
+}
+
+func hasReminderGotchaIntent(normalized string) bool {
+	return containsAny(normalized, "提醒", "通知", "reminder", "notification") &&
+		containsAny(normalized, "是不是完全", "是否完全", "完全不", "任何", "所有", "never", "no ") &&
+		containsAny(normalized, "小星", "助手", "agent", "assistant")
+}
+
+func hasHistoricalStateLookupIntent(normalized string) bool {
+	return containsAny(normalized, "以前", "之前", "过去", "曾经", "从前", "早期")
 }
 
 func hasEventBundleSlotLanguage(normalized string) bool {
@@ -713,6 +770,8 @@ func queryMemoryAbility(normalized string) MemoryAbility {
 		return MemoryAbilityRelationshipArc
 	case hasStateTransitionIntent(normalized):
 		return MemoryAbilityHistorical
+	case hasReminderGotchaIntent(normalized):
+		return MemoryAbilityGotcha
 	case hasPremiseCheckIntent(normalized):
 		return MemoryAbilityPremiseCheck
 	case hasPastEventDirectFactIntent(normalized):
@@ -748,6 +807,8 @@ func queryEvidenceNeed(normalized string) EvidenceNeed {
 		return EvidenceNeedRelationshipTimeline
 	case hasStateTransitionIntent(normalized):
 		return EvidenceNeedStateTransition
+	case hasReminderGotchaIntent(normalized):
+		return EvidenceNeedGotchaNote
 	case hasPremiseCheckIntent(normalized):
 		return EvidenceNeedPremiseCounterexample
 	case hasPastEventDirectFactIntent(normalized) && !hasStateTransitionIntent(normalized):

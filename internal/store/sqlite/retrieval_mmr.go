@@ -3,6 +3,8 @@ package sqlite
 import (
 	"sort"
 	"strings"
+
+	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
 
 func bestMMRCandidateIndex(candidates []scoredFact, selected []scoredFact) int {
@@ -39,6 +41,48 @@ func maxFactSimilarity(candidate scoredFact, selected []scoredFact) float64 {
 		}
 	}
 	return maxSimilarity
+}
+
+func isMMRDuplicateCandidate(query QueryAnalysis, candidate scoredFact, selected []scoredFact) bool {
+	if len(selected) == 0 {
+		return false
+	}
+	if maxFactSimilarity(candidate, selected) > defaultDuplicateThreshold {
+		return true
+	}
+	if !queryUsesPredicateObjectHardCap(query) {
+		return false
+	}
+	candidateKey := predicateObjectKey(candidate.Fact)
+	if candidateKey == "" {
+		return false
+	}
+	for _, item := range selected {
+		if predicateObjectKey(item.Fact) == candidateKey &&
+			item.Fact.LifecycleStatus == candidate.Fact.LifecycleStatus {
+			return true
+		}
+	}
+	return false
+}
+
+func queryUsesPredicateObjectHardCap(query QueryAnalysis) bool {
+	if queryWantsExplicitProvenanceMemory(query) ||
+		query.EvidenceNeed == EvidenceNeedStateTransition ||
+		query.EvidenceNeed == EvidenceNeedRelationshipTimeline ||
+		hasQuerySignal(query, QuerySignalStateTransition) ||
+		hasQuerySignal(query, QuerySignalRelationshipArc) {
+		return false
+	}
+	return true
+}
+
+func predicateObjectKey(fact core.Fact) string {
+	objectKey := canonicalObjectKey(fact.ObjectEntityID, fact.ObjectLiteral)
+	if objectKey == "" || strings.TrimSpace(fact.Predicate) == "" {
+		return ""
+	}
+	return strings.TrimSpace(fact.Predicate) + "\x1f" + objectKey
 }
 
 func factSimilarity(left scoredFact, right scoredFact) float64 {

@@ -105,7 +105,9 @@ func queryAllowsHistoricalTransitionCompletion(query QueryAnalysis, policy Retri
 		return false
 	}
 	return query.EvidenceNeed == EvidenceNeedStateTransition ||
-		hasQuerySignal(query, QuerySignalStateTransition)
+		query.EvidenceNeed == EvidenceNeedRelationshipTimeline ||
+		hasQuerySignal(query, QuerySignalStateTransition) ||
+		hasQuerySignal(query, QuerySignalRelationshipArc)
 }
 
 func (r *RetrievalRepository) ensureSelectedHistoricalSupersedesCompletions(ctx context.Context, req RetrievalRequest, query QueryAnalysis, policy RetrievalPolicy, now time.Time, selected []scoredFact, scored []scoredFact) ([]scoredFact, error) {
@@ -1140,7 +1142,10 @@ func factLooksLikePremiseCounterexample(query QueryAnalysis, fact core.Fact, fac
 		stringFromPtr(fact.ObjectLiteral),
 		factSearchText,
 	), " "))
-	for _, term := range []string{"不能吃辣", "不太能吃辣", "辛辣耐受度低", "不能暴露", "不能把", "禁止", "不要", "不得", "不允许", "不是所有", "反例", "例外"} {
+	if queryMentionsSpicyPreference(query) && containsAny(text, "不能吃辣", "不太能吃辣", "辛辣耐受度低") {
+		return true
+	}
+	for _, term := range []string{"不能暴露", "不能把", "禁止", "不要", "不得", "不允许", "不是所有", "反例", "例外"} {
 		if strings.Contains(text, term) {
 			return true
 		}
@@ -1162,6 +1167,11 @@ func factLooksLikePremiseCounterexample(query QueryAnalysis, fact core.Fact, fac
 		}
 	}
 	return false
+}
+
+func queryMentionsSpicyPreference(query QueryAnalysis) bool {
+	text := strings.ToLower(strings.Join(nonEmptyStrings(query.Raw, query.Normalized, strings.Join(query.Terms, " ")), " "))
+	return containsAny(text, "辣", "辛辣", "无辣不欢", "加辣", "spicy")
 }
 
 func isAmbiguousCounterexampleExpansion(term string) bool {
@@ -1259,7 +1269,7 @@ ORDER BY node_id ASC`, args...)
 
 func queryWantsRelationshipOutcome(query QueryAnalysis) bool {
 	switch query.MemoryAbility {
-	case MemoryAbilityRelationshipArc, MemoryAbilityDynamicState:
+	case MemoryAbilityRelationshipArc, MemoryAbilityDynamicState, MemoryAbilitySupportive:
 	default:
 		return false
 	}
@@ -1268,16 +1278,13 @@ func queryWantsRelationshipOutcome(query QueryAnalysis) bool {
 }
 
 func factLooksLikeRelationshipOutcome(fact core.Fact) bool {
-	if fact.FactType == core.FactTypeRelationalState {
-		return true
-	}
 	text := strings.ToLower(strings.Join(nonEmptyStrings(
 		string(fact.Predicate),
 		string(fact.FactType),
 		fact.ContentSummary,
 		stringFromPtr(fact.ObjectLiteral),
 	), " "))
-	for _, term := range []string{"feels_with_agent", "relational_state", "companionship", "less lonely", "不孤独", "没那么孤独", "陪伴"} {
+	for _, term := range []string{"feels_with_agent", "companionship", "less lonely", "不孤独", "没那么孤独", "孤单", "没那么孤单", "陪伴感", "感受", "和解", "互相理解", "翻篇"} {
 		if strings.Contains(text, term) {
 			return true
 		}

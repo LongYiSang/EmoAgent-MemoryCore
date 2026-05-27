@@ -557,7 +557,7 @@ func TestServiceRetrieveSensitivityPermission(t *testing.T) {
 	requireMemoryItem(t, sensitive, boundary.ID, "用户不希望晚上十点后被提醒工作。", "")
 }
 
-func TestServiceRetrieveFatigueSuppression(t *testing.T) {
+func TestServiceRetrieveFatigueSuppressionAfterRepeatedPromptInjection(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := openConsolidationService(t, ctx)
 	defer svc.Close()
@@ -576,9 +576,24 @@ func TestServiceRetrieveFatigueSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second retrieve: %v", err)
 	}
-	requireNoMemoryItem(t, second, fact.ID)
-	if len(second.DoNotMention) != 1 || second.DoNotMention[0].NodeID != fact.ID {
-		t.Fatalf("suppression = %#v, want fact %s", second.DoNotMention, fact.ID)
+	requireMemoryItem(t, second, fact.ID, "用户喜欢咖啡。", "")
+	if len(second.DoNotMention) != 0 {
+		t.Fatalf("second suppression = %#v, want none after one prior prompt injection", second.DoNotMention)
+	}
+
+	third, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	if err != nil {
+		t.Fatalf("third retrieve: %v", err)
+	}
+	requireMemoryItem(t, third, fact.ID, "用户喜欢咖啡。", "")
+
+	fourth, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	if err != nil {
+		t.Fatalf("fourth retrieve: %v", err)
+	}
+	requireNoMemoryItem(t, fourth, fact.ID)
+	if len(fourth.DoNotMention) != 1 || fourth.DoNotMention[0].NodeID != fact.ID {
+		t.Fatalf("suppression = %#v, want fact %s", fourth.DoNotMention, fact.ID)
 	}
 }
 
