@@ -34,6 +34,11 @@ seed:
       role: user
       content: 周末上午如果天气好，我会给阳台植物浇水，然后去附近公园走一圈。
       occurred_at: "2026-05-30T10:00:00+08:00"
+    - id: ep_daily_pet
+      session_id: s_daily_life
+      role: user
+      content: 我家里的猫叫小橘，是我从大学毕业后一直养的宠物；如果我出差，记得提醒我提前安排猫粮和自动饮水机。
+      occurred_at: "2026-05-30T20:30:00+08:00"
 
 live_extraction:
   session_id: s_daily_life
@@ -48,7 +53,7 @@ live_extraction:
 
 expect:
   gate:
-    min_accepted_facts: 4
+    min_accepted_facts: 5
     max_rejected: 1
   accepted_facts:
     - subject_entity_id: user
@@ -80,6 +85,12 @@ expect:
         - 周末
         - 植物
         - 公园
+    - subject_entity_id: user
+      predicate: has_pet
+      summary_contains_any:
+        - 小橘
+        - 猫
+        - 宠物
   review_or_reject:
     - reason_any_of:
         - model_rejected
