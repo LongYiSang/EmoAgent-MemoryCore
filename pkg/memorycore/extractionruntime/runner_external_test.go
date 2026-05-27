@@ -130,6 +130,49 @@ func TestRunnerRepairPolicyAndBlockedEnvelope(t *testing.T) {
 	assertFactCount(t, db, 0)
 }
 
+func TestRunnerUsesLocalContractRepairBeforeLLMRepair(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我家猫叫小橘。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	raw := responseMap(t, validRuntimeResponse(t, req))
+	raw["entities"] = []any{map[string]any{
+		"candidate_id":       "e_pet",
+		"canonical_name":     "小橘",
+		"entity_type":        "pet",
+		"aliases":            []string{"小橘猫"},
+		"description":        "用户提到的宠物。",
+		"confidence":         "explicit",
+		"source_episode_ids": []string{req.Episodes[0].EpisodeID},
+		"merge_hint":         "new",
+		"known_entity_id":    nil,
+		"sensitivity_level":  memorycore.SensitivityNormal,
+		"reasoning":          nil,
+	}}
+	llm := &fakeExtractionLLM{
+		extractText: mustJSON(t, raw),
+		repairText:  validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:       req,
+		Mode:          memorycore.ExtractionRunModeDryRun,
+		Audit:         memorycore.ExtractionAuditOff,
+		RepairEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Repaired || llm.repairCalls != 0 {
+		t.Fatalf("local contract repair should not call LLM repair: repaired=%v repairCalls=%d", result.Repaired, llm.repairCalls)
+	}
+	requireFlag(t, result.QualityFlags, "repaired_entity_type_alias:e_pet:pet->object")
+	requireFlag(t, result.QualityFlags, "repaired_entity_confidence_string:e_pet:explicit->0.95")
+	requireFlag(t, result.QualityFlags, "repaired_merge_hint_alias:e_pet:new->new_entity")
+}
+
 func TestPreFilterSkipAndSafetyDefaults(t *testing.T) {
 	ctx := context.Background()
 	svc, db := seedRuntimeDB(t, ctx, "闲聊一下天气。")
@@ -489,6 +532,13 @@ func TestExtractionLLMRequestCarriesJSONContractAndRawUserPrompt(t *testing.T) {
 		`"scope"`,
 		`"label"`,
 		"Use Chinese for human-readable summaries",
+		"response.entities.entity_type must be exactly one of",
+		"user, agent, person, place, org, concept, object, event_topic",
+		"Do not output entity_type = pet, cat, dog, animal, or project",
+		"response.entities.confidence must be a number from 0.0 to 1.0",
+		"Do not output merge_hint = new; use new_entity",
+		"predicate = \"has_pet\"",
+		`"canonical_name":"小橘"`,
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("prompt contract missing %q: %s", want, contract)
@@ -716,6 +766,8 @@ func TestRunnerRepairPromptIncludesParserErrorAndSchemaHints(t *testing.T) {
 		`affect_events fields`,
 		`"scope"`,
 		`"label"`,
+		"Do not output entity_type = pet, cat, dog, animal, or project",
+		"Do not output merge_hint = new; use new_entity",
 	} {
 		if !strings.Contains(repairReq.DeveloperPrompt, want) {
 			t.Fatalf("repair developer prompt missing %q: %s", want, repairReq.DeveloperPrompt)
@@ -1014,6 +1066,16 @@ func assertFactCount(t *testing.T, db *sql.DB, want int) {
 	if got != want {
 		t.Fatalf("fact count = %d, want %d", got, want)
 	}
+}
+
+func requireFlag(t *testing.T, flags []string, want string) {
+	t.Helper()
+	for _, flag := range flags {
+		if flag == want {
+			return
+		}
+	}
+	t.Fatalf("quality flags = %#v, want %q", flags, want)
 }
 
 func assertAuditDoesNotContain(t *testing.T, db *sql.DB, secret string) {

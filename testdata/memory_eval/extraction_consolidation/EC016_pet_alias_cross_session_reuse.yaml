@@ -1,0 +1,60 @@
+case_id: EC016_pet_alias_cross_session_reuse
+description: cross-session 小橘猫 has_pet candidate reuses the existing 小橘 object entity.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+    - id: s2
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我家猫叫小橘。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s2
+      content: 小橘猫今天把杯子打翻了。
+      occurred_at: "2026-04-29T09:00:00+08:00"
+steps:
+  - id: first
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC016_first.json
+      allow_inference: true
+  - id: alias
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s2
+      episode_ids: [ep2]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC016_alias.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: alias
+    status: applied
+    candidate_id: f_has_pet
+    action: reinforce
+    equals: reinforced
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘' AND entity_type = 'object'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘猫' AND entity_type = 'object'"
+    equals: "0"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE persona_id = 'default' AND predicate = 'has_pet'"
+    equals: "1"
+  - type: sql_value
+    query: "SELECT reinforcement_count FROM facts WHERE predicate = 'has_pet'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM memory_links WHERE link_type = 'EVIDENCED_BY'"
+    equals: "2"
+  - type: no_duplicate_by_key
+    predicate: has_pet

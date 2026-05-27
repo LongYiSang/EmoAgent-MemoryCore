@@ -300,7 +300,7 @@ func validateFactShape(fact memorycore.ExtractedFactCandidate) []string {
 	if fact.TemporalPrecision != "" && !validTemporalPrecision(fact.TemporalPrecision) {
 		reasons = append(reasons, "invalid_temporal_precision")
 	}
-	if fact.ExtractionConfidence != "" && fact.ExtractionConfidence != memorycore.ConfidenceExplicit && fact.ExtractionConfidence != memorycore.ConfidenceInferred && fact.ExtractionConfidence != memorycore.ConfidenceAmbiguous {
+	if fact.ExtractionConfidence != "" && !memorycore.IsAllowedExtractionConfidenceLabel(fact.ExtractionConfidence) {
 		reasons = append(reasons, "invalid_extraction_confidence")
 	}
 	if fact.FactType != "" && !validFactType(fact.FactType) {
@@ -515,19 +515,7 @@ func specialEntityCandidate(id string) bool {
 }
 
 func validEntityType(value string) bool {
-	switch value {
-	case memorycore.EntityTypeUser,
-		memorycore.EntityTypeAgent,
-		memorycore.EntityTypePerson,
-		memorycore.EntityTypePlace,
-		memorycore.EntityTypeOrg,
-		memorycore.EntityTypeConcept,
-		memorycore.EntityTypeObject,
-		memorycore.EntityTypeEventTopic:
-		return true
-	default:
-		return false
-	}
+	return memorycore.IsAllowedExtractionEntityType(value)
 }
 
 func validSensitivity(value string) bool {
@@ -582,12 +570,7 @@ func validTemporalPrecision(value string) bool {
 }
 
 func validMergeHint(value string) bool {
-	switch value {
-	case "known_entity", "maybe_existing", "new_entity", "ambiguous":
-		return true
-	default:
-		return false
-	}
+	return memorycore.IsAllowedExtractionMergeHint(value)
 }
 
 func validForgetLevel(value string) bool {

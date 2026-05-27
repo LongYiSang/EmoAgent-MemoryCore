@@ -192,7 +192,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		return finish(result, promptHash, "", "", prefilterHash, &usage, safe)
 	}
 	responseHash := hashText(raw.Text)
-	resp, parseErr := extraction.ParseResponse(strings.NewReader(raw.Text))
+	resp, _, parseErr := extraction.ParseResponseWithRepairReport(strings.NewReader(raw.Text))
 	var repairedHash string
 	if parseErr != nil && runReq.RepairEnabled {
 		trace.recordExtractionParseError(parseErr)
@@ -206,7 +206,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 			return finish(result, promptHash, responseHash, "", prefilterHash, &usage, safe)
 		}
 		repairedHash = hashText(repairRaw.Text)
-		resp, parseErr = extraction.ParseResponse(strings.NewReader(repairRaw.Text))
+		resp, _, parseErr = extraction.ParseResponseWithRepairReport(strings.NewReader(repairRaw.Text))
 		trace.recordRepairParseError(parseErr)
 		result.Repaired = true
 	}
@@ -217,6 +217,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	}
 
 	gate := extraction.ValidateExtraction(req, resp)
+	result.QualityFlags = append([]string(nil), resp.QualityFlags...)
 	result.GateResult = &gate
 	result.AcceptedCount = gate.Summary.AcceptedFactCount
 	result.ReviewCount = gate.Summary.NeedsReviewCount
@@ -504,10 +505,21 @@ func repairDeveloperPrompt(parseErr error) string {
 }
 
 func extractionFieldContract() string {
-	return `Field contract:
+	entityTypes := strings.Join(memorycore.AllowedExtractionEntityTypes(), ", ")
+	mergeHints := strings.Join(memorycore.AllowedExtractionMergeHints(), ", ")
+	confidenceLabels := strings.Join(memorycore.AllowedExtractionConfidenceLabels(), ", ")
+	return fmt.Sprintf(`Field contract:
 - Use Chinese for human-readable summaries and notes when the source conversation is Chinese: content_summary, evidence_notes, reasoning, gate_summary.notes, pin_reason, target_description, corrected_topic, and rejection reasons. Keep JSON field names, IDs, enum values, fact_type, operation_hint, quality_decision, sensitivity_level, and confidence labels as protocol values.
 - Do not copy request.known_entities into response.entities. entity_id is input-only. Do not return entity_id; use "known_entity_id" for an existing entity or omit entities when using special ids "user" or "agent".
 - response.entities fields only: "candidate_id", "canonical_name", "entity_type", "aliases", "description", "confidence", "source_episode_ids", "merge_hint", "known_entity_id", "sensitivity_level", "reasoning".
+- response.entities.entity_type must be exactly one of: %s.
+- Do not output entity_type = pet, cat, dog, animal, or project. For a named pet such as 小橘, output entity_type = object.
+- response.entities.confidence must be a number from 0.0 to 1.0. Do not put explicit, inferred, ambiguous, sure, or other strings in entity confidence.
+- response.entities.merge_hint must be exactly one of: %s. Do not output merge_hint = new; use new_entity.
+- response.facts.extraction_confidence must be exactly one of: %s.
+- For a named pet relationship, output an object entity and a has_pet fact: subject_entity_candidate_id = "user", predicate = "has_pet", object_entity_candidate_id points to the pet entity, and object_literal = null.
 - response.affect_events fields only: "candidate_id", "scope", "label", "valence", "arousal", "source_episode_ids", "confidence", "reasoning". Do not return subject_entity_candidate_id, affect_type, intensity, trigger, context, operation_hint, quality_decision, or quality_reasons in affect_events.
-- response.facts fields only: "candidate_id", "subject_entity_candidate_id", "predicate", "object_entity_candidate_id", "object_literal", "content_summary", "fact_type", "valid_from", "valid_to", "temporal_precision", "extraction_confidence", "extraction_confidence_score", "importance", "valence", "arousal", "sensitivity_level", "source_episode_ids", "evidence_notes", "reasoning", "operation_hint", "pinned", "user_requested", "searchable_hint", "quality_decision", "quality_reasons".`
+- response.facts fields only: "candidate_id", "subject_entity_candidate_id", "predicate", "object_entity_candidate_id", "object_literal", "content_summary", "fact_type", "valid_from", "valid_to", "temporal_precision", "extraction_confidence", "extraction_confidence_score", "importance", "valence", "arousal", "sensitivity_level", "source_episode_ids", "evidence_notes", "reasoning", "operation_hint", "pinned", "user_requested", "searchable_hint", "quality_decision", "quality_reasons".
+- Named pet example: {"entities":[{"candidate_id":"e_pet_xiaoju","canonical_name":"小橘","entity_type":"object","aliases":["小橘猫"],"description":"用户提到的宠物。","confidence":0.95,"source_episode_ids":["ep_1"],"merge_hint":"new_entity","known_entity_id":null,"sensitivity_level":"normal","reasoning":null}],"facts":[{"candidate_id":"f_has_pet_xiaoju","subject_entity_candidate_id":"user","predicate":"has_pet","object_entity_candidate_id":"e_pet_xiaoju","object_literal":null,"content_summary":"用户有一只叫小橘的宠物。","fact_type":"core_identity","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.65,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"用户直接提到小橘。","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":[]}]}.
+- Repair schema contract only. Allowed local-style rewrites are pet/cat/dog/animal entity_type to object, entity confidence labels to numeric scores, and merge_hint new to new_entity. Do not invent memories or add facts unless the original response already implies the relationship and the source episodes support it.`, entityTypes, mergeHints, confidenceLabels)
 }

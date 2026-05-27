@@ -114,6 +114,7 @@ type ExtractionRunResult struct {
 	SkippedEpisodeCount   int                     `json:"skipped_episode_count"`
 	PreFilterReviewCount  int                     `json:"prefilter_review_count,omitempty"`
 	Repaired              bool                    `json:"repaired,omitempty"`
+	QualityFlags          []string                `json:"quality_flags,omitempty"`
 	GateResult            *ExtractionGateResult   `json:"gate_result,omitempty"`
 	DryRunResult          *ExtractionDryRunResult `json:"dry_run_result,omitempty"`
 	ApplyResult           *ExtractionApplyResult  `json:"apply_result,omitempty"`

@@ -59,6 +59,10 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertLinkNotExists(ctx, assertion)
 	case "apply_status":
 		return s.assertApplyStatus(assertion)
+	case "quality_flag":
+		return s.assertQualityFlag(assertion)
+	case "gate_decision":
+		return s.assertGateDecision(assertion)
 	case "entity_exists":
 		return s.assertEntityExists(ctx, assertion)
 	case "entity_alias_exists":
@@ -1190,6 +1194,63 @@ func (s *runState) assertApplyStatus(assertion Assertion) error {
 		}
 	}
 	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "candidate " + assertion.CandidateID, Actual: "missing"}
+}
+
+func (s *runState) assertQualityFlag(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "step " + assertion.Step, Actual: "missing"}
+	}
+	want := assertion.Equals
+	if want == "" {
+		want = assertion.SearchText
+	}
+	for _, flag := range result.QualityFlags {
+		if flag == want {
+			return nil
+		}
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "quality flag " + want, Actual: strings.Join(result.QualityFlags, ",")}
+}
+
+func (s *runState) assertGateDecision(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Gate == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "gate step " + assertion.Step, Actual: "missing"}
+	}
+	decisions := gateDecisionGroups(*result.Gate)
+	for _, decision := range decisions {
+		if assertion.CandidateID != "" && decision.CandidateID != assertion.CandidateID {
+			continue
+		}
+		if assertion.Kind != "" && decision.Kind != assertion.Kind {
+			continue
+		}
+		if assertion.Status != "" && decision.Decision != assertion.Status {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "decision=" + assertion.Status, Actual: "decision=" + decision.Decision}
+		}
+		if len(assertion.RequiredReasonCodes) > 0 {
+			missing := missingStrings(assertion.RequiredReasonCodes, decision.ReasonCodes)
+			if len(missing) > 0 {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "reason_codes include " + strings.Join(assertion.RequiredReasonCodes, ","), Actual: "reason_codes=" + strings.Join(decision.ReasonCodes, ",")}
+			}
+		}
+		return nil
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "gate decision " + assertion.CandidateID, Actual: "missing"}
+}
+
+func gateDecisionGroups(gate memorycore.ExtractionGateResult) []memorycore.CandidateGateDecision {
+	var out []memorycore.CandidateGateDecision
+	out = append(out, gate.ResponseDecisions...)
+	out = append(out, gate.EntityDecisions...)
+	out = append(out, gate.FactDecisions...)
+	out = append(out, gate.LinkDecisions...)
+	out = append(out, gate.AffectEventDecisions...)
+	out = append(out, gate.DeletionIntentDecisions...)
+	out = append(out, gate.PinIntentDecisions...)
+	out = append(out, gate.CorrectionHintDecisions...)
+	return out
 }
 
 func (s *runState) assertEntityExists(ctx context.Context, assertion Assertion) error {

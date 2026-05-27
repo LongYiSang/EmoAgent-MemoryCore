@@ -60,6 +60,7 @@ type stepResult struct {
 	Retrieval       *memorycore.MemoryContext
 	Apply           *memorycore.ExtractionApplyResult
 	Gate            *memorycore.ExtractionGateResult
+	QualityFlags    []string
 	ScoreBreakdowns []RetrievalScoreBreakdownReport
 	RerankRequest   *memorycore.MirrorRerankRequest
 	Forget          *memorycore.ForgetResult
@@ -455,11 +456,11 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		}
 		s.steps[step.ID] = stepResult{MirrorSync: result}
 	case "apply_extraction_response":
-		apply, gate, err := s.runApplyExtractionResponse(ctx, step)
+		apply, gate, qualityFlags, err := s.runApplyExtractionResponse(ctx, step)
 		if err != nil {
 			return err
 		}
-		s.steps[step.ID] = stepResult{Apply: apply, Gate: gate}
+		s.steps[step.ID] = stepResult{Apply: apply, Gate: gate, QualityFlags: qualityFlags}
 	case "link":
 		if err := s.runLink(ctx, step); err != nil {
 			return err
@@ -550,13 +551,13 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 	return result, nil
 }
 
-func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*memorycore.ExtractionApplyResult, *memorycore.ExtractionGateResult, error) {
+func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*memorycore.ExtractionApplyResult, *memorycore.ExtractionGateResult, []string, error) {
 	body := step.ApplyExtraction
 	var sessionID *string
 	if strings.TrimSpace(body.SessionID) != "" {
 		value, err := s.resolveString(body.SessionID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		sessionID = &value
 	}
@@ -564,13 +565,13 @@ func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*
 	for _, episodeID := range body.EpisodeIDs {
 		value, err := s.resolveString(episodeID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		episodeIDs = append(episodeIDs, value)
 	}
 	now, err := parseOptionalTime(body.Now)
 	if err != nil {
-		return nil, nil, fmt.Errorf("case %s step %s extraction now: %w", s.caseID, step.ID, err)
+		return nil, nil, nil, fmt.Errorf("case %s step %s extraction now: %w", s.caseID, step.ID, err)
 	}
 	if now.IsZero() {
 		now = fixedNow
@@ -588,22 +589,22 @@ func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*
 		Now:                      now,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("case %s step %s build extraction request: %w", s.caseID, step.ID, err)
+		return nil, nil, nil, fmt.Errorf("case %s step %s build extraction request: %w", s.caseID, step.ID, err)
 	}
 	req.RequestID = defaultString(body.RequestID, step.ID)
 
 	responsePath, err := resolveEvalFile(body.ResponseFixture)
 	if err != nil {
-		return nil, nil, fmt.Errorf("case %s step %s response fixture: %w", s.caseID, step.ID, err)
+		return nil, nil, nil, fmt.Errorf("case %s step %s response fixture: %w", s.caseID, step.ID, err)
 	}
 	raw, err := os.Open(responsePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("case %s step %s open response fixture: %w", s.caseID, step.ID, err)
+		return nil, nil, nil, fmt.Errorf("case %s step %s open response fixture: %w", s.caseID, step.ID, err)
 	}
 	defer raw.Close()
 	resp, err := extraction.ParseResponse(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("case %s step %s parse response fixture: %w", s.caseID, step.ID, err)
+		return nil, nil, nil, fmt.Errorf("case %s step %s parse response fixture: %w", s.caseID, step.ID, err)
 	}
 	gate := extraction.ValidateExtraction(req, resp)
 	apply := extraction.ApplyAcceptedFacts(ctx, s.service, s.db, req, resp, gate)
@@ -617,7 +618,7 @@ func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*
 			s.refs[step.ID+".fact_id"] = result.Result.Fact.ID
 		}
 	}
-	return &apply, &gate, nil
+	return &apply, &gate, append([]string(nil), resp.QualityFlags...), nil
 }
 
 func (s *runState) runFact(ctx context.Context, step Step) error {

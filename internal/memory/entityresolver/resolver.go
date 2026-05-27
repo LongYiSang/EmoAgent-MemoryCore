@@ -24,6 +24,8 @@ type Input struct {
 	ResponseEntities []memorycore.ExtractedEntityCandidate
 	CandidateID      string
 	AllowSensitive   bool
+	Predicate        string
+	ObjectKind       string
 }
 
 type Result struct {
@@ -80,6 +82,12 @@ func (r Resolver) Resolve(ctx context.Context, in Input) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
+		if len(matches) == 0 && canResolveNamedPetAlias(candidate, in) {
+			matches, err = findPetAliasMatches(ctx, r.DB, in.PersonaID, candidate.CanonicalName, candidate.Aliases)
+			if err != nil {
+				return Result{}, err
+			}
+		}
 		if len(matches) == 1 {
 			return Result{CandidateID: candidateID, EntityID: matches[0], Status: "resolved", CanonicalKey: normalizeEntityText(candidate.CanonicalName)}, nil
 		}
@@ -106,6 +114,13 @@ func (r Resolver) Resolve(ctx context.Context, in Input) (Result, error) {
 		return Result{}, err
 	}
 	return Result{CandidateID: candidateID, EntityID: entity.ID, Status: "created", CanonicalKey: normalizeEntityText(candidate.CanonicalName)}, nil
+}
+
+func canResolveNamedPetAlias(candidate memorycore.ExtractedEntityCandidate, in Input) bool {
+	return candidate.EntityType == memorycore.EntityTypeObject &&
+		strings.TrimSpace(in.Predicate) == "has_pet" &&
+		strings.TrimSpace(in.ObjectKind) == "entity" &&
+		candidate.SensitivityLevel != memorycore.SensitivityHighlySensitive
 }
 
 func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, error) {
@@ -225,6 +240,126 @@ WHERE a.persona_id = ?
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func findPetAliasMatches(ctx context.Context, db *sql.DB, personaID string, name string, aliases []string) ([]string, error) {
+	needles := petSurfaceKeys(append([]string{name}, aliases...)...)
+	if len(needles) == 0 {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT id, canonical_name
+FROM entities
+WHERE persona_id = ?
+  AND entity_type = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1`, personaID, memorycore.EntityTypeObject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	matches := map[string]struct{}{}
+	for rows.Next() {
+		var id, canonical string
+		if err := rows.Scan(&id, &canonical); err != nil {
+			return nil, err
+		}
+		if surfaceMatches(needles, petSurfaceKeys(canonical)) {
+			matches[id] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	aliasRows, err := db.QueryContext(ctx, `
+SELECT e.id, a.alias
+FROM entity_aliases a
+JOIN entities e ON e.id = a.entity_id AND e.persona_id = a.persona_id
+WHERE a.persona_id = ?
+  AND e.entity_type = ?
+  AND e.visibility_status = 'visible'
+  AND e.searchable = 1`, personaID, memorycore.EntityTypeObject)
+	if err != nil {
+		return nil, err
+	}
+	defer aliasRows.Close()
+	for aliasRows.Next() {
+		var id, alias string
+		if err := aliasRows.Scan(&id, &alias); err != nil {
+			return nil, err
+		}
+		if surfaceMatches(needles, petSurfaceKeys(alias)) {
+			matches[id] = struct{}{}
+		}
+	}
+	if err := aliasRows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(matches))
+	for id := range matches {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func petSurfaceKeys(values ...string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		for _, candidate := range normalizePetSurfaceName(value) {
+			key := normalizeEntityText(candidate)
+			if key != "" {
+				out[key] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func surfaceMatches(left map[string]struct{}, right map[string]struct{}) bool {
+	for key := range left {
+		if _, ok := right[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizePetSurfaceName(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	candidates := []string{value}
+	trimmed := strings.TrimSpace(value)
+	for _, prefix := range []string{"我家", "家里", "我的"} {
+		trimmed = strings.TrimPrefix(trimmed, prefix)
+	}
+	candidates = append(candidates, strings.TrimSpace(trimmed))
+	for _, prefix := range []string{"橘猫", "小猫", "小狗", "宠物", "cat ", "dog "} {
+		candidates = append(candidates, strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)))
+	}
+	for _, suffix := range []string{"橘猫", "猫", "狗", "小猫", "小狗", "宠物", " cat", " dog", "cat", "dog"} {
+		candidates = append(candidates, strings.TrimSpace(strings.TrimSuffix(trimmed, suffix)))
+	}
+	return uniqueEntityTexts(candidates)
+}
+
+func uniqueEntityTexts(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		key := normalizeEntityText(value)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func aliasesForEnsure(values []string) []memorycore.EntityAliasInput {

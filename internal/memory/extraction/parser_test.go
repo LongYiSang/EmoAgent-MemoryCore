@@ -61,6 +61,76 @@ func TestParsePreFilterResponseAcceptsProtocolRoutingHints(t *testing.T) {
 	}
 }
 
+func TestParseResponseRepairsEntityContractAliasesBeforeStrictDecode(t *testing.T) {
+	body := strings.Replace(validResponseJSON(), `"entities": []`, `"entities": [
+    {
+      "candidate_id": "e_pet",
+      "canonical_name": "小橘",
+      "entity_type": "pet",
+      "aliases": ["小橘猫"],
+      "description": null,
+      "confidence": "explicit",
+      "source_episode_ids": ["ep_seed"],
+      "merge_hint": "new",
+      "known_entity_id": null,
+      "sensitivity_level": "normal",
+      "reasoning": null
+    }
+  ]`, 1)
+
+	resp, err := extraction.ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	if len(resp.Entities) != 1 {
+		t.Fatalf("entities = %d, want 1", len(resp.Entities))
+	}
+	entity := resp.Entities[0]
+	if entity.EntityType != memorycore.EntityTypeObject {
+		t.Fatalf("entity_type = %q, want object", entity.EntityType)
+	}
+	if entity.Confidence != 0.95 {
+		t.Fatalf("confidence = %.2f, want 0.95", entity.Confidence)
+	}
+	if entity.MergeHint != "new_entity" {
+		t.Fatalf("merge_hint = %q, want new_entity", entity.MergeHint)
+	}
+	for _, want := range []string{
+		"repaired_entity_type_alias:e_pet:pet->object",
+		"repaired_entity_confidence_string:e_pet:explicit->0.95",
+		"repaired_merge_hint_alias:e_pet:new->new_entity",
+	} {
+		requireString(t, resp.QualityFlags, want)
+	}
+}
+
+func TestParseResponseUnknownEntityConfidenceStringBecomesGateRejectableSentinel(t *testing.T) {
+	body := strings.Replace(validResponseJSON(), `"entities": []`, `"entities": [
+    {
+      "candidate_id": "e_pet",
+      "canonical_name": "小橘",
+      "entity_type": "object",
+      "aliases": [],
+      "description": null,
+      "confidence": "sure",
+      "source_episode_ids": ["ep_seed"],
+      "merge_hint": "new_entity",
+      "known_entity_id": null,
+      "sensitivity_level": "normal",
+      "reasoning": null
+    }
+  ]`, 1)
+
+	resp, err := extraction.ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	if got := resp.Entities[0].Confidence; got != -1 {
+		t.Fatalf("confidence = %.2f, want -1", got)
+	}
+	requireString(t, resp.QualityFlags, "unrepairable_entity_confidence_string:e_pet:sure->-1")
+}
+
 func validRequestJSON() string {
 	return `{
   "schema_version": "memory_extraction_protocol.v0.1.request",
@@ -119,6 +189,16 @@ func validRequestJSON() string {
     "max_links": 20
   }
 }`
+}
+
+func requireString(t *testing.T, values []string, want string) {
+	t.Helper()
+	for _, value := range values {
+		if value == want {
+			return
+		}
+	}
+	t.Fatalf("values = %#v, want %q", values, want)
 }
 
 func validResponseJSON() string {

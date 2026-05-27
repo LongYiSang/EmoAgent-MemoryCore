@@ -128,6 +128,7 @@ func entityNeedsReviewError(role string, result entityresolver.Result, err error
 
 func factToConsolidationCandidate(ctx context.Context, svc memorycore.Service, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, fact memorycore.ExtractedFactCandidate, pinnedTargets map[string]struct{}) (memorycore.ConsolidateCandidateRequest, error) {
 	resolver := entityresolver.Resolver{Service: svc, DB: db}
+	objectKind := predicateObjectKind(req.PredicateSchemas, fact.Predicate)
 	subject, err := resolver.Resolve(ctx, entityresolver.Input{
 		PersonaID:        req.PersonaID,
 		KnownEntities:    req.KnownEntities,
@@ -149,6 +150,8 @@ func factToConsolidationCandidate(ctx context.Context, svc memorycore.Service, d
 			ResponseEntities: resp.Entities,
 			CandidateID:      *fact.ObjectEntityCandidateID,
 			AllowSensitive:   req.Policy.AllowSensitiveExtraction,
+			Predicate:        fact.Predicate,
+			ObjectKind:       objectKind,
 		})
 		if err != nil {
 			if reviewErr := entityNeedsReviewError("object", object, err); reviewErr != nil {
@@ -192,6 +195,15 @@ func factToConsolidationCandidate(ctx context.Context, svc memorycore.Service, d
 			Approved: true,
 		},
 	}, nil
+}
+
+func predicateObjectKind(schemas []memorycore.ExtractionPredicateSchema, predicate string) string {
+	for _, schema := range schemas {
+		if schema.Predicate == predicate {
+			return schema.ObjectKind
+		}
+	}
+	return ""
 }
 
 func applyAcceptedLinks(ctx context.Context, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult, candidateFacts map[string]string) error {

@@ -34,23 +34,36 @@ func ParseRequest(r io.Reader) (memorycore.ExtractionRequest, error) {
 }
 
 func ParseResponse(r io.Reader) (memorycore.ExtractionResponse, error) {
+	resp, _, err := ParseResponseWithRepairReport(r)
+	return resp, err
+}
+
+func ParseResponseWithRepairReport(r io.Reader) (memorycore.ExtractionResponse, ContractRepairReport, error) {
 	var resp memorycore.ExtractionResponse
-	if err := strictDecode(r, &resp); err != nil {
-		return memorycore.ExtractionResponse{}, err
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, err
+	}
+	normalized, report, normalizeErr := NormalizeExtractionResponseContract(data)
+	if normalizeErr != nil {
+		normalized = data
+	}
+	if err := strictDecodeBytes(normalized, &resp); err != nil {
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, err
 	}
 	if resp.SchemaVersion != memorycore.ExtractionResponseSchemaVersion {
-		return memorycore.ExtractionResponse{}, fmt.Errorf("schema_version must be %s", memorycore.ExtractionResponseSchemaVersion)
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, fmt.Errorf("schema_version must be %s", memorycore.ExtractionResponseSchemaVersion)
 	}
 	if strings.TrimSpace(resp.RequestID) == "" {
-		return memorycore.ExtractionResponse{}, fmt.Errorf("request_id is required")
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, fmt.Errorf("request_id is required")
 	}
 	if strings.TrimSpace(resp.PersonaID) == "" {
-		return memorycore.ExtractionResponse{}, fmt.Errorf("persona_id is required")
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, fmt.Errorf("persona_id is required")
 	}
 	if !validExtractionTrigger(resp.Trigger) {
-		return memorycore.ExtractionResponse{}, fmt.Errorf("trigger is invalid")
+		return memorycore.ExtractionResponse{}, ContractRepairReport{}, fmt.Errorf("trigger is invalid")
 	}
-	return resp, nil
+	return resp, report, nil
 }
 
 func ParsePreFilterResponse(r io.Reader) (memorycore.ExtractionPreFilterResponse, error) {
@@ -97,6 +110,10 @@ func strictDecode(r io.Reader, out any) error {
 	if err != nil {
 		return err
 	}
+	return strictDecodeBytes(data, out)
+}
+
+func strictDecodeBytes(data []byte, out any) error {
 	if strings.HasPrefix(strings.TrimSpace(string(data)), "```") {
 		return fmt.Errorf("json must not be wrapped in markdown code fences")
 	}

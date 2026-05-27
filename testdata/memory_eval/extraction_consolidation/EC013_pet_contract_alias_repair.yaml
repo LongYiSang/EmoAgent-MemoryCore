@@ -1,0 +1,44 @@
+case_id: EC013_pet_contract_alias_repair
+description: pet entity_type, entity confidence label, and merge_hint alias are locally repaired before gate/apply.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我家猫叫小橘。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC013.json
+      allow_inference: true
+assertions:
+  - type: quality_flag
+    step: apply
+    equals: repaired_entity_type_alias:e_pet:pet->object
+  - type: quality_flag
+    step: apply
+    equals: repaired_entity_confidence_string:e_pet:explicit->0.95
+  - type: quality_flag
+    step: apply
+    equals: repaired_merge_hint_alias:e_pet:new->new_entity
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_has_pet
+    action: insert
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘' AND entity_type = 'object'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts f JOIN entities e ON f.object_entity_id = e.id WHERE f.persona_id = 'default' AND f.predicate = 'has_pet' AND e.canonical_name = '小橘' AND f.visibility_status = 'visible'"
+    equals: "1"

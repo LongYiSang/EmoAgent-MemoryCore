@@ -490,6 +490,7 @@ type Assertion struct {
 	Step                           string   `yaml:"step"`
 	NodeID                         string   `yaml:"node_id"`
 	NodeType                       string   `yaml:"node_type"`
+	Kind                           string   `yaml:"kind"`
 	NodeIDs                        []string `yaml:"node_ids"`
 	RelevantNodeIDs                []string `yaml:"relevant_node_ids"`
 	ForbiddenNodeIDs               []string `yaml:"forbidden_node_ids"`
@@ -780,6 +781,8 @@ func knownAssertionType(value string) bool {
 		"queue_count",
 		"queue_status",
 		"apply_status",
+		"quality_flag",
+		"gate_decision",
 		"entity_exists",
 		"entity_alias_exists",
 		"link_not_exists",

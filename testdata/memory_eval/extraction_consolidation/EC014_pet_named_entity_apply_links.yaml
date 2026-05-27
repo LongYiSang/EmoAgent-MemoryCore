@@ -1,0 +1,48 @@
+case_id: EC014_pet_named_entity_apply_links
+description: named pet is stored as object entity and has_pet fact receives evidence and about-entity links.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 小橘是我家的猫。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC014.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_has_pet
+    action: insert
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘' AND entity_type = 'object'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts f JOIN entities e ON f.object_entity_id = e.id WHERE f.persona_id = 'default' AND f.predicate = 'has_pet' AND e.canonical_name = '小橘' AND f.visibility_status = 'visible' AND f.validity_status = 'valid'"
+    equals: "1"
+  - type: link_exists
+    from_node_id: $apply.f_has_pet.fact_id
+    link_type: EVIDENCED_BY
+    to_node_type: episode
+    to_node_id: ep1
+  - type: link_exists
+    from_node_id: $apply.f_has_pet.fact_id
+    link_type: ABOUT_ENTITY
+    to_node_type: entity
+    to_node_id: user
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM memory_links ml JOIN entities e ON ml.to_node_id = e.id WHERE ml.from_node_id = (SELECT id FROM facts WHERE predicate = 'has_pet') AND ml.link_type = 'ABOUT_ENTITY' AND ml.to_node_type = 'entity' AND e.canonical_name = '小橘'"
+    equals: "1"

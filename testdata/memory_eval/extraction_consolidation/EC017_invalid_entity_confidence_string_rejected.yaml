@@ -1,0 +1,48 @@
+case_id: EC017_invalid_entity_confidence_string_rejected
+description: unknown entity confidence string is not treated as high confidence and blocks apply.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我家猫叫小橘。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC017.json
+      allow_inference: true
+assertions:
+  - type: quality_flag
+    step: apply
+    equals: unrepairable_entity_confidence_string:e_pet:sure->-1
+  - type: gate_decision
+    step: apply
+    kind: entity
+    candidate_id: e_pet
+    status: reject
+    required_reason_codes: [confidence_out_of_range]
+  - type: gate_decision
+    step: apply
+    kind: fact
+    candidate_id: f_has_pet
+    status: reject
+    required_reason_codes: [entity_rejected]
+  - type: apply_status
+    step: apply
+    status: nothing_applied
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘'"
+    equals: "0"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE persona_id = 'default'"
+    equals: "0"

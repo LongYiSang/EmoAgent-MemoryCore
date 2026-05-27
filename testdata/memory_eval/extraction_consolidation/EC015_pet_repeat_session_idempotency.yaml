@@ -1,0 +1,51 @@
+case_id: EC015_pet_repeat_session_idempotency
+description: repeating the same has_pet extraction in one session does not duplicate entity, fact, or links.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我家猫叫小橘。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: first
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC015_first.json
+      allow_inference: true
+  - id: rerun
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC015_rerun.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: rerun
+    status: skipped
+    candidate_id: f_has_pet
+    action: duplicate_apply
+    equals: skipped
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND canonical_name = '小橘' AND entity_type = 'object'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE persona_id = 'default' AND predicate = 'has_pet'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM memory_links WHERE link_type = 'EVIDENCED_BY'"
+    equals: "1"
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM memory_links WHERE link_type = 'ABOUT_ENTITY'"
+    equals: "2"
+  - type: no_duplicate_by_key
+    predicate: has_pet
