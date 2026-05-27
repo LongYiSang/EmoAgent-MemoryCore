@@ -1,0 +1,34 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "f_assistant_suggested_like",
+      "subject_entity_candidate_id": "user",
+      "predicate": "likes",
+      "object_literal": "热牛奶",
+      "content_summary": "助手猜测用户可能喜欢热牛奶。",
+      "fact_type": "stable_preference",
+      "extraction_confidence": "inferred",
+      "extraction_confidence_score": 0.65,
+      "importance": 0.3,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {"accepted_fact_count": 1, "notes": "assistant-only source"}
+}

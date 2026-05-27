@@ -1,0 +1,49 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "f_coffee",
+      "subject_entity_candidate_id": "user",
+      "predicate": "likes",
+      "object_literal": "咖啡",
+      "content_summary": "用户喜欢咖啡。",
+      "fact_type": "stable_preference",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.95,
+      "importance": 0.6,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    },
+    {
+      "candidate_id": "f_tea",
+      "subject_entity_candidate_id": "user",
+      "predicate": "likes",
+      "object_literal": "乌龙茶",
+      "content_summary": "用户喜欢乌龙茶。",
+      "fact_type": "stable_preference",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.95,
+      "importance": 0.6,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {"accepted_fact_count": 2, "notes": "multi coexist"}
+}

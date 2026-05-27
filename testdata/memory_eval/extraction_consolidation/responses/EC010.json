@@ -1,0 +1,44 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "f_agent_affect",
+      "subject_entity_candidate_id": "agent",
+      "predicate": "feels_about_agent",
+      "object_literal": "Agent 依恋用户",
+      "content_summary": "Agent 表达依恋用户。",
+      "fact_type": "relational_state",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.9,
+      "importance": 0.3,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [],
+  "affect_events": [
+    {
+      "candidate_id": "a_agent",
+      "scope": "agent",
+      "label": "attachment",
+      "valence": 0.4,
+      "arousal": 0.5,
+      "source_episode_ids": ["ep1"],
+      "confidence": 0.8
+    }
+  ],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": ["agent_affect"],
+  "gate_summary": {"accepted_fact_count": 0, "rejected_count": 1}
+}

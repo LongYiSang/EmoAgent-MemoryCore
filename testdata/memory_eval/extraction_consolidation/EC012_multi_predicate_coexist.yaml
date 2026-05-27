@@ -1,0 +1,32 @@
+case_id: EC012_multi_predicate_coexist
+description: multi-cardinality predicates coexist instead of superseding each other.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我喜欢咖啡，也喜欢乌龙茶。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC012.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_tea
+    action: coexist
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE predicate = 'likes' AND visibility_status = 'visible' AND validity_status = 'valid'"
+    equals: "2"

@@ -25,7 +25,7 @@ func ValidateExtraction(req memorycore.ExtractionRequest, resp memorycore.Extrac
 	result.ResponseDecisions = validateResponseEnvelope(ctx)
 	result.EntityDecisions = validateEntities(ctx)
 	result.FactDecisions = validateFacts(ctx, result.EntityDecisions)
-	result.LinkDecisions = validateLinks(ctx)
+	result.LinkDecisions = validateLinks(ctx, result.FactDecisions)
 	result.AffectEventDecisions = validateAffectEvents(ctx)
 	result.DeletionIntentDecisions = validateDeletionIntents(ctx)
 	result.PinIntentDecisions = validatePinIntents(ctx)
@@ -48,6 +48,7 @@ type gateContext struct {
 	predicates       map[string]memorycore.ExtractionPredicateSchema
 	knownEntities    map[string]memorycore.ExtractionKnownEntity
 	entityCandidates map[string]memorycore.ExtractedEntityCandidate
+	factCandidates   map[string]memorycore.ExtractedFactCandidate
 }
 
 func newGateContext(req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse) gateContext {
@@ -58,6 +59,7 @@ func newGateContext(req memorycore.ExtractionRequest, resp memorycore.Extraction
 		predicates:       map[string]memorycore.ExtractionPredicateSchema{},
 		knownEntities:    map[string]memorycore.ExtractionKnownEntity{},
 		entityCandidates: map[string]memorycore.ExtractedEntityCandidate{},
+		factCandidates:   map[string]memorycore.ExtractedFactCandidate{},
 	}
 	for _, episode := range req.Episodes {
 		ctx.episodes[episode.EpisodeID] = episode
@@ -70,6 +72,9 @@ func newGateContext(req memorycore.ExtractionRequest, resp memorycore.Extraction
 	}
 	for _, entity := range resp.Entities {
 		ctx.entityCandidates[entity.CandidateID] = entity
+	}
+	for _, fact := range resp.Facts {
+		ctx.factCandidates[fact.CandidateID] = fact
 	}
 	return ctx
 }
@@ -114,6 +119,9 @@ func validateEntities(ctx gateContext) []memorycore.CandidateGateDecision {
 		if entity.EntityType == memorycore.EntityTypeAgent {
 			reasons = append(reasons, "agent_affect_boundary")
 		}
+		if entity.SensitivityLevel == memorycore.SensitivityHighlySensitive && !ctx.req.Policy.AllowSensitiveExtraction {
+			reasons = append(reasons, "highly_sensitive_entity_requires_review")
+		}
 		if entity.Confidence < 0 || entity.Confidence > 1 {
 			reasons = append(reasons, "confidence_out_of_range")
 		}
@@ -143,7 +151,7 @@ func validateEntities(ctx gateContext) []memorycore.CandidateGateDecision {
 			decisions = append(decisions, decisionMany(entity.CandidateID, "entity", decisionReject, reasons, "agent entities cannot become user memory facts"))
 			continue
 		}
-		if hasReason(reasons, "ambiguous_entity") || hasReason(reasons, "known_entity_not_visible_searchable") {
+		if hasReason(reasons, "ambiguous_entity") || hasReason(reasons, "known_entity_not_visible_searchable") || hasReason(reasons, "highly_sensitive_entity_requires_review") {
 			decisions = append(decisions, decisionMany(entity.CandidateID, "entity", decisionNeedsReview, reasons, "entity requires review"))
 			continue
 		}
@@ -187,7 +195,11 @@ func validateFacts(ctx gateContext, entityDecisions []memorycore.CandidateGateDe
 		for _, r := range sourceReasons {
 			rejectReasons = append(rejectReasons, r)
 		}
-		if _, ok := ctx.predicates[fact.Predicate]; !ok {
+		if allFactSourcesHaveRole(ctx, fact.SourceEpisodeIDs, "assistant") {
+			rejectReasons = append(rejectReasons, "assistant_suggestion_not_user_fact")
+		}
+		predicateSchema, predicateKnown := ctx.predicates[fact.Predicate]
+		if !predicateKnown {
 			reviewReasons = append(reviewReasons, "unknown_predicate")
 		}
 		if hasAgentAffectLeak(fact) {
@@ -225,6 +237,9 @@ func validateFacts(ctx gateContext, entityDecisions []memorycore.CandidateGateDe
 		}
 		hasObjectEntity := fact.ObjectEntityCandidateID != nil && strings.TrimSpace(*fact.ObjectEntityCandidateID) != ""
 		hasObjectLiteral := fact.ObjectLiteral != nil && strings.TrimSpace(*fact.ObjectLiteral) != ""
+		if predicateKnown && predicateSchema.ObjectKind == "entity" && !hasObjectEntity {
+			reviewReasons = append(reviewReasons, "object_entity_required")
+		}
 		if hasObjectEntity == hasObjectLiteral {
 			rejectReasons = append(rejectReasons, "object_entity_or_literal_required")
 		}
@@ -241,7 +256,11 @@ func validateFacts(ctx gateContext, entityDecisions []memorycore.CandidateGateDe
 	return decisions
 }
 
-func validateLinks(ctx gateContext) []memorycore.CandidateGateDecision {
+func validateLinks(ctx gateContext, factDecisions []memorycore.CandidateGateDecision) []memorycore.CandidateGateDecision {
+	factDecisionByID := map[string]memorycore.CandidateGateDecision{}
+	for _, d := range factDecisions {
+		factDecisionByID[d.CandidateID] = d
+	}
 	var decisions []memorycore.CandidateGateDecision
 	for _, link := range ctx.resp.Links {
 		reasons := validateSourceIDs(ctx, link.SourceEpisodeIDs, true)
@@ -251,11 +270,21 @@ func validateLinks(ctx gateContext) []memorycore.CandidateGateDecision {
 		if !validLinkType(link.LinkType) {
 			reasons = append(reasons, "invalid_link_type")
 		}
+		if _, ok := ctx.factCandidates[link.FromCandidateID]; !ok {
+			reasons = append(reasons, "from_candidate_not_fact")
+		} else if d := factDecisionByID[link.FromCandidateID]; d.Decision != decisionAccept {
+			reasons = append(reasons, "from_candidate_not_accepted")
+		}
+		if _, ok := ctx.factCandidates[link.ToCandidateID]; !ok {
+			reasons = append(reasons, "to_candidate_not_fact")
+		} else if d := factDecisionByID[link.ToCandidateID]; d.Decision != decisionAccept {
+			reasons = append(reasons, "to_candidate_not_accepted")
+		}
 		if len(reasons) > 0 {
 			decisions = append(decisions, decisionMany(link.CandidateID, "link", decisionReject, reasons, "invalid link source"))
 			continue
 		}
-		decisions = append(decisions, decision(link.CandidateID, "link", decisionNotApplied, "unsupported_apply", "links are not written in Phase2B"))
+		decisions = append(decisions, decision(link.CandidateID, "link", decisionAccept, "accepted_for_link_apply", ""))
 	}
 	return decisions
 }
@@ -393,6 +422,19 @@ func validateSourceIDs(ctx gateContext, ids []string, allowEmpty bool) []string 
 		}
 	}
 	return uniqueStrings(reasons)
+}
+
+func allFactSourcesHaveRole(ctx gateContext, ids []string, role string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		episode, ok := ctx.episodes[id]
+		if !ok || episode.Role != role {
+			return false
+		}
+	}
+	return true
 }
 
 func hasAgentAffectLeak(fact memorycore.ExtractedFactCandidate) bool {
@@ -568,7 +610,7 @@ func validAffectScope(value string) bool {
 
 func validLinkType(value string) bool {
 	switch value {
-	case "EVIDENCED_BY", "ABOUT_ENTITY", "CAUSED_BY", "EXPLAINS", "CONTRADICTS", "SUPPORTS", "INHIBITS":
+	case "CAUSED_BY", "EXPLAINS", "CONTRADICTS", "SUPPORTS", "INHIBITS":
 		return true
 	default:
 		return false

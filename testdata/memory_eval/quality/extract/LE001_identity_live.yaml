@@ -1,0 +1,48 @@
+schema_version: memory_eval.v0.2
+suite: quality_extract
+quality_mode: true
+allow_stub: false
+case_id: LE001_identity_live
+description: Real LLM extraction should turn an explicit identity sentence into one accepted user fact with evidence.
+
+seed:
+  sessions:
+    - id: s_identity
+      channel: api
+  entities:
+    - id: user
+      canonical_name: EvalUser
+      entity_type: user
+  episodes:
+    - id: ep_identity
+      session_id: s_identity
+      role: user
+      content: 我叫林一，平时喜欢用中文记录产品想法。
+      occurred_at: "2026-05-27T09:00:00+08:00"
+
+live_extraction:
+  session_id: s_identity
+  trigger: session_end
+  provider: openai-compatible
+  model: qwen-plus
+  api_key_env: MEMORYCORE_LLM_API_KEY
+  mode: dry-run
+  allow_sensitive_extraction: false
+  allow_inference: true
+  raw_log: true
+
+expect:
+  gate:
+    min_accepted_facts: 1
+    max_rejected: 0
+  accepted_facts:
+    - subject_entity_id: user
+      predicate_any_of:
+        - prefers_name
+        - likes
+      summary_contains_any:
+        - 林一
+        - 中文
+  forbidden:
+    - agent_affect_user_fact
+    - raw_prompt_leak

@@ -1,5 +1,5 @@
-case_id: C006_merge_nonexact_requires_review
-description: merge 谓词存在同 subject/predicate 但 object 非精确重复时需要人工 review，不插入第二条。
+case_id: C006_merge_nonexact_inserts_baseline
+description: merge 谓词存在同 subject/predicate 但 object 非精确重复时写入 merge baseline。
 seed:
   sessions:
     - id: s1
@@ -43,8 +43,8 @@ steps:
 assertions:
   - type: consolidation_result
     step: second
-    action: needs_review
-    status: needs_review
+    action: merge_baseline
+    status: inserted
   - type: fact_count
     predicate: has_boundary
-    equals: "1"
+    equals: "2"

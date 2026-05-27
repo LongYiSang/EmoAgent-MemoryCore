@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,6 +195,115 @@ func TestRunMatrixWritesCombinedReportsForMultipleFixtures(t *testing.T) {
 		if !strings.Contains(string(queryAnalysisReport), want) {
 			t.Fatalf("combined query analysis report =\n%s\nwant %q", string(queryAnalysisReport), want)
 		}
+	}
+}
+
+func TestRunLiveExtractionMockWritesReports(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "LE001_mock_live.yaml"), []byte(minimalCLILiveExtractionFixture()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reportDir := filepath.Join(t.TempDir(), "reports")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--suite", "extract",
+		"--mode", "live",
+		"--provider", "mock",
+		"--root", root,
+		"--temp-dir", t.TempDir(),
+		"--report-dir", reportDir,
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	for _, name := range []string{"report.md", "report.json"} {
+		if _, err := os.Stat(filepath.Join(reportDir, name)); err != nil {
+			t.Fatalf("expected %s: %v", name, err)
+		}
+	}
+	for _, want := range []string{
+		"live_extraction_report",
+		"case_id: LE001_mock_live",
+		"status: pass",
+		"accepted=1",
+		"raw_log_paths:",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout =\n%s\nwant %q", stdout.String(), want)
+		}
+	}
+	jsonReport, err := os.ReadFile(filepath.Join(reportDir, "report.json"))
+	if err != nil {
+		t.Fatalf("read live report: %v", err)
+	}
+	for _, want := range []string{
+		`"suite": "quality_extract"`,
+		`"mode": "live"`,
+		`"case_id": "LE001_mock_live"`,
+		`"status": "pass"`,
+		`"accepted_count": 1`,
+		`"raw_log_paths"`,
+	} {
+		if !strings.Contains(string(jsonReport), want) {
+			t.Fatalf("report.json =\n%s\nwant %q", string(jsonReport), want)
+		}
+	}
+}
+
+func TestRunLiveExtractionThinkingFlagControlsOpenAICompatiblePayload(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "LE001_live.yaml"), []byte(minimalCLILiveExtractionFixture()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+
+	for _, tt := range []struct {
+		name         string
+		args         []string
+		wantThinking string
+	}{
+		{name: "default_false", wantThinking: "disabled"},
+		{name: "explicit_false", args: []string{"--thinking", "false"}, wantThinking: "disabled"},
+		{name: "explicit_true", args: []string{"--thinking", "true"}, wantThinking: "enabled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var payload map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				responseText := liveExtractionProviderResponse(t, payload)
+				writeLiveExtractionProviderResponse(t, w, responseText)
+			}))
+			defer server.Close()
+
+			args := []string{
+				"--suite", "extract",
+				"--mode", "live",
+				"--provider", "openai-compatible",
+				"--base-url", server.URL,
+				"--model", "deepseek-v4-flash",
+				"--api-key-env", "TEST_EXTRACTION_API_KEY",
+				"--root", root,
+				"--temp-dir", t.TempDir(),
+				"--report-dir", filepath.Join(t.TempDir(), "reports"),
+			}
+			args = append(args, tt.args...)
+			var stdout, stderr bytes.Buffer
+			code := run(args, &stdout, &stderr)
+
+			if code != 0 {
+				t.Fatalf("run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+			}
+			thinking, ok := payload["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("thinking = %#v, want object", payload["thinking"])
+			}
+			if thinking["type"] != tt.wantThinking {
+				t.Fatalf("thinking.type = %#v, want %s; payload=%#v", thinking["type"], tt.wantThinking, payload)
+			}
+		})
 	}
 }
 
@@ -656,3 +768,156 @@ assertions:
     min: 1.0
 `
 }
+
+func minimalCLILiveExtractionFixture() string {
+	return `
+schema_version: memory_eval.v0.2
+suite: quality_extract
+quality_mode: true
+allow_stub: false
+case_id: LE001_mock_live
+description: Mock live extraction should run through the explicit live eval path.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: EvalUser
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      role: user
+      content: 我喜欢咖啡。
+      occurred_at: "2026-05-27T09:00:00+08:00"
+live_extraction:
+  session_id: s1
+  provider: mock
+  mode: dry-run
+  raw_log: true
+expect:
+  gate:
+    min_accepted_facts: 1
+    max_review: 0
+    max_rejected: 0
+  accepted_facts:
+    - subject_entity_id: user
+      predicate_any_of: [likes]
+      summary_contains_any: [咖啡]
+  forbidden:
+    - raw_prompt_leak
+`
+}
+
+func liveExtractionProviderResponse(t *testing.T, payload map[string]any) string {
+	t.Helper()
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("messages = %#v, want non-empty array", payload["messages"])
+	}
+	last, ok := messages[len(messages)-1].(map[string]any)
+	if !ok {
+		t.Fatalf("last message = %#v, want object", messages[len(messages)-1])
+	}
+	content, ok := last["content"].(string)
+	if !ok {
+		t.Fatalf("last message content = %#v, want string", last["content"])
+	}
+	jsonStart := strings.Index(content, `{"schema_version":`)
+	if jsonStart < 0 {
+		t.Fatalf("user message missing request JSON: %s", content)
+	}
+	var req struct {
+		RequestID string  `json:"request_id"`
+		PersonaID string  `json:"persona_id"`
+		SessionID *string `json:"session_id"`
+		Trigger   string  `json:"trigger"`
+		Episodes  []struct {
+			EpisodeID string `json:"episode_id"`
+		} `json:"episodes"`
+	}
+	if err := json.Unmarshal([]byte(content[jsonStart:]), &req); err != nil {
+		t.Fatalf("decode extraction request: %v\n%s", err, content[jsonStart:])
+	}
+	episodeID := "ep1"
+	if len(req.Episodes) > 0 {
+		episodeID = req.Episodes[0].EpisodeID
+	}
+	body := map[string]any{
+		"schema_version": memoryExtractionResponseSchemaVersionForTest,
+		"request_id":     req.RequestID,
+		"persona_id":     req.PersonaID,
+		"session_id":     req.SessionID,
+		"trigger":        req.Trigger,
+		"source_window":  map[string]any{"episode_ids": []string{episodeID}, "started_at": nil, "ended_at": nil},
+		"entities":       []any{},
+		"facts": []any{map[string]any{
+			"candidate_id":                "f1",
+			"subject_entity_candidate_id": "user",
+			"predicate":                   "likes",
+			"object_entity_candidate_id":  nil,
+			"object_literal":              "咖啡",
+			"content_summary":             "用户喜欢咖啡。",
+			"fact_type":                   "stable_preference",
+			"valid_from":                  nil,
+			"valid_to":                    nil,
+			"temporal_precision":          "unknown",
+			"extraction_confidence":       "explicit",
+			"extraction_confidence_score": 0.95,
+			"importance":                  0.7,
+			"valence":                     0.2,
+			"arousal":                     0.2,
+			"sensitivity_level":           "normal",
+			"source_episode_ids":          []string{episodeID},
+			"evidence_notes":              "用户直接表达喜欢咖啡。",
+			"reasoning":                   nil,
+			"operation_hint":              "insert_candidate",
+			"pinned":                      false,
+			"user_requested":              false,
+			"searchable_hint":             true,
+			"quality_decision":            "accept_for_consolidation",
+			"quality_reasons":             []string{"explicit_user_statement"},
+		}},
+		"links":               []any{},
+		"affect_events":       []any{},
+		"deletion_intents":    []any{},
+		"pin_intents":         []any{},
+		"correction_hints":    []any{},
+		"rejected_candidates": []any{},
+		"quality_flags":       []any{},
+		"gate_summary": map[string]any{
+			"accepted_fact_count":   1,
+			"needs_review_count":    0,
+			"rejected_count":        0,
+			"has_deletion_intent":   false,
+			"has_pin_intent":        false,
+			"requires_human_review": false,
+			"notes":                 "通过",
+		},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal provider response content: %v", err)
+	}
+	return string(data)
+}
+
+func writeLiveExtractionProviderResponse(t *testing.T, w http.ResponseWriter, responseText string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"model": "deepseek-v4-flash",
+		"choices": []any{map[string]any{
+			"finish_reason": "stop",
+			"message": map[string]any{
+				"content": responseText,
+			},
+		}},
+	}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		t.Fatalf("encode provider response: %v", err)
+	}
+}
+
+const memoryExtractionResponseSchemaVersionForTest = "memory_extraction_protocol.v0.1"

@@ -1,0 +1,54 @@
+case_id: EC004_correction_supersede_lives_in
+description: corrected single-cardinality predicate supersedes the old active fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我住在上海。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+    - id: ep2
+      session_id: s1
+      content: 更正一下，我现在住在杭州。
+      occurred_at: "2026-04-28T10:00:00+08:00"
+steps:
+  - id: old
+    action: apply_extraction_response
+    apply_extraction_response:
+      request_id: move_old
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC004_old.json
+      allow_inference: true
+  - id: new
+    action: apply_extraction_response
+    apply_extraction_response:
+      request_id: move_new
+      session_id: s1
+      episode_ids: [ep2]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC004_new.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: new
+    status: applied
+    candidate_id: f_lives_hangzhou
+    action: supersede
+  - type: fact_column
+    fact_id: $old.f_lives_shanghai.fact_id
+    column: validity_status
+    equals: invalidated
+  - type: fact_column
+    fact_id: $new.f_lives_hangzhou.fact_id
+    column: validity_status
+    equals: valid
+  - type: link_exists
+    from_node_id: $new.f_lives_hangzhou.fact_id
+    link_type: SUPERSEDES
+    to_node_id: $old.f_lives_shanghai.fact_id

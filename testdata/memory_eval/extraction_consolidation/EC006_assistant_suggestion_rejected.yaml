@@ -1,0 +1,31 @@
+case_id: EC006_assistant_suggestion_rejected
+description: assistant-only suggestions do not become user facts.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      role: assistant
+      content: 你可能会喜欢热牛奶。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC006.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: nothing_applied
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts"
+    equals: "0"

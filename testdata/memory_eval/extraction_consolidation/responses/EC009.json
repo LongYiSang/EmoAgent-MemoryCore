@@ -1,0 +1,45 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [
+    {
+      "candidate_id": "diagnosis",
+      "canonical_name": "健康诊断",
+      "entity_type": "concept",
+      "aliases": ["diagnosis"],
+      "confidence": 0.8,
+      "source_episode_ids": ["ep1"],
+      "merge_hint": "new_entity",
+      "sensitivity_level": "highly_sensitive"
+    }
+  ],
+  "facts": [
+    {
+      "candidate_id": "f_sensitive",
+      "subject_entity_candidate_id": "user",
+      "predicate": "is_busy_with",
+      "object_entity_candidate_id": "diagnosis",
+      "content_summary": "用户正在处理高度敏感的健康诊断。",
+      "fact_type": "transient_context",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.9,
+      "importance": 0.6,
+      "sensitivity_level": "highly_sensitive",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": ["sensitive_review"],
+  "gate_summary": {"accepted_fact_count": 0, "needs_review_count": 1, "requires_human_review": true}
+}

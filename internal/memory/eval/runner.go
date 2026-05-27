@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
 )
 
 const defaultPersonaID = "default"
@@ -57,6 +58,8 @@ type runState struct {
 type stepResult struct {
 	Consolidation   *memorycore.ConsolidationResult
 	Retrieval       *memorycore.MemoryContext
+	Apply           *memorycore.ExtractionApplyResult
+	Gate            *memorycore.ExtractionGateResult
 	ScoreBreakdowns []RetrievalScoreBreakdownReport
 	RerankRequest   *memorycore.MirrorRerankRequest
 	Forget          *memorycore.ForgetResult
@@ -244,6 +247,9 @@ func (s *runState) stepReport(step Step) StepReport {
 		out.FusionMode = step.Retrieve.FusionMode
 		out.Retrieval = result.Retrieval
 		out.ScoreBreakdowns = append([]RetrievalScoreBreakdownReport(nil), result.ScoreBreakdowns...)
+	}
+	if result.Apply != nil {
+		out.Apply = result.Apply
 	}
 	return out
 }
@@ -448,6 +454,12 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			return fmt.Errorf("case %s step %s mirror sync: %w", s.caseID, step.ID, err)
 		}
 		s.steps[step.ID] = stepResult{MirrorSync: result}
+	case "apply_extraction_response":
+		apply, gate, err := s.runApplyExtractionResponse(ctx, step)
+		if err != nil {
+			return err
+		}
+		s.steps[step.ID] = stepResult{Apply: apply, Gate: gate}
 	case "link":
 		if err := s.runLink(ctx, step); err != nil {
 			return err
@@ -536,6 +548,76 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 		return nil, fmt.Errorf("case %s step %s consolidate: %w", s.caseID, step.ID, err)
 	}
 	return result, nil
+}
+
+func (s *runState) runApplyExtractionResponse(ctx context.Context, step Step) (*memorycore.ExtractionApplyResult, *memorycore.ExtractionGateResult, error) {
+	body := step.ApplyExtraction
+	var sessionID *string
+	if strings.TrimSpace(body.SessionID) != "" {
+		value, err := s.resolveString(body.SessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		sessionID = &value
+	}
+	episodeIDs := make([]string, 0, len(body.EpisodeIDs))
+	for _, episodeID := range body.EpisodeIDs {
+		value, err := s.resolveString(episodeID)
+		if err != nil {
+			return nil, nil, err
+		}
+		episodeIDs = append(episodeIDs, value)
+	}
+	now, err := parseOptionalTime(body.Now)
+	if err != nil {
+		return nil, nil, fmt.Errorf("case %s step %s extraction now: %w", s.caseID, step.ID, err)
+	}
+	if now.IsZero() {
+		now = fixedNow
+	}
+	req, err := extraction.BuildRequest(ctx, s.db, extraction.BuildRequestOptions{
+		PersonaID:                defaultString(body.PersonaID, s.persona),
+		SessionID:                sessionID,
+		EpisodeIDs:               episodeIDs,
+		Trigger:                  defaultString(body.Trigger, memorycore.ExtractionTriggerSessionEnd),
+		Timezone:                 defaultString(body.Timezone, "Asia/Shanghai"),
+		AllowSensitiveExtraction: body.AllowSensitiveExtraction,
+		AllowInference:           body.AllowInference,
+		ManualPin:                body.ManualPin,
+		ManualForget:             body.ManualForget,
+		Now:                      now,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("case %s step %s build extraction request: %w", s.caseID, step.ID, err)
+	}
+	req.RequestID = defaultString(body.RequestID, step.ID)
+
+	responsePath, err := resolveEvalFile(body.ResponseFixture)
+	if err != nil {
+		return nil, nil, fmt.Errorf("case %s step %s response fixture: %w", s.caseID, step.ID, err)
+	}
+	raw, err := os.Open(responsePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("case %s step %s open response fixture: %w", s.caseID, step.ID, err)
+	}
+	defer raw.Close()
+	resp, err := extraction.ParseResponse(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("case %s step %s parse response fixture: %w", s.caseID, step.ID, err)
+	}
+	gate := extraction.ValidateExtraction(req, resp)
+	apply := extraction.ApplyAcceptedFacts(ctx, s.service, s.db, req, resp, gate)
+	for _, result := range apply.Results {
+		if result.Result == nil || result.Result.Fact == nil {
+			continue
+		}
+		refPrefix := step.ID + "." + result.CandidateID
+		s.refs[refPrefix+".fact_id"] = result.Result.Fact.ID
+		if _, exists := s.refs[step.ID+".fact_id"]; !exists {
+			s.refs[step.ID+".fact_id"] = result.Result.Fact.ID
+		}
+	}
+	return &apply, &gate, nil
 }
 
 func (s *runState) runFact(ctx context.Context, step Step) error {
@@ -1392,4 +1474,36 @@ func sanitizeFileName(value string) string {
 		return "case"
 	}
 	return result
+}
+
+func resolveEvalFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	root, err := findEvalRepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, path), nil
+}
+
+func findEvalRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found from %s", dir)
+		}
+		dir = parent
+	}
 }

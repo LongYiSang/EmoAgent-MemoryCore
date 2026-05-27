@@ -1,0 +1,37 @@
+case_id: EC007_transient_ttl
+description: expire_by_time transient context receives default TTL and transient fact type.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 这几周我忙着数据库迁移。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC007.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_busy
+    action: insert
+  - type: fact_column
+    fact_id: $apply.f_busy.fact_id
+    column: fact_type
+    equals: transient_context
+  - type: fact_column
+    fact_id: $apply.f_busy.fact_id
+    column: valid_to
+    equals: "2026-05-19T01:00:00Z"

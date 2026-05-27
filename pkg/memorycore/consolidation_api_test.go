@@ -260,7 +260,7 @@ func TestServiceConsolidateExpireByTimeUsesCandidateValidFromForDefaultTTL(t *te
 	requireFactLifecycleVisibility(t, db, result.Fact.ID, "active", "visible")
 }
 
-func TestServiceConsolidateMergeNonExactNeedsReviewWithoutInsert(t *testing.T) {
+func TestServiceConsolidateMergeNonExactInsertsBaseline(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)
 	defer svc.Close()
@@ -286,19 +286,19 @@ func TestServiceConsolidateMergeNonExactNeedsReviewWithoutInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consolidate non-exact boundary: %v", err)
 	}
-	if second.Action != memorycore.ConsolidationActionNeedsReview {
-		t.Fatalf("second action = %q, want needs_review", second.Action)
+	if second.Action != memorycore.ConsolidationActionMergeBaseline {
+		t.Fatalf("second action = %q, want merge_baseline", second.Action)
 	}
-	if second.Status != memorycore.ConsolidationStatusNeedsReview {
-		t.Fatalf("second status = %q, want needs_review", second.Status)
+	if second.Status != memorycore.ConsolidationStatusInserted {
+		t.Fatalf("second status = %q, want inserted", second.Status)
 	}
-	if second.Fact != nil {
-		t.Fatalf("second fact = %#v, want nil", second.Fact)
+	if second.Fact == nil {
+		t.Fatal("second fact is nil")
 	}
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
-	requireFactCount(t, db, "has_boundary", 1)
+	requireFactCount(t, db, "has_boundary", 2)
 	requireFactReinforcementCount(t, db, first.Fact.ID, 0)
 }
 

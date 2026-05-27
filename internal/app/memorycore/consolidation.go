@@ -12,9 +12,11 @@ func (s *service) ConsolidateCandidate(ctx context.Context, req ConsolidateCandi
 	}
 
 	result, err := s.facts.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
-		PersonaID: personaID,
-		SessionID: req.SessionID,
-		Trigger:   defaultString(req.Trigger, ConsolidationTriggerManual),
+		PersonaID:   personaID,
+		SessionID:   req.SessionID,
+		RequestID:   req.RequestID,
+		CandidateID: req.CandidateID,
+		Trigger:     defaultString(req.Trigger, ConsolidationTriggerManual),
 		Candidate: memsqlite.ManualFactCandidate{
 			SubjectEntityID:  req.Candidate.SubjectEntityID,
 			Predicate:        req.Candidate.Predicate,

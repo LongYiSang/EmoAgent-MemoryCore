@@ -49,7 +49,7 @@ func TestConsolidationRepositoryWritesFactLinksAndQueueAtomically(t *testing.T) 
 	requireQueueCount(t, db.SQLDB(), "memory_link", result.LinkIDs[0], "upsert_edge", 1)
 }
 
-func TestConsolidationRepositoryReinforcesAndKeepsLinksIdempotent(t *testing.T) {
+func TestConsolidationRepositoryReinforcesNewSourceAndSkipsRepeat(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
 	defer db.Close()
@@ -64,7 +64,7 @@ func TestConsolidationRepositoryReinforcesAndKeepsLinksIdempotent(t *testing.T) 
 			Predicate:        "likes",
 			ObjectLiteral:    ptr("咖啡"),
 			ContentSummary:   "用户喜欢咖啡。",
-			SourceEpisodeIDs: []string{"ep_visible"},
+			SourceEpisodeIDs: []string{"ep_later"},
 			Confidence:       string(core.ExtractionConfidenceExplicit),
 			Importance:       0.4,
 		},
@@ -103,7 +103,134 @@ func TestConsolidationRepositoryReinforcesAndKeepsLinksIdempotent(t *testing.T) 
 	}
 	requireSQLiteFactCount(t, db.SQLDB(), "likes", 1)
 	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeEvidencedBy), "ep_visible", 1)
+	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeEvidencedBy), "ep_later", 1)
 	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeAboutEntity), "ent_user", 1)
+
+	third, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "likes",
+			ObjectLiteral:    ptr("咖啡"),
+			ContentSummary:   "用户喜欢咖啡。",
+			SourceEpisodeIDs: []string{"ep_later"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("third consolidate: %v", err)
+	}
+	if third.Action != memsqlite.ConsolidationActionDuplicateApply {
+		t.Fatalf("third action = %q, want duplicate_apply", third.Action)
+	}
+	if third.Status != memsqlite.ConsolidationStatusSkipped {
+		t.Fatalf("third status = %q, want skipped", third.Status)
+	}
+	requireSQLiteFactReinforcementCount(t, db.SQLDB(), first.Fact.ID, 1)
+	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeEvidencedBy), "ep_later", 1)
+}
+
+func TestConsolidationRepositoryCapsReinforcementOncePerSessionFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	sessionID := "s1"
+	repo := memsqlite.NewConsolidationRepository(db.SQLDB(), fixedConsolidationIDs(), fixedConsolidationNow)
+	first, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		SessionID: &sessionID,
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "likes",
+			ObjectLiteral:    ptr("咖啡"),
+			ContentSummary:   "用户喜欢咖啡。",
+			SourceEpisodeIDs: []string{"ep_later"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.4,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first consolidate: %v", err)
+	}
+	second, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		SessionID: &sessionID,
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "likes",
+			ObjectLiteral:    ptr("咖啡"),
+			ContentSummary:   "用户喜欢咖啡。",
+			SourceEpisodeIDs: []string{"ep_visible"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.9,
+		},
+	})
+	if err != nil {
+		t.Fatalf("second consolidate: %v", err)
+	}
+	if second.Action != memsqlite.ConsolidationActionReinforceNoop {
+		t.Fatalf("second action = %q, want reinforce_noop", second.Action)
+	}
+	if second.Fact.ID != first.Fact.ID {
+		t.Fatalf("reinforced fact id = %q, want %q", second.Fact.ID, first.Fact.ID)
+	}
+	requireSQLiteFactReinforcementCount(t, db.SQLDB(), first.Fact.ID, 0)
+	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeEvidencedBy), "ep_visible", 1)
+	requireSQLiteLinkCount(t, db.SQLDB(), first.Fact.ID, string(core.LinkTypeEvidencedBy), "ep_later", 1)
+}
+
+func TestConsolidationRepositoryMergePredicateInsertsBaselineInsteadOfReview(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	repo := memsqlite.NewConsolidationRepository(db.SQLDB(), fixedConsolidationIDs(), fixedConsolidationNow)
+	first, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "prefers_communication_style",
+			ObjectLiteral:    ptr("直接一点"),
+			ContentSummary:   "用户偏好直接沟通。",
+			SourceEpisodeIDs: []string{"ep_visible"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.6,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first merge predicate consolidate: %v", err)
+	}
+	second, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "prefers_communication_style",
+			ObjectLiteral:    ptr("先给结论"),
+			ContentSummary:   "用户偏好先给结论。",
+			SourceEpisodeIDs: []string{"ep_later"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.7,
+		},
+	})
+	if err != nil {
+		t.Fatalf("second merge predicate consolidate: %v", err)
+	}
+	if first.Action != memsqlite.ConsolidationActionInsert {
+		t.Fatalf("first action = %q, want insert", first.Action)
+	}
+	if second.Action != memsqlite.ConsolidationActionMergeBaseline || second.Status != memsqlite.ConsolidationStatusInserted {
+		t.Fatalf("second result = %s/%s, want merge_baseline/inserted", second.Action, second.Status)
+	}
+	requireSQLiteFactCount(t, db.SQLDB(), "prefers_communication_style", 2)
 }
 
 func TestConsolidationRepositorySupersedesAndPersistsInvalidation(t *testing.T) {
@@ -149,6 +276,55 @@ func TestConsolidationRepositorySupersedesAndPersistsInvalidation(t *testing.T) 
 	requireSQLiteFactValidity(t, db.SQLDB(), first.Fact.ID, string(core.ValidityInvalidated))
 	requireSQLiteLinkCount(t, db.SQLDB(), second.Fact.ID, string(core.LinkTypeSupersedes), first.Fact.ID, 1)
 	requireQueueCount(t, db.SQLDB(), "fact", first.Fact.ID, "upsert_node", 2)
+}
+
+func TestConsolidationRepositorySupersedesUncertainComparableFact(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	repo := memsqlite.NewConsolidationRepository(db.SQLDB(), fixedConsolidationIDs(), fixedConsolidationNow)
+	old, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "lives_in",
+			ObjectEntityID:   ptr("ent_shanghai"),
+			ContentSummary:   "用户可能住在上海。",
+			SourceEpisodeIDs: []string{"ep_visible"},
+			Confidence:       string(core.ExtractionConfidenceAmbiguous),
+			Importance:       0.6,
+		},
+	})
+	if err != nil {
+		t.Fatalf("old consolidate: %v", err)
+	}
+	if _, err := db.SQLDB().Exec(`UPDATE facts SET validity_status = 'uncertain' WHERE id = ?`, old.Fact.ID); err != nil {
+		t.Fatalf("mark old uncertain: %v", err)
+	}
+	newer, err := repo.ConsolidateCandidate(ctx, memsqlite.ConsolidateCandidateRequest{
+		PersonaID: "default",
+		Trigger:   "manual",
+		Candidate: memsqlite.ManualFactCandidate{
+			SubjectEntityID:  "ent_user",
+			Predicate:        "lives_in",
+			ObjectEntityID:   ptr("ent_hangzhou"),
+			ContentSummary:   "用户住在杭州。",
+			SourceEpisodeIDs: []string{"ep_later"},
+			Confidence:       string(core.ExtractionConfidenceExplicit),
+			Importance:       0.9,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new consolidate: %v", err)
+	}
+	if newer.Action != memsqlite.ConsolidationActionSupersede {
+		t.Fatalf("new action = %q, want supersede", newer.Action)
+	}
+	requireSQLiteFactValidity(t, db.SQLDB(), old.Fact.ID, string(core.ValidityInvalidated))
+	requireSQLiteLinkCount(t, db.SQLDB(), newer.Fact.ID, string(core.LinkTypeSupersedes), old.Fact.ID, 1)
 }
 
 func TestConsolidationRepositoryLLMCheckNeedsReviewWithoutFact(t *testing.T) {
@@ -254,7 +430,7 @@ func TestConsolidationRepositoryExpireByTimeNeedsReviewWithoutDefaultTTL(t *test
 	requireSQLiteFactCount(t, db.SQLDB(), "is_busy_with", 0)
 }
 
-func TestConsolidationRepositoryMergeNonExactNeedsReviewWithoutInsert(t *testing.T) {
+func TestConsolidationRepositoryMergeNonExactInsertsBaseline(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
 	defer db.Close()
@@ -293,16 +469,16 @@ func TestConsolidationRepositoryMergeNonExactNeedsReviewWithoutInsert(t *testing
 	if err != nil {
 		t.Fatalf("second consolidate: %v", err)
 	}
-	if second.Action != memsqlite.ConsolidationActionNeedsReview {
-		t.Fatalf("second action = %q, want needs_review", second.Action)
+	if second.Action != memsqlite.ConsolidationActionMergeBaseline {
+		t.Fatalf("second action = %q, want merge_baseline", second.Action)
 	}
-	if second.Status != memsqlite.ConsolidationStatusNeedsReview {
-		t.Fatalf("second status = %q, want needs_review", second.Status)
+	if second.Status != memsqlite.ConsolidationStatusInserted {
+		t.Fatalf("second status = %q, want inserted", second.Status)
 	}
-	if second.Fact != nil {
-		t.Fatalf("second fact = %#v, want nil", second.Fact)
+	if second.Fact == nil {
+		t.Fatal("second fact is nil")
 	}
-	requireSQLiteFactCount(t, db.SQLDB(), "has_boundary", 1)
+	requireSQLiteFactCount(t, db.SQLDB(), "has_boundary", 2)
 	requireSQLiteFactReinforcementCount(t, db.SQLDB(), first.Fact.ID, 0)
 }
 

@@ -1,0 +1,39 @@
+case_id: EC008_causal_link
+description: accepted causal extraction link writes an idempotent MemoryLink edge.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: platform_team
+      canonical_name: Platform Team
+      entity_type: org
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 因为加入 Platform Team，我这几周忙数据库迁移。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC008.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_busy
+    action: insert
+  - type: link_exists
+    from_node_id: $apply.f_busy.fact_id
+    link_type: CAUSED_BY
+    to_node_id: $apply.f_work.fact_id
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM index_sync_queue WHERE node_type = 'memory_link' AND operation = 'upsert_edge'"
+    equals: "6"

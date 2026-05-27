@@ -13,6 +13,7 @@ import (
 func TestEvalFixtures(t *testing.T) {
 	suites := []fixtureRegressionSuite{
 		{Dir: "consolidation", StubPolicy: FixtureStubPolicyForbid},
+		{Dir: "extraction_consolidation", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "forgetting", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "phase5", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "retrieval", StubPolicy: FixtureStubPolicyForbid},
@@ -46,6 +47,37 @@ func TestEvalFixtures(t *testing.T) {
 	}
 	if count < 10 {
 		t.Fatalf("fixture count = %d, want at least 10", count)
+	}
+}
+
+func TestExtractionConsolidationFixturesWriteLatestReport(t *testing.T) {
+	paths := discoverSuiteFixtures(t, "extraction_consolidation")
+	if len(paths) < 12 {
+		t.Fatalf("extraction_consolidation fixture count = %d, want at least 12", len(paths))
+	}
+	ctx := context.Background()
+	cases := make([]QualityBenchmarkCase, 0, len(paths))
+	for _, path := range paths {
+		fixture, err := LoadFixtureFile(path)
+		if err != nil {
+			cases = append(cases, QualityBenchmarkCase{Path: path, Report: Report{Err: err}})
+			continue
+		}
+		report := NewRunner(RunnerOptions{TempDir: t.TempDir()}).Run(ctx, fixture)
+		cases = append(cases, QualityBenchmarkCase{Path: path, Fixture: fixture, Report: report})
+	}
+	reportDir := filepath.Join(repoRoot(t), "reports", "memory_eval")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create report dir: %v", err)
+	}
+	if err := writeExtractionLatestReports(filepath.Join(reportDir, "latest.json"), filepath.Join(reportDir, "latest.md"), cases); err != nil {
+		t.Fatalf("write latest reports: %v", err)
+	}
+	for _, item := range cases {
+		logEvalDebug(t, item.Report)
+		if item.Report.Failed() {
+			t.Fatal(item.Report.Error())
+		}
 	}
 }
 
@@ -91,6 +123,64 @@ func TestQualityRetrievalFixturesDeclareQualityMetadata(t *testing.T) {
 			}
 			if fixture.AllowStub {
 				t.Fatalf("allow_stub = true, want false")
+			}
+		})
+	}
+}
+
+func TestQualityExtractDirectoryDocumentsLiveLLMBoundary(t *testing.T) {
+	dir := filepath.Join(repoRoot(t), "testdata", "memory_eval", "quality", "extract")
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("quality extract directory missing: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("quality extract path is not a directory: %s", dir)
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatalf("quality extract README missing: %v", err)
+	}
+	text := string(readme)
+	for _, want := range []string{
+		"suite: quality_extract",
+		"quality_mode: true",
+		"allow_stub: false",
+		"openai-compatible",
+		"raw-log",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("quality extract README missing %q", want)
+		}
+	}
+}
+
+func TestQualityExtractLiveFixturesDeclareLiveMetadata(t *testing.T) {
+	paths := discoverSuiteFixtures(t, filepath.Join("quality", "extract"))
+	if len(paths) < 2 {
+		t.Fatalf("quality extract fixture count = %d, want at least 2", len(paths))
+	}
+	for _, path := range paths {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			fixture, err := LoadFixtureFile(path)
+			if err != nil {
+				t.Fatalf("load fixture: %v", err)
+			}
+			if fixture.Suite != "quality_extract" {
+				t.Fatalf("suite = %q, want quality_extract", fixture.Suite)
+			}
+			if !fixture.QualityMode || fixture.AllowStub {
+				t.Fatalf("quality metadata = quality_mode:%v allow_stub:%v", fixture.QualityMode, fixture.AllowStub)
+			}
+			if fixture.LiveExtraction == nil {
+				t.Fatal("live_extraction is nil")
+			}
+			if strings.TrimSpace(fixture.LiveExtraction.SessionID) == "" {
+				t.Fatal("live_extraction.session_id is required")
+			}
+			if err := fixture.ValidateStubPolicy(FixtureStubPolicyForbid); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

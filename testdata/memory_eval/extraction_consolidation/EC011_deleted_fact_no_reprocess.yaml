@@ -1,0 +1,56 @@
+case_id: EC011_deleted_fact_no_reprocess
+description: reprocessing a forgotten fact fingerprint does not revive a visible fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我不喜欢早上八点开会。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: first
+    action: apply_extraction_response
+    apply_extraction_response:
+      request_id: deleted_a
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC011_a.json
+      allow_inference: true
+  - id: forget
+    action: forget
+    forget:
+      actor: user
+      reason_code: user_requested
+      level: hard_forget
+      target:
+        scope_mode: exact_node
+        node_type: fact
+        node_id: $first.f_dislike_8am.fact_id
+  - id: rerun
+    action: apply_extraction_response
+    apply_extraction_response:
+      request_id: deleted_b
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC011_b.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: rerun
+    status: skipped
+    candidate_id: f_dislike_8am
+    action: duplicate_apply
+    equals: skipped
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE visibility_status = 'visible' AND searchable = 1"
+    equals: "0"
+  - type: search_absent
+    node_id: $first.f_dislike_8am.fact_id
+    node_type: fact
+    search_text: 早上八点

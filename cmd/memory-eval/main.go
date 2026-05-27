@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,14 @@ type options struct {
 	embeddingCacheMode       string
 	reuseMirror              string
 	reportDir                string
+	liveProvider             string
+	liveBaseURL              string
+	liveModel                string
+	liveAPIKeyEnv            string
+	liveRawLogDir            string
+	liveTimeout              time.Duration
+	liveMaxTokens            int
+	liveThinking             bool
 	queryAnalysis            memorycore.QueryAnalysisOptions
 }
 
@@ -61,6 +70,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	ctx := context.Background()
 	if opts.mode == "matrix" {
 		return runMatrix(ctx, opts, paths, stdout, stderr)
+	}
+	if opts.mode == "live" {
+		return runLiveExtraction(ctx, opts, paths, stdout, stderr)
 	}
 	cases := make([]memoryeval.QualityBenchmarkCase, 0, len(paths))
 	for _, path := range paths {
@@ -99,6 +111,36 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	output := memoryeval.FormatQualityBenchmarkReport(cases, memoryeval.QualityBenchmarkReportOptions{Mode: opts.reportMode})
 	fmt.Fprintln(stdout, output)
 	if qualityFailed(cases) {
+		return 1
+	}
+	return 0
+}
+
+func runLiveExtraction(ctx context.Context, opts options, paths []string, stdout io.Writer, stderr io.Writer) int {
+	if opts.suite != "extract" {
+		fmt.Fprintln(stderr, "--mode live is only supported with --suite extract")
+		return 2
+	}
+	report := memoryeval.RunLiveExtractionFiles(ctx, paths, memoryeval.LiveExtractionRunnerOptions{
+		TempDir:   opts.tempDir,
+		ReportDir: opts.reportDir,
+		Provider:  opts.liveProvider,
+		BaseURL:   opts.liveBaseURL,
+		Model:     opts.liveModel,
+		APIKeyEnv: opts.liveAPIKeyEnv,
+		RawLogDir: opts.liveRawLogDir,
+		Timeout:   opts.liveTimeout,
+		MaxTokens: opts.liveMaxTokens,
+		Thinking:  opts.liveThinking,
+	})
+	fmt.Fprintln(stdout, memoryeval.FormatLiveExtractionReport(report))
+	if opts.reportDir != "" {
+		if err := memoryeval.WriteLiveExtractionReports(opts.reportDir, report); err != nil {
+			fmt.Fprintf(stderr, "write live extraction reports: %v\n", err)
+			return 1
+		}
+	}
+	if report.Failed > 0 {
 		return 1
 	}
 	return 0
@@ -221,6 +263,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	var queryAnalysisTimeoutMS int
 	var queryAnalysisSoftJoinTimeoutMS int
 	var queryAnalysisMaxSemanticLatencyMS int
+	rawLiveThinking := "false"
 	opts := options{suite: "retrieval", qualityNoStub: true, strictCapabilities: true, embeddingCacheMode: "off", reuseMirror: "auto"}
 	fs := flag.NewFlagSet("memory-eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -239,6 +282,14 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	fs.StringVar(&opts.embeddingCacheMode, "embedding-cache-mode", opts.embeddingCacheMode, "embedding cache mode: off, read_write, read_only, or refresh")
 	fs.StringVar(&opts.reuseMirror, "reuse-mirror", opts.reuseMirror, "mirror reuse mode: auto or never")
 	fs.StringVar(&opts.reportDir, "report-dir", "", "optional directory for matrix report.json and report.md")
+	fs.StringVar(&opts.liveProvider, "provider", "", "live extraction provider: mock or openai-compatible")
+	fs.StringVar(&opts.liveBaseURL, "base-url", "", "OpenAI-compatible base URL for --suite extract --mode live")
+	fs.StringVar(&opts.liveModel, "model", "", "extraction model for --suite extract --mode live")
+	fs.StringVar(&opts.liveAPIKeyEnv, "api-key-env", "", "environment variable containing live extraction provider API key")
+	fs.StringVar(&opts.liveRawLogDir, "raw-log-dir", "", "directory for live extraction raw logs")
+	fs.DurationVar(&opts.liveTimeout, "timeout", 0, "live extraction provider timeout")
+	fs.IntVar(&opts.liveMaxTokens, "max-tokens", 0, "live extraction maximum output tokens")
+	fs.StringVar(&rawLiveThinking, "thinking", rawLiveThinking, "live extraction thinking mode: true or false")
 	fs.StringVar(&queryAnalysisMode, "query-analysis-mode", "rule_only", "query analysis mode: rule_only, semantic_always, semantic_on_low_confidence, semantic_rewrite_only, legacy_only, shadow_adaptive, adaptive, adaptive_safe, or adaptive_full")
 	fs.IntVar(&queryAnalysisTimeoutMS, "query-analysis-timeout-ms", 1500, "query analysis sidecar timeout in milliseconds")
 	fs.IntVar(&queryAnalysisSoftJoinTimeoutMS, "query-analysis-soft-join-timeout-ms", 0, "semantic query-analysis wait budget before raw-only completion in milliseconds; 0 uses query-analysis-timeout-ms")
@@ -260,7 +311,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	}
 	mode, reportMode, ok := parseMode(rawMode)
 	if !ok {
-		fmt.Fprintln(stderr, "mode must be brief, full, or matrix")
+		fmt.Fprintln(stderr, "mode must be brief, full, matrix, or live")
 		return options{}, false
 	}
 	profiles, err := memoryeval.ParseProfiles(rawProfiles)
@@ -270,6 +321,11 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	}
 	if err := memoryeval.ValidateEmbeddingCacheMode(opts.embeddingCacheMode); err != nil {
 		fmt.Fprintln(stderr, err)
+		return options{}, false
+	}
+	liveThinking, err := strconv.ParseBool(strings.TrimSpace(rawLiveThinking))
+	if err != nil {
+		fmt.Fprintln(stderr, "thinking must be true or false")
 		return options{}, false
 	}
 	if queryAnalysisRequiresSidecar(queryAnalysisMode) && !hasMirrorProfile(profiles) {
@@ -286,6 +342,7 @@ func parseOptions(args []string, stderr io.Writer) (options, bool) {
 	opts.profiles = profiles
 	opts.embeddingCacheMode = memoryeval.NormalizeEmbeddingCacheMode(opts.embeddingCacheMode)
 	opts.queryAnalysis = queryAnalysis
+	opts.liveThinking = liveThinking
 	if strings.TrimSpace(opts.root) == "" {
 		opts.root = defaultSuiteRoot(repoRoot, opts.suite)
 	}
@@ -431,6 +488,8 @@ func parseMode(value string) (string, memoryeval.QualityBenchmarkMode, bool) {
 		return "full", memoryeval.QualityBenchmarkModeFull, true
 	case "matrix":
 		return "matrix", memoryeval.QualityBenchmarkModeFull, true
+	case "live":
+		return "live", memoryeval.QualityBenchmarkModeFull, true
 	default:
 		return "", "", false
 	}

@@ -55,6 +55,20 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertFactColumn(ctx, assertion)
 	case "link_exists":
 		return s.assertLinkExists(ctx, assertion)
+	case "link_not_exists":
+		return s.assertLinkNotExists(ctx, assertion)
+	case "apply_status":
+		return s.assertApplyStatus(assertion)
+	case "entity_exists":
+		return s.assertEntityExists(ctx, assertion)
+	case "entity_alias_exists":
+		return s.assertEntityAliasExists(ctx, assertion)
+	case "no_duplicate_by_key":
+		return s.assertNoDuplicateByKey(ctx, assertion)
+	case "sql_count":
+		return s.assertSQLCount(ctx, assertion)
+	case "sql_value":
+		return s.assertSQLValue(ctx, assertion)
 	case "narrative_exists":
 		return s.assertNarrativeExists(ctx, assertion)
 	case "insight_exists":
@@ -1110,6 +1124,197 @@ WHERE from_node_type = ? AND from_node_id = ?
 	return nil
 }
 
+func (s *runState) assertLinkNotExists(ctx context.Context, assertion Assertion) error {
+	fromID, err := s.resolveString(assertion.FromNodeID)
+	if err != nil {
+		return err
+	}
+	toID, err := s.resolveString(assertion.ToNodeID)
+	if err != nil {
+		return err
+	}
+	fromType := defaultString(assertion.FromNodeType, "fact")
+	toType := defaultString(assertion.ToNodeType, "fact")
+	var count int
+	err = s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE from_node_type = ? AND from_node_id = ?
+  AND link_type = ?
+  AND to_node_type = ? AND to_node_id = ?`,
+		fromType, fromID, assertion.LinkType, toType, toID).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s link query: %w", s.caseID, assertion.Type, err)
+	}
+	if count != 0 {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "no link", Actual: fmt.Sprintf("count=%d", count)}
+	}
+	return nil
+}
+
+func (s *runState) assertApplyStatus(assertion Assertion) error {
+	result, ok := s.steps[assertion.Step]
+	if !ok || result.Apply == nil {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "apply step " + assertion.Step, Actual: "missing"}
+	}
+	if assertion.Status != "" && result.Apply.Status != assertion.Status {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "status=" + assertion.Status, Actual: "status=" + result.Apply.Status}
+	}
+	if assertion.CandidateID == "" {
+		return nil
+	}
+	for _, item := range result.Apply.Results {
+		if item.CandidateID != assertion.CandidateID {
+			continue
+		}
+		if assertion.Action != "" {
+			action := ""
+			if item.Result != nil {
+				action = item.Result.Action
+			}
+			if action != assertion.Action {
+				return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "action=" + assertion.Action, Actual: "action=" + action}
+			}
+		}
+		if assertion.Equals != "" && item.Status != assertion.Equals {
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "candidate_status=" + assertion.Equals, Actual: "candidate_status=" + item.Status}
+		}
+		return nil
+	}
+	for _, failure := range result.Apply.Failures {
+		if failure.CandidateID == assertion.CandidateID {
+			if assertion.Equals == "" || assertion.Equals == "failed" {
+				return nil
+			}
+			return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "candidate_status=" + assertion.Equals, Actual: "failed:" + failure.Reason}
+		}
+	}
+	return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "candidate " + assertion.CandidateID, Actual: "missing"}
+}
+
+func (s *runState) assertEntityExists(ctx context.Context, assertion Assertion) error {
+	entityID := assertion.EntityID
+	if entityID == "" {
+		entityID = assertion.NodeID
+	}
+	entityID, err := s.resolveString(entityID)
+	if err != nil {
+		return err
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM entities
+WHERE persona_id = ?
+  AND id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1`, s.persona, entityID).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s entity query: %w", s.caseID, assertion.Type, err)
+	}
+	if count != 1 {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "one visible entity", Actual: fmt.Sprintf("count=%d", count)}
+	}
+	return nil
+}
+
+func (s *runState) assertEntityAliasExists(ctx context.Context, assertion Assertion) error {
+	entityID := assertion.EntityID
+	if entityID == "" {
+		entityID = assertion.NodeID
+	}
+	entityID, err := s.resolveString(entityID)
+	if err != nil {
+		return err
+	}
+	alias := assertion.Alias
+	if alias == "" {
+		alias = assertion.SearchText
+	}
+	var count int
+	err = s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM entity_aliases
+WHERE persona_id = ?
+  AND entity_id = ?
+  AND alias = ?`, s.persona, entityID, alias).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s alias query: %w", s.caseID, assertion.Type, err)
+	}
+	if count != 1 {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "one alias " + alias, Actual: fmt.Sprintf("count=%d", count)}
+	}
+	return nil
+}
+
+func (s *runState) assertNoDuplicateByKey(ctx context.Context, assertion Assertion) error {
+	query := `
+SELECT COUNT(*)
+FROM (
+  SELECT subject_entity_id, predicate, COALESCE(object_entity_id, lower(trim(object_literal)), ''), COUNT(*) AS c
+  FROM facts
+  WHERE persona_id = ?
+    AND visibility_status = 'visible'
+    AND searchable = 1`
+	args := []any{s.persona}
+	if assertion.Predicate != "" {
+		query += ` AND predicate = ?`
+		args = append(args, assertion.Predicate)
+	}
+	query += `
+  GROUP BY subject_entity_id, predicate, COALESCE(object_entity_id, lower(trim(object_literal)), '')
+  HAVING c > 1
+)`
+	var got int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil {
+		return fmt.Errorf("case %s assertion %s duplicate query: %w", s.caseID, assertion.Type, err)
+	}
+	if got != 0 {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "duplicate groups=0", Actual: fmt.Sprintf("duplicate groups=%d", got)}
+	}
+	return nil
+}
+
+func (s *runState) assertSQLCount(ctx context.Context, assertion Assertion) error {
+	query := strings.TrimSpace(assertion.Query)
+	if query == "" {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "query", Actual: "empty"}
+	}
+	args := assertionArgs(assertion.Args)
+	var got int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&got); err != nil {
+		return fmt.Errorf("case %s assertion %s sql_count: %w", s.caseID, assertion.Type, err)
+	}
+	actual := fmt.Sprintf("%d", got)
+	if actual != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "count=" + assertion.Equals, Actual: "count=" + actual}
+	}
+	return nil
+}
+
+func (s *runState) assertSQLValue(ctx context.Context, assertion Assertion) error {
+	query := strings.TrimSpace(assertion.Query)
+	if query == "" {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "query", Actual: "empty"}
+	}
+	value, err := queryScalarString(ctx, s.db, query, assertionArgs(assertion.Args)...)
+	if err != nil {
+		return fmt.Errorf("case %s assertion %s sql_value: %w", s.caseID, assertion.Type, err)
+	}
+	if value != assertion.Equals {
+		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "value=" + assertion.Equals, Actual: "value=" + value}
+	}
+	return nil
+}
+
+func assertionArgs(values []string) []any {
+	args := make([]any, 0, len(values))
+	for _, value := range values {
+		args = append(args, value)
+	}
+	return args
+}
+
 func (s *runState) assertNarrativeExists(ctx context.Context, assertion Assertion) error {
 	narrativeID, err := s.resolveString(assertion.NodeID)
 	if err != nil {
@@ -1328,7 +1533,7 @@ func mapKeys(values map[string]string) []string {
 
 func allowedFactAssertionColumn(column string) bool {
 	switch column {
-	case "validity_status", "visibility_status", "lifecycle_status", "sensitivity_level", "searchable", "pinned", "predicate", "content_summary", "object_literal", "valid_to":
+	case "validity_status", "visibility_status", "lifecycle_status", "sensitivity_level", "searchable", "pinned", "predicate", "content_summary", "object_literal", "fact_type", "valid_to":
 		return true
 	default:
 		return false

@@ -21,6 +21,7 @@ type StepReport struct {
 	QueryText       string
 	FusionMode      string
 	Retrieval       *memorycore.MemoryContext
+	Apply           *memorycore.ExtractionApplyResult
 	ScoreBreakdowns []RetrievalScoreBreakdownReport
 }
 
@@ -118,6 +119,19 @@ func writeStepDebug(b *strings.Builder, step StepReport) {
 	}
 	b.WriteString("\n")
 	if step.Retrieval == nil {
+		if step.Apply != nil {
+			fmt.Fprintf(b, "    apply status=%s applied=%d failures=%d\n", step.Apply.Status, step.Apply.AppliedCount, len(step.Apply.Failures))
+			for _, result := range step.Apply.Results {
+				action := ""
+				if result.Result != nil {
+					action = result.Result.Action
+				}
+				fmt.Fprintf(b, "      candidate=%s status=%s action=%s\n", result.CandidateID, result.Status, action)
+			}
+			for _, failure := range step.Apply.Failures {
+				fmt.Fprintf(b, "      failure candidate=%s reason=%s\n", failure.CandidateID, failure.Reason)
+			}
+		}
 		return
 	}
 	retrieval := step.Retrieval

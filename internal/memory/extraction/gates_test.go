@@ -36,6 +36,38 @@ func TestValidateExtractionHardRulesAndRouting(t *testing.T) {
 	requireDecision(t, gate.FactDecisions, "f1", "needs_review", "unknown_predicate")
 
 	resp = validResponse(t)
+	resp.Links = []memorycore.ExtractedLinkCandidate{{
+		CandidateID:     "link_evidence",
+		FromCandidateID: "f1",
+		ToCandidateID:   "f1",
+		LinkType:        "EVIDENCED_BY",
+		Confidence:      0.9,
+	}}
+	gate = extraction.ValidateExtraction(req, resp)
+	requireDecision(t, gate.LinkDecisions, "link_evidence", "reject", "invalid_link_type")
+
+	req = validRequest(t)
+	label := "居住地"
+	factType := memorycore.FactTypeCoreIdentity
+	req.PredicateSchemas = append(req.PredicateSchemas, memorycore.ExtractionPredicateSchema{
+		Predicate:         "lives_in",
+		CanonicalLabel:    &label,
+		DefaultFactType:   &factType,
+		Cardinality:       "single",
+		ConflictPolicy:    "supersede",
+		TemporalBehavior:  "state",
+		ObjectKind:        "entity",
+		DefaultImportance: 0.8,
+		AllowInference:    true,
+	})
+	resp = validResponse(t)
+	resp.Facts[0].Predicate = "lives_in"
+	resp.Facts[0].ObjectLiteral = stringPtr("新加坡")
+	resp.Facts[0].ObjectEntityCandidateID = nil
+	gate = extraction.ValidateExtraction(req, resp)
+	requireDecision(t, gate.FactDecisions, "f1", "needs_review", "object_entity_required")
+
+	resp = validResponse(t)
 	resp.Facts[0].SensitivityLevel = memorycore.SensitivityHighlySensitive
 	gate = extraction.ValidateExtraction(req, resp)
 	requireDecision(t, gate.FactDecisions, "f1", "needs_review", "highly_sensitive_requires_review")
@@ -78,6 +110,39 @@ func TestValidateExtractionHardRulesAndRouting(t *testing.T) {
 	}}
 	gate = extraction.ValidateExtraction(req, resp)
 	requireDecision(t, gate.AffectEventDecisions, "a1", "reject", "agent_affect_boundary")
+}
+
+func TestApplyAcceptedFactsStopsBlockedEnvelope(t *testing.T) {
+	ctx := context.Background()
+	dbPath, cleanup := seedExtractionDB(t)
+	defer cleanup()
+
+	db, err := memsqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	svc, err := memorycore.Open(ctx, memorycore.Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	defer svc.Close()
+
+	req := validRequest(t)
+	resp := validResponse(t)
+	resp.RequestID = "stale_response"
+	gate := extraction.ValidateExtraction(req, resp)
+	result := extraction.ApplyAcceptedFacts(ctx, svc, db.SQLDB(), req, resp, gate)
+	if result.Status != "failed" || len(result.Failures) == 0 || result.Failures[0].CandidateID != "response" {
+		t.Fatalf("apply result = %#v, want response-level gate failure", result)
+	}
+	var factCount int
+	if err := db.SQLDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM facts`).Scan(&factCount); err != nil {
+		t.Fatalf("count facts: %v", err)
+	}
+	if factCount != 0 {
+		t.Fatalf("fact count = %d, want blocked response to write nothing", factCount)
+	}
 }
 
 func TestValidateExtractionAmbiguousEntityNeedsReview(t *testing.T) {
@@ -214,6 +279,83 @@ func TestApplyAcceptedFactsMarksPinAndDoesNotApplyRouteOnlyItems(t *testing.T) {
 	}
 	if factCount != 1 {
 		t.Fatalf("fact count = %d, want deletion intent not applied as fact", factCount)
+	}
+}
+
+func TestApplyAcceptedFactsObjectEntityNeedsReviewDoesNotBecomeApplyFailure(t *testing.T) {
+	ctx := context.Background()
+	dbPath, cleanup := seedExtractionDB(t)
+	defer cleanup()
+
+	db, err := memsqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	svc, err := memorycore.Open(ctx, memorycore.Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	defer svc.Close()
+	if _, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+		ID:            "ent_hidden_place",
+		CanonicalName: "Hidden Place",
+		EntityType:    memorycore.EntityTypePlace,
+	}); err != nil {
+		t.Fatalf("ensure place: %v", err)
+	}
+	if _, err := db.SQLDB().ExecContext(ctx, `UPDATE entities SET visibility_status = 'hidden' WHERE id = 'ent_hidden_place'`); err != nil {
+		t.Fatalf("hide place: %v", err)
+	}
+
+	req := validRequest(t)
+	label := "居住地"
+	factType := memorycore.FactTypeCoreIdentity
+	req.KnownEntities = append(req.KnownEntities, memorycore.ExtractionKnownEntity{
+		EntityID:         "ent_hidden_place",
+		CanonicalName:    "Hidden Place",
+		EntityType:       memorycore.EntityTypePlace,
+		VisibilityStatus: memorycore.VisibilityVisible,
+		SensitivityLevel: memorycore.SensitivityNormal,
+	})
+	req.PredicateSchemas = append(req.PredicateSchemas, memorycore.ExtractionPredicateSchema{
+		Predicate:         "lives_in",
+		CanonicalLabel:    &label,
+		DefaultFactType:   &factType,
+		Cardinality:       "single",
+		ConflictPolicy:    "supersede",
+		TemporalBehavior:  "state",
+		ObjectKind:        "entity",
+		DefaultImportance: 0.8,
+		AllowInference:    true,
+	})
+	resp := validResponse(t)
+	resp.Entities = []memorycore.ExtractedEntityCandidate{{
+		CandidateID:      "place_candidate",
+		KnownEntityID:    stringPtr("ent_hidden_place"),
+		CanonicalName:    "Hidden Place",
+		EntityType:       memorycore.EntityTypePlace,
+		Confidence:       0.9,
+		SourceEpisodeIDs: []string{"ep_seed"},
+		MergeHint:        "known_entity",
+		SensitivityLevel: memorycore.SensitivityNormal,
+	}}
+	resp.Facts[0].Predicate = "lives_in"
+	resp.Facts[0].ObjectLiteral = nil
+	resp.Facts[0].ObjectEntityCandidateID = stringPtr("place_candidate")
+	resp.Facts[0].ContentSummary = "用户住在 Hidden Place。"
+	gate := extraction.ValidateExtraction(req, resp)
+	requireDecision(t, gate.FactDecisions, "f1", "accept", "accepted_for_consolidation")
+
+	result := extraction.ApplyAcceptedFacts(ctx, svc, db.SQLDB(), req, resp, gate)
+	if len(result.Failures) != 0 {
+		t.Fatalf("apply failures = %#v, want object resolution needs_review result", result.Failures)
+	}
+	if len(result.Results) != 1 || result.Results[0].Status != memorycore.ConsolidationStatusNeedsReview {
+		t.Fatalf("apply results = %#v, want one needs_review result", result.Results)
+	}
+	if result.Results[0].Result == nil || result.Results[0].Result.Action != memorycore.ConsolidationActionNeedsReview {
+		t.Fatalf("apply result = %#v, want needs_review action", result.Results[0].Result)
 	}
 }
 

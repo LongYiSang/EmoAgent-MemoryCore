@@ -1,0 +1,70 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [
+    {
+      "candidate_id": "org_platform",
+      "canonical_name": "Platform Team",
+      "entity_type": "org",
+      "aliases": ["Platform Team"],
+      "confidence": 1,
+      "source_episode_ids": ["ep1"],
+      "merge_hint": "known_entity",
+      "known_entity_id": "platform_team",
+      "sensitivity_level": "normal"
+    }
+  ],
+  "facts": [
+    {
+      "candidate_id": "f_work",
+      "subject_entity_candidate_id": "user",
+      "predicate": "works_at",
+      "object_entity_candidate_id": "org_platform",
+      "content_summary": "用户加入 Platform Team。",
+      "fact_type": "core_identity",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.9,
+      "importance": 0.75,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    },
+    {
+      "candidate_id": "f_busy",
+      "subject_entity_candidate_id": "user",
+      "predicate": "is_busy_with",
+      "object_literal": "数据库迁移",
+      "content_summary": "用户近期忙于数据库迁移。",
+      "fact_type": "transient_context",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.9,
+      "importance": 0.55,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [
+    {
+      "candidate_id": "l_busy_caused_by_work",
+      "link_type": "CAUSED_BY",
+      "from_candidate_id": "f_busy",
+      "to_candidate_id": "f_work",
+      "source_episode_ids": ["ep1"],
+      "confidence": 0.8
+    }
+  ],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {"accepted_fact_count": 2, "notes": "causal link"}
+}

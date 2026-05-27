@@ -1,0 +1,97 @@
+schema_version: memory_eval.v0.2
+suite: quality_extract
+quality_mode: true
+allow_stub: false
+case_id: LE002_daily_life_live
+description: Real LLM extraction should capture ordinary daily-life preferences and routines without overgeneralizing transient context.
+
+seed:
+  sessions:
+    - id: s_daily_life
+      channel: api
+  entities:
+    - id: user
+      canonical_name: EvalUser
+      entity_type: user
+  episodes:
+    - id: ep_daily_morning
+      session_id: s_daily_life
+      role: user
+      content: 我早上通常先喝一杯温水，再开始看消息。咖啡一般放到午饭后，不然胃会不舒服。
+      occurred_at: "2026-05-27T08:20:00+08:00"
+    - id: ep_daily_food
+      session_id: s_daily_life
+      role: user
+      content: 点外卖时帮我记一下，太辣的我不太行，但微辣可以接受。今天只是赶时间，随便吃点就好。
+      occurred_at: "2026-05-27T12:10:00+08:00"
+    - id: ep_daily_reminder
+      session_id: s_daily_life
+      role: user
+      content: 晚上九点以后尽量别提醒我工作事项，那个时间我想留给散步和整理房间。
+      occurred_at: "2026-05-27T21:05:00+08:00"
+    - id: ep_daily_weekend
+      session_id: s_daily_life
+      role: user
+      content: 周末上午如果天气好，我会给阳台植物浇水，然后去附近公园走一圈。
+      occurred_at: "2026-05-30T10:00:00+08:00"
+
+live_extraction:
+  session_id: s_daily_life
+  trigger: session_end
+  provider: openai-compatible
+  model: qwen-plus
+  api_key_env: MEMORYCORE_LLM_API_KEY
+  mode: dry-run
+  allow_sensitive_extraction: false
+  allow_inference: true
+  raw_log: true
+
+expect:
+  gate:
+    min_accepted_facts: 4
+    max_rejected: 1
+  accepted_facts:
+    - subject_entity_id: user
+      predicate_any_of:
+        - likes
+        - uses_coping_strategy
+      summary_contains_any:
+        - 早上
+        - 温水
+    - subject_entity_id: user
+      predicate_any_of:
+        - dislikes
+        - has_boundary
+      summary_contains_any:
+        - 太辣
+        - 微辣
+    - subject_entity_id: user
+      predicate_any_of:
+        - has_boundary
+        - prefers_communication_style
+      summary_contains_any:
+        - 晚上九点
+        - 工作事项
+    - subject_entity_id: user
+      predicate_any_of:
+        - likes
+        - uses_coping_strategy
+      summary_contains_any:
+        - 周末
+        - 植物
+        - 公园
+  review_or_reject:
+    - reason_any_of:
+        - model_rejected
+        - model_needs_review
+        - transient_context
+        - insufficient_stability
+        - overgeneralization_risk
+      summary_contains_any:
+        - 今天只是赶时间
+        - 随便吃点
+  forbidden:
+    - agent_affect_user_fact
+    - raw_prompt_leak
+    - overgeneralize_hates_spicy_food
+    - overgeneralize_never_work_after_9pm

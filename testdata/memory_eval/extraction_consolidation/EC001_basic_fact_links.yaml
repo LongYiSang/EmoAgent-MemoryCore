@@ -1,0 +1,42 @@
+case_id: EC001_basic_fact_links
+description: extraction fact enters consolidation and writes required evidence/entity links.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我不喜欢早上八点开会。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC001.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_dislike_8am
+    action: insert
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts WHERE persona_id = 'default' AND predicate = 'dislikes' AND visibility_status = 'visible'"
+    equals: "1"
+  - type: link_exists
+    from_node_id: $apply.f_dislike_8am.fact_id
+    link_type: EVIDENCED_BY
+    to_node_type: episode
+    to_node_id: ep1
+  - type: link_exists
+    from_node_id: $apply.f_dislike_8am.fact_id
+    link_type: ABOUT_ENTITY
+    to_node_type: entity
+    to_node_id: user

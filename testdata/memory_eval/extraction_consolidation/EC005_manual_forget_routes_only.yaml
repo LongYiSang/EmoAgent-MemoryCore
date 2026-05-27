@@ -1,0 +1,31 @@
+case_id: EC005_manual_forget_routes_only
+description: manual forget extraction routes deletion intent and writes no ordinary fact.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 忘掉我住在哪里。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      trigger: manual_forget
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC005.json
+      manual_forget: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: nothing_applied
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM facts"
+    equals: "0"

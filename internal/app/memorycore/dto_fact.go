@@ -15,6 +15,8 @@ const (
 	ConsolidationActionMergeBaseline    = "merge_baseline"
 	ConsolidationActionReject           = "reject"
 	ConsolidationActionNeedsReview      = "needs_review"
+	ConsolidationActionDuplicateApply   = "duplicate_apply"
+	ConsolidationActionReinforceNoop    = "reinforce_noop"
 
 	ConsolidationStatusInserted    = "inserted"
 	ConsolidationStatusDiscarded   = "discarded"
@@ -23,6 +25,7 @@ const (
 	ConsolidationStatusCoexisted   = "coexisted"
 	ConsolidationStatusRejected    = "rejected"
 	ConsolidationStatusNeedsReview = "needs_review"
+	ConsolidationStatusSkipped     = "skipped"
 
 	FactTypeCoreIdentity        = "core_identity"
 	FactTypeSignificantEvent    = "significant_event"
@@ -42,11 +45,13 @@ const (
 )
 
 type ConsolidateCandidateRequest struct {
-	PersonaID string
-	SessionID *string
-	Trigger   string
-	Candidate ManualFactCandidate
-	Policy    ConsolidationPolicy
+	PersonaID   string
+	SessionID   *string
+	RequestID   string
+	CandidateID string
+	Trigger     string
+	Candidate   ManualFactCandidate
+	Policy      ConsolidationPolicy
 }
 
 type ManualFactCandidate struct {

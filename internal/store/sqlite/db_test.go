@@ -24,13 +24,15 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	requireTable(t, db.SQLDB(), "memory_search_documents")
 	requireTable(t, db.SQLDB(), "extraction_runs")
 	requireTable(t, db.SQLDB(), "mirror_persona_state")
+	requireTable(t, db.SQLDB(), "consolidation_apply_fingerprints")
+	requireTable(t, db.SQLDB(), "consolidation_session_fact_writes")
 
 	var migrationCount int
 	if err := db.SQLDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 7 {
-		t.Fatalf("migration count = %d, want 7", migrationCount)
+	if migrationCount != 9 {
+		t.Fatalf("migration count = %d, want 9", migrationCount)
 	}
 
 	predicates := memsqlite.NewPredicateRepository(db.SQLDB())
@@ -40,6 +42,42 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	}
 	if predicate.ConflictPolicy != core.ConflictPolicySupersede {
 		t.Fatalf("lives_in conflict policy = %q, want %q", predicate.ConflictPolicy, core.ConflictPolicySupersede)
+	}
+}
+
+func TestAgentAffectPlaceholderTablesDefaultToUnsearchable(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	store := memsqlite.NewStore(db.SQLDB())
+	if err := store.EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		t.Fatalf("ensure persona: %v", err)
+	}
+
+	mustExec(t, db.SQLDB(), `INSERT INTO agent_affect_profiles (id, persona_id, profile_name) VALUES ('profile_1', 'default', 'default')`)
+	mustExec(t, db.SQLDB(), `INSERT INTO agent_affect_states (id, persona_id, profile_id) VALUES ('state_1', 'default', 'profile_1')`)
+	mustExec(t, db.SQLDB(), `INSERT INTO agent_appraisals (id, persona_id, trigger_type) VALUES ('appraisal_1', 'default', 'user_message')`)
+	mustExec(t, db.SQLDB(), `INSERT INTO agent_affect_events (id, persona_id, trigger_type, appraisal_id) VALUES ('event_1', 'default', 'user_message', 'appraisal_1')`)
+	mustExec(t, db.SQLDB(), `INSERT INTO agent_expression_decisions (id, persona_id, guidance_json) VALUES ('decision_1', 'default', '{}')`)
+
+	for _, tc := range []struct {
+		table string
+		id    string
+	}{
+		{"agent_affect_profiles", "profile_1"},
+		{"agent_affect_states", "state_1"},
+		{"agent_appraisals", "appraisal_1"},
+		{"agent_affect_events", "event_1"},
+		{"agent_expression_decisions", "decision_1"},
+	} {
+		var searchable int
+		if err := db.SQLDB().QueryRowContext(ctx, "SELECT searchable FROM "+tc.table+" WHERE id = ?", tc.id).Scan(&searchable); err != nil {
+			t.Fatalf("query %s searchable: %v", tc.table, err)
+		}
+		if searchable != 0 {
+			t.Fatalf("%s searchable = %d, want 0", tc.table, searchable)
+		}
 	}
 }
 
@@ -214,6 +252,14 @@ func requireTable(t *testing.T, db *sql.DB, table string) {
 	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?`, table).Scan(&name)
 	if err != nil {
 		t.Fatalf("table %s does not exist: %v", table, err)
+	}
+}
+
+func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+	t.Helper()
+
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
 	}
 }
 

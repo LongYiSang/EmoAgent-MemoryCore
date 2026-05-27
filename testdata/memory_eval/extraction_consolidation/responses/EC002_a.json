@@ -1,0 +1,34 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "repeat_a",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "session_end",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [],
+  "facts": [
+    {
+      "candidate_id": "f_dislike_8am",
+      "subject_entity_candidate_id": "user",
+      "predicate": "dislikes",
+      "object_literal": "早上八点开会",
+      "content_summary": "用户不喜欢早上八点开会。",
+      "fact_type": "stable_preference",
+      "extraction_confidence": "explicit",
+      "extraction_confidence_score": 0.95,
+      "importance": 0.7,
+      "sensitivity_level": "normal",
+      "source_episode_ids": ["ep1"],
+      "operation_hint": "insert_candidate",
+      "quality_decision": "accept_for_consolidation"
+    }
+  ],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {"accepted_fact_count": 1, "notes": "first run"}
+}

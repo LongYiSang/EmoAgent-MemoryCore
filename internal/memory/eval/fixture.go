@@ -15,15 +15,17 @@ import (
 )
 
 type Fixture struct {
-	SchemaVersion string      `yaml:"schema_version"`
-	Suite         string      `yaml:"suite"`
-	QualityMode   bool        `yaml:"quality_mode"`
-	AllowStub     bool        `yaml:"allow_stub"`
-	CaseID        string      `yaml:"case_id"`
-	Description   string      `yaml:"description"`
-	Seed          Seed        `yaml:"seed"`
-	Steps         []Step      `yaml:"steps"`
-	Assertions    []Assertion `yaml:"assertions"`
+	SchemaVersion  string                `yaml:"schema_version"`
+	Suite          string                `yaml:"suite"`
+	QualityMode    bool                  `yaml:"quality_mode"`
+	AllowStub      bool                  `yaml:"allow_stub"`
+	CaseID         string                `yaml:"case_id"`
+	Description    string                `yaml:"description"`
+	Seed           Seed                  `yaml:"seed"`
+	LiveExtraction *LiveExtractionConfig `yaml:"live_extraction"`
+	Expect         LiveExtractionExpect  `yaml:"expect"`
+	Steps          []Step                `yaml:"steps"`
+	Assertions     []Assertion           `yaml:"assertions"`
 }
 
 type FixtureStubPolicy string
@@ -84,24 +86,86 @@ type EpisodeSeed struct {
 	Searchable       *bool  `yaml:"searchable"`
 }
 
+type LiveExtractionConfig struct {
+	RequestID                string   `yaml:"request_id"`
+	PersonaID                string   `yaml:"persona_id"`
+	SessionID                string   `yaml:"session_id"`
+	EpisodeIDs               []string `yaml:"episode_ids"`
+	Trigger                  string   `yaml:"trigger"`
+	Provider                 string   `yaml:"provider"`
+	BaseURL                  string   `yaml:"base_url"`
+	Model                    string   `yaml:"model"`
+	APIKeyEnv                string   `yaml:"api_key_env"`
+	Mode                     string   `yaml:"mode"`
+	Timezone                 string   `yaml:"timezone"`
+	Limit                    int      `yaml:"limit"`
+	MaxFacts                 int      `yaml:"max_facts"`
+	MaxLinks                 int      `yaml:"max_links"`
+	AllowSensitiveExtraction bool     `yaml:"allow_sensitive_extraction"`
+	AllowInference           bool     `yaml:"allow_inference"`
+	ManualPin                bool     `yaml:"manual_pin"`
+	ManualForget             bool     `yaml:"manual_forget"`
+	UsePreFilter             bool     `yaml:"prefilter"`
+	Repair                   *bool    `yaml:"repair"`
+	RequireCleanGate         bool     `yaml:"require_clean_gate"`
+	Audit                    string   `yaml:"audit"`
+	Force                    bool     `yaml:"force"`
+	RawLog                   bool     `yaml:"raw_log"`
+	RawLogDir                string   `yaml:"raw_log_dir"`
+	Temperature              float64  `yaml:"temperature"`
+	MaxTokens                int      `yaml:"max_tokens"`
+	Timeout                  string   `yaml:"timeout"`
+}
+
+type LiveExtractionExpect struct {
+	Gate           LiveExtractionGateExpect     `yaml:"gate"`
+	AcceptedFacts  []LiveExtractionFactExpect   `yaml:"accepted_facts"`
+	ReviewOrReject []LiveExtractionReviewExpect `yaml:"review_or_reject"`
+	Forbidden      []string                     `yaml:"forbidden"`
+}
+
+type LiveExtractionGateExpect struct {
+	MinAcceptedFacts int  `yaml:"min_accepted_facts"`
+	MaxAcceptedFacts *int `yaml:"max_accepted_facts"`
+	MinReview        int  `yaml:"min_review"`
+	MaxReview        *int `yaml:"max_review"`
+	MinRejected      int  `yaml:"min_rejected"`
+	MaxRejected      *int `yaml:"max_rejected"`
+}
+
+type LiveExtractionFactExpect struct {
+	SubjectEntityID    string   `yaml:"subject_entity_id"`
+	Predicate          string   `yaml:"predicate"`
+	PredicateAnyOf     []string `yaml:"predicate_any_of"`
+	SummaryContains    string   `yaml:"summary_contains"`
+	SummaryContainsAny []string `yaml:"summary_contains_any"`
+}
+
+type LiveExtractionReviewExpect struct {
+	ReasonAnyOf        []string `yaml:"reason_any_of"`
+	SummaryContains    string   `yaml:"summary_contains"`
+	SummaryContainsAny []string `yaml:"summary_contains_any"`
+}
+
 type Step struct {
-	ID            string                `yaml:"id"`
-	Action        string                `yaml:"action"`
-	Consolidate   *ConsolidateStep      `yaml:"consolidate"`
-	Retrieve      *RetrieveStep         `yaml:"retrieve"`
-	Forget        *ForgetStep           `yaml:"forget"`
-	RetentionRun  *RetentionRunStep     `yaml:"retention_run"`
-	Compression   *CompressionStep      `yaml:"compression_apply"`
-	RebuildSearch *RebuildSearchStep    `yaml:"rebuild_search"`
-	MirrorRebuild *MirrorRebuildStep    `yaml:"mirror_rebuild"`
-	MirrorSync    *MirrorSyncStep       `yaml:"mirror_sync"`
-	Link          *LinkStep             `yaml:"link"`
-	Fact          *FactStep             `yaml:"fact"`
-	FactOverride  *FactOverride         `yaml:"fact_override"`
-	MirrorStub    *MirrorStubSettings   `yaml:"mirror_stub"`
-	GraphStub     *GraphStubSettings    `yaml:"graph_activation_stub"`
-	RerankStub    *RerankStubSettings   `yaml:"rerank_stub"`
-	SemanticStub  *SemanticStubSettings `yaml:"semantic_query_analysis_stub"`
+	ID              string                `yaml:"id"`
+	Action          string                `yaml:"action"`
+	Consolidate     *ConsolidateStep      `yaml:"consolidate"`
+	Retrieve        *RetrieveStep         `yaml:"retrieve"`
+	Forget          *ForgetStep           `yaml:"forget"`
+	RetentionRun    *RetentionRunStep     `yaml:"retention_run"`
+	Compression     *CompressionStep      `yaml:"compression_apply"`
+	RebuildSearch   *RebuildSearchStep    `yaml:"rebuild_search"`
+	MirrorRebuild   *MirrorRebuildStep    `yaml:"mirror_rebuild"`
+	MirrorSync      *MirrorSyncStep       `yaml:"mirror_sync"`
+	ApplyExtraction *ApplyExtractionStep  `yaml:"apply_extraction_response"`
+	Link            *LinkStep             `yaml:"link"`
+	Fact            *FactStep             `yaml:"fact"`
+	FactOverride    *FactOverride         `yaml:"fact_override"`
+	MirrorStub      *MirrorStubSettings   `yaml:"mirror_stub"`
+	GraphStub       *GraphStubSettings    `yaml:"graph_activation_stub"`
+	RerankStub      *RerankStubSettings   `yaml:"rerank_stub"`
+	SemanticStub    *SemanticStubSettings `yaml:"semantic_query_analysis_stub"`
 }
 
 type ConsolidateStep struct {
@@ -229,6 +293,21 @@ type MirrorRebuildStep struct {
 type MirrorSyncStep struct {
 	PersonaID string `yaml:"persona_id"`
 	Limit     int    `yaml:"limit"`
+}
+
+type ApplyExtractionStep struct {
+	RequestID                string   `yaml:"request_id"`
+	PersonaID                string   `yaml:"persona_id"`
+	SessionID                string   `yaml:"session_id"`
+	Trigger                  string   `yaml:"trigger"`
+	EpisodeIDs               []string `yaml:"episode_ids"`
+	ResponseFixture          string   `yaml:"response_fixture"`
+	Now                      string   `yaml:"now"`
+	Timezone                 string   `yaml:"timezone"`
+	AllowSensitiveExtraction bool     `yaml:"allow_sensitive_extraction"`
+	AllowInference           bool     `yaml:"allow_inference"`
+	ManualPin                bool     `yaml:"manual_pin"`
+	ManualForget             bool     `yaml:"manual_forget"`
 }
 
 type LinkStep struct {
@@ -474,6 +553,11 @@ type Assertion struct {
 	DroppedRewriteCount            int      `yaml:"dropped_rewrite_count"`
 	DroppedRewriteReasons          []string `yaml:"dropped_rewrite_reasons"`
 	EnglishRewriteCount            int      `yaml:"english_rewrite_count"`
+	CandidateID                    string   `yaml:"candidate_id"`
+	EntityID                       string   `yaml:"entity_id"`
+	Alias                          string   `yaml:"alias"`
+	Query                          string   `yaml:"query"`
+	Args                           []string `yaml:"args"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -571,6 +655,13 @@ func (f *Fixture) Validate() error {
 		case "mirror_sync":
 			if step.MirrorSync == nil {
 				return fmt.Errorf("case %s step %s missing mirror_sync body", caseID, step.ID)
+			}
+		case "apply_extraction_response":
+			if step.ApplyExtraction == nil {
+				return fmt.Errorf("case %s step %s missing apply_extraction_response body", caseID, step.ID)
+			}
+			if strings.TrimSpace(step.ApplyExtraction.ResponseFixture) == "" {
+				return fmt.Errorf("case %s step %s response_fixture is required", caseID, step.ID)
 			}
 		case "link":
 			if step.Link == nil {
@@ -688,6 +779,13 @@ func knownAssertionType(value string) bool {
 		"mirror_index_status",
 		"queue_count",
 		"queue_status",
+		"apply_status",
+		"entity_exists",
+		"entity_alias_exists",
+		"link_not_exists",
+		"no_duplicate_by_key",
+		"sql_count",
+		"sql_value",
 		"selected_recall_at_k",
 		"context_precision_at_k",
 		"forbidden_recall_zero",

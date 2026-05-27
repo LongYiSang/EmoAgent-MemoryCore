@@ -1,0 +1,50 @@
+case_id: EC003_alias_singapore_reuse
+description: Singapore aliases reuse the existing entity instead of creating a new place entity.
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+    - id: singapore
+      canonical_name: 新加坡
+      entity_type: place
+      aliases:
+        - id: alias_singapore_en
+          alias: Singapore
+          alias_type: translation
+          confidence: 1
+        - id: alias_singapore_sg
+          alias: SG
+          alias_type: abbreviation
+          confidence: 1
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 我现在住在 SG。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: apply
+    action: apply_extraction_response
+    apply_extraction_response:
+      session_id: s1
+      episode_ids: [ep1]
+      response_fixture: testdata/memory_eval/extraction_consolidation/responses/EC003.json
+      allow_inference: true
+assertions:
+  - type: apply_status
+    step: apply
+    status: applied
+    candidate_id: f_lives_sg
+    action: insert
+  - type: entity_alias_exists
+    entity_id: singapore
+    alias: SG
+  - type: sql_count
+    query: "SELECT COUNT(*) FROM entities WHERE persona_id = 'default' AND entity_type = 'place'"
+    equals: "1"
+  - type: sql_value
+    query: "SELECT object_entity_id FROM facts WHERE predicate = 'lives_in'"
+    equals: singapore

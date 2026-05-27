@@ -1,0 +1,27 @@
+{
+  "schema_version": "memory_extraction_protocol.v0.1",
+  "request_id": "apply",
+  "persona_id": "default",
+  "session_id": "s1",
+  "trigger": "manual_forget",
+  "source_window": {"episode_ids": ["ep1"]},
+  "entities": [],
+  "facts": [],
+  "links": [],
+  "affect_events": [],
+  "deletion_intents": [
+    {
+      "candidate_id": "d_forget_location",
+      "forget_level": "hard_forget",
+      "target_description": "用户要求忘掉居住地",
+      "source_episode_id": "ep1",
+      "confidence": 0.95,
+      "requires_confirmation": true
+    }
+  ],
+  "pin_intents": [],
+  "correction_hints": [],
+  "rejected_candidates": [],
+  "quality_flags": [],
+  "gate_summary": {"accepted_fact_count": 0, "has_deletion_intent": true, "notes": "route only"}
+}

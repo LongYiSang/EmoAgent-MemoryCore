@@ -2,9 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +27,8 @@ const (
 	ConsolidationActionMergeBaseline    = "merge_baseline"
 	ConsolidationActionReject           = "reject"
 	ConsolidationActionNeedsReview      = "needs_review"
+	ConsolidationActionDuplicateApply   = "duplicate_apply"
+	ConsolidationActionReinforceNoop    = "reinforce_noop"
 
 	ConsolidationStatusInserted    = "inserted"
 	ConsolidationStatusDiscarded   = "discarded"
@@ -32,6 +37,7 @@ const (
 	ConsolidationStatusCoexisted   = "coexisted"
 	ConsolidationStatusRejected    = "rejected"
 	ConsolidationStatusNeedsReview = "needs_review"
+	ConsolidationStatusSkipped     = "skipped"
 )
 
 type ConsolidationRepository struct {
@@ -41,11 +47,13 @@ type ConsolidationRepository struct {
 }
 
 type ConsolidateCandidateRequest struct {
-	PersonaID string
-	SessionID *string
-	Trigger   string
-	Candidate ManualFactCandidate
-	Policy    ConsolidationPolicy
+	PersonaID   string
+	SessionID   *string
+	RequestID   string
+	CandidateID string
+	Trigger     string
+	Candidate   ManualFactCandidate
+	Policy      ConsolidationPolicy
 }
 
 type ManualFactCandidate struct {
@@ -192,6 +200,24 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	if reviewReason != "" {
 		return needsReviewResult(reviewReason), nil
 	}
+	fingerprint := consolidationApplyFingerprint(req.PersonaID, candidate)
+	if previous, err := findApplyFingerprintTx(ctx, tx, req.PersonaID, fingerprint); err == nil {
+		if previous.FactID != "" {
+			stored, err := getFactTx(ctx, tx, req.PersonaID, previous.FactID)
+			if err != nil {
+				return ConsolidationResult{}, err
+			}
+			return ConsolidationResult{
+				Action:       ConsolidationActionDuplicateApply,
+				Status:       ConsolidationStatusSkipped,
+				Fact:         &stored,
+				ExistingFact: &stored,
+			}, nil
+		}
+		return ConsolidationResult{Action: ConsolidationActionDuplicateApply, Status: ConsolidationStatusSkipped}, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ConsolidationResult{}, err
+	}
 
 	existing, err := activeFactsForCandidateTx(ctx, tx, req.PersonaID, candidate)
 	if err != nil {
@@ -206,12 +232,34 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 				ExistingFact: duplicate,
 			}, nil
 		}
-		return r.reinforceFactTx(ctx, tx, req.PersonaID, *duplicate, candidate)
+		if hasAll, err := factHasAllSourceEvidenceTx(ctx, tx, req.PersonaID, duplicate.ID, candidate.SourceEpisodeIDs); err != nil {
+			return ConsolidationResult{}, err
+		} else if hasAll {
+			stored, err := getFactTx(ctx, tx, req.PersonaID, duplicate.ID)
+			if err != nil {
+				return ConsolidationResult{}, err
+			}
+			if err := insertApplyFingerprintTx(ctx, tx, req.PersonaID, fingerprint, duplicate.ID, ConsolidationActionReinforceNoop, req); err != nil {
+				return ConsolidationResult{}, err
+			}
+			return ConsolidationResult{
+				Action:       ConsolidationActionReinforceNoop,
+				Status:       ConsolidationStatusSkipped,
+				Fact:         &stored,
+				ExistingFact: duplicate,
+			}, nil
+		}
+		result, err := r.reinforceFactTx(ctx, tx, req.PersonaID, req.SessionID, *duplicate, candidate)
+		if err != nil {
+			return ConsolidationResult{}, err
+		}
+		if result.Fact != nil {
+			if err := insertApplyFingerprintTx(ctx, tx, req.PersonaID, fingerprint, result.Fact.ID, result.Action, req); err != nil {
+				return ConsolidationResult{}, err
+			}
+		}
+		return result, nil
 	}
-	if schema.ConflictPolicy == core.ConflictPolicyMerge && len(existing) > 0 {
-		return needsReviewResult("merge predicate has non-exact existing fact"), nil
-	}
-
 	action := insertionAction(schema, len(existing))
 	fact := buildFact(req.PersonaID, candidate, schema, r.newID())
 	if err := insertFactTx(ctx, tx, fact); err != nil {
@@ -225,6 +273,9 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 		return ConsolidationResult{}, err
 	}
 	if err := r.enqueueIndexSyncTx(ctx, tx, req.PersonaID, string(core.NodeTypeFact), fact.ID, "upsert_node"); err != nil {
+		return ConsolidationResult{}, err
+	}
+	if _, err := recordSessionFactWriteTx(ctx, tx, req.PersonaID, req.SessionID, fact.ID); err != nil {
 		return ConsolidationResult{}, err
 	}
 
@@ -269,6 +320,9 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	if err != nil {
 		return ConsolidationResult{}, err
 	}
+	if err := insertApplyFingerprintTx(ctx, tx, req.PersonaID, fingerprint, stored.ID, action, req); err != nil {
+		return ConsolidationResult{}, err
+	}
 	return ConsolidationResult{
 		Action:            action,
 		Status:            statusForAction(action),
@@ -278,17 +332,23 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	}, nil
 }
 
-func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.Tx, personaID string, fact core.Fact, candidate ManualFactCandidate) (ConsolidationResult, error) {
+func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.Tx, personaID string, sessionID *string, fact core.Fact, candidate ManualFactCandidate) (ConsolidationResult, error) {
 	importance := fact.Importance
 	if candidate.Importance > importance {
 		importance = candidate.Importance
 	}
-	if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance); err != nil {
-		return ConsolidationResult{}, err
-	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, personaID, fact, candidate, nil)
 	if err != nil {
 		return ConsolidationResult{}, err
+	}
+	canReinforce, err := recordSessionFactWriteTx(ctx, tx, personaID, sessionID, fact.ID)
+	if err != nil {
+		return ConsolidationResult{}, err
+	}
+	if canReinforce {
+		if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance); err != nil {
+			return ConsolidationResult{}, err
+		}
 	}
 	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, fact.ID); err != nil {
 		return ConsolidationResult{}, err
@@ -300,9 +360,15 @@ func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.T
 	if err != nil {
 		return ConsolidationResult{}, err
 	}
+	action := ConsolidationActionReinforce
+	status := ConsolidationStatusReinforced
+	if !canReinforce {
+		action = ConsolidationActionReinforceNoop
+		status = ConsolidationStatusSkipped
+	}
 	return ConsolidationResult{
-		Action:       ConsolidationActionReinforce,
-		Status:       ConsolidationStatusReinforced,
+		Action:       action,
+		Status:       status,
 		Fact:         &stored,
 		ExistingFact: &fact,
 		LinkIDs:      linkIDs,
@@ -570,7 +636,7 @@ FROM facts
 WHERE persona_id = ?
   AND subject_entity_id = ?
   AND predicate = ?
-  AND validity_status = 'valid'
+  AND validity_status IN ('valid', 'uncertain')
   AND visibility_status = 'visible'
   AND searchable = 1
 ORDER BY created_at ASC`, personaID, candidate.SubjectEntityID, candidate.Predicate)
@@ -737,6 +803,28 @@ WHERE persona_id = ? AND id = ?`,
 	return err
 }
 
+func recordSessionFactWriteTx(ctx context.Context, tx *sql.Tx, personaID string, sessionID *string, factID string) (bool, error) {
+	if sessionID == nil || strings.TrimSpace(*sessionID) == "" || strings.TrimSpace(factID) == "" {
+		return true, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO consolidation_session_fact_writes (
+    persona_id, session_id, fact_id
+) VALUES (?, ?, ?)`,
+		personaID,
+		strings.TrimSpace(*sessionID),
+		factID,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 func invalidateFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, validTo time.Time) error {
 	_, err := tx.ExecContext(ctx, `
 UPDATE facts
@@ -821,9 +909,117 @@ func statusForAction(action string) string {
 		return ConsolidationStatusCoexisted
 	case ConsolidationActionMergeBaseline:
 		return ConsolidationStatusInserted
+	case ConsolidationActionDuplicateApply, ConsolidationActionReinforceNoop:
+		return ConsolidationStatusSkipped
 	default:
 		return ConsolidationStatusInserted
 	}
+}
+
+type applyFingerprintRow struct {
+	FactID string
+	Action string
+}
+
+func consolidationApplyFingerprint(personaID string, candidate ManualFactCandidate) string {
+	sourceIDs := uniqueSorted(candidate.SourceEpisodeIDs)
+	parts := []string{
+		personaID,
+		strings.TrimSpace(candidate.SubjectEntityID),
+		strings.TrimSpace(candidate.Predicate),
+		canonicalObjectKey(candidate.ObjectEntityID, candidate.ObjectLiteral),
+		strings.TrimSpace(candidate.FactType),
+		optionalTimeKey(candidate.ValidFrom),
+		optionalTimeKey(candidate.ValidTo),
+		strings.Join(sourceIDs, ","),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	return hex.EncodeToString(sum[:])
+}
+
+func findApplyFingerprintTx(ctx context.Context, tx *sql.Tx, personaID string, fingerprint string) (applyFingerprintRow, error) {
+	var row applyFingerprintRow
+	var factID sql.NullString
+	err := tx.QueryRowContext(ctx, `
+SELECT fact_id, action
+FROM consolidation_apply_fingerprints
+WHERE persona_id = ? AND fingerprint = ?`, personaID, fingerprint).Scan(&factID, &row.Action)
+	if err != nil {
+		return applyFingerprintRow{}, err
+	}
+	if factID.Valid {
+		row.FactID = factID.String
+	}
+	return row, nil
+}
+
+func insertApplyFingerprintTx(ctx context.Context, tx *sql.Tx, personaID string, fingerprint string, factID string, action string, req ConsolidateCandidateRequest) error {
+	var sessionID any
+	if req.SessionID != nil && strings.TrimSpace(*req.SessionID) != "" {
+		sessionID = strings.TrimSpace(*req.SessionID)
+	}
+	_, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO consolidation_apply_fingerprints (
+    persona_id, fingerprint, fact_id, candidate_id, request_id, session_id, action
+) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		personaID,
+		fingerprint,
+		nullableNonEmptyString(factID),
+		nullableNonEmptyString(req.CandidateID),
+		nullableNonEmptyString(req.RequestID),
+		sessionID,
+		action,
+	)
+	return err
+}
+
+func factHasAllSourceEvidenceTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, sourceIDs []string) (bool, error) {
+	for _, sourceID := range uniqueSorted(sourceIDs) {
+		var count int
+		err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM memory_links
+WHERE persona_id = ?
+  AND from_node_type = 'fact'
+  AND from_node_id = ?
+  AND link_type = 'EVIDENCED_BY'
+  AND to_node_type = 'episode'
+  AND to_node_id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1`, personaID, factID, sourceID).Scan(&count)
+		if err != nil {
+			return false, err
+		}
+		if count == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func uniqueSorted(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func optionalTimeKey(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func invalidationTimeFor(candidate ManualFactCandidate, sources []sourceEpisode, now time.Time) time.Time {
