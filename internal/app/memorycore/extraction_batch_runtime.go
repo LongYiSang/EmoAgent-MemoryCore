@@ -1,22 +1,20 @@
-package extractionruntime
+package memorycore
 
 import (
 	"context"
 	"database/sql"
 	"strings"
-
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
-func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchRequest) (memorycore.ExtractionBatchResult, error) {
+func (r *Runner) RunBatch(ctx context.Context, batch ExtractionBatchRequest) (ExtractionBatchResult, error) {
 	if batch.Mode == "" {
-		batch.Mode = memorycore.ExtractionRunModeDryRun
+		batch.Mode = ExtractionRunModeDryRun
 	}
 	if batch.Audit == "" {
-		batch.Audit = memorycore.ExtractionAuditOn
+		batch.Audit = ExtractionAuditOn
 	}
 	if batch.Trigger == "" {
-		batch.Trigger = memorycore.ExtractionTriggerSessionEnd
+		batch.Trigger = ExtractionTriggerSessionEnd
 	}
 	if batch.Timezone == "" {
 		batch.Timezone = "Asia/Singapore"
@@ -39,10 +37,10 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 	if len(sessionIDs) == 0 {
 		sessionIDs, err = eligibleSessions(ctx, r.db, personaID, batch)
 		if err != nil {
-			return memorycore.ExtractionBatchResult{Mode: batch.Mode, Status: "failed"}, err
+			return ExtractionBatchResult{Mode: batch.Mode, Status: "failed"}, err
 		}
 	}
-	result := memorycore.ExtractionBatchResult{Mode: batch.Mode, Status: "ok", Results: []memorycore.ExtractionRunResult{}}
+	result := ExtractionBatchResult{Mode: batch.Mode, Status: "ok", Results: []ExtractionRunResult{}}
 	for _, sessionID := range sessionIDs {
 		sid := sessionID
 		req, err := BuildRequest(ctx, r.db, BuildRequestOptions{
@@ -68,7 +66,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 			}
 			continue
 		}
-		run, err := r.Run(ctx, memorycore.ExtractionRunRequest{
+		run, err := r.Run(ctx, ExtractionRunRequest{
 			Request:          req,
 			Mode:             batch.Mode,
 			ProviderID:       batch.ProviderID,
@@ -83,7 +81,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 			Audit:            batch.Audit,
 			Force:            batch.Force,
 			RawLog:           batch.RawLog,
-			Window: memorycore.ExtractionRunWindow{
+			Window: ExtractionRunWindow{
 				Since: batch.Since,
 				Until: batch.Until,
 				Limit: batch.EpisodeLimit,
@@ -91,7 +89,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 		})
 		if run.SkippedByFingerprint {
 			result.SkippedCount++
-		} else if err != nil || run.Status == memorycore.ExtractionRunStatusFailed {
+		} else if err != nil || run.Status == ExtractionRunStatusFailed {
 			result.FailedCount++
 		} else {
 			result.ProcessedCount++
@@ -108,7 +106,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch memorycore.ExtractionBatchR
 	return result, nil
 }
 
-func eligibleSessions(ctx context.Context, db *sql.DB, personaID string, batch memorycore.ExtractionBatchRequest) ([]string, error) {
+func eligibleSessions(ctx context.Context, db *sql.DB, personaID string, batch ExtractionBatchRequest) ([]string, error) {
 	limit := batch.Limit
 	if limit == 0 {
 		limit = 50

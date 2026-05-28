@@ -11,6 +11,61 @@ type Options struct {
 	MirrorAdapter     MirrorAdapter
 	QueryAnalysis     QueryAnalysisOptions
 	SidecarResilience SidecarResilienceOptions
+	Extraction        ExtractionOptions
+}
+
+type ExtractionOptions struct {
+	Enabled        bool
+	Provider       ExtractionProviderOptions
+	Defaults       ExtractionDefaults
+	Runtime        ExtractionRuntimeOptions
+	Audit          ExtractionAuditOptions
+	RawLog         ExtractionRawLogOptions
+	PromptVersions ExtractionPromptVersionOptions
+}
+
+type ExtractionProviderOptions struct {
+	Kind           string
+	ID             string
+	BaseURL        string
+	APIKeyEnv      string
+	Model          string
+	Temperature    float64
+	MaxTokens      int
+	Timeout        time.Duration
+	ResponseFormat ExtractionResponseFormat
+	Thinking       *OpenAICompatibleThinkingOptions
+}
+
+type ExtractionDefaults struct {
+	Configured               bool
+	Mode                     ExtractionRunMode
+	Timezone                 string
+	AllowSensitiveExtraction bool
+	AllowInference           bool
+	MaxFacts                 int
+	MaxLinks                 int
+	RequireCleanGate         bool
+	ApplyAcceptedFacts       bool
+	ExecuteDeletionIntents   bool
+}
+
+type ExtractionRuntimeOptions struct {
+	Configured    bool
+	UsePreFilter  bool
+	RepairEnabled bool
+}
+
+type ExtractionAuditOptions struct {
+	Configured bool
+	Enabled    bool
+	Force      bool
+}
+
+type ExtractionPromptVersionOptions struct {
+	Extraction string
+	PreFilter  string
+	Repair     string
 }
 
 type QueryAnalysisProvider string

@@ -30,6 +30,8 @@ type Service interface {
 	PreviewForget(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error)
 	ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (*ForgetExecuteResult, error)
 	VerifyForget(ctx context.Context, req ForgetVerifyRequest) (*ForgetVerifyResult, error)
+	RunExtraction(ctx context.Context, req RunExtractionRequest) (*ExtractionRunResult, error)
+	RunExtractionBatch(ctx context.Context, req ExtractionBatchRequest) (*ExtractionBatchResult, error)
 	RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
 	RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (*RebuildMirrorResult, error)
 }
@@ -58,6 +60,7 @@ type service struct {
 	now               func() time.Time
 	sidecarResilience SidecarResilienceOptions
 	sidecarBreaker    *sidecarCircuitBreaker
+	extraction        ExtractionOptions
 }
 
 func Open(ctx context.Context, opts Options) (Service, error) {
@@ -81,6 +84,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		now = time.Now
 	}
 	resilience := normalizeSidecarResilienceOptions(opts.SidecarResilience)
+	extraction := normalizeExtractionOptions(opts.Extraction)
 	sqlDB := db.SQLDB()
 	retrieve := memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now)
 	queryPipeline := newQueryAnalysisPipeline(storeRuleQueryAnalyzer{repo: retrieve}, newSemanticQueryAnalyzerFromOptions(opts.QueryAnalysis), opts.QueryAnalysis)
@@ -108,6 +112,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		now:               now,
 		sidecarResilience: resilience,
 		sidecarBreaker:    newSidecarCircuitBreaker(resilience.Breaker, now),
+		extraction:        extraction,
 	}, nil
 }
 

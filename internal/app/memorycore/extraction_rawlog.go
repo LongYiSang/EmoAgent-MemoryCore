@@ -1,4 +1,4 @@
-package extractionruntime
+package memorycore
 
 import (
 	"encoding/json"
@@ -7,15 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const rawLogSchemaVersion = "memory_extraction_raw_log.v0.1"
 
 type rawLogTrace struct {
 	StartedAt time.Time
-	Request   memorycore.ExtractionRequest
+	Request   ExtractionRequest
 	LLM       rawLogLLMTraceSet
 }
 
@@ -27,9 +25,9 @@ type rawLogLLMTraceSet struct {
 }
 
 type rawLogLLMCall struct {
-	Request    *memorycore.ExtractionLLMRequest  `json:"request,omitempty"`
-	Response   *memorycore.ExtractionLLMResponse `json:"response,omitempty"`
-	ParseError string                            `json:"parse_error,omitempty"`
+	Request    *ExtractionLLMRequest  `json:"request,omitempty"`
+	Response   *ExtractionLLMResponse `json:"response,omitempty"`
+	ParseError string                 `json:"parse_error,omitempty"`
 }
 
 type rawLogAudit struct {
@@ -46,14 +44,14 @@ type rawLogTimings struct {
 	DurationMS int64     `json:"duration_ms"`
 }
 
-func newRawLogTrace(start time.Time, runReq memorycore.ExtractionRunRequest) *rawLogTrace {
+func newRawLogTrace(start time.Time, runReq ExtractionRunRequest) *rawLogTrace {
 	if !runReq.RawLog.Enabled {
 		return nil
 	}
 	return &rawLogTrace{StartedAt: start.UTC(), Request: runReq.Request}
 }
 
-func (t *rawLogTrace) recordPreFilterRequest(req memorycore.ExtractionLLMRequest) {
+func (t *rawLogTrace) recordPreFilterRequest(req ExtractionLLMRequest) {
 	if t == nil {
 		return
 	}
@@ -61,7 +59,7 @@ func (t *rawLogTrace) recordPreFilterRequest(req memorycore.ExtractionLLMRequest
 	t.LLM.PreFilter.Request = &req
 }
 
-func (t *rawLogTrace) recordPreFilterResponse(resp memorycore.ExtractionLLMResponse) {
+func (t *rawLogTrace) recordPreFilterResponse(resp ExtractionLLMResponse) {
 	if t == nil {
 		return
 	}
@@ -77,7 +75,7 @@ func (t *rawLogTrace) recordPreFilterParseError(err error) {
 	t.LLM.PreFilter.ParseError = err.Error()
 }
 
-func (t *rawLogTrace) recordPreFilterRepairRequest(req memorycore.ExtractionLLMRequest) {
+func (t *rawLogTrace) recordPreFilterRepairRequest(req ExtractionLLMRequest) {
 	if t == nil {
 		return
 	}
@@ -85,7 +83,7 @@ func (t *rawLogTrace) recordPreFilterRepairRequest(req memorycore.ExtractionLLMR
 	t.LLM.PreFilterRepair.Request = &req
 }
 
-func (t *rawLogTrace) recordPreFilterRepairResponse(resp memorycore.ExtractionLLMResponse) {
+func (t *rawLogTrace) recordPreFilterRepairResponse(resp ExtractionLLMResponse) {
 	if t == nil {
 		return
 	}
@@ -101,7 +99,7 @@ func (t *rawLogTrace) recordPreFilterRepairParseError(err error) {
 	t.LLM.PreFilterRepair.ParseError = err.Error()
 }
 
-func (t *rawLogTrace) recordExtractionRequest(req memorycore.ExtractionLLMRequest) {
+func (t *rawLogTrace) recordExtractionRequest(req ExtractionLLMRequest) {
 	if t == nil {
 		return
 	}
@@ -109,7 +107,7 @@ func (t *rawLogTrace) recordExtractionRequest(req memorycore.ExtractionLLMReques
 	t.LLM.Extraction.Request = &req
 }
 
-func (t *rawLogTrace) recordExtractionResponse(resp memorycore.ExtractionLLMResponse) {
+func (t *rawLogTrace) recordExtractionResponse(resp ExtractionLLMResponse) {
 	if t == nil {
 		return
 	}
@@ -125,7 +123,7 @@ func (t *rawLogTrace) recordExtractionParseError(err error) {
 	t.LLM.Extraction.ParseError = err.Error()
 }
 
-func (t *rawLogTrace) recordRepairRequest(req memorycore.ExtractionLLMRequest) {
+func (t *rawLogTrace) recordRepairRequest(req ExtractionLLMRequest) {
 	if t == nil {
 		return
 	}
@@ -133,7 +131,7 @@ func (t *rawLogTrace) recordRepairRequest(req memorycore.ExtractionLLMRequest) {
 	t.LLM.Repair.Request = &req
 }
 
-func (t *rawLogTrace) recordRepairResponse(resp memorycore.ExtractionLLMResponse) {
+func (t *rawLogTrace) recordRepairResponse(resp ExtractionLLMResponse) {
 	if t == nil {
 		return
 	}
@@ -156,7 +154,7 @@ func ensureRawLogCall(call *rawLogLLMCall) *rawLogLLMCall {
 	return &rawLogLLMCall{}
 }
 
-func writeRawLog(dir string, result memorycore.ExtractionRunResult, trace *rawLogTrace, audit rawLogAudit) error {
+func writeRawLog(dir string, result ExtractionRunResult, trace *rawLogTrace, audit rawLogAudit) error {
 	if trace == nil {
 		return nil
 	}
@@ -168,15 +166,15 @@ func writeRawLog(dir string, result memorycore.ExtractionRunResult, trace *rawLo
 	}
 	finishedAt := time.Now().UTC()
 	artifact := struct {
-		SchemaVersion string                             `json:"schema_version"`
-		Request       memorycore.ExtractionRequest       `json:"request"`
-		LLM           rawLogLLMTraceSet                  `json:"llm"`
-		GateResult    *memorycore.ExtractionGateResult   `json:"gate_result,omitempty"`
-		DryRunResult  *memorycore.ExtractionDryRunResult `json:"dry_run_result,omitempty"`
-		ApplyResult   *memorycore.ExtractionApplyResult  `json:"apply_result,omitempty"`
-		Result        memorycore.ExtractionRunResult     `json:"result"`
-		Audit         rawLogAudit                        `json:"audit"`
-		Timings       rawLogTimings                      `json:"timings"`
+		SchemaVersion string                  `json:"schema_version"`
+		Request       ExtractionRequest       `json:"request"`
+		LLM           rawLogLLMTraceSet       `json:"llm"`
+		GateResult    *ExtractionGateResult   `json:"gate_result,omitempty"`
+		DryRunResult  *ExtractionDryRunResult `json:"dry_run_result,omitempty"`
+		ApplyResult   *ExtractionApplyResult  `json:"apply_result,omitempty"`
+		Result        ExtractionRunResult     `json:"result"`
+		Audit         rawLogAudit             `json:"audit"`
+		Timings       rawLogTimings           `json:"timings"`
 	}{
 		SchemaVersion: rawLogSchemaVersion,
 		Request:       trace.Request,
@@ -214,7 +212,7 @@ func writeRawLog(dir string, result memorycore.ExtractionRunResult, trace *rawLo
 	return os.Rename(tmpName, filepath.Join(dir, base))
 }
 
-func rawLogFilename(start time.Time, result memorycore.ExtractionRunResult) string {
+func rawLogFilename(start time.Time, result ExtractionRunResult) string {
 	fingerprint := result.Fingerprint
 	if len(fingerprint) > 8 {
 		fingerprint = fingerprint[:8]

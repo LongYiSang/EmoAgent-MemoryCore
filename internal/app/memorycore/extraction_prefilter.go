@@ -1,18 +1,15 @@
-package extractionruntime
+package memorycore
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"strings"
-
-	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 var errPreFilterEnvelope = errors.New("prefilter envelope mismatch")
 
-func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequest, runReq memorycore.ExtractionRunRequest, trace *rawLogTrace) (memorycore.ExtractionRequest, string, memorycore.LLMUsage, int, error) {
+func (r *Runner) runPreFilter(ctx context.Context, req ExtractionRequest, runReq ExtractionRunRequest, trace *rawLogTrace) (ExtractionRequest, string, LLMUsage, int, error) {
 	llmReq := r.buildPreFilterLLMRequest(req, runReq)
 	trace.recordPreFilterRequest(llmReq)
 	raw, err := r.llm.CompleteJSON(ctx, llmReq)
@@ -21,7 +18,7 @@ func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequ
 		return req, "", raw.Usage, 0, err
 	}
 	prefilterHash := hashText(raw.Text)
-	resp, err := extraction.ParsePreFilterResponse(strings.NewReader(raw.Text))
+	resp, err := ParsePreFilterResponse(strings.NewReader(raw.Text))
 	if err != nil && runReq.RepairEnabled {
 		trace.recordPreFilterParseError(err)
 		repairReq := r.buildPreFilterRepairLLMRequest(raw.Text, runReq)
@@ -33,7 +30,7 @@ func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequ
 			return req, prefilterHash, raw.Usage, 0, repairErr
 		}
 		prefilterHash = hashText(repaired.Text)
-		resp, err = extraction.ParsePreFilterResponse(strings.NewReader(repaired.Text))
+		resp, err = ParsePreFilterResponse(strings.NewReader(repaired.Text))
 		trace.recordPreFilterRepairParseError(err)
 	}
 	if err != nil {
@@ -47,7 +44,7 @@ func (r *Runner) runPreFilter(ctx context.Context, req memorycore.ExtractionRequ
 	return filtered, prefilterHash, raw.Usage, reviews, nil
 }
 
-func validatePreFilterEnvelope(req memorycore.ExtractionRequest, resp memorycore.ExtractionPreFilterResponse) error {
+func validatePreFilterEnvelope(req ExtractionRequest, resp ExtractionPreFilterResponse) error {
 	if resp.RequestID != req.RequestID {
 		return errPreFilterEnvelope
 	}
@@ -66,41 +63,43 @@ func validatePreFilterEnvelope(req memorycore.ExtractionRequest, resp memorycore
 	return nil
 }
 
-func (r *Runner) buildPreFilterLLMRequest(req memorycore.ExtractionRequest, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
+func (r *Runner) buildPreFilterLLMRequest(req ExtractionRequest, runReq ExtractionRunRequest) ExtractionLLMRequest {
 	requestJSON, _ := json.Marshal(req)
-	return memorycore.ExtractionLLMRequest{
-		Purpose:         memorycore.ExtractionLLMPurposePreFilter,
+	return ExtractionLLMRequest{
+		Purpose:         ExtractionLLMPurposePreFilter,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
-		SystemPrompt:    "MemoryCore prefilter " + r.promptVersions.PreFilter + ". Decide whether each episode should be kept for extraction.",
-		DeveloperPrompt: "Return strict JSON for schema " + memorycore.ExtractionPreFilterSchemaVersion + " with keep boolean and routing_hint extract|forget_manager|pin_manager|skip|review. Review and manager routes mean keep.",
+		SystemPrompt:    "MemoryCore prefilter " + r.promptVersions.PreFilter + ". Decide whether each episode should be kept for ",
+		DeveloperPrompt: "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + " with keep boolean and routing_hint extract|forget_manager|pin_manager|skip|review. Review and manager routes mean keep.",
 		UserPrompt:      string(requestJSON),
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposePreFilter, req.RequestID, r.promptVersions.PreFilter, memorycore.ExtractionPreFilterSchemaVersion),
+		ResponseFormat:  ExtractionResponseFormatJSONObject,
+		Metadata:        requestMetadata(ExtractionLLMPurposePreFilter, req.RequestID, r.promptVersions.PreFilter, ExtractionPreFilterSchemaVersion),
 	}
 }
 
-func (r *Runner) buildPreFilterRepairLLMRequest(raw string, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
-	return memorycore.ExtractionLLMRequest{
-		Purpose:         memorycore.ExtractionLLMPurposeRepair,
+func (r *Runner) buildPreFilterRepairLLMRequest(raw string, runReq ExtractionRunRequest) ExtractionLLMRequest {
+	return ExtractionLLMRequest{
+		Purpose:         ExtractionLLMPurposeRepair,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
 		SystemPrompt:    "MemoryCore prefilter JSON repair " + r.promptVersions.Repair + ". Repair JSON only.",
-		DeveloperPrompt: "Return strict JSON for schema " + memorycore.ExtractionPreFilterSchemaVersion + ". Do not include episode text.",
+		DeveloperPrompt: "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + ". Do not include episode text.",
 		UserPrompt:      raw,
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, memorycore.ExtractionPreFilterSchemaVersion),
+		ResponseFormat:  ExtractionResponseFormatJSONObject,
+		Metadata:        requestMetadata(ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, ExtractionPreFilterSchemaVersion),
 	}
 }
 
-func applyPreFilter(req memorycore.ExtractionRequest, resp memorycore.ExtractionPreFilterResponse) (memorycore.ExtractionRequest, int) {
-	decisions := map[string]memorycore.ExtractionPreFilterEpisode{}
+func applyPreFilter(req ExtractionRequest, resp ExtractionPreFilterResponse) (ExtractionRequest, int) {
+	decisions := map[string]ExtractionPreFilterEpisode{}
 	for _, decision := range resp.Episodes {
 		decisions[decision.EpisodeID] = decision
 	}
@@ -138,8 +137,8 @@ func preFilterHintForcesKeep(hint string) bool {
 	}
 }
 
-func mustKeepEpisode(req memorycore.ExtractionRequest, episode memorycore.ExtractionEpisode) bool {
-	if req.Trigger == memorycore.ExtractionTriggerManualPin || req.Trigger == memorycore.ExtractionTriggerManualForget || req.Policy.ManualPin || req.Policy.ManualForget {
+func mustKeepEpisode(req ExtractionRequest, episode ExtractionEpisode) bool {
+	if req.Trigger == ExtractionTriggerManualPin || req.Trigger == ExtractionTriggerManualForget || req.Policy.ManualPin || req.Policy.ManualForget {
 		return true
 	}
 	text := strings.ToLower(episode.Content)

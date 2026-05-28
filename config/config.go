@@ -88,7 +88,14 @@ type LLMPipelineConfig struct {
 
 type ExtractionPipelineConfig struct {
 	LLMPipelineConfig `yaml:",inline" json:",inline"`
+	Mode              string                 `yaml:"mode" json:"mode"`
+	Audit             ExtractionAuditConfig  `yaml:"audit" json:"audit"`
 	RawLog            ExtractionRawLogConfig `yaml:"raw_log" json:"raw_log"`
+}
+
+type ExtractionAuditConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	Force   bool `yaml:"force" json:"force"`
 }
 
 type ExtractionRawLogConfig struct {
@@ -517,6 +524,8 @@ func DefaultConfig() Config {
 					Thinking:             ThinkingConfig{Type: "disabled"},
 					RetryOnSchemaFailure: 1,
 				},
+				Mode:  string(memorycore.ExtractionRunModeDryRun),
+				Audit: ExtractionAuditConfig{Enabled: true},
 			},
 			ExtractionRepair: LLMPipelineConfig{
 				Enabled:  false,
@@ -848,6 +857,9 @@ func (c Config) validatePipelines() error {
 	if err := validateLLMPipeline("pipelines.extraction", c.Pipelines.Extraction.LLMPipelineConfig, c, false); err != nil {
 		return err
 	}
+	if _, err := normalizeExtractionConfigMode(c.Pipelines.Extraction.Mode); err != nil {
+		return err
+	}
 	if c.Pipelines.Extraction.RawLog.Enabled && strings.TrimSpace(c.Pipelines.Extraction.RawLog.Directory) == "" {
 		return fmt.Errorf("pipelines.extraction.raw_log.directory is required when raw_log.enabled is true")
 	}
@@ -1163,6 +1175,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		AutoMigrate:   c.Core.AutoMigrate,
 		EnableFTS:     c.Core.EnableFTS,
 		MirrorAdapter: adapter,
+		Extraction:    c.ExtractionOptions(),
 		QueryAnalysis: memorycore.QueryAnalysisOptions{
 			Provider:                         provider,
 			Mode:                             memorycore.QueryAnalysisMode(runtimeQueryAnalysisMode(qa)),
@@ -1230,6 +1243,108 @@ func runtimeQueryAnalysisMode(qa QueryAnalysisPipeline) string {
 	default:
 		return "rule_only"
 	}
+}
+
+func (c Config) ExtractionOptions() memorycore.ExtractionOptions {
+	pipeline := c.Pipelines.Extraction
+	repair := c.Pipelines.ExtractionRepair
+	provider := c.ProviderByID(pipeline.ProviderID)
+	providerOpts := memorycore.ExtractionProviderOptions{
+		Kind:           memorycore.ExtractionProviderDisabled,
+		ID:             pipeline.ProviderID,
+		Model:          pipeline.Model,
+		Temperature:    pipeline.Params.Temperature,
+		MaxTokens:      pipeline.Params.MaxOutputTokens,
+		ResponseFormat: memorycore.ExtractionResponseFormat(pipeline.Params.ResponseFormat),
+		Thinking:       &memorycore.OpenAICompatibleThinkingOptions{Type: pipeline.Thinking.Type},
+	}
+	if provider != nil {
+		providerOpts.Kind = extractionProviderKind(*provider)
+		providerOpts.BaseURL = provider.BaseURL
+		providerOpts.APIKeyEnv = provider.APIKeyEnv
+		if provider.TimeoutMS > 0 {
+			providerOpts.Timeout = time.Duration(provider.TimeoutMS) * time.Millisecond
+		}
+	}
+	return memorycore.ExtractionOptions{
+		Enabled:  pipeline.Enabled,
+		Provider: providerOpts,
+		Defaults: memorycore.ExtractionDefaults{
+			Configured:               true,
+			Mode:                     extractionConfigRunMode(pipeline.Mode),
+			Timezone:                 firstNonEmptyString(c.Core.Timezone, "Asia/Singapore"),
+			AllowSensitiveExtraction: c.WritePolicy.Extraction.AllowSensitiveExtraction,
+			AllowInference:           c.WritePolicy.Extraction.AllowInference,
+			MaxFacts:                 c.WritePolicy.Extraction.MaxFactsPerRequest,
+			MaxLinks:                 c.WritePolicy.Extraction.MaxLinksPerRequest,
+			RequireCleanGate:         false,
+			ApplyAcceptedFacts:       true,
+			ExecuteDeletionIntents:   false,
+		},
+		Runtime: memorycore.ExtractionRuntimeOptions{
+			Configured:    true,
+			UsePreFilter:  c.Pipelines.Prefilter.Enabled,
+			RepairEnabled: repair.Enabled || repair.RetryOnSchemaFailure > 0 || pipeline.RetryOnSchemaFailure > 0,
+		},
+		Audit: memorycore.ExtractionAuditOptions{
+			Configured: true,
+			Enabled:    pipeline.Audit.Enabled,
+			Force:      pipeline.Audit.Force,
+		},
+		RawLog: memorycore.ExtractionRawLogOptions{
+			Enabled:   pipeline.RawLog.Enabled,
+			Directory: pipeline.RawLog.Directory,
+		},
+	}
+}
+
+func extractionConfigRunMode(mode string) memorycore.ExtractionRunMode {
+	normalized, err := normalizeExtractionConfigMode(mode)
+	if err != nil {
+		return memorycore.ExtractionRunModeDryRun
+	}
+	return normalized
+}
+
+func normalizeExtractionConfigMode(mode string) (memorycore.ExtractionRunMode, error) {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "", string(memorycore.ExtractionRunModeDryRun), "dry_run":
+		return memorycore.ExtractionRunModeDryRun, nil
+	case string(memorycore.ExtractionRunModeValidate):
+		return memorycore.ExtractionRunModeValidate, nil
+	case string(memorycore.ExtractionRunModeApply):
+		return memorycore.ExtractionRunModeApply, nil
+	default:
+		return "", fmt.Errorf("pipelines.extraction.mode must be one of validate|dry-run|dry_run|apply")
+	}
+}
+
+func extractionProviderKind(provider ProviderConfig) string {
+	switch strings.TrimSpace(strings.ToLower(strings.ReplaceAll(provider.Provider, "_", "-"))) {
+	case "mock":
+		return memorycore.ExtractionProviderMock
+	case "openai-compatible", "openai":
+		return memorycore.ExtractionProviderOpenAICompatible
+	case "disabled", "":
+		if strings.EqualFold(provider.Protocol, "openai_compatible") && provider.Enabled {
+			return memorycore.ExtractionProviderOpenAICompatible
+		}
+		return memorycore.ExtractionProviderDisabled
+	default:
+		if strings.EqualFold(provider.Protocol, "openai_compatible") {
+			return memorycore.ExtractionProviderOpenAICompatible
+		}
+		return provider.Provider
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c Config) RetrievalPolicy() memorycore.RetrievalPolicy {

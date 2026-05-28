@@ -26,10 +26,13 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		t.Fatal("enabled default = true, want embedding opt-in")
 	}
 	if cfg.Pipelines.Extraction.Params.Temperature != 0 ||
+		cfg.Pipelines.Extraction.Mode != string(memorycore.ExtractionRunModeDryRun) ||
 		cfg.Pipelines.Extraction.Params.TopP != 1 ||
 		cfg.Pipelines.Extraction.Params.MaxOutputTokens != 6000 ||
 		cfg.Pipelines.Extraction.Params.ResponseFormat != "json_schema" ||
 		cfg.Pipelines.Extraction.RetryOnSchemaFailure != 1 ||
+		!cfg.Pipelines.Extraction.Audit.Enabled ||
+		cfg.Pipelines.Extraction.Audit.Force ||
 		cfg.Pipelines.Extraction.RawLog.Enabled ||
 		cfg.Pipelines.Extraction.RawLog.Directory != "" {
 		t.Fatalf("extraction defaults = %#v", cfg.Pipelines.Extraction)
@@ -72,7 +75,8 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 	if got := cfg.ProviderByID("llm_main"); got == nil || got.Protocol != "openai_compatible" || got.APIKeyEnv != "MEMORYCORE_LLM_API_KEY" {
 		t.Fatalf("llm provider = %#v", got)
 	}
-	if cfg.Pipelines.Extraction.Model != "gpt-5.4" ||
+	if cfg.Pipelines.Extraction.Mode != string(memorycore.ExtractionRunModeApply) ||
+		cfg.Pipelines.Extraction.Model != "gpt-5.4" ||
 		cfg.Pipelines.Extraction.Params.MaxOutputTokens != 7000 ||
 		cfg.Pipelines.Extraction.Thinking.Type != "disabled" ||
 		!cfg.Pipelines.Extraction.RawLog.Enabled ||
@@ -95,6 +99,23 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 	}
 	if opts.DBPath != "./full.db" || opts.PersonaID != "persona_full" || !opts.AutoMigrate || !opts.EnableFTS {
 		t.Fatalf("options core = %#v", opts)
+	}
+	if !opts.Extraction.Enabled ||
+		opts.Extraction.Provider.Kind != memorycore.ExtractionProviderOpenAICompatible ||
+		opts.Extraction.Provider.ID != "llm_main" ||
+		opts.Extraction.Provider.BaseURL != "https://llm.invalid/v1" ||
+		opts.Extraction.Provider.Model != "gpt-5.4" ||
+		opts.Extraction.Provider.MaxTokens != 7000 ||
+		opts.Extraction.Provider.ResponseFormat != memorycore.ExtractionResponseFormatJSONSchema ||
+		opts.Extraction.Defaults.Mode != memorycore.ExtractionRunModeApply ||
+		!opts.Extraction.Runtime.UsePreFilter ||
+		!opts.Extraction.Runtime.RepairEnabled ||
+		opts.Extraction.Audit.Enabled ||
+		!opts.Extraction.Audit.Force ||
+		!opts.Extraction.RawLog.Enabled ||
+		opts.Extraction.RawLog.Directory != "./debug/extraction_raw" ||
+		opts.Extraction.Defaults.AllowSensitiveExtraction {
+		t.Fatalf("extraction options = %#v", opts.Extraction)
 	}
 	if opts.QueryAnalysis.Provider != memorycore.QueryAnalysisProviderSidecar ||
 		opts.QueryAnalysis.Mode != memorycore.QueryAnalysisModeAdaptiveSafe ||
@@ -219,6 +240,12 @@ providers:
 		cfg := memconfig.DefaultConfig()
 		cfg.Pipelines.Extraction.RawLog.Enabled = true
 		requireErrorContains(t, cfg.Validate(), "pipelines.extraction.raw_log.directory")
+	})
+
+	t.Run("extraction mode must be supported", func(t *testing.T) {
+		cfg := memconfig.DefaultConfig()
+		cfg.Pipelines.Extraction.Mode = "invalid"
+		requireErrorContains(t, cfg.Validate(), "pipelines.extraction.mode")
 	})
 }
 
@@ -353,7 +380,10 @@ func TestDocsDescriptorIsStableAndJSONSerializable(t *testing.T) {
 	for _, want := range []string{
 		"schema_version",
 		"providers.llm[].api_key_env",
+		"pipelines.extraction.mode",
 		"pipelines.extraction.params.max_output_tokens",
+		"pipelines.extraction.audit.enabled",
+		"pipelines.extraction.audit.force",
 		"pipelines.extraction.raw_log.enabled",
 		"pipelines.extraction.raw_log.directory",
 		"write_policy.triggers.manual_forget.enabled",
@@ -417,6 +447,7 @@ pipelines:
     reasoning_effort: high
   extraction:
     enabled: true
+    mode: apply
     provider_id: llm_main
     model: gpt-5.4
     params:
@@ -431,6 +462,9 @@ pipelines:
       type: disabled
     reasoning_effort: high
     retry_on_schema_failure: 1
+    audit:
+      enabled: false
+      force: true
     raw_log:
       enabled: true
       directory: ./debug/extraction_raw

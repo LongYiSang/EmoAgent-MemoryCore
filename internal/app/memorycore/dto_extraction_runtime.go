@@ -21,17 +21,18 @@ type ExtractionLLM interface {
 }
 
 type ExtractionLLMRequest struct {
-	Purpose         string            `json:"purpose"`
-	ProviderID      string            `json:"provider_id,omitempty"`
-	ProviderKind    string            `json:"provider_kind,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	SystemPrompt    string            `json:"system_prompt"`
-	DeveloperPrompt string            `json:"developer_prompt,omitempty"`
-	UserPrompt      string            `json:"user_prompt"`
-	Temperature     float64           `json:"temperature"`
-	MaxTokens       int               `json:"max_tokens"`
-	Timeout         time.Duration     `json:"timeout"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Purpose         string                   `json:"purpose"`
+	ProviderID      string                   `json:"provider_id,omitempty"`
+	ProviderKind    string                   `json:"provider_kind,omitempty"`
+	Model           string                   `json:"model,omitempty"`
+	SystemPrompt    string                   `json:"system_prompt"`
+	DeveloperPrompt string                   `json:"developer_prompt,omitempty"`
+	UserPrompt      string                   `json:"user_prompt"`
+	Temperature     float64                  `json:"temperature"`
+	MaxTokens       int                      `json:"max_tokens"`
+	Timeout         time.Duration            `json:"timeout"`
+	ResponseFormat  ExtractionResponseFormat `json:"response_format,omitempty"`
+	Metadata        map[string]string        `json:"metadata,omitempty"`
 }
 
 type ExtractionLLMResponse struct {
@@ -71,21 +72,22 @@ const (
 )
 
 type ExtractionRunRequest struct {
-	Request          ExtractionRequest       `json:"request"`
-	Mode             ExtractionRunMode       `json:"mode"`
-	ProviderID       string                  `json:"provider_id,omitempty"`
-	ProviderKind     string                  `json:"provider_kind,omitempty"`
-	Model            string                  `json:"model,omitempty"`
-	Temperature      float64                 `json:"temperature,omitempty"`
-	MaxTokens        int                     `json:"max_tokens,omitempty"`
-	Timeout          time.Duration           `json:"timeout,omitempty"`
-	UsePreFilter     bool                    `json:"use_prefilter,omitempty"`
-	RepairEnabled    bool                    `json:"repair_enabled,omitempty"`
-	RequireCleanGate bool                    `json:"require_clean_gate,omitempty"`
-	Audit            string                  `json:"audit,omitempty"`
-	Force            bool                    `json:"force,omitempty"`
-	Window           ExtractionRunWindow     `json:"window,omitempty"`
-	RawLog           ExtractionRawLogOptions `json:"raw_log,omitempty"`
+	Request          ExtractionRequest        `json:"request"`
+	Mode             ExtractionRunMode        `json:"mode"`
+	ProviderID       string                   `json:"provider_id,omitempty"`
+	ProviderKind     string                   `json:"provider_kind,omitempty"`
+	Model            string                   `json:"model,omitempty"`
+	Temperature      float64                  `json:"temperature,omitempty"`
+	MaxTokens        int                      `json:"max_tokens,omitempty"`
+	Timeout          time.Duration            `json:"timeout,omitempty"`
+	ResponseFormat   ExtractionResponseFormat `json:"response_format,omitempty"`
+	UsePreFilter     bool                     `json:"use_prefilter,omitempty"`
+	RepairEnabled    bool                     `json:"repair_enabled,omitempty"`
+	RequireCleanGate bool                     `json:"require_clean_gate,omitempty"`
+	Audit            string                   `json:"audit,omitempty"`
+	Force            bool                     `json:"force,omitempty"`
+	Window           ExtractionRunWindow      `json:"window,omitempty"`
+	RawLog           ExtractionRawLogOptions  `json:"raw_log,omitempty"`
 }
 
 type ExtractionRawLogOptions struct {
@@ -128,6 +130,8 @@ type ExtractionRunResult struct {
 	Usage                 LLMUsage                `json:"usage,omitempty"`
 	SanitizedErrorCode    string                  `json:"sanitized_error_code,omitempty"`
 	SanitizedErrorMessage string                  `json:"sanitized_error_message,omitempty"`
+	RoutedDeletionIntents []DeletionIntentRoute   `json:"routed_deletion_intents,omitempty"`
+	RoutedPinIntents      []PinIntentRoute        `json:"routed_pin_intents,omitempty"`
 	DurationMS            int64                   `json:"duration_ms,omitempty"`
 }
 

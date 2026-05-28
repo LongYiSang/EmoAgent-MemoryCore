@@ -1,4 +1,4 @@
-package extractionruntime
+package memorycore
 
 import (
 	"context"
@@ -10,9 +10,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const (
@@ -20,24 +17,6 @@ const (
 	defaultPreFilterPromptVersion = "phase2c.prefilter.v1"
 	defaultRepairPromptVersion    = "phase2c.repair.v1"
 )
-
-type BuildRequestOptions struct {
-	PersonaID                string
-	SessionID                *string
-	EpisodeIDs               []string
-	Trigger                  string
-	Limit                    int
-	Since                    *time.Time
-	Until                    *time.Time
-	Timezone                 string
-	AllowSensitiveExtraction bool
-	AllowInference           bool
-	ManualPin                bool
-	ManualForget             bool
-	MaxFacts                 int
-	MaxLinks                 int
-	Now                      time.Time
-}
 
 type PromptVersions struct {
 	Extraction string
@@ -47,45 +26,25 @@ type PromptVersions struct {
 
 type RunnerOptions struct {
 	DB             *sql.DB
-	Service        memorycore.Service
-	LLM            memorycore.ExtractionLLM
+	Service        Service
+	LLM            ExtractionLLM
 	AuditStore     AuditStore
 	Now            func() time.Time
 	PromptVersions PromptVersions
 }
 
 type AuditStore interface {
-	FindSuccessfulRun(ctx context.Context, fingerprint string, mode memorycore.ExtractionRunMode) (*memorycore.ExtractionRunAuditRecord, error)
-	RecordRun(ctx context.Context, record memorycore.ExtractionRunAuditRecord) error
+	FindSuccessfulRun(ctx context.Context, fingerprint string, mode ExtractionRunMode) (*ExtractionRunAuditRecord, error)
+	RecordRun(ctx context.Context, record ExtractionRunAuditRecord) error
 }
 
 type Runner struct {
 	db             *sql.DB
-	service        memorycore.Service
-	llm            memorycore.ExtractionLLM
+	service        Service
+	llm            ExtractionLLM
 	audit          AuditStore
 	now            func() time.Time
 	promptVersions PromptVersions
-}
-
-func BuildRequest(ctx context.Context, db *sql.DB, opts BuildRequestOptions) (memorycore.ExtractionRequest, error) {
-	return extraction.BuildRequest(ctx, db, extraction.BuildRequestOptions{
-		PersonaID:                opts.PersonaID,
-		SessionID:                opts.SessionID,
-		EpisodeIDs:               opts.EpisodeIDs,
-		Trigger:                  opts.Trigger,
-		Limit:                    opts.Limit,
-		Since:                    opts.Since,
-		Until:                    opts.Until,
-		Timezone:                 opts.Timezone,
-		AllowSensitiveExtraction: opts.AllowSensitiveExtraction,
-		AllowInference:           opts.AllowInference,
-		ManualPin:                opts.ManualPin,
-		ManualForget:             opts.ManualForget,
-		MaxFacts:                 opts.MaxFacts,
-		MaxLinks:                 opts.MaxLinks,
-		Now:                      opts.Now,
-	})
 }
 
 func NewRunner(opts RunnerOptions) *Runner {
@@ -113,26 +72,26 @@ func NewRunner(opts RunnerOptions) *Runner {
 	}
 }
 
-func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest) (memorycore.ExtractionRunResult, error) {
+func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (ExtractionRunResult, error) {
 	start := r.now()
 	if runReq.Mode == "" {
-		runReq.Mode = memorycore.ExtractionRunModeDryRun
+		runReq.Mode = ExtractionRunModeDryRun
 	}
 	if runReq.Audit == "" {
-		runReq.Audit = memorycore.ExtractionAuditOn
+		runReq.Audit = ExtractionAuditOn
 	}
-	result := memorycore.ExtractionRunResult{
+	result := ExtractionRunResult{
 		RequestID:            runReq.Request.RequestID,
 		PersonaID:            runReq.Request.PersonaID,
 		SessionID:            runReq.Request.SessionID,
 		Trigger:              runReq.Request.Trigger,
 		Mode:                 runReq.Mode,
-		Status:               memorycore.ExtractionRunStatusFailed,
+		Status:               ExtractionRunStatusFailed,
 		OriginalEpisodeCount: len(runReq.Request.Episodes),
 		KeptEpisodeCount:     len(runReq.Request.Episodes),
 	}
 	trace := newRawLogTrace(start, runReq)
-	finish := func(result memorycore.ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *memorycore.LLMUsage, safe *safeError) (memorycore.ExtractionRunResult, error) {
+	finish := func(result ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *LLMUsage, safe *safeError) (ExtractionRunResult, error) {
 		return r.finish(ctx, start, runReq, result, promptHash, responseHash, repairedHash, prefilterHash, usage, safe, trace)
 	}
 	if runReq.RawLog.Enabled && strings.TrimSpace(runReq.RawLog.Directory) == "" {
@@ -147,14 +106,14 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		return finish(result, "", "", "", "", nil, safe)
 	}
 	result.Fingerprint = fingerprint
-	if runReq.Audit != memorycore.ExtractionAuditOff && r.audit != nil && !runReq.Force {
+	if runReq.Audit != ExtractionAuditOff && r.audit != nil && !runReq.Force {
 		previous, err := r.audit.FindSuccessfulRun(ctx, fingerprint, runReq.Mode)
 		if err != nil {
 			safe := sanitizedError("audit_lookup_failed", "could not read extraction audit state")
 			return finish(result, "", "", "", "", nil, safe)
 		}
 		if previous != nil {
-			result.Status = memorycore.ExtractionRunStatusSkipped
+			result.Status = ExtractionRunStatusSkipped
 			result.SkippedByFingerprint = true
 			return finish(result, "", "", "", "", nil, nil)
 		}
@@ -162,7 +121,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 
 	req := cloneRequest(runReq.Request)
 	var prefilterHash string
-	var usage memorycore.LLMUsage
+	var usage LLMUsage
 	if runReq.UsePreFilter {
 		filtered, pfHash, pfUsage, pfReview, pfErr := r.runPreFilter(ctx, req, runReq, trace)
 		prefilterHash = pfHash
@@ -176,7 +135,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		result.KeptEpisodeCount = len(req.Episodes)
 		result.SkippedEpisodeCount = result.OriginalEpisodeCount - result.KeptEpisodeCount
 		if len(req.Episodes) == 0 {
-			result.Status = memorycore.ExtractionRunStatusSkipped
+			result.Status = ExtractionRunStatusSkipped
 			return finish(result, "", "", "", prefilterHash, &usage, nil)
 		}
 	}
@@ -192,7 +151,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		return finish(result, promptHash, "", "", prefilterHash, &usage, safe)
 	}
 	responseHash := hashText(raw.Text)
-	resp, _, parseErr := extraction.ParseResponseWithRepairReport(strings.NewReader(raw.Text))
+	resp, _, parseErr := ParseResponseWithRepairReport(strings.NewReader(raw.Text))
 	var repairedHash string
 	if parseErr != nil && runReq.RepairEnabled {
 		trace.recordExtractionParseError(parseErr)
@@ -206,7 +165,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 			return finish(result, promptHash, responseHash, "", prefilterHash, &usage, safe)
 		}
 		repairedHash = hashText(repairRaw.Text)
-		resp, _, parseErr = extraction.ParseResponseWithRepairReport(strings.NewReader(repairRaw.Text))
+		resp, _, parseErr = ParseResponseWithRepairReport(strings.NewReader(repairRaw.Text))
 		trace.recordRepairParseError(parseErr)
 		result.Repaired = true
 	}
@@ -216,7 +175,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 	}
 
-	gate := extraction.ValidateExtraction(req, resp)
+	gate := ValidateExtraction(req, resp)
 	result.QualityFlags = append([]string(nil), resp.QualityFlags...)
 	result.GateResult = &gate
 	result.AcceptedCount = gate.Summary.AcceptedFactCount
@@ -226,34 +185,34 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	result.NotAppliedCount = gate.Summary.NotAppliedCount
 	result.Usage = usage
 	if gate.Status == "blocked" {
-		result.Status = memorycore.ExtractionRunStatusBlocked
+		result.Status = ExtractionRunStatusBlocked
 		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 	}
 
 	switch runReq.Mode {
-	case memorycore.ExtractionRunModeValidate:
-		result.Status = memorycore.ExtractionRunStatusValidated
-	case memorycore.ExtractionRunModeDryRun:
-		dry := extraction.DryRun(req, resp, gate)
+	case ExtractionRunModeValidate:
+		result.Status = ExtractionRunStatusValidated
+	case ExtractionRunModeDryRun:
+		dry := DryRun(req, resp, gate)
 		result.DryRunResult = &dry
-		result.Status = memorycore.ExtractionRunStatusDryRun
-	case memorycore.ExtractionRunModeApply:
+		result.Status = ExtractionRunStatusDryRun
+	case ExtractionRunModeApply:
 		if runReq.RequireCleanGate && (gate.Summary.NeedsReviewCount > 0 || gate.Summary.RejectedCount > 0) {
-			result.Status = memorycore.ExtractionRunStatusFailed
+			result.Status = ExtractionRunStatusFailed
 			safe := sanitizedError("unclean_gate", "gate contains review or rejected candidates")
 			return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 		}
-		apply := extraction.ApplyAcceptedFacts(ctx, r.service, r.db, req, resp, gate)
+		apply := ApplyAcceptedFacts(ctx, r.service, r.db, req, resp, gate)
 		result.ApplyResult = &apply
 		result.AppliedCount = apply.AppliedCount
 		result.FailureCount = len(apply.Failures)
 		switch {
 		case apply.Status == "applied":
-			result.Status = memorycore.ExtractionRunStatusApplied
+			result.Status = ExtractionRunStatusApplied
 		case apply.Status == "nothing_applied":
-			result.Status = memorycore.ExtractionRunStatusNothingApplied
+			result.Status = ExtractionRunStatusNothingApplied
 		default:
-			result.Status = memorycore.ExtractionRunStatusFailed
+			result.Status = ExtractionRunStatusFailed
 		}
 	default:
 		safe := sanitizedError("invalid_mode", "mode must be validate, dry-run, or apply")
@@ -262,7 +221,7 @@ func (r *Runner) Run(ctx context.Context, runReq memorycore.ExtractionRunRequest
 	return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 }
 
-func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.ExtractionRunRequest, result memorycore.ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *memorycore.LLMUsage, safe *safeError, trace *rawLogTrace) (memorycore.ExtractionRunResult, error) {
+func (r *Runner) finish(ctx context.Context, start time.Time, runReq ExtractionRunRequest, result ExtractionRunResult, promptHash string, responseHash string, repairedHash string, prefilterHash string, usage *LLMUsage, safe *safeError, trace *rawLogTrace) (ExtractionRunResult, error) {
 	result.DurationMS = time.Since(start).Milliseconds()
 	if usage != nil {
 		result.Usage = *usage
@@ -271,11 +230,11 @@ func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.
 		result.SanitizedErrorCode = safe.Code
 		result.SanitizedErrorMessage = safe.Message
 		if result.Status == "" {
-			result.Status = memorycore.ExtractionRunStatusFailed
+			result.Status = ExtractionRunStatusFailed
 		}
 	}
-	if runReq.Audit != memorycore.ExtractionAuditOff && r.audit != nil && result.Fingerprint != "" {
-		record := memorycore.ExtractionRunAuditRecord{
+	if runReq.Audit != ExtractionAuditOff && r.audit != nil && result.Fingerprint != "" {
+		record := ExtractionRunAuditRecord{
 			RequestID:              result.RequestID,
 			PersonaID:              result.PersonaID,
 			SessionID:              result.SessionID,
@@ -311,7 +270,7 @@ func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.
 			UpdatedAt:              r.now(),
 		}
 		if err := r.audit.RecordRun(ctx, record); err != nil && safe == nil {
-			result.Status = memorycore.ExtractionRunStatusFailed
+			result.Status = ExtractionRunStatusFailed
 			result.SanitizedErrorCode = "audit_write_failed"
 			result.SanitizedErrorMessage = "could not write extraction audit state"
 			safe = sanitizedError(result.SanitizedErrorCode, result.SanitizedErrorMessage)
@@ -326,7 +285,7 @@ func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.
 			PreFilterHash:        prefilterHash,
 		}
 		if err := writeRawLog(runReq.RawLog.Directory, result, trace, audit); err != nil {
-			result.Status = memorycore.ExtractionRunStatusFailed
+			result.Status = ExtractionRunStatusFailed
 			result.SanitizedErrorCode = "raw_log_write_failed"
 			result.SanitizedErrorMessage = "could not write extraction raw log"
 			return result, errors.New(result.SanitizedErrorMessage)
@@ -338,14 +297,14 @@ func (r *Runner) finish(ctx context.Context, start time.Time, runReq memorycore.
 	return result, nil
 }
 
-func (r *Runner) fingerprint(ctx context.Context, req memorycore.ExtractionRunRequest) (string, error) {
+func (r *Runner) fingerprint(ctx context.Context, req ExtractionRunRequest) (string, error) {
 	hashes, err := episodeContentHashes(ctx, r.db, req.Request.PersonaID, req.Request.Episodes)
 	if err != nil {
 		return "", err
 	}
 	payload := map[string]any{
-		"request_schema":           memorycore.ExtractionRequestSchemaVersion,
-		"response_schema":          memorycore.ExtractionResponseSchemaVersion,
+		"request_schema":           ExtractionRequestSchemaVersion,
+		"response_schema":          ExtractionResponseSchemaVersion,
 		"persona_id":               req.Request.PersonaID,
 		"session_id":               req.Request.SessionID,
 		"trigger":                  req.Request.Trigger,
@@ -363,16 +322,17 @@ func (r *Runner) fingerprint(ctx context.Context, req memorycore.ExtractionRunRe
 		"provider_kind":            req.ProviderKind,
 		"model":                    req.Model,
 		"provider_params": map[string]any{
-			"temperature": req.Temperature,
-			"max_tokens":  req.MaxTokens,
-			"timeout":     req.Timeout.String(),
+			"temperature":     req.Temperature,
+			"max_tokens":      req.MaxTokens,
+			"timeout":         req.Timeout.String(),
+			"response_format": req.ResponseFormat,
 		},
 		"mode": req.Mode,
 	}
 	return hashJSON(payload), nil
 }
 
-func episodeContentHashes(ctx context.Context, db *sql.DB, personaID string, episodes []memorycore.ExtractionEpisode) ([]map[string]string, error) {
+func episodeContentHashes(ctx context.Context, db *sql.DB, personaID string, episodes []ExtractionEpisode) ([]map[string]string, error) {
 	out := make([]map[string]string, 0, len(episodes))
 	for _, episode := range episodes {
 		contentHash := ""
@@ -387,11 +347,11 @@ func episodeContentHashes(ctx context.Context, db *sql.DB, personaID string, epi
 	return out, nil
 }
 
-func cloneRequest(req memorycore.ExtractionRequest) memorycore.ExtractionRequest {
-	req.Episodes = append([]memorycore.ExtractionEpisode(nil), req.Episodes...)
-	req.KnownEntities = append([]memorycore.ExtractionKnownEntity(nil), req.KnownEntities...)
-	req.PredicateSchemas = append([]memorycore.ExtractionPredicateSchema(nil), req.PredicateSchemas...)
-	req.ApprovedWorkCandidates = append([]memorycore.ExtractionWorkCandidate(nil), req.ApprovedWorkCandidates...)
+func cloneRequest(req ExtractionRequest) ExtractionRequest {
+	req.Episodes = append([]ExtractionEpisode(nil), req.Episodes...)
+	req.KnownEntities = append([]ExtractionKnownEntity(nil), req.KnownEntities...)
+	req.PredicateSchemas = append([]ExtractionPredicateSchema(nil), req.PredicateSchemas...)
+	req.ApprovedWorkCandidates = append([]ExtractionWorkCandidate(nil), req.ApprovedWorkCandidates...)
 	return req
 }
 
@@ -429,17 +389,17 @@ func sanitizeProviderMessage(err error) string {
 	}
 }
 
-func addUsage(a memorycore.LLMUsage, b memorycore.LLMUsage) memorycore.LLMUsage {
+func addUsage(a LLMUsage, b LLMUsage) LLMUsage {
 	a.PromptTokens += b.PromptTokens
 	a.CompletionTokens += b.CompletionTokens
 	a.TotalTokens += b.TotalTokens
 	return a
 }
 
-func (r *Runner) buildExtractionLLMRequest(req memorycore.ExtractionRequest, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
+func (r *Runner) buildExtractionLLMRequest(req ExtractionRequest, runReq ExtractionRunRequest) ExtractionLLMRequest {
 	requestJSON, _ := json.Marshal(req)
-	return memorycore.ExtractionLLMRequest{
-		Purpose:         memorycore.ExtractionLLMPurposeExtraction,
+	return ExtractionLLMRequest{
+		Purpose:         ExtractionLLMPurposeExtraction,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
@@ -449,13 +409,14 @@ func (r *Runner) buildExtractionLLMRequest(req memorycore.ExtractionRequest, run
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeExtraction, req.RequestID, r.promptVersions.Extraction, memorycore.ExtractionResponseSchemaVersion),
+		ResponseFormat:  runReq.ResponseFormat,
+		Metadata:        requestMetadata(ExtractionLLMPurposeExtraction, req.RequestID, r.promptVersions.Extraction, ExtractionResponseSchemaVersion),
 	}
 }
 
-func (r *Runner) buildRepairLLMRequest(raw string, parseErr error, runReq memorycore.ExtractionRunRequest) memorycore.ExtractionLLMRequest {
-	return memorycore.ExtractionLLMRequest{
-		Purpose:         memorycore.ExtractionLLMPurposeRepair,
+func (r *Runner) buildRepairLLMRequest(raw string, parseErr error, runReq ExtractionRunRequest) ExtractionLLMRequest {
+	return ExtractionLLMRequest{
+		Purpose:         ExtractionLLMPurposeRepair,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
@@ -465,7 +426,8 @@ func (r *Runner) buildRepairLLMRequest(raw string, parseErr error, runReq memory
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
-		Metadata:        requestMetadata(memorycore.ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, memorycore.ExtractionResponseSchemaVersion),
+		ResponseFormat:  runReq.ResponseFormat,
+		Metadata:        requestMetadata(ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, ExtractionResponseSchemaVersion),
 	}
 }
 
@@ -485,11 +447,11 @@ func extractionSystemPrompt(version string) string {
 	return fmt.Sprintf(`MemoryCore extraction runtime %s. Extract candidate JSON only. Go gates decide validity and persistence.
 Return exactly one JSON object and no prose, markdown, code fences, or wrapper text.
 FORMAT ONLY JSON EXAMPLE:
-{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[{"candidate_id":"f1","subject_entity_candidate_id":"user","predicate":"likes","object_entity_candidate_id":null,"object_literal":"手冲咖啡","content_summary":"用户喜欢手冲咖啡。","fact_type":"stable_preference","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.7,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"用户直接表达喜欢手冲咖啡。","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":["explicit_user_statement"]}],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":1,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"通过"}}`, version, memorycore.ExtractionResponseSchemaVersion)
+{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[{"candidate_id":"f1","subject_entity_candidate_id":"user","predicate":"likes","object_entity_candidate_id":null,"object_literal":"手冲咖啡","content_summary":"用户喜欢手冲咖啡。","fact_type":"stable_preference","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.7,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"用户直接表达喜欢手冲咖啡。","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":["explicit_user_statement"]}],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":1,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"通过"}}`, version, ExtractionResponseSchemaVersion)
 }
 
 func extractionDeveloperPrompt() string {
-	return "Return strict JSON matching schema " + memorycore.ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message.\n" + extractionFieldContract()
+	return "Return strict JSON matching schema " + ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message.\n" + extractionFieldContract()
 }
 
 func repairSystemPrompt(version string) string {
@@ -501,13 +463,13 @@ func repairDeveloperPrompt(parseErr error) string {
 	if parseErr != nil {
 		message = " Parser error to fix: " + parseErr.Error()
 	}
-	return "Return only one strict JSON object for schema " + memorycore.ExtractionResponseSchemaVersion + ". Do not include markdown fences." + message + "\n" + extractionFieldContract()
+	return "Return only one strict JSON object for schema " + ExtractionResponseSchemaVersion + ". Do not include markdown fences." + message + "\n" + extractionFieldContract()
 }
 
 func extractionFieldContract() string {
-	entityTypes := strings.Join(memorycore.AllowedExtractionEntityTypes(), ", ")
-	mergeHints := strings.Join(memorycore.AllowedExtractionMergeHints(), ", ")
-	confidenceLabels := strings.Join(memorycore.AllowedExtractionConfidenceLabels(), ", ")
+	entityTypes := strings.Join(AllowedExtractionEntityTypes(), ", ")
+	mergeHints := strings.Join(AllowedExtractionMergeHints(), ", ")
+	confidenceLabels := strings.Join(AllowedExtractionConfidenceLabels(), ", ")
 	return fmt.Sprintf(`Field contract:
 - Use Chinese for human-readable summaries and notes when the source conversation is Chinese: content_summary, evidence_notes, reasoning, gate_summary.notes, pin_reason, target_description, corrected_topic, and rejection reasons. Keep JSON field names, IDs, enum values, fact_type, operation_hint, quality_decision, sensitivity_level, and confidence labels as protocol values.
 - Do not copy request.known_entities into response.entities. entity_id is input-only. Do not return entity_id; use "known_entity_id" for an existing entity or omit entities when using special ids "user" or "agent".

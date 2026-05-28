@@ -1,4 +1,4 @@
-package extractionruntime
+package memorycore
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 type SQLiteAuditStore struct {
@@ -18,7 +17,7 @@ func NewSQLiteAuditStore(db *sql.DB) *SQLiteAuditStore {
 	return &SQLiteAuditStore{db: db}
 }
 
-func (s *SQLiteAuditStore) FindSuccessfulRun(ctx context.Context, fingerprint string, mode memorycore.ExtractionRunMode) (*memorycore.ExtractionRunAuditRecord, error) {
+func (s *SQLiteAuditStore) FindSuccessfulRun(ctx context.Context, fingerprint string, mode ExtractionRunMode) (*ExtractionRunAuditRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
@@ -44,7 +43,7 @@ WHERE fingerprint = ?
   AND status IN (`+placeholders+`)
 ORDER BY created_at DESC
 LIMIT 1`, args...)
-	var rec memorycore.ExtractionRunAuditRecord
+	var rec ExtractionRunAuditRecord
 	var sessionID, model, promptHash, responseHash, repairedHash, prefilterHash, errorCode, errorMessage sql.NullString
 	var createdAt, updatedAt string
 	if err := row.Scan(
@@ -104,7 +103,7 @@ LIMIT 1`, args...)
 	return &rec, nil
 }
 
-func (s *SQLiteAuditStore) RecordRun(ctx context.Context, rec memorycore.ExtractionRunAuditRecord) error {
+func (s *SQLiteAuditStore) RecordRun(ctx context.Context, rec ExtractionRunAuditRecord) error {
 	if s == nil || s.db == nil {
 		return nil
 	}
@@ -171,14 +170,14 @@ INSERT INTO extraction_runs(
 	return err
 }
 
-func successfulStatusesForMode(mode memorycore.ExtractionRunMode) []string {
+func successfulStatusesForMode(mode ExtractionRunMode) []string {
 	switch mode {
-	case memorycore.ExtractionRunModeApply:
-		return []string{string(memorycore.ExtractionRunStatusApplied)}
-	case memorycore.ExtractionRunModeValidate:
-		return []string{string(memorycore.ExtractionRunStatusValidated), string(memorycore.ExtractionRunStatusSkipped)}
+	case ExtractionRunModeApply:
+		return []string{string(ExtractionRunStatusApplied)}
+	case ExtractionRunModeValidate:
+		return []string{string(ExtractionRunStatusValidated), string(ExtractionRunStatusSkipped)}
 	default:
-		return []string{string(memorycore.ExtractionRunStatusDryRun), string(memorycore.ExtractionRunStatusSkipped)}
+		return []string{string(ExtractionRunStatusDryRun), string(ExtractionRunStatusSkipped)}
 	}
 }
 

@@ -91,6 +91,33 @@ pipelines:
 	requireRawLogFileCount(t, rawDir, 1)
 }
 
+func TestRunExtractRunModeUsesConfig(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+pipelines:
+  extraction:
+    mode: apply
+`)
+
+	stdout, stderr, code := runCLI(
+		"extract-run",
+		"--config", configPath,
+		"--session", "session_seed",
+		"--provider", "mock",
+		"--audit", "off",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"applied"`)
+	requireFactCount(t, dbPath, 1)
+}
+
 func TestRunExtractRunRawLogFlagOverridesConfigAndWarns(t *testing.T) {
 	dbPath := seedCLIConsolidationDB(t)
 	configDir := t.TempDir()

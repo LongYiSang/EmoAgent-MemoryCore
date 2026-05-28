@@ -389,6 +389,27 @@ func TestFingerprintIncludesRuntimeTogglesAndSkippedDryRunIsReusable(t *testing.
 	if cleanGateOff.Fingerprint == cleanGateOn.Fingerprint {
 		t.Fatalf("require-clean-gate toggle did not change fingerprint: %s", cleanGateOff.Fingerprint)
 	}
+	jsonObject, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:        req,
+		Mode:           memorycore.ExtractionRunModeDryRun,
+		Audit:          memorycore.ExtractionAuditOff,
+		ResponseFormat: memorycore.ExtractionResponseFormatJSONObject,
+	})
+	if err != nil {
+		t.Fatalf("json_object format: %v", err)
+	}
+	jsonSchema, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:        req,
+		Mode:           memorycore.ExtractionRunModeDryRun,
+		Audit:          memorycore.ExtractionAuditOff,
+		ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+	})
+	if err != nil {
+		t.Fatalf("json_schema format: %v", err)
+	}
+	if jsonObject.Fingerprint == jsonSchema.Fingerprint {
+		t.Fatalf("response_format did not change fingerprint: %s", jsonObject.Fingerprint)
+	}
 
 	audit := extractionruntime.NewSQLiteAuditStore(db)
 	skipLLM := &fakeExtractionLLM{prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
@@ -591,6 +612,40 @@ func TestOpenAICompatibleLLMSendsConfiguredThinkingType(t *testing.T) {
 	responseFormat, ok := payload["response_format"].(map[string]any)
 	if !ok || responseFormat["type"] != "json_object" {
 		t.Fatalf("response_format = %#v, want json_object", payload["response_format"])
+	}
+}
+
+func TestOpenAICompatibleLLMSendsJSONSchemaResponseFormat(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"schema-model","choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:        server.URL,
+		APIKeyEnv:      "TEST_EXTRACTION_API_KEY",
+		Model:          "schema-model",
+		ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+	})
+
+	if _, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeExtraction,
+		UserPrompt: "{}",
+	}); err != nil {
+		t.Fatalf("CompleteJSON: %v", err)
+	}
+	responseFormat, ok := payload["response_format"].(map[string]any)
+	if !ok || responseFormat["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v, want json_schema", payload["response_format"])
+	}
+	if _, ok := responseFormat["json_schema"].(map[string]any); !ok {
+		t.Fatalf("json_schema payload = %#v, want object", responseFormat["json_schema"])
 	}
 }
 
