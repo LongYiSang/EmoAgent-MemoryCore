@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultPromptVersion          = "phase2c.extraction.v1"
-	defaultPreFilterPromptVersion = "phase2c.prefilter.v1"
+	defaultPreFilterPromptVersion = "phase2c.prefilter.v2"
 	defaultRepairPromptVersion    = "phase2c.repair.v1"
 )
 

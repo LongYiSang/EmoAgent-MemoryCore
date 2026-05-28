@@ -293,6 +293,123 @@ func TestPreFilterRoutingHintsKeepExceptSkip(t *testing.T) {
 	}
 }
 
+func TestPreFilterLLMRequestCarriesEnvelopeContractAndRawUserPrompt(t *testing.T) {
+	ctx := context.Background()
+	svc, db := seedRuntimeDB(t, ctx, "我也养了一只猫，叫大黑，因为它全身都是黑的。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		prefilterText: prefilterResponse(t, req, map[string]prefilterDecision{
+			req.Episodes[0].EpisodeID: {Keep: true, RoutingHint: "extract"},
+		}),
+		extractText: validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	if _, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:      req,
+		Mode:         memorycore.ExtractionRunModeDryRun,
+		Audit:        memorycore.ExtractionAuditOff,
+		UsePreFilter: true,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(llm.requests) < 1 {
+		t.Fatalf("captured request count = %d, want prefilter request", len(llm.requests))
+	}
+	captured := llm.requests[0]
+	if captured.Purpose != memorycore.ExtractionLLMPurposePreFilter {
+		t.Fatalf("first request purpose = %q, want prefilter", captured.Purpose)
+	}
+	contract := captured.SystemPrompt + "\n" + captured.DeveloperPrompt
+	for _, want := range []string{
+		"Return exactly one JSON object",
+		memorycore.ExtractionPreFilterSchemaVersion,
+		`"schema_version":"memory_extraction_protocol.v0.1.prefilter"`,
+		`"request_id":"req_example"`,
+		`"persona_id":"default"`,
+		`"session_id":null`,
+		`"trigger":"session_end"`,
+		`"episodes":[{"episode_id":"ep_1","keep":true,"routing_hint":"extract","reason_codes":["memory_candidate"]}]`,
+		`"quality_flags":[]`,
+		"Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags.",
+		"Each input episode_id must appear exactly once in episodes.",
+		"Allowed routing_hint values: extract, forget_manager, pin_manager, skip, review.",
+		"Do not put keep or routing_hint at the top level.",
+		"Do not copy episode content into the response.",
+		`When unsure, use keep=true and routing_hint="review".`,
+		"forget_manager, pin_manager, and review mean keep the episode.",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("prefilter prompt contract missing %q: %s", want, contract)
+		}
+	}
+	var promptReq memorycore.ExtractionRequest
+	if err := json.Unmarshal([]byte(captured.UserPrompt), &promptReq); err != nil {
+		t.Fatalf("user prompt is not raw ExtractionRequest JSON: %v", err)
+	}
+	if promptReq.RequestID != req.RequestID {
+		t.Fatalf("user prompt request_id = %q, want %q", promptReq.RequestID, req.RequestID)
+	}
+	if strings.Contains(captured.UserPrompt, "output_contract") {
+		t.Fatalf("user prompt wrapped request instead of raw ExtractionRequest JSON: %s", captured.UserPrompt)
+	}
+}
+
+func TestPreFilterRepairPromptCarriesMinimalEnvelopeContext(t *testing.T) {
+	ctx := context.Background()
+	secret := "大黑"
+	svc, db := seedRuntimeDB(t, ctx, "我也养了一只猫，叫"+secret+"，因为它全身都是黑的。")
+	defer svc.Close()
+	defer db.Close()
+
+	req := buildRuntimeRequest(t, ctx, db)
+	llm := &fakeExtractionLLM{
+		prefilterText: `{"keep":true,"routing_hint":"extract"}`,
+		repairText: prefilterResponse(t, req, map[string]prefilterDecision{
+			req.Episodes[0].EpisodeID: {Keep: true, RoutingHint: "review"},
+		}),
+		extractText: validRuntimeResponse(t, req),
+	}
+	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{DB: db, Service: svc, LLM: llm})
+	if _, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
+		Request:        req,
+		Mode:           memorycore.ExtractionRunModeDryRun,
+		Audit:          memorycore.ExtractionAuditOff,
+		UsePreFilter:   true,
+		RepairEnabled:  true,
+		ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if llm.repairCalls != 1 {
+		t.Fatalf("repair calls = %d, want 1", llm.repairCalls)
+	}
+	var repairReq memorycore.ExtractionLLMRequest
+	for _, captured := range llm.requests {
+		if captured.Purpose == memorycore.ExtractionLLMPurposeRepair {
+			repairReq = captured
+			break
+		}
+	}
+	if repairReq.Purpose == "" {
+		t.Fatalf("repair request was not captured: %#v", llm.requests)
+	}
+	if !strings.Contains(repairReq.DeveloperPrompt, `Parser error to fix: json: unknown field "keep"`) {
+		t.Fatalf("repair prompt missing parse error: %s", repairReq.DeveloperPrompt)
+	}
+	if !strings.Contains(repairReq.DeveloperPrompt, "If the original response lacks per-episode decisions, output every episode_id with keep=true and routing_hint=\"review\".") {
+		t.Fatalf("repair prompt missing conservative review fallback: %s", repairReq.DeveloperPrompt)
+	}
+	if !strings.Contains(repairReq.UserPrompt, req.RequestID) || !strings.Contains(repairReq.UserPrompt, req.Episodes[0].EpisodeID) {
+		t.Fatalf("repair prompt missing request envelope context: %s", repairReq.UserPrompt)
+	}
+	if strings.Contains(repairReq.UserPrompt, secret) || strings.Contains(repairReq.UserPrompt, "全身都是黑") {
+		t.Fatalf("repair prompt leaked episode content: %s", repairReq.UserPrompt)
+	}
+}
+
 func TestAuditSanitizesSensitiveTextAndSeparatesDryRunApplyFingerprints(t *testing.T) {
 	ctx := context.Background()
 	secret := "UNIQUE_PHASE2C_SECRET_9f4e5a"

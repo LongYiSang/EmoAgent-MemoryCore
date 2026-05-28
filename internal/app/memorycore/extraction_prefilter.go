@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ func (r *Runner) runPreFilter(ctx context.Context, req ExtractionRequest, runReq
 	resp, err := ParsePreFilterResponse(strings.NewReader(raw.Text))
 	if err != nil && runReq.RepairEnabled {
 		trace.recordPreFilterParseError(err)
-		repairReq := r.buildPreFilterRepairLLMRequest(raw.Text, runReq)
+		repairReq := r.buildPreFilterRepairLLMRequest(req, raw.Text, err, runReq)
 		trace.recordPreFilterRepairRequest(repairReq)
 		repaired, repairErr := r.llm.CompleteJSON(ctx, repairReq)
 		trace.recordPreFilterRepairResponse(repaired)
@@ -70,8 +71,8 @@ func (r *Runner) buildPreFilterLLMRequest(req ExtractionRequest, runReq Extracti
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
-		SystemPrompt:    "MemoryCore prefilter " + r.promptVersions.PreFilter + ". Decide whether each episode should be kept for ",
-		DeveloperPrompt: "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + " with keep boolean and routing_hint extract|forget_manager|pin_manager|skip|review. Review and manager routes mean keep.",
+		SystemPrompt:    prefilterSystemPrompt(r.promptVersions.PreFilter),
+		DeveloperPrompt: prefilterDeveloperPrompt(),
 		UserPrompt:      string(requestJSON),
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
@@ -81,20 +82,57 @@ func (r *Runner) buildPreFilterLLMRequest(req ExtractionRequest, runReq Extracti
 	}
 }
 
-func (r *Runner) buildPreFilterRepairLLMRequest(raw string, runReq ExtractionRunRequest) ExtractionLLMRequest {
+func (r *Runner) buildPreFilterRepairLLMRequest(req ExtractionRequest, raw string, parseErr error, runReq ExtractionRunRequest) ExtractionLLMRequest {
+	repairJSON, _ := json.Marshal(preFilterRepairPayload(req, raw))
 	return ExtractionLLMRequest{
 		Purpose:         ExtractionLLMPurposeRepair,
 		ProviderID:      runReq.ProviderID,
 		ProviderKind:    runReq.ProviderKind,
 		Model:           runReq.Model,
 		SystemPrompt:    "MemoryCore prefilter JSON repair " + r.promptVersions.Repair + ". Repair JSON only.",
-		DeveloperPrompt: "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + ". Do not include episode text.",
-		UserPrompt:      raw,
+		DeveloperPrompt: prefilterRepairDeveloperPrompt(parseErr),
+		UserPrompt:      string(repairJSON),
 		Temperature:     runReq.Temperature,
 		MaxTokens:       runReq.MaxTokens,
 		Timeout:         runReq.Timeout,
 		ResponseFormat:  ExtractionResponseFormatJSONObject,
 		Metadata:        requestMetadata(ExtractionLLMPurposeRepair, "", r.promptVersions.Repair, ExtractionPreFilterSchemaVersion),
+	}
+}
+
+func prefilterSystemPrompt(version string) string {
+	return fmt.Sprintf(`MemoryCore prefilter %s. Decide whether each input episode should be kept for the extraction runtime.
+Return exactly one JSON object and no prose, markdown, code fences, or wrapper text.
+FORMAT ONLY JSON EXAMPLE:
+{"schema_version":"%s","request_id":"req_example","persona_id":"default","session_id":null,"trigger":"session_end","episodes":[{"episode_id":"ep_1","keep":true,"routing_hint":"extract","reason_codes":["memory_candidate"]}],"quality_flags":[]}`, version, ExtractionPreFilterSchemaVersion)
+}
+
+func prefilterDeveloperPrompt() string {
+	return "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags. Each episodes item must include episode_id, keep, routing_hint, and reason_codes. Each input episode_id must appear exactly once in episodes. Allowed routing_hint values: extract, forget_manager, pin_manager, skip, review. Do not put keep or routing_hint at the top level. Do not copy episode content into the response. When unsure, use keep=true and routing_hint=\"review\". forget_manager, pin_manager, and review mean keep the episode."
+}
+
+func prefilterRepairDeveloperPrompt(parseErr error) string {
+	message := ""
+	if parseErr != nil {
+		message = " Parser error to fix: " + parseErr.Error()
+	}
+	return "Return only one strict JSON object for schema " + ExtractionPreFilterSchemaVersion + ". Do not include markdown fences. Do not include episode text. Repair to the complete prefilter envelope with top-level schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags. If the original response lacks per-episode decisions, output every episode_id with keep=true and routing_hint=\"review\"." + message + "\n" + prefilterDeveloperPrompt()
+}
+
+func preFilterRepairPayload(req ExtractionRequest, raw string) map[string]any {
+	episodeIDs := make([]string, 0, len(req.Episodes))
+	for _, episode := range req.Episodes {
+		episodeIDs = append(episodeIDs, episode.EpisodeID)
+	}
+	return map[string]any{
+		"original_response": raw,
+		"request_context": map[string]any{
+			"request_id":  req.RequestID,
+			"persona_id":  req.PersonaID,
+			"session_id":  req.SessionID,
+			"trigger":     req.Trigger,
+			"episode_ids": episodeIDs,
+		},
 	}
 }
 
