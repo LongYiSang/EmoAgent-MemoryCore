@@ -250,6 +250,7 @@ func TestPreFilterRoutingHintsKeepExceptSkip(t *testing.T) {
 	}{
 		{name: "forget manager", hint: "forget_manager", wantKeep: true, wantReview: true},
 		{name: "pin manager", hint: "pin_manager", wantKeep: true, wantReview: true},
+		{name: "correction", hint: "correction", wantKeep: true, wantReview: true},
 		{name: "review", hint: "review", wantKeep: true, wantReview: true},
 		{name: "legacy route", hint: "route", wantKeep: true, wantReview: true},
 		{name: "skip", hint: "skip", wantKeep: false},
@@ -335,11 +336,14 @@ func TestPreFilterLLMRequestCarriesEnvelopeContractAndRawUserPrompt(t *testing.T
 		`"quality_flags":[]`,
 		"Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags.",
 		"Each input episode_id must appear exactly once in episodes.",
-		"Allowed routing_hint values: extract, forget_manager, pin_manager, skip, review.",
+		"Allowed routing_hint values: extract, forget_manager, pin_manager, correction, skip, review.",
 		"Do not put keep or routing_hint at the top level.",
 		"Do not copy episode content into the response.",
 		`When unsure, use keep=true and routing_hint="review".`,
-		"forget_manager, pin_manager, and review mean keep the episode.",
+		"forget_manager, pin_manager, correction, and review mean keep the episode.",
+		"Use extract only for explicit user-owned durable memory candidates.",
+		"Use forget_manager for forget/delete/do-not-mention/do-not-remember intents that may target existing memory.",
+		"Use correction for corrections of existing memory.",
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("prefilter prompt contract missing %q: %s", want, contract)
@@ -677,6 +681,9 @@ func TestExtractionLLMRequestCarriesJSONContractAndRawUserPrompt(t *testing.T) {
 		"Do not output merge_hint = new; use new_entity",
 		"predicate = \"has_pet\"",
 		`"canonical_name":"小橘"`,
+		"Only write user-owned, explicit, durable, allowed memories.",
+		"Go gate is the persistence authority.",
+		"不要再提早会",
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("prompt contract missing %q: %s", want, contract)

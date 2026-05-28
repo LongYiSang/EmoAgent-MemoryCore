@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	defaultPromptVersion          = "phase2c.extraction.v1"
-	defaultPreFilterPromptVersion = "phase2c.prefilter.v2"
+	defaultPromptVersion          = "phase2d.extraction.v1"
+	defaultPreFilterPromptVersion = "phase2d.prefilter.v1"
 	defaultRepairPromptVersion    = "phase2c.repair.v1"
 )
 
@@ -188,12 +188,14 @@ func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (Extracti
 		result.Status = ExtractionRunStatusBlocked
 		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 	}
+	result.RoutedForgetPreviews = previewExtractionDeletionIntents(ctx, r.service, req, resp, gate)
 
 	switch runReq.Mode {
 	case ExtractionRunModeValidate:
 		result.Status = ExtractionRunStatusValidated
 	case ExtractionRunModeDryRun:
 		dry := DryRun(req, resp, gate)
+		dry.RoutedForgetPreviews = append([]RoutedForgetPreview(nil), result.RoutedForgetPreviews...)
 		result.DryRunResult = &dry
 		result.Status = ExtractionRunStatusDryRun
 	case ExtractionRunModeApply:
@@ -315,6 +317,8 @@ func (r *Runner) fingerprint(ctx context.Context, req ExtractionRunRequest) (str
 		"prompt_version":           r.promptVersions.Extraction,
 		"prefilter_prompt_version": r.promptVersions.PreFilter,
 		"repair_prompt_version":    r.promptVersions.Repair,
+		"admission_policy_version": extractionAdmissionPolicyVersion,
+		"prompt_hash":              hashText(extractionSystemPrompt(r.promptVersions.Extraction) + "\n" + extractionDeveloperPrompt()),
 		"use_prefilter":            req.UsePreFilter,
 		"repair_enabled":           req.RepairEnabled,
 		"require_clean_gate":       req.RequireCleanGate,
@@ -328,6 +332,9 @@ func (r *Runner) fingerprint(ctx context.Context, req ExtractionRunRequest) (str
 			"response_format": req.ResponseFormat,
 		},
 		"mode": req.Mode,
+	}
+	if req.UsePreFilter {
+		payload["prefilter_prompt_hash"] = hashText(prefilterSystemPrompt(r.promptVersions.PreFilter) + "\n" + prefilterDeveloperPrompt())
 	}
 	return hashJSON(payload), nil
 }
@@ -451,7 +458,7 @@ FORMAT ONLY JSON EXAMPLE:
 }
 
 func extractionDeveloperPrompt() string {
-	return "Return strict JSON matching schema " + ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message.\n" + extractionFieldContract()
+	return "Return strict JSON matching schema " + ExtractionResponseSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, source_window, entities, facts, links, affect_events, deletion_intents, pin_intents, correction_hints, rejected_candidates, quality_flags, and gate_summary. Preserve IDs from the ExtractionRequest JSON in the user message.\n" + extractionAdmissionPromptContract() + "\n" + extractionFieldContract()
 }
 
 func repairSystemPrompt(version string) string {
@@ -482,6 +489,21 @@ func extractionFieldContract() string {
 - For a named pet relationship, output an object entity and a has_pet fact: subject_entity_candidate_id = "user", predicate = "has_pet", object_entity_candidate_id points to the pet entity, and object_literal = null.
 - response.affect_events fields only: "candidate_id", "scope", "label", "valence", "arousal", "source_episode_ids", "confidence", "reasoning". Do not return subject_entity_candidate_id, affect_type, intensity, trigger, context, operation_hint, quality_decision, or quality_reasons in affect_events.
 - response.facts fields only: "candidate_id", "subject_entity_candidate_id", "predicate", "object_entity_candidate_id", "object_literal", "content_summary", "fact_type", "valid_from", "valid_to", "temporal_precision", "extraction_confidence", "extraction_confidence_score", "importance", "valence", "arousal", "sensitivity_level", "source_episode_ids", "evidence_notes", "reasoning", "operation_hint", "pinned", "user_requested", "searchable_hint", "quality_decision", "quality_reasons".
+- response.correction_hints fields only: "candidate_id", "corrected_topic", "new_candidate_id", "old_memory_ref", "confidence", "reasoning". Do not output kind, target_*, corrected_value, source_episode_ids, or raw episode text in correction_hints.
+- response.rejected_candidates fields only: "candidate_id", "kind", "reasons". Put reason codes in the reasons array. Do not output reason, reason_code, reason_codes, source_episode_ids, or raw episode text in rejected_candidates.
 - Named pet example: {"entities":[{"candidate_id":"e_pet_xiaoju","canonical_name":"小橘","entity_type":"object","aliases":["小橘猫"],"description":"用户提到的宠物。","confidence":0.95,"source_episode_ids":["ep_1"],"merge_hint":"new_entity","known_entity_id":null,"sensitivity_level":"normal","reasoning":null}],"facts":[{"candidate_id":"f_has_pet_xiaoju","subject_entity_candidate_id":"user","predicate":"has_pet","object_entity_candidate_id":"e_pet_xiaoju","object_literal":null,"content_summary":"用户有一只叫小橘的宠物。","fact_type":"core_identity","valid_from":null,"valid_to":null,"temporal_precision":"unknown","extraction_confidence":"explicit","extraction_confidence_score":0.95,"importance":0.65,"valence":0.2,"arousal":0.2,"sensitivity_level":"normal","source_episode_ids":["ep_1"],"evidence_notes":"用户直接提到小橘。","reasoning":null,"operation_hint":"insert_candidate","pinned":false,"user_requested":false,"searchable_hint":true,"quality_decision":"accept_for_consolidation","quality_reasons":[]}]}.
 - Repair schema contract only. Allowed local-style rewrites are pet/cat/dog/animal entity_type to object, entity confidence labels to numeric scores, and merge_hint new to new_entity. Do not invent memories or add facts unless the original response already implies the relationship and the source episodes support it.`, entityTypes, mergeHints, confidenceLabels)
+}
+
+func extractionAdmissionPromptContract() string {
+	return `Memory admission rules:
+- Only write user-owned, explicit, durable, allowed memories.
+- Before emitting any fact, answer internally: is this claim owned by the user, explicit or strongly user-confirmed, durable/useful for long-term memory, and allowed by the user to be remembered and recalled? Emit a fact only when all answers are yes.
+- For "别记这个 / 不要记 / don't remember this / do not save", do not emit facts for the same content. If it only refers to the current window, output no deletion_intent; if it points to old memory, emit deletion_intents only.
+- For "不要再提 / 别再提 / forget / delete / remove", emit deletion_intents only. Do not turn the control intent into an ordinary user fact.
+- For corrections such as "不是北京，是上海", emit correction_hints and an optional clearly supported correction_candidate fact for the new explicit value. Do not re-emit the stale value as an ordinary fact.
+- Do not emit facts for assistant guesses, assistant suggestions, tool outputs, search results, command logs, stack traces, work progress logs, hypothetical statements, conditional plans, roleplay-only statements, or ephemeral chitchat.
+- Negative examples: "如果我以后搬去东京" is not "用户住在东京"; "你可能不喜欢早会" is assistant speculation; "你可以试试周末运动" is assistant suggestion; "npm install failed" is work-log noise; "这句别记" blocks current fact writing; "不要再提早会" is a soft_forget deletion intent.
+- Use rejected_candidates for visible rejected candidates when useful for audit, with reason codes such as hypothetical_scenario, assistant_speculation_not_user_fact, assistant_suggestion_not_user_fact, tool_noise, work_log_noise, do_not_remember, do_not_mention, deletion_intent_only, correction_hint_only, weak_inference, sensitive_inference, or no_durable_value.
+- gate_summary is advisory only. Do not inflate accepted_fact_count. The Go gate is the persistence authority.`
 }

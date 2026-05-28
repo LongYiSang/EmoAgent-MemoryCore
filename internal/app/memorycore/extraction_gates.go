@@ -174,73 +174,30 @@ func validateFacts(ctx gateContext, entityDecisions []CandidateGateDecision) []C
 		if strings.TrimSpace(fact.CandidateID) == "" {
 			rejectReasons = append(rejectReasons, "candidate_id_required")
 		}
-		if fact.QualityDecision == "reject" {
-			rejectReasons = append(rejectReasons, "model_rejected")
-		}
 		if fact.QualityDecision == "needs_review" {
 			reviewReasons = append(reviewReasons, "model_needs_review")
 		}
 		for _, r := range validateFactShape(fact) {
 			rejectReasons = append(rejectReasons, r)
 		}
-		if fact.ExtractionConfidence == ConfidenceInferred && !ctx.req.Policy.AllowInference {
-			reviewReasons = append(reviewReasons, "inference_not_allowed")
-		}
-		if ctx.req.Trigger == ExtractionTriggerManualForget {
-			rejectReasons = append(rejectReasons, "manual_forget_fact_rejected")
-		}
-		sourceReasons := validateSourceIDs(ctx, fact.SourceEpisodeIDs, false)
-		for _, r := range sourceReasons {
+		for _, r := range evaluateFactProvenance(ctx, fact) {
 			rejectReasons = append(rejectReasons, r)
 		}
-		if allFactSourcesHaveRole(ctx, fact.SourceEpisodeIDs, "assistant") {
-			rejectReasons = append(rejectReasons, "assistant_suggestion_not_user_fact")
+		admission := evaluateFactAdmission(ctx, fact)
+		switch admission.Action {
+		case AdmissionReject, AdmissionSkip:
+			rejectReasons = append(rejectReasons, admission.ReasonCodes...)
+		case AdmissionNeedsReview:
+			reviewReasons = append(reviewReasons, admission.ReasonCodes...)
 		}
-		predicateSchema, predicateKnown := ctx.predicates[fact.Predicate]
-		if !predicateKnown {
-			reviewReasons = append(reviewReasons, "unknown_predicate")
+		for _, r := range evaluateFactSensitivity(ctx, fact) {
+			reviewReasons = append(reviewReasons, r)
 		}
-		if hasAgentAffectLeak(fact) {
-			rejectReasons = append(rejectReasons, "agent_affect_boundary")
-		}
-		if fact.SensitivityLevel == SensitivityHighlySensitive && !ctx.req.Policy.AllowSensitiveExtraction {
-			reviewReasons = append(reviewReasons, "highly_sensitive_requires_review")
-		}
-		if fact.SubjectEntityCandidateID == "" {
-			rejectReasons = append(rejectReasons, "subject_entity_candidate_id_required")
-		} else if known, ok := ctx.knownEntities[fact.SubjectEntityCandidateID]; ok && known.EntityType == EntityTypeAgent {
-			rejectReasons = append(rejectReasons, "agent_affect_boundary")
-		} else if entityDecision, ok := entityDecisionByID[fact.SubjectEntityCandidateID]; ok {
-			if entityDecision.Decision == decisionNeedsReview {
-				reviewReasons = append(reviewReasons, "entity_needs_review")
-			}
-			if entityDecision.Decision == decisionReject {
-				rejectReasons = append(rejectReasons, "entity_rejected")
-			}
-		} else if !specialEntityCandidate(fact.SubjectEntityCandidateID) {
-			reviewReasons = append(reviewReasons, "entity_reference_unresolved")
-		}
-		if fact.ObjectEntityCandidateID != nil && strings.TrimSpace(*fact.ObjectEntityCandidateID) != "" {
-			id := strings.TrimSpace(*fact.ObjectEntityCandidateID)
-			if entityDecision, ok := entityDecisionByID[id]; ok {
-				if entityDecision.Decision == decisionNeedsReview {
-					reviewReasons = append(reviewReasons, "entity_needs_review")
-				}
-				if entityDecision.Decision == decisionReject {
-					rejectReasons = append(rejectReasons, "entity_rejected")
-				}
-			} else if !specialEntityCandidate(id) {
-				reviewReasons = append(reviewReasons, "entity_reference_unresolved")
-			}
-		}
-		hasObjectEntity := fact.ObjectEntityCandidateID != nil && strings.TrimSpace(*fact.ObjectEntityCandidateID) != ""
-		hasObjectLiteral := fact.ObjectLiteral != nil && strings.TrimSpace(*fact.ObjectLiteral) != ""
-		if predicateKnown && predicateSchema.ObjectKind == "entity" && !hasObjectEntity {
-			reviewReasons = append(reviewReasons, "object_entity_required")
-		}
-		if hasObjectEntity == hasObjectLiteral {
-			rejectReasons = append(rejectReasons, "object_entity_or_literal_required")
-		}
+		refRejects, refReviews := evaluateFactReferences(ctx, fact, entityDecisionByID)
+		rejectReasons = append(rejectReasons, refRejects...)
+		reviewReasons = append(reviewReasons, refReviews...)
+		rejectReasons = uniqueStrings(rejectReasons)
+		reviewReasons = uniqueStrings(reviewReasons)
 		if len(rejectReasons) > 0 {
 			decisions = append(decisions, decisionMany(fact.CandidateID, "fact", decisionReject, rejectReasons, "fact rejected by Go gate"))
 			continue
@@ -252,6 +209,69 @@ func validateFacts(ctx gateContext, entityDecisions []CandidateGateDecision) []C
 		decisions = append(decisions, decision(fact.CandidateID, "fact", decisionAccept, "accepted_for_consolidation", ""))
 	}
 	return decisions
+}
+
+func evaluateFactProvenance(ctx gateContext, fact ExtractedFactCandidate) []string {
+	return validateSourceIDs(ctx, fact.SourceEpisodeIDs, false)
+}
+
+func evaluateFactSensitivity(ctx gateContext, fact ExtractedFactCandidate) []string {
+	var reviewReasons []string
+	if fact.ExtractionConfidence == ConfidenceInferred && !ctx.req.Policy.AllowInference {
+		reviewReasons = append(reviewReasons, "inference_not_allowed")
+	}
+	if fact.SensitivityLevel == SensitivityHighlySensitive && !ctx.req.Policy.AllowSensitiveExtraction {
+		reviewReasons = append(reviewReasons, "highly_sensitive_requires_review")
+	}
+	return reviewReasons
+}
+
+func evaluateFactReferences(ctx gateContext, fact ExtractedFactCandidate, entityDecisionByID map[string]CandidateGateDecision) ([]string, []string) {
+	rejectReasons := []string{}
+	reviewReasons := []string{}
+	predicateSchema, predicateKnown := ctx.predicates[fact.Predicate]
+	if !predicateKnown {
+		reviewReasons = append(reviewReasons, "unknown_predicate")
+	}
+	if hasAgentAffectLeak(fact) {
+		rejectReasons = append(rejectReasons, "agent_affect_boundary")
+	}
+	if fact.SubjectEntityCandidateID == "" {
+		rejectReasons = append(rejectReasons, "subject_entity_candidate_id_required")
+	} else if known, ok := ctx.knownEntities[fact.SubjectEntityCandidateID]; ok && known.EntityType == EntityTypeAgent {
+		rejectReasons = append(rejectReasons, "agent_affect_boundary")
+	} else if entityDecision, ok := entityDecisionByID[fact.SubjectEntityCandidateID]; ok {
+		if entityDecision.Decision == decisionNeedsReview {
+			reviewReasons = append(reviewReasons, "entity_needs_review")
+		}
+		if entityDecision.Decision == decisionReject {
+			rejectReasons = append(rejectReasons, "entity_rejected")
+		}
+	} else if !specialEntityCandidate(fact.SubjectEntityCandidateID) {
+		reviewReasons = append(reviewReasons, "entity_reference_unresolved")
+	}
+	if fact.ObjectEntityCandidateID != nil && strings.TrimSpace(*fact.ObjectEntityCandidateID) != "" {
+		id := strings.TrimSpace(*fact.ObjectEntityCandidateID)
+		if entityDecision, ok := entityDecisionByID[id]; ok {
+			if entityDecision.Decision == decisionNeedsReview {
+				reviewReasons = append(reviewReasons, "entity_needs_review")
+			}
+			if entityDecision.Decision == decisionReject {
+				rejectReasons = append(rejectReasons, "entity_rejected")
+			}
+		} else if !specialEntityCandidate(id) {
+			reviewReasons = append(reviewReasons, "entity_reference_unresolved")
+		}
+	}
+	hasObjectEntity := fact.ObjectEntityCandidateID != nil && strings.TrimSpace(*fact.ObjectEntityCandidateID) != ""
+	hasObjectLiteral := fact.ObjectLiteral != nil && strings.TrimSpace(*fact.ObjectLiteral) != ""
+	if predicateKnown && predicateSchema.ObjectKind == "entity" && !hasObjectEntity {
+		reviewReasons = append(reviewReasons, "object_entity_required")
+	}
+	if hasObjectEntity == hasObjectLiteral {
+		rejectReasons = append(rejectReasons, "object_entity_or_literal_required")
+	}
+	return rejectReasons, reviewReasons
 }
 
 func validateLinks(ctx gateContext, factDecisions []CandidateGateDecision) []CandidateGateDecision {

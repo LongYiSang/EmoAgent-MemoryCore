@@ -164,6 +164,7 @@ type (
 	RetrievalAffectContext              = appcore.RetrievalAffectContext
 	RetrievalPolicy                     = appcore.RetrievalPolicy
 	RetrievalRequest                    = appcore.RetrievalRequest
+	RoutedForgetPreview                 = appcore.RoutedForgetPreview
 	RunMirrorSyncRequest                = appcore.RunMirrorSyncRequest
 	RunMirrorSyncResult                 = appcore.RunMirrorSyncResult
 	RunExtractionRequest                = appcore.RunExtractionRequest

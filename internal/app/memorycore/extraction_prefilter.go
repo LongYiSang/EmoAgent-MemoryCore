@@ -108,7 +108,7 @@ FORMAT ONLY JSON EXAMPLE:
 }
 
 func prefilterDeveloperPrompt() string {
-	return "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags. Each episodes item must include episode_id, keep, routing_hint, and reason_codes. Each input episode_id must appear exactly once in episodes. Allowed routing_hint values: extract, forget_manager, pin_manager, skip, review. Do not put keep or routing_hint at the top level. Do not copy episode content into the response. When unsure, use keep=true and routing_hint=\"review\". forget_manager, pin_manager, and review mean keep the episode."
+	return "Return strict JSON for schema " + ExtractionPreFilterSchemaVersion + ". Top-level fields must include schema_version, request_id, persona_id, session_id, trigger, episodes, and quality_flags. Each episodes item must include episode_id, keep, routing_hint, and reason_codes. Each input episode_id must appear exactly once in episodes. Allowed routing_hint values: extract, forget_manager, pin_manager, correction, skip, review. Do not put keep or routing_hint at the top level. Do not copy episode content into the response. When unsure, use keep=true and routing_hint=\"review\". forget_manager, pin_manager, correction, and review mean keep the episode. Use extract only for explicit user-owned durable memory candidates. Use forget_manager for forget/delete/do-not-mention/do-not-remember intents that may target existing memory. Use pin_manager for explicit remember/pin instructions. Use correction for corrections of existing memory. Use skip for no durable memory value, tool noise, assistant-only content, work-log noise, or hypothetical-only content. Use review for ambiguous or sensitive cases."
 }
 
 func prefilterRepairDeveloperPrompt(parseErr error) string {
@@ -168,7 +168,7 @@ func applyPreFilter(req ExtractionRequest, resp ExtractionPreFilterResponse) (Ex
 
 func preFilterHintForcesKeep(hint string) bool {
 	switch hint {
-	case "forget_manager", "pin_manager", "review", "route":
+	case "forget_manager", "pin_manager", "correction", "review", "route":
 		return true
 	default:
 		return false
@@ -181,7 +181,7 @@ func mustKeepEpisode(req ExtractionRequest, episode ExtractionEpisode) bool {
 	}
 	text := strings.ToLower(episode.Content)
 	needles := []string{
-		"不要再提", "别再提", "不要提", "忘记", "删除", "删掉", "source_redact", "do-not-mention", "do not mention", "forget",
+		"别记", "不要记", "不要再提", "别再提", "不要提", "忘记", "忘掉", "删除", "删掉", "source_redact", "do-not-mention", "do not mention", "do not remember", "don't remember", "forget", "delete",
 		"纠正", "更正", "修正", "不是", "记住", "请记住", "remember",
 		"我是", "我叫", "我的名字", "核心", "身份",
 		"喜欢", "不喜欢", "讨厌", "偏好", "边界", "不要", "承诺", "答应", "计划", "长期", "重要",

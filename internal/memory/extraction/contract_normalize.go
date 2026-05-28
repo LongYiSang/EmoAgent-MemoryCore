@@ -52,6 +52,8 @@ func NormalizeExtractionResponseContract(raw []byte) ([]byte, ContractRepairRepo
 		normalizeEntityConfidence(entity, candidateID, &report)
 		normalizeMergeHint(entity, candidateID, &report)
 	}
+	normalizeCorrectionHints(root, &report)
+	normalizeRejectedCandidates(root, &report)
 	appendQualityFlags(root, report.Flags)
 	out, err := json.Marshal(root)
 	if err != nil {
@@ -103,6 +105,72 @@ func normalizeMergeHint(entity map[string]any, candidateID string, report *Contr
 		reason = "known_without_known_entity_id"
 	}
 	report.add(candidateID, "entity", "merge_hint", value, repaired, reason)
+}
+
+func normalizeCorrectionHints(root map[string]any, report *ContractRepairReport) {
+	hints, _ := root["correction_hints"].([]any)
+	for _, item := range hints {
+		hint, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		candidateID := stringValue(hint["candidate_id"])
+		for _, field := range []string{
+			"kind",
+			"target_candidate_id",
+			"target_predicate",
+			"target_object_literal",
+			"corrected_value",
+			"source_episode_ids",
+		} {
+			if _, ok := hint[field]; ok {
+				delete(hint, field)
+				report.add(candidateID, "correction_hint", field, "present", "", "correction_hint_extra_field")
+			}
+		}
+	}
+}
+
+func normalizeRejectedCandidates(root map[string]any, report *ContractRepairReport) {
+	rejected, _ := root["rejected_candidates"].([]any)
+	for _, item := range rejected {
+		candidate, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		candidateID := stringValue(candidate["candidate_id"])
+		if strings.TrimSpace(stringValue(candidate["kind"])) == "" {
+			candidate["kind"] = "candidate"
+			report.add(candidateID, "rejected_candidate", "kind", "", "candidate", "rejected_candidate_default_kind")
+		}
+		reasons := stringSliceValue(candidate["reasons"])
+		if reasonCode := stringValue(candidate["reason_code"]); reasonCode != "" {
+			reasons = appendUnique(reasons, reasonCode)
+			delete(candidate, "reason_code")
+			report.add(candidateID, "rejected_candidate", "reason_code", reasonCode, "reasons", "rejected_candidate_reason_code")
+		}
+		for _, reasonCode := range stringSliceValue(candidate["reason_codes"]) {
+			reasons = appendUnique(reasons, reasonCode)
+		}
+		if _, ok := candidate["reason_codes"]; ok {
+			delete(candidate, "reason_codes")
+			report.add(candidateID, "rejected_candidate", "reason_codes", "present", "reasons", "rejected_candidate_reason_codes")
+		}
+		if len(reasons) == 0 && strings.TrimSpace(stringValue(candidate["reason"])) != "" {
+			reasons = appendUnique(reasons, memorycore.ReasonModelRejected)
+		}
+		if len(reasons) > 0 {
+			candidate["reasons"] = reasons
+		}
+		if _, ok := candidate["reason"]; ok {
+			delete(candidate, "reason")
+			report.add(candidateID, "rejected_candidate", "reason", "present", "", "rejected_candidate_reason_text")
+		}
+		if _, ok := candidate["source_episode_ids"]; ok {
+			delete(candidate, "source_episode_ids")
+			report.add(candidateID, "rejected_candidate", "source_episode_ids", "present", "", "rejected_candidate_source_episode_ids")
+		}
+	}
 }
 
 func repairEntityTypeAlias(value string) (string, bool) {
@@ -219,6 +287,20 @@ func stringValue(value any) string {
 		return s
 	}
 	return ""
+}
+
+func stringSliceValue(value any) []string {
+	values, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, item := range values {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func canonicalContractToken(value string) string {

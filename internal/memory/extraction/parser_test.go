@@ -44,7 +44,7 @@ func TestStrictParsersRejectUnknownFieldsCodeFenceTrailingGarbageAndSchemaMismat
 }
 
 func TestParsePreFilterResponseAcceptsProtocolRoutingHints(t *testing.T) {
-	for _, hint := range []string{"extract", "forget_manager", "pin_manager", "skip", "review", "route"} {
+	for _, hint := range []string{"extract", "forget_manager", "pin_manager", "correction", "skip", "review", "route"} {
 		t.Run(hint, func(t *testing.T) {
 			body := validPreFilterJSON(hint)
 			resp, err := extraction.ParsePreFilterResponse(strings.NewReader(body))
@@ -129,6 +129,65 @@ func TestParseResponseUnknownEntityConfidenceStringBecomesGateRejectableSentinel
 		t.Fatalf("confidence = %.2f, want -1", got)
 	}
 	requireString(t, resp.QualityFlags, "unrepairable_entity_confidence_string:e_pet:sure->-1")
+}
+
+func TestParseResponseRepairsRejectedCandidateModelShape(t *testing.T) {
+	body := strings.Replace(validResponseJSON(), `"rejected_candidates": [],`, `"rejected_candidates": [{
+    "candidate_id": "r1",
+    "reason_code": "hypothetical_scenario",
+    "reason": "用户表达的是假设性计划，并非当前事实。",
+    "source_episode_ids": ["ep_seed"]
+  }],`, 1)
+
+	resp, report, err := extraction.ParseResponseWithRepairReport(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponseWithRepairReport: %v", err)
+	}
+	if len(resp.RejectedCandidates) != 1 {
+		t.Fatalf("rejected candidates = %#v, want one", resp.RejectedCandidates)
+	}
+	got := resp.RejectedCandidates[0]
+	if got.CandidateID != "r1" || got.Kind != "candidate" {
+		t.Fatalf("rejected candidate = %#v, want normalized candidate r1", got)
+	}
+	if len(got.Reasons) != 1 || got.Reasons[0] != "hypothetical_scenario" {
+		t.Fatalf("rejected reasons = %#v, want hypothetical_scenario", got.Reasons)
+	}
+	if !report.Applied {
+		t.Fatalf("repair report was not marked applied")
+	}
+}
+
+func TestParseResponseRepairsCorrectionHintModelShape(t *testing.T) {
+	body := strings.Replace(validResponseJSON(), `"correction_hints": [],`, `"correction_hints": [{
+    "candidate_id": "ch1",
+    "kind": "correction",
+    "target_candidate_id": null,
+    "target_predicate": "likes",
+    "target_object_literal": "杭州美食",
+    "corrected_topic": "杭州美食",
+    "corrected_value": "用户并不喜欢杭州美食，只是觉得杭州美食选择多。",
+    "source_episode_ids": ["ep_seed"],
+    "reasoning": "用户明确纠正了助理关于喜欢杭州美食的假设。"
+  }],`, 1)
+
+	resp, report, err := extraction.ParseResponseWithRepairReport(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponseWithRepairReport: %v", err)
+	}
+	if len(resp.CorrectionHints) != 1 {
+		t.Fatalf("correction hints = %#v, want one", resp.CorrectionHints)
+	}
+	got := resp.CorrectionHints[0]
+	if got.CandidateID != "ch1" || got.CorrectedTopic != "杭州美食" {
+		t.Fatalf("correction hint = %#v, want normalized ch1 topic", got)
+	}
+	if got.Reasoning == nil || *got.Reasoning == "" {
+		t.Fatalf("correction hint reasoning was not preserved: %#v", got)
+	}
+	if !report.Applied {
+		t.Fatalf("repair report was not marked applied")
+	}
 }
 
 func validRequestJSON() string {

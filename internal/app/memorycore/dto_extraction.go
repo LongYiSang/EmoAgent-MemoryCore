@@ -251,6 +251,7 @@ type ExtractionDryRunResult struct {
 	EntityPreview          []EntityApplyPreview   `json:"entity_preview"`
 	FactPreview            []FactApplyPreview     `json:"fact_preview"`
 	RoutedDeletionIntents  []DeletionIntentRoute  `json:"routed_deletion_intents"`
+	RoutedForgetPreviews   []RoutedForgetPreview  `json:"routed_forget_previews,omitempty"`
 	RoutedPinIntents       []PinIntentRoute       `json:"routed_pin_intents"`
 	NotAppliedLinks        []LinkCandidatePreview `json:"not_applied_links"`
 	NotAppliedAffectEvents []AffectEventPreview   `json:"not_applied_affect_events"`
@@ -277,6 +278,19 @@ type DeletionIntentRoute struct {
 	CandidateID string `json:"candidate_id"`
 	RouteTo     string `json:"route_to"`
 	Decision    string `json:"decision"`
+}
+
+type RoutedForgetPreview struct {
+	IntentCandidateID string               `json:"intent_candidate_id"`
+	ForgetLevel       string               `json:"forget_level"`
+	ScopeMode         string               `json:"scope_mode,omitempty"`
+	NodeType          string               `json:"node_type,omitempty"`
+	NodeID            string               `json:"node_id,omitempty"`
+	EntityID          string               `json:"entity_id,omitempty"`
+	Preview           *ForgetPreviewResult `json:"preview,omitempty"`
+	ErrorCode         string               `json:"error_code,omitempty"`
+	ErrorMessage      string               `json:"error_message,omitempty"`
+	PreviewOnly       bool                 `json:"preview_only"`
 }
 
 type PinIntentRoute struct {

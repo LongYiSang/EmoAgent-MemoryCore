@@ -131,6 +131,7 @@ type ExtractionRunResult struct {
 	SanitizedErrorCode    string                  `json:"sanitized_error_code,omitempty"`
 	SanitizedErrorMessage string                  `json:"sanitized_error_message,omitempty"`
 	RoutedDeletionIntents []DeletionIntentRoute   `json:"routed_deletion_intents,omitempty"`
+	RoutedForgetPreviews  []RoutedForgetPreview   `json:"routed_forget_previews,omitempty"`
 	RoutedPinIntents      []PinIntentRoute        `json:"routed_pin_intents,omitempty"`
 	DurationMS            int64                   `json:"duration_ms,omitempty"`
 }

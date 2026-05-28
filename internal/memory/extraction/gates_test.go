@@ -112,6 +112,141 @@ func TestValidateExtractionHardRulesAndRouting(t *testing.T) {
 	requireDecision(t, gate.AffectEventDecisions, "a1", "reject", "agent_affect_boundary")
 }
 
+func TestValidateExtractionAdmissionRules(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      string
+		role         string
+		sourceType   string
+		modify       func(*memorycore.ExtractionRequest, *memorycore.ExtractedFactCandidate)
+		wantDecision string
+		wantReason   string
+	}{
+		{
+			name:         "hypothetical scenario is not a fact",
+			content:      "如果我以后搬去东京，你要提醒我整理资料。",
+			wantDecision: "reject",
+			wantReason:   "hypothetical_scenario",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				fact.Predicate = "dislikes"
+				fact.ObjectLiteral = stringPtr("东京")
+				fact.ContentSummary = "用户住在东京。"
+			},
+		},
+		{
+			name:         "assistant guess is rejected",
+			content:      "你可能是不喜欢早会。",
+			role:         memorycore.RoleAssistant,
+			wantDecision: "reject",
+			wantReason:   "assistant_speculation_not_user_fact",
+		},
+		{
+			name:         "assistant suggestion is rejected",
+			content:      "你可以试试周末运动。",
+			role:         memorycore.RoleAssistant,
+			wantDecision: "reject",
+			wantReason:   "assistant_suggestion_not_user_fact",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				fact.ObjectLiteral = stringPtr("周末运动")
+				fact.ContentSummary = "用户适合周末运动。"
+			},
+		},
+		{
+			name:         "tool noise is rejected",
+			content:      "search result: npm install failed with stack trace",
+			role:         memorycore.RoleToolSummary,
+			sourceType:   memorycore.SourceTypePlugin,
+			wantDecision: "reject",
+			wantReason:   "tool_noise",
+		},
+		{
+			name:         "work log noise is rejected",
+			content:      "npm install 失败，正在重试。",
+			role:         memorycore.RoleWorkReport,
+			sourceType:   memorycore.SourceTypeWorkCandidate,
+			wantDecision: "reject",
+			wantReason:   "work_log_noise",
+		},
+		{
+			name:         "do not remember blocks current fact",
+			content:      "我其实很讨厌早会，但这句别记。",
+			wantDecision: "reject",
+			wantReason:   "do_not_remember",
+		},
+		{
+			name:         "do not mention is deletion intent only",
+			content:      "以后不要再提我讨厌早会这件事。",
+			wantDecision: "reject",
+			wantReason:   "do_not_mention",
+		},
+		{
+			name:         "forget command is deletion intent only",
+			content:      "忘掉我不吃香菜。",
+			wantDecision: "reject",
+			wantReason:   "deletion_intent_only",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				fact.ObjectLiteral = stringPtr("香菜")
+				fact.ContentSummary = "用户不吃香菜。"
+			},
+		},
+		{
+			name:         "correction does not re-emit stale fact",
+			content:      "不是北京，是上海。",
+			wantDecision: "reject",
+			wantReason:   "correction_hint_only",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				fact.ObjectLiteral = stringPtr("北京")
+				fact.ContentSummary = "用户住在北京。"
+			},
+		},
+		{
+			name:         "weak inference needs review",
+			content:      "我最近状态不太好。",
+			wantDecision: "needs_review",
+			wantReason:   "weak_inference",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				req.Policy.AllowInference = false
+				fact.ExtractionConfidence = memorycore.ConfidenceInferred
+			},
+		},
+		{
+			name:         "sensitive inference needs review",
+			content:      "我最近状态不太好。",
+			wantDecision: "needs_review",
+			wantReason:   "sensitive_inference",
+			modify: func(req *memorycore.ExtractionRequest, fact *memorycore.ExtractedFactCandidate) {
+				fact.ExtractionConfidence = memorycore.ConfidenceInferred
+				fact.ObjectLiteral = stringPtr("长期焦虑")
+				fact.ContentSummary = "用户长期焦虑。"
+			},
+		},
+		{
+			name:         "user confirmation is accepted",
+			content:      "对，我就是不喜欢早会。",
+			wantDecision: "accept",
+			wantReason:   "accepted_for_consolidation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := validRequest(t)
+			resp := validResponse(t)
+			req.Episodes[0].Content = tc.content
+			if tc.role != "" {
+				req.Episodes[0].Role = tc.role
+			}
+			if tc.sourceType != "" {
+				req.Episodes[0].SourceType = tc.sourceType
+			}
+			if tc.modify != nil {
+				tc.modify(&req, &resp.Facts[0])
+			}
+			gate := extraction.ValidateExtraction(req, resp)
+			requireDecision(t, gate.FactDecisions, "f1", tc.wantDecision, tc.wantReason)
+		})
+	}
+}
+
 func TestApplyAcceptedFactsStopsBlockedEnvelope(t *testing.T) {
 	ctx := context.Background()
 	dbPath, cleanup := seedExtractionDB(t)

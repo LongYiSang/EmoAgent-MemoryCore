@@ -88,7 +88,7 @@ func ParsePreFilterResponse(r io.Reader) (memorycore.ExtractionPreFilterResponse
 			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("episode_id is required")
 		}
 		switch episode.RoutingHint {
-		case "extract", "forget_manager", "pin_manager", "skip", "review", "route":
+		case "extract", "forget_manager", "pin_manager", "correction", "skip", "review", "route":
 		default:
 			return memorycore.ExtractionPreFilterResponse{}, fmt.Errorf("routing_hint is invalid")
 		}

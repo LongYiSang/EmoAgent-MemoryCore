@@ -15,30 +15,7 @@ const (
 )
 
 func ValidateExtraction(req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse) memorycore.ExtractionGateResult {
-	ctx := newGateContext(req, resp)
-	result := memorycore.ExtractionGateResult{
-		RequestID: req.RequestID,
-		PersonaID: req.PersonaID,
-		Status:    "ok",
-	}
-
-	result.ResponseDecisions = validateResponseEnvelope(ctx)
-	result.EntityDecisions = validateEntities(ctx)
-	result.FactDecisions = validateFacts(ctx, result.EntityDecisions)
-	result.LinkDecisions = validateLinks(ctx, result.FactDecisions)
-	result.AffectEventDecisions = validateAffectEvents(ctx)
-	result.DeletionIntentDecisions = validateDeletionIntents(ctx)
-	result.PinIntentDecisions = validatePinIntents(ctx)
-	result.CorrectionHintDecisions = validateCorrectionHints(ctx)
-	result.Summary = summarizeGate(result)
-	if len(result.ResponseDecisions) > 0 {
-		result.Status = "blocked"
-	} else if result.Summary.RejectedCount > 0 {
-		result.Status = "has_rejected"
-	} else if result.Summary.NeedsReviewCount > 0 {
-		result.Status = "has_review"
-	}
-	return result
+	return memorycore.ValidateExtraction(req, resp)
 }
 
 type gateContext struct {

@@ -325,6 +325,7 @@ func enrichExtractionRunResult(result *ExtractionRunResult) {
 	}
 	if result.DryRunResult != nil {
 		result.RoutedDeletionIntents = append([]DeletionIntentRoute(nil), result.DryRunResult.RoutedDeletionIntents...)
+		result.RoutedForgetPreviews = append([]RoutedForgetPreview(nil), result.DryRunResult.RoutedForgetPreviews...)
 		result.RoutedPinIntents = append([]PinIntentRoute(nil), result.DryRunResult.RoutedPinIntents...)
 		return
 	}
