@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,13 @@ from memorycore_sidecar.config import (
     TriviumConfig,
 )
 from memorycore_sidecar.embedding import FakeEmbeddingProvider
+from memorycore_sidecar.protocol import (
+    DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+    DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION,
+    REQUEST_SCHEMA_VERSION,
+    RESPONSE_SCHEMA_VERSION,
+)
+from memorycore_sidecar.server import create_server
 
 
 def test_trivium_adapter_upserts_updates_and_searches_real_db(tmp_path: Path):
@@ -76,6 +85,79 @@ def test_trivium_adapter_upserts_updates_and_searches_real_db(tmp_path: Path):
     assert stored.payload["sqlite_node_id"] == "fact-1"
     assert stored.payload["searchable_text"] == "espresso fact"
     assert stored.payload["payload"] == {"importance": "high"}
+
+
+def test_trivium_adapter_delete_candidates_endpoint_returns_sqlite_id_and_safe_summary(
+    tmp_path: Path,
+):
+    adapter = TriviumAdapter(
+        _config(tmp_path),
+        FakeEmbeddingProvider(
+            {
+                "coffee fact": [1.0, 0.0, 0.0],
+                "forget coffee fact": [1.0, 0.0, 0.0],
+            }
+        ),
+    )
+    server = create_server(("127.0.0.1", 0), adapter)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        upsert_payload = {
+            "schema_version": REQUEST_SCHEMA_VERSION,
+            "operation_id": "upsert-fact-1",
+            "persona_id": "alice",
+            "operation": "upsert_node",
+            "node": _node("alice", "fact-1", "coffee fact"),
+        }
+        upsert_request = urllib.request.Request(
+            base_url + "/mirror/operation",
+            data=json.dumps(upsert_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(upsert_request, timeout=2) as response:
+            upsert_body = json.load(response)
+        assert upsert_body["schema_version"] == RESPONSE_SCHEMA_VERSION
+        assert upsert_body["status"] == "ok"
+
+        delete_payload = {
+            "schema_version": DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+            "request_id": "delete-1",
+            "persona_id": "alice",
+            "intent": {
+                "raw_text": "forget coffee fact",
+                "operation_purpose": "forget_delete",
+                "operation_target_only": True,
+            },
+            "scope": {},
+            "policy": {
+                "limit": 5,
+                "allow_fact_candidates": True,
+                "include_safe_summary": True,
+            },
+        }
+        delete_request = urllib.request.Request(
+            base_url + "/memory/delete-candidates",
+            data=json.dumps(delete_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(delete_request, timeout=2) as response:
+            body = json.load(response)
+
+        assert body["schema_version"] == DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "delete-1"
+        assert body["status"] == "ok"
+        assert body["degraded"] is False
+        assert body["candidates"][0]["node_type"] == "fact"
+        assert body["candidates"][0]["node_id"] == "fact-1"
+        assert body["candidates"][0]["safe_summary"] == "coffee fact"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_trivium_adapter_delete_node_is_idempotent(tmp_path: Path):

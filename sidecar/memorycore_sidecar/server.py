@@ -278,6 +278,20 @@ def _memory_node_matches(
     limit: int,
     allowed_node_types: set[str],
 ) -> tuple[list[dict[str, Any]], bool]:
+    adapter_matches = getattr(adapter, "memory_node_matches", None)
+    if callable(adapter_matches):
+        return (
+            list(
+                adapter_matches(
+                    persona_id=persona_id,
+                    query_text=query_text,
+                    limit=limit,
+                    allowed_node_types=allowed_node_types,
+                )
+            )[:limit],
+            False,
+        )
+
     nodes = getattr(adapter, "_nodes", None)
     if not isinstance(nodes, dict):
         return [], True

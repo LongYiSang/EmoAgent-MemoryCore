@@ -78,6 +78,37 @@ class FakeMirrorAdapter(MirrorAdapter):
 
         return fuse_dense_results(request, search)
 
+    def memory_node_matches(
+        self,
+        *,
+        persona_id: str,
+        query_text: str,
+        limit: int,
+        allowed_node_types: set[str],
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        for (node_persona_id, node_type, sqlite_node_id), node in sorted(
+            self._nodes.items()
+        ):
+            if node_persona_id != persona_id:
+                continue
+            if node_type not in allowed_node_types:
+                continue
+            searchable_text = str(node.get("searchable_text", ""))
+            score = _text_overlap_score(query_text, searchable_text)
+            if score <= 0:
+                continue
+            matches.append(
+                {
+                    "node_type": str(node_type),
+                    "node_id": str(sqlite_node_id),
+                    "safe_summary": searchable_text,
+                    "score": score,
+                }
+            )
+        matches.sort(key=lambda item: (-item["score"], item["node_type"], item["node_id"]))
+        return matches[:limit]
+
     def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
         persona_id = str(request["persona_id"])
         edges_by_source, degree_by_node = self._build_persona_activation_graph(persona_id)
@@ -166,6 +197,35 @@ def _stable_fake_id(*parts: str) -> int:
 
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]", text.casefold()))
+
+
+def _text_overlap_score(query_text: str, searchable_text: str) -> float:
+    query = _normalize_text(query_text)
+    target = _normalize_text(searchable_text)
+    if not query or not target:
+        return 0.0
+    if query in target or target in query:
+        return 1.0
+    query_terms = _semantic_terms(query)
+    target_terms = _semantic_terms(target)
+    if not query_terms or not target_terms:
+        return 0.0
+    overlap = query_terms & target_terms
+    if not overlap:
+        return 0.0
+    return round(min(1.0, len(overlap) / max(1, len(target_terms))), 6)
+
+
+def _semantic_terms(value: str) -> set[str]:
+    terms = set(re.findall(r"[0-9a-z_]+|[\u4e00-\u9fff]", value))
+    cjk = [ch for ch in value if "\u4e00" <= ch <= "\u9fff"]
+    for idx in range(len(cjk) - 1):
+        terms.add("".join(cjk[idx : idx + 2]))
+    return terms
+
+
+def _normalize_text(value: str) -> str:
+    return "".join(str(value).casefold().split())
 
 
 def _edge_key(edge: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:

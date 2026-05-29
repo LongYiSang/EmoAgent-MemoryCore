@@ -490,7 +490,7 @@ func (s *service) previewSemanticForgetQuery(ctx context.Context, personaID stri
 	if len(targets) > 0 {
 		return targets, sidecarStatus, nil
 	}
-	fallback, err := s.previewBroadTopic(ctx, personaID, query, limit)
+	fallback, err := s.previewSemanticSQLiteFallback(ctx, personaID, query, limit)
 	if err != nil {
 		return nil, sidecarStatus, err
 	}
@@ -579,6 +579,89 @@ LIMIT ?`, personaID, "%"+topic+"%", limit)
 	return scanForgetTargetIDs(rows, ForgetNodeFact)
 }
 
+func (s *service) previewSemanticSQLiteFallback(ctx context.Context, personaID string, queryText string, limit int) ([]ForgetResolvedTarget, error) {
+	patterns := semanticForgetFallbackPatterns(queryText)
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	clauses := make([]string, 0, len(patterns))
+	args := []any{personaID}
+	for _, pattern := range patterns {
+		clauses = append(clauses, "content_summary LIKE ?")
+		args = append(args, "%"+pattern+"%")
+	}
+	args = append(args, limit)
+	rows, err := s.sqlDB.QueryContext(ctx, `
+SELECT id, content_summary
+FROM facts
+WHERE persona_id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND validity_status = 'valid'
+  AND lifecycle_status = 'active'
+  AND (`+strings.Join(clauses, " OR ")+`)
+ORDER BY updated_at DESC, created_at DESC
+LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanForgetFactSummaryRows(rows)
+}
+
+func semanticForgetFallbackPatterns(queryText string) []string {
+	base := normalizeSemanticForgetFallbackQuery(queryText)
+	if base == "" {
+		return nil
+	}
+	var patterns []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if !usefulSemanticForgetFallbackPattern(value) {
+			return
+		}
+		for _, existing := range patterns {
+			if existing == value {
+				return
+			}
+		}
+		patterns = append(patterns, value)
+	}
+	add(base)
+	add(normalizeUserPronounForForgetFallback(base))
+	return patterns
+}
+
+func normalizeSemanticForgetFallbackQuery(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), " \t\r\n。！？!?.,，；;：:\"'“”‘’")
+	if value == "" {
+		return ""
+	}
+	for _, token := range []string{"不要再提", "别再提", "忘记", "忘掉", "删除"} {
+		value = strings.ReplaceAll(value, token, "")
+	}
+	return strings.Trim(strings.TrimSpace(value), " \t\r\n。！？!?.,，；;：:\"'“”‘’")
+}
+
+func normalizeUserPronounForForgetFallback(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "我的", "用户的")
+	value = strings.ReplaceAll(value, "我", "用户")
+	return strings.TrimSpace(value)
+}
+
+func usefulSemanticForgetFallbackPattern(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "", "我", "我的", "用户", "用户的":
+		return false
+	default:
+		return true
+	}
+}
+
 func scanForgetTargetIDs(rows *sql.Rows, nodeType string) ([]ForgetResolvedTarget, error) {
 	var targets []ForgetResolvedTarget
 	for rows.Next() {
@@ -587,6 +670,25 @@ func scanForgetTargetIDs(rows *sql.Rows, nodeType string) ([]ForgetResolvedTarge
 			return nil, err
 		}
 		targets = append(targets, safeForgetTarget(nodeType, nodeID))
+	}
+	return targets, rows.Err()
+}
+
+func scanForgetFactSummaryRows(rows *sql.Rows) ([]ForgetResolvedTarget, error) {
+	var targets []ForgetResolvedTarget
+	for rows.Next() {
+		var nodeID string
+		var safeSummary string
+		if err := rows.Scan(&nodeID, &safeSummary); err != nil {
+			return nil, err
+		}
+		target := safeForgetTarget(ForgetNodeFact, nodeID)
+		safeSummary = strings.TrimSpace(safeSummary)
+		if safeSummary != "" {
+			target.Summary = safeSummary
+			target.SafeSummary = safeSummary
+		}
+		targets = append(targets, target)
 	}
 	return targets, rows.Err()
 }

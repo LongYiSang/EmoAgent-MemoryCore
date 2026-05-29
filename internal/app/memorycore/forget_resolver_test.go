@@ -139,6 +139,69 @@ func TestPreviewForgetSemanticQueryFallsBackToSQLiteWhenSidecarFails(t *testing.
 	}
 }
 
+func TestPreviewForgetSemanticQueryFallbackNormalizesUserPronouns(t *testing.T) {
+	ctx := context.Background()
+	adapter := &semanticDedupTestAdapter{deleteErr: errors.New("sidecar down")}
+	svc := openExtractionSemanticTestService(t, ctx, ExtractionOptions{}, SemanticOpsOptions{
+		Forget: SemanticForgetOptions{PreviewEnabled: true},
+	}, adapter)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_semantic_forget_pronoun", "ep_seed", "我喜欢手冲咖啡。")
+	inserted := seedExtractionFact(t, ctx, svc, "ent_user_session_semantic_forget_pronoun", "手冲咖啡", "用户喜欢手冲咖啡。", "ep_seed")
+
+	query := "我喜欢手冲咖啡"
+	preview, err := svc.PreviewForget(ctx, ForgetPreviewRequest{
+		RequestID:      "req_semantic_forget_pronoun",
+		RequestedLevel: ForgetLevelSoft,
+		ScopeMode:      ForgetScopeSemanticQuery,
+		SemanticQuery:  &query,
+	})
+	if err != nil {
+		t.Fatalf("PreviewForget fallback: %v", err)
+	}
+	if preview.SidecarStatus != "failed" || preview.Status != "resolved" {
+		t.Fatalf("preview status = %#v, want failed sidecar with resolved SQLite fallback", preview)
+	}
+	if len(preview.Targets) != 1 || preview.Targets[0].NodeID != inserted.Fact.ID {
+		t.Fatalf("preview targets = %#v, want normalized SQLite fallback fact", preview.Targets)
+	}
+	verify, err := svc.VerifyForget(ctx, ForgetVerifyRequest{Targets: preview.Targets})
+	if err != nil {
+		t.Fatalf("VerifyForget: %v", err)
+	}
+	if verify.Passed {
+		t.Fatalf("verify = %#v, preview fallback must not execute deletion", verify)
+	}
+}
+
+func TestPreviewForgetSemanticQueryFallbackDoesNotBroadenEmptyOperation(t *testing.T) {
+	ctx := context.Background()
+	adapter := &semanticDedupTestAdapter{deleteErr: errors.New("sidecar down")}
+	svc := openExtractionSemanticTestService(t, ctx, ExtractionOptions{}, SemanticOpsOptions{
+		Forget: SemanticForgetOptions{PreviewEnabled: true},
+	}, adapter)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_semantic_forget_empty", "ep_seed", "我喜欢手冲咖啡。")
+	seedExtractionFact(t, ctx, svc, "ent_user_session_semantic_forget_empty", "手冲咖啡", "用户喜欢手冲咖啡。", "ep_seed")
+
+	query := "忘记"
+	preview, err := svc.PreviewForget(ctx, ForgetPreviewRequest{
+		RequestID:      "req_semantic_forget_empty",
+		RequestedLevel: ForgetLevelSoft,
+		ScopeMode:      ForgetScopeSemanticQuery,
+		SemanticQuery:  &query,
+	})
+	if err != nil {
+		t.Fatalf("PreviewForget fallback: %v", err)
+	}
+	if preview.SidecarStatus != "failed" || preview.Status != "no_match" {
+		t.Fatalf("preview status = %#v, want failed sidecar with no SQLite broadening", preview)
+	}
+	if len(preview.Targets) != 0 {
+		t.Fatalf("preview targets = %#v, want no targets for empty operation query", preview.Targets)
+	}
+}
+
 func memoryContextHasItem(context *MemoryContext, nodeID string) bool {
 	if context == nil {
 		return false

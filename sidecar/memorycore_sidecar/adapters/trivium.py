@@ -281,6 +281,60 @@ class TriviumAdapter(MirrorAdapter):
             result["embedding_cache_stats"] = stats
         return result
 
+    def memory_node_matches(
+        self,
+        *,
+        persona_id: str,
+        query_text: str,
+        limit: int,
+        allowed_node_types: set[str],
+    ) -> list[dict[str, Any]]:
+        query_vector = _embed_with_optional_ref(
+            self.embedding_provider,
+            query_text,
+            None,
+        )
+        matches: list[dict[str, Any]] = []
+        with self._lock:
+            db = self._db_for_persona(persona_id)
+            hits = list(
+                db.search(
+                    query_vector,
+                    top_k=max(limit * 2, 32),
+                    expand_depth=0,
+                    min_score=0.0,
+                    payload_filter=None,
+                )
+            )
+            for hit in hits:
+                trivium_node_id = getattr(hit, "id", None)
+                if not isinstance(trivium_node_id, int) or trivium_node_id <= 0:
+                    continue
+                score = _finite_hit_score(getattr(hit, "score", None))
+                if score <= 0:
+                    continue
+                payload = _stored_node_payload(db.get(trivium_node_id))
+                if payload is None:
+                    continue
+                node_type = str(payload.get("node_type", ""))
+                if node_type not in allowed_node_types:
+                    continue
+                sqlite_node_id = str(payload.get("sqlite_node_id", ""))
+                if not sqlite_node_id:
+                    continue
+                matches.append(
+                    {
+                        "node_type": node_type,
+                        "node_id": sqlite_node_id,
+                        "safe_summary": str(payload.get("searchable_text", "")),
+                        "score": score,
+                    }
+                )
+                if len(matches) >= limit:
+                    break
+        matches.sort(key=lambda item: (-item["score"], item["node_type"], item["node_id"]))
+        return matches
+
     def activate_graph(self, request: dict[str, Any]) -> dict[str, Any]:
         persona_id = str(request["persona_id"])
         with self._lock:
@@ -555,6 +609,29 @@ def _dense_hits(hits: list[Any]) -> list[DenseHit]:
             continue
         out.append(DenseHit(trivium_node_id=trivium_node_id, score=min(score_float, 1.0)))
     return out
+
+
+def _finite_hit_score(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(score) or score <= 0:
+        return 0.0
+    return min(score, 1.0)
+
+
+def _stored_node_payload(node: Any) -> dict[str, Any] | None:
+    if node is None:
+        return None
+    payload = getattr(node, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(node, dict):
+        payload = node.get("payload")
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _sha256_hex(value: str) -> str:
