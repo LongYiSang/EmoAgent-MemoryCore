@@ -12,6 +12,8 @@ const (
 	decisionNeedsReview = "needs_review"
 	decisionRouteOnly   = "route_only"
 	decisionNotApplied  = "not_applied"
+
+	deletionIntentRouteNote = "routed to forget manager; preview/execution result is recorded in routed_forget_previews"
 )
 
 func ValidateExtraction(req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse) memorycore.ExtractionGateResult {
@@ -344,7 +346,7 @@ func validateDeletionIntents(ctx gateContext) []memorycore.CandidateGateDecision
 			decisions = append(decisions, decision(intent.CandidateID, "deletion_intent", decisionReject, "source_episode_not_in_request", ""))
 			continue
 		}
-		decisions = append(decisions, decision(intent.CandidateID, "deletion_intent", decisionRouteOnly, "route_to_forget_manager", "deletion intents are not executed in Phase2B"))
+		decisions = append(decisions, decision(intent.CandidateID, "deletion_intent", decisionRouteOnly, "route_to_forget_manager", deletionIntentRouteNote))
 	}
 	return decisions
 }

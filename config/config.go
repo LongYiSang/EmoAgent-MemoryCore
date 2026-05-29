@@ -784,12 +784,6 @@ func (c Config) Validate() error {
 	if err := c.validatePipelines(); err != nil {
 		return err
 	}
-	if !c.WritePolicy.Triggers.ManualForget.Enabled {
-		return fmt.Errorf("write_policy.triggers.manual_forget.enabled cannot be false")
-	}
-	if !c.WritePolicy.Prefilter.RouteManualForgetAlways {
-		return fmt.Errorf("write_policy.prefilter.route_manual_forget_always cannot be false")
-	}
 	if c.WritePolicy.Extraction.MaxFactsPerRequest <= 0 {
 		return fmt.Errorf("write_policy.extraction.max_facts_per_request must be > 0")
 	}
@@ -1279,7 +1273,7 @@ func (c Config) ExtractionOptions() memorycore.ExtractionOptions {
 			MaxLinks:                 c.WritePolicy.Extraction.MaxLinksPerRequest,
 			RequireCleanGate:         false,
 			ApplyAcceptedFacts:       true,
-			ExecuteDeletionIntents:   false,
+			ExecuteDeletionIntents:   true,
 		},
 		Runtime: memorycore.ExtractionRuntimeOptions{
 			Configured:    true,

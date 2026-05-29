@@ -128,6 +128,9 @@ func TestRunExtractionFacadeManualForgetRoutesOnlyAndDoesNotWriteFact(t *testing
 	if len(result.RoutedDeletionIntents) == 0 || result.RoutedDeletionIntents[0].Decision != "route_only" {
 		t.Fatalf("routed deletion intents = %#v", result.RoutedDeletionIntents)
 	}
+	if result.GateResult == nil || len(result.GateResult.DeletionIntentDecisions) == 0 || result.GateResult.DeletionIntentDecisions[0].Notes != deletionIntentRouteNote {
+		t.Fatalf("deletion intent gate note = %#v, want current routed preview/execution note", result.GateResult)
+	}
 	if len(result.RoutedForgetPreviews) == 0 {
 		t.Fatalf("routed forget previews missing: %#v", result)
 	}
@@ -302,6 +305,157 @@ func TestPreviewExtractionDeletionIntentsSourceRedactUsesExactEpisode(t *testing
 	}
 	if route.Preview == nil || !route.Preview.RequiresConfirmation || len(route.Preview.Targets) != 1 || route.Preview.Targets[0].NodeID != "ep_redact" {
 		t.Fatalf("preview = %#v, want confirmed exact episode target", route.Preview)
+	}
+}
+
+func TestRunExtractionSessionEndDeletionIntentSoftForgetsMatchedFacts(t *testing.T) {
+	ctx := context.Background()
+	options := mockExtractionOptions()
+	options.Defaults.Mode = ExtractionRunModeApply
+	options.Defaults.ExecuteDeletionIntents = true
+	svc := openExtractionTestService(t, ctx, options)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_forget_soft", "ep_seed", "I like green tea.")
+	inserted, err := svc.ConsolidateCandidate(ctx, ConsolidateCandidateRequest{
+		Candidate: ManualFactCandidate{
+			SubjectEntityID:  "ent_user_session_forget_soft",
+			Predicate:        "likes",
+			ObjectLiteral:    stringPtrValue("green tea"),
+			ContentSummary:   "User likes green tea.",
+			SourceEpisodeIDs: []string{"ep_seed"},
+			Confidence:       ConfidenceExplicit,
+			Importance:       0.8,
+		},
+		Policy: ConsolidationPolicy{Approved: true},
+	})
+	if err != nil {
+		t.Fatalf("seed fact: %v", err)
+	}
+	if _, err := svc.AppendEpisode(ctx, AppendEpisodeRequest{ID: "ep_forget", SessionID: "session_forget_soft", Role: RoleUser, Content: "Please do not mention green tea again.", SourceType: SourceTypeChat}); err != nil {
+		t.Fatalf("append forget episode: %v", err)
+	}
+	sessionID := "session_forget_soft"
+	result, err := svc.RunExtraction(ctx, RunExtractionRequest{
+		SessionID: &sessionID,
+		Trigger:   ExtractionTriggerSessionEnd,
+		Mode:      ExtractionRunModeApply,
+		Build: &ExtractionBuildSelector{
+			EpisodeIDs: []string{"ep_forget"},
+			SessionID:  &sessionID,
+			Limit:      1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunExtraction: %v", err)
+	}
+	if result.Status != ExtractionRunStatusApplied || result.AppliedCount != 0 || result.ForgetExecutedCount != 1 || result.ForgetFailureCount != 0 {
+		t.Fatalf("result = %#v, want applied forget only", result)
+	}
+	if len(result.RoutedForgetPreviews) != 1 || result.RoutedForgetPreviews[0].PreviewOnly || result.RoutedForgetPreviews[0].ExecutedCount != 1 {
+		t.Fatalf("routed forget previews = %#v, want executed route", result.RoutedForgetPreviews)
+	}
+	verify, err := svc.VerifyForget(ctx, ForgetVerifyRequest{
+		PersonaID: "default",
+		Targets: []ForgetResolvedTarget{{
+			NodeType: ForgetNodeFact,
+			NodeID:   inserted.Fact.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("VerifyForget: %v", err)
+	}
+	if verify == nil || !verify.Passed {
+		t.Fatalf("verify = %#v, want passed", verify)
+	}
+}
+
+func TestRunExtractionSessionEndDeletionIntentNoMatchDoesNotFail(t *testing.T) {
+	ctx := context.Background()
+	options := mockExtractionOptions()
+	options.Defaults.Mode = ExtractionRunModeApply
+	options.Defaults.ExecuteDeletionIntents = true
+	svc := openExtractionTestService(t, ctx, options)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_forget_nomatch", "ep_forget", "Please do not mention green tea again.")
+
+	sessionID := "session_forget_nomatch"
+	result, err := svc.RunExtraction(ctx, RunExtractionRequest{
+		SessionID: &sessionID,
+		Trigger:   ExtractionTriggerSessionEnd,
+		Mode:      ExtractionRunModeApply,
+		Build: &ExtractionBuildSelector{
+			EpisodeIDs: []string{"ep_forget"},
+			SessionID:  &sessionID,
+			Limit:      1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunExtraction: %v", err)
+	}
+	if result.Status != ExtractionRunStatusNothingApplied || result.ForgetExecutedCount != 0 || result.ForgetFailureCount != 0 {
+		t.Fatalf("result = %#v, want nothing applied", result)
+	}
+	if len(result.RoutedForgetPreviews) != 1 || result.RoutedForgetPreviews[0].ErrorCode != "forget_preview_no_match" || result.RoutedForgetPreviews[0].SkipReason != "forget_preview_no_match" {
+		t.Fatalf("routed forget previews = %#v, want no-match skip", result.RoutedForgetPreviews)
+	}
+}
+
+func TestExtractionDeletionIntentExecutionSkipsNonSoftLevels(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, ExtractionOptions{})
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_forget_hard", "ep_seed", "I like green tea.")
+	inserted, err := svc.ConsolidateCandidate(ctx, ConsolidateCandidateRequest{
+		Candidate: ManualFactCandidate{
+			SubjectEntityID:  "ent_user_session_forget_hard",
+			Predicate:        "likes",
+			ObjectLiteral:    stringPtrValue("green tea"),
+			ContentSummary:   "User likes green tea.",
+			SourceEpisodeIDs: []string{"ep_seed"},
+			Confidence:       ConfidenceExplicit,
+			Importance:       0.8,
+		},
+		Policy: ConsolidationPolicy{Approved: true},
+	})
+	if err != nil {
+		t.Fatalf("seed fact: %v", err)
+	}
+	req := admissionApplyRequest("Please delete green tea.", RoleUser, SourceTypeChat)
+	resp := ExtractionResponse{
+		SchemaVersion: ExtractionResponseSchemaVersion,
+		RequestID:     req.RequestID,
+		PersonaID:     req.PersonaID,
+		SessionID:     req.SessionID,
+		Trigger:       req.Trigger,
+		SourceWindow:  ExtractionSourceWindow{EpisodeIDs: []string{"ep_admission"}},
+		DeletionIntents: []ExtractedDeletionIntent{{
+			CandidateID:          "d_hard",
+			ForgetLevel:          ForgetLevelHard,
+			TargetDescription:    "green tea",
+			TargetNodeTypeHint:   stringPtrValue(ForgetNodeFact),
+			SourceEpisodeID:      "ep_admission",
+			Confidence:           0.95,
+			RequiresConfirmation: true,
+		}},
+	}
+	gate := ValidateExtraction(req, resp)
+	routes := svc.(*service).PreviewExtractionDeletionIntents(ctx, req, resp, gate)
+	routes, executed, failures := executeExtractionDeletionIntents(ctx, svc, routes)
+	if executed != 0 || failures != 0 || len(routes) != 1 || routes[0].SkipReason != "unsupported_forget_level" {
+		t.Fatalf("routes/executed/failures = %#v/%d/%d, want hard skip", routes, executed, failures)
+	}
+	verify, err := svc.VerifyForget(ctx, ForgetVerifyRequest{
+		PersonaID: "default",
+		Targets: []ForgetResolvedTarget{{
+			NodeType: ForgetNodeFact,
+			NodeID:   inserted.Fact.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("VerifyForget: %v", err)
+	}
+	if verify == nil || verify.Passed {
+		t.Fatalf("verify = %#v, want fact still visible", verify)
 	}
 }
 

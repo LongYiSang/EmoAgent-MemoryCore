@@ -72,22 +72,23 @@ const (
 )
 
 type ExtractionRunRequest struct {
-	Request          ExtractionRequest        `json:"request"`
-	Mode             ExtractionRunMode        `json:"mode"`
-	ProviderID       string                   `json:"provider_id,omitempty"`
-	ProviderKind     string                   `json:"provider_kind,omitempty"`
-	Model            string                   `json:"model,omitempty"`
-	Temperature      float64                  `json:"temperature,omitempty"`
-	MaxTokens        int                      `json:"max_tokens,omitempty"`
-	Timeout          time.Duration            `json:"timeout,omitempty"`
-	ResponseFormat   ExtractionResponseFormat `json:"response_format,omitempty"`
-	UsePreFilter     bool                     `json:"use_prefilter,omitempty"`
-	RepairEnabled    bool                     `json:"repair_enabled,omitempty"`
-	RequireCleanGate bool                     `json:"require_clean_gate,omitempty"`
-	Audit            string                   `json:"audit,omitempty"`
-	Force            bool                     `json:"force,omitempty"`
-	Window           ExtractionRunWindow      `json:"window,omitempty"`
-	RawLog           ExtractionRawLogOptions  `json:"raw_log,omitempty"`
+	Request                ExtractionRequest        `json:"request"`
+	Mode                   ExtractionRunMode        `json:"mode"`
+	ProviderID             string                   `json:"provider_id,omitempty"`
+	ProviderKind           string                   `json:"provider_kind,omitempty"`
+	Model                  string                   `json:"model,omitempty"`
+	Temperature            float64                  `json:"temperature,omitempty"`
+	MaxTokens              int                      `json:"max_tokens,omitempty"`
+	Timeout                time.Duration            `json:"timeout,omitempty"`
+	ResponseFormat         ExtractionResponseFormat `json:"response_format,omitempty"`
+	UsePreFilter           bool                     `json:"use_prefilter,omitempty"`
+	RepairEnabled          bool                     `json:"repair_enabled,omitempty"`
+	RequireCleanGate       bool                     `json:"require_clean_gate,omitempty"`
+	ExecuteDeletionIntents bool                     `json:"execute_deletion_intents,omitempty"`
+	Audit                  string                   `json:"audit,omitempty"`
+	Force                  bool                     `json:"force,omitempty"`
+	Window                 ExtractionRunWindow      `json:"window,omitempty"`
+	RawLog                 ExtractionRawLogOptions  `json:"raw_log,omitempty"`
 }
 
 type ExtractionRawLogOptions struct {
@@ -127,6 +128,8 @@ type ExtractionRunResult struct {
 	NotAppliedCount       int                     `json:"not_applied_count"`
 	AppliedCount          int                     `json:"applied_count"`
 	FailureCount          int                     `json:"failure_count"`
+	ForgetExecutedCount   int                     `json:"forget_executed_count"`
+	ForgetFailureCount    int                     `json:"forget_failure_count"`
 	Usage                 LLMUsage                `json:"usage,omitempty"`
 	SanitizedErrorCode    string                  `json:"sanitized_error_code,omitempty"`
 	SanitizedErrorMessage string                  `json:"sanitized_error_message,omitempty"`

@@ -59,6 +59,107 @@ func (s *service) PreviewExtractionDeletionIntents(ctx context.Context, req Extr
 	return routes
 }
 
+func executeExtractionDeletionIntents(ctx context.Context, svc Service, routes []RoutedForgetPreview) ([]RoutedForgetPreview, int, int) {
+	if svc == nil || len(routes) == 0 {
+		return routes, 0, 0
+	}
+	out := append([]RoutedForgetPreview(nil), routes...)
+	executed := 0
+	failures := 0
+	for i := range out {
+		count, failed := executeExtractionDeletionIntent(ctx, svc, &out[i])
+		executed += count
+		failures += failed
+	}
+	return out, executed, failures
+}
+
+func executeExtractionDeletionIntent(ctx context.Context, svc Service, route *RoutedForgetPreview) (int, int) {
+	if route == nil {
+		return 0, 0
+	}
+	targets, skip := executableExtractionDeletionTargets(*route)
+	if skip != "" {
+		route.SkipReason = skip
+		return 0, 0
+	}
+	personaID := route.Preview.PersonaID
+	if strings.TrimSpace(personaID) == "" {
+		route.SkipReason = "missing_persona"
+		return 0, 0
+	}
+	var verifyTargets []ForgetResolvedTarget
+	for _, target := range targets {
+		_, err := svc.Forget(ctx, ForgetRequest{
+			PersonaID:  personaID,
+			Actor:      ForgetActorSystem,
+			ReasonCode: ForgetReasonUserRequested,
+			Level:      ForgetLevelSoft,
+			Target: ForgetTarget{
+				ScopeMode: ForgetScopeExactNode,
+				NodeType:  ForgetNodeFact,
+				NodeID:    target.NodeID,
+			},
+		})
+		if err != nil {
+			route.FailureCount++
+			route.ErrorCode = "forget_execute_failed"
+			route.ErrorMessage = "forget execution failed"
+			continue
+		}
+		route.ExecutedCount++
+		verifyTargets = append(verifyTargets, target)
+	}
+	if len(verifyTargets) > 0 {
+		verify, err := svc.VerifyForget(ctx, ForgetVerifyRequest{PersonaID: personaID, Targets: verifyTargets})
+		if err != nil {
+			route.FailureCount++
+			route.ErrorCode = "forget_verify_failed"
+			route.ErrorMessage = "forget verification failed"
+		} else {
+			route.Verify = verify
+			if !verify.Passed {
+				route.FailureCount++
+				route.ErrorCode = "forget_verify_failed"
+				route.ErrorMessage = "forget verification failed"
+			}
+		}
+	}
+	if route.ExecutedCount > 0 {
+		route.PreviewOnly = false
+	}
+	return route.ExecutedCount, route.FailureCount
+}
+
+func executableExtractionDeletionTargets(route RoutedForgetPreview) ([]ForgetResolvedTarget, string) {
+	if route.ForgetLevel != ForgetLevelSoft {
+		return nil, "unsupported_forget_level"
+	}
+	if route.ErrorCode != "" {
+		return nil, route.ErrorCode
+	}
+	if route.Preview == nil {
+		return nil, "missing_preview"
+	}
+	if route.Preview.Status == "no_match" {
+		return nil, "forget_preview_no_match"
+	}
+	if route.Preview.ScopeMode == ForgetScopeEntity || route.Preview.ScopeMode == ForgetScopeRecentEpisodeWindow {
+		return nil, "unsupported_scope"
+	}
+	targets := make([]ForgetResolvedTarget, 0, len(route.Preview.Targets))
+	for _, target := range route.Preview.Targets {
+		if target.NodeType != ForgetNodeFact || strings.TrimSpace(target.NodeID) == "" {
+			return nil, "unsupported_target"
+		}
+		targets = append(targets, target)
+	}
+	if len(targets) == 0 {
+		return nil, "forget_preview_no_match"
+	}
+	return targets, ""
+}
+
 func forgetPreviewRequestFromDeletionIntent(req ExtractionRequest, intent ExtractedDeletionIntent) (ForgetPreviewRequest, bool, string) {
 	previewReq := ForgetPreviewRequest{
 		PersonaID: req.PersonaID,

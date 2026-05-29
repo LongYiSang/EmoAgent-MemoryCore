@@ -108,6 +108,7 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 		opts.Extraction.Provider.MaxTokens != 7000 ||
 		opts.Extraction.Provider.ResponseFormat != memorycore.ExtractionResponseFormatJSONSchema ||
 		opts.Extraction.Defaults.Mode != memorycore.ExtractionRunModeApply ||
+		!opts.Extraction.Defaults.ExecuteDeletionIntents ||
 		!opts.Extraction.Runtime.UsePreFilter ||
 		!opts.Extraction.Runtime.RepairEnabled ||
 		opts.Extraction.Audit.Enabled ||

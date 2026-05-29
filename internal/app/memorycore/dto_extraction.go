@@ -290,6 +290,10 @@ type RoutedForgetPreview struct {
 	Preview           *ForgetPreviewResult `json:"preview,omitempty"`
 	ErrorCode         string               `json:"error_code,omitempty"`
 	ErrorMessage      string               `json:"error_message,omitempty"`
+	SkipReason        string               `json:"skip_reason,omitempty"`
+	ExecutedCount     int                  `json:"executed_count,omitempty"`
+	FailureCount      int                  `json:"failure_count,omitempty"`
+	Verify            *ForgetVerifyResult  `json:"verify,omitempty"`
 	PreviewOnly       bool                 `json:"preview_only"`
 }
 

@@ -208,8 +208,20 @@ func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (Extracti
 		result.ApplyResult = &apply
 		result.AppliedCount = apply.AppliedCount
 		result.FailureCount = len(apply.Failures)
+		if runReq.ExecuteDeletionIntents {
+			var forgetExecuted int
+			var forgetFailures int
+			result.RoutedForgetPreviews, forgetExecuted, forgetFailures = executeExtractionDeletionIntents(ctx, r.service, result.RoutedForgetPreviews)
+			result.ForgetExecutedCount = forgetExecuted
+			result.ForgetFailureCount = forgetFailures
+			result.FailureCount += forgetFailures
+		}
 		switch {
+		case result.ForgetFailureCount > 0:
+			result.Status = ExtractionRunStatusFailed
 		case apply.Status == "applied":
+			result.Status = ExtractionRunStatusApplied
+		case result.ForgetExecutedCount > 0:
 			result.Status = ExtractionRunStatusApplied
 		case apply.Status == "nothing_applied":
 			result.Status = ExtractionRunStatusNothingApplied
@@ -501,7 +513,8 @@ func extractionAdmissionPromptContract() string {
 - Only write user-owned, explicit, durable, allowed memories.
 - Before emitting any fact, answer internally: is this claim owned by the user, explicit or strongly user-confirmed, durable/useful for long-term memory, and allowed by the user to be remembered and recalled? Emit a fact only when all answers are yes.
 - For "别记这个 / 不要记 / don't remember this / do not save", do not emit facts for the same content. If it only refers to the current window, output no deletion_intent; if it points to old memory, emit deletion_intents only.
-- For "不要再提 / 别再提 / forget / delete / remove", emit deletion_intents only. Do not turn the control intent into an ordinary user fact.
+- For "不要再提 / 别再提 / forget / delete / remove", emit deletion_intents only for the old memory target. Default forget_level to "soft_forget" unless the user explicitly asks for permanent/source deletion. target_description must name the concrete old memory topic, not generic phrases such as "old memory", "related memory", or "旧记忆". Do not turn the control intent itself into an ordinary user fact.
+- If the same turn also contains a correction/new preference, you may emit a normal fact for the corrected content, but never emit a fact for the old target the user asked not to mention.
 - For corrections such as "不是北京，是上海", emit correction_hints and an optional clearly supported correction_candidate fact for the new explicit value. Do not re-emit the stale value as an ordinary fact.
 - Do not emit facts for assistant guesses, assistant suggestions, tool outputs, search results, command logs, stack traces, work progress logs, hypothetical statements, conditional plans, roleplay-only statements, or ephemeral chitchat.
 - Negative examples: "如果我以后搬去东京" is not "用户住在东京"; "你可能不喜欢早会" is assistant speculation; "你可以试试周末运动" is assistant suggestion; "npm install failed" is work-log noise; "这句别记" blocks current fact writing; "不要再提早会" is a soft_forget deletion intent.
