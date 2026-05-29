@@ -28,6 +28,10 @@ func NewDeterministicMockLLM() *MockLLM {
 
 func (m *MockLLM) CompleteJSON(ctx context.Context, req ExtractionLLMRequest) (ExtractionLLMResponse, error) {
 	switch req.Purpose {
+	case MemoryOperationLLMPurposeDirective:
+		return ExtractionLLMResponse{Text: deterministicManualForgetDirectiveResponse(req), Model: "mock"}, nil
+	case MemoryOperationLLMPurposeConfirm:
+		return ExtractionLLMResponse{Text: deterministicManualForgetConfirmationResponse(req), Model: "mock"}, nil
 	case ExtractionLLMPurposePreFilter:
 		m.PreFilterCalls++
 		if m.PrefilterResponse != "" {
@@ -50,6 +54,85 @@ func (m *MockLLM) CompleteJSON(ctx context.Context, req ExtractionLLMRequest) (E
 		}
 		return ExtractionLLMResponse{Text: deterministicExtractionResponse(req), Model: "mock"}, nil
 	}
+}
+
+func deterministicManualForgetDirectiveResponse(req ExtractionLLMRequest) string {
+	var payload struct {
+		UserText string `json:"user_text"`
+	}
+	_ = json.Unmarshal([]byte(req.UserPrompt), &payload)
+	text := strings.TrimSpace(payload.UserText)
+	lower := strings.ToLower(text)
+	body := ManualForgetDirectiveResult{
+		Intent:     ManualForgetIntentNone,
+		Confidence: 0.25,
+		ReasonCodes: []string{
+			"mock_operation_llm",
+		},
+	}
+	if strings.Contains(text, "放下") ||
+		strings.Contains(text, "清掉") ||
+		strings.Contains(text, "别记") ||
+		strings.Contains(text, "别再提") ||
+		strings.Contains(text, "删除") ||
+		strings.Contains(lower, "forget") ||
+		strings.Contains(lower, "delete") {
+		body.Intent = ManualForgetIntentForget
+		body.Confidence = 0.91
+		body.ForgetLevelHint = ForgetLevelSoft
+		body.TargetNodeTypeHint = ForgetNodeFact
+		body.TargetDescription = safeDirectiveTargetDescription(text)
+	}
+	if strings.Contains(text, "清掉") || strings.Contains(text, "所有") || strings.Contains(text, "都删") {
+		body.ForgetLevelHint = ForgetLevelPurge
+		body.RequiresLLMConfirm = true
+	}
+	if strings.Contains(text, "别记") || strings.Contains(text, "不要记") {
+		body.ForgetLevelHint = ForgetLevelHard
+	}
+	if strings.Contains(text, "原文") || strings.Contains(text, "刚才那段") {
+		body.ForgetLevelHint = ForgetLevelSourceRedact
+		body.TargetNodeTypeHint = ForgetNodeEpisode
+	}
+	data, _ := json.Marshal(body)
+	return string(data)
+}
+
+func deterministicManualForgetConfirmationResponse(req ExtractionLLMRequest) string {
+	var payload struct {
+		UserReply string `json:"user_reply"`
+	}
+	_ = json.Unmarshal([]byte(req.UserPrompt), &payload)
+	lower := strings.ToLower(strings.TrimSpace(payload.UserReply))
+	body := struct {
+		Decision           string   `json:"decision"`
+		Confidence         float64  `json:"confidence"`
+		SelectedDisplayIDs []string `json:"selected_display_ids,omitempty"`
+		ModifiedTarget     string   `json:"modified_target,omitempty"`
+		FollowupHint       string   `json:"followup_hint,omitempty"`
+		ReasonCodes        []string `json:"reason_codes,omitempty"`
+	}{
+		Decision:    ForgetConfirmationUnclear,
+		Confidence:  0.45,
+		ReasonCodes: []string{"mock_operation_llm"},
+	}
+	switch {
+	case strings.Contains(lower, "不要") || strings.Contains(lower, "先不") || strings.Contains(lower, "取消") || strings.Contains(lower, "deny"):
+		body.Decision = ForgetConfirmationDeny
+		body.Confidence = 0.91
+	case strings.Contains(lower, "按刚才那组处理") || strings.Contains(lower, "处理吧") || strings.Contains(lower, "确认") || strings.Contains(lower, "confirm"):
+		body.Decision = ForgetConfirmationConfirm
+		body.Confidence = 0.94
+	case strings.Contains(lower, "只删") || strings.Contains(lower, "选"):
+		body.Decision = ForgetConfirmationSelect
+		body.Confidence = 0.86
+	case strings.Contains(lower, "改成") || strings.Contains(lower, "换成"):
+		body.Decision = ForgetConfirmationModify
+		body.Confidence = 0.83
+		body.ModifiedTarget = payload.UserReply
+	}
+	data, _ := json.Marshal(body)
+	return string(data)
 }
 
 func deterministicPreFilterResponse(req ExtractionLLMRequest) string {

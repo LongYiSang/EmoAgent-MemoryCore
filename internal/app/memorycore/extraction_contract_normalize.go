@@ -50,6 +50,7 @@ func NormalizeExtractionResponseContract(raw []byte) ([]byte, ContractRepairRepo
 		normalizeEntityConfidence(entity, candidateID, &report)
 		normalizeMergeHint(entity, candidateID, &report)
 	}
+	normalizeDeletionIntents(root, &report)
 	normalizeCorrectionHints(root, &report)
 	normalizeRejectedCandidates(root, &report)
 	appendQualityFlags(root, report.Flags)
@@ -103,6 +104,58 @@ func normalizeMergeHint(entity map[string]any, candidateID string, report *Contr
 		reason = "known_without_known_entity_id"
 	}
 	report.add(candidateID, "entity", "merge_hint", value, repaired, reason)
+}
+
+func normalizeDeletionIntents(root map[string]any, report *ContractRepairReport) {
+	intents, _ := root["deletion_intents"].([]any)
+	for _, item := range intents {
+		intent, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		candidateID := stringValue(intent["candidate_id"])
+		if stringValue(intent["forget_level"]) == "" {
+			if scope := stringValue(intent["scope"]); scope != "" {
+				intent["forget_level"] = scope
+				report.add(candidateID, "deletion_intent", "scope", scope, "forget_level", "deletion_intent_scope_alias")
+			}
+		}
+		if stringValue(intent["target_description"]) == "" {
+			if target := stringValue(intent["target_object_literal"]); target != "" {
+				intent["target_description"] = target
+				report.add(candidateID, "deletion_intent", "target_object_literal", target, "target_description", "deletion_intent_target_literal")
+			} else if target := stringValue(intent["target_candidate_id"]); target != "" {
+				intent["target_description"] = target
+				report.add(candidateID, "deletion_intent", "target_candidate_id", target, "target_description", "deletion_intent_target_candidate")
+			}
+		}
+		if stringValue(intent["source_episode_id"]) == "" {
+			if episodes := stringSliceValue(intent["source_episode_ids"]); len(episodes) > 0 {
+				intent["source_episode_id"] = episodes[0]
+				report.add(candidateID, "deletion_intent", "source_episode_ids", "present", "source_episode_id", "deletion_intent_source_episode_ids")
+			}
+		}
+		if _, ok := intent["requires_confirmation"]; !ok && hasAnyField(intent, "scope", "target_candidate_id", "target_predicate", "target_object_literal", "target_episode_ids", "source_episode_ids") {
+			intent["requires_confirmation"] = true
+			report.add(candidateID, "deletion_intent", "requires_confirmation", "", "true", "deletion_intent_default_requires_confirmation")
+		}
+		for _, field := range []string{
+			"target_candidate_id",
+			"target_predicate",
+			"target_object_literal",
+			"target_episode_ids",
+			"source_episode_ids",
+			"scope",
+			"operation_hint",
+			"quality_decision",
+			"quality_reasons",
+		} {
+			if _, ok := intent[field]; ok {
+				delete(intent, field)
+				report.add(candidateID, "deletion_intent", field, "present", "", "deletion_intent_extra_field")
+			}
+		}
+	}
 }
 
 func normalizeCorrectionHints(root map[string]any, report *ContractRepairReport) {
@@ -278,6 +331,15 @@ func hasKnownEntityID(value any) bool {
 	default:
 		return false
 	}
+}
+
+func hasAnyField(values map[string]any, fields ...string) bool {
+	for _, field := range fields {
+		if _, ok := values[field]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func stringValue(value any) string {

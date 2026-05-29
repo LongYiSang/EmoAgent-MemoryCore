@@ -190,6 +190,40 @@ func TestParseResponseRepairsCorrectionHintModelShape(t *testing.T) {
 	}
 }
 
+func TestParseResponseRepairsDeletionIntentModelShape(t *testing.T) {
+	body := strings.Replace(validResponseJSON(), `"deletion_intents": [],`, `"deletion_intents": [{
+    "candidate_id": "del_1",
+    "target_candidate_id": null,
+    "target_predicate": "likes",
+    "target_object_literal": "杭州的美食",
+    "target_episode_ids": [],
+    "scope": "soft_forget",
+    "reasoning": "用户明确要求以后别再提。",
+    "source_episode_ids": ["ep_seed"],
+    "operation_hint": "delete_candidate",
+    "quality_decision": "accept_for_consolidation",
+    "quality_reasons": ["explicit_user_request"]
+  }],`, 1)
+
+	resp, report, err := extraction.ParseResponseWithRepairReport(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponseWithRepairReport: %v", err)
+	}
+	if len(resp.DeletionIntents) != 1 {
+		t.Fatalf("deletion intents = %#v, want one", resp.DeletionIntents)
+	}
+	got := resp.DeletionIntents[0]
+	if got.CandidateID != "del_1" || got.ForgetLevel != memorycore.ForgetLevelSoft || got.TargetDescription != "杭州的美食" || got.SourceEpisodeID != "ep_seed" {
+		t.Fatalf("deletion intent = %#v, want normalized soft forget target", got)
+	}
+	if got.Reasoning == nil || *got.Reasoning == "" {
+		t.Fatalf("deletion intent reasoning was not preserved: %#v", got)
+	}
+	if !report.Applied {
+		t.Fatalf("repair report was not marked applied")
+	}
+}
+
 func validRequestJSON() string {
 	return `{
   "schema_version": "memory_extraction_protocol.v0.1.request",
