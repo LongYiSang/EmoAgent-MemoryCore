@@ -61,6 +61,7 @@ type service struct {
 	sidecarResilience SidecarResilienceOptions
 	sidecarBreaker    *sidecarCircuitBreaker
 	extraction        ExtractionOptions
+	semanticOps       SemanticOpsOptions
 }
 
 func Open(ctx context.Context, opts Options) (Service, error) {
@@ -113,6 +114,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		sidecarResilience: resilience,
 		sidecarBreaker:    newSidecarCircuitBreaker(resilience.Breaker, now),
 		extraction:        extraction,
+		semanticOps:       normalizeSemanticOpsOptions(opts.SemanticOps),
 	}, nil
 }
 

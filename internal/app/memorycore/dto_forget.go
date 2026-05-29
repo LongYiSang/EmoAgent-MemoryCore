@@ -8,6 +8,7 @@ const (
 	ForgetScopeRecentEpisodeWindow = "recent_episode_window"
 	ForgetScopeEntity              = "entity_scope"
 	ForgetScopeBroadTopic          = "broad_topic"
+	ForgetScopeSemanticQuery       = "semantic_query"
 
 	ForgetNodeFact    = "fact"
 	ForgetNodeEpisode = "episode"
@@ -55,17 +56,22 @@ type ForgetResult struct {
 }
 
 type ForgetPreviewRequest struct {
-	PersonaID         string
-	ScopeMode         string
-	NodeType          string
-	NodeID            string
-	EntityID          string
-	Topic             string
-	SessionID         string
-	Since             *time.Time
-	Until             *time.Time
-	Limit             int
-	RecentPromptItems []ForgetPromptItem
+	RequestID           string
+	PersonaID           string
+	Actor               string
+	RequestedLevel      string
+	ScopeMode           string
+	NodeType            string
+	NodeID              string
+	EntityID            string
+	Topic               string
+	SessionID           string
+	Since               *time.Time
+	Until               *time.Time
+	Limit               int
+	SemanticQuery       *string
+	RequireConfirmation bool
+	RecentPromptItems   []ForgetPromptItem
 }
 
 type ForgetPromptItem struct {
@@ -76,10 +82,15 @@ type ForgetPromptItem struct {
 
 type ForgetPreviewResult struct {
 	PersonaID            string
+	RequestID            string
+	PreviewHash          string
+	RequestedLevel       string
 	ScopeMode            string
 	Status               string
 	RequiresConfirmation bool
 	Reason               string
+	RiskFlags            []string
+	SidecarStatus        string
 	Targets              []ForgetResolvedTarget
 }
 
@@ -91,19 +102,27 @@ type ForgetResolvedTarget struct {
 }
 
 type ForgetExecuteRequest struct {
-	PersonaID      string
-	Actor          string
-	ReasonCode     string
-	Level          string
-	PreviewRequest ForgetPreviewRequest
-	Preview        ForgetPreviewResult
-	Confirmed      bool
+	PersonaID        string
+	Actor            string
+	ReasonCode       string
+	Level            string
+	PreviewRequest   ForgetPreviewRequest
+	Preview          ForgetPreviewResult
+	PreviewHash      string
+	ConfirmedTargets []ExactNodeRef
+	Confirmed        bool
 }
 
 type ForgetExecuteResult struct {
-	PersonaID string
-	Executed  int
-	Results   []ForgetResult
+	PersonaID   string
+	Executed    int
+	PreviewHash string
+	Results     []ForgetResult
+}
+
+type ExactNodeRef struct {
+	NodeType string
+	NodeID   string
 }
 
 type ForgetVerifyRequest struct {

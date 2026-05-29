@@ -85,6 +85,7 @@ type ExtractionRunRequest struct {
 	RepairEnabled          bool                     `json:"repair_enabled,omitempty"`
 	RequireCleanGate       bool                     `json:"require_clean_gate,omitempty"`
 	ExecuteDeletionIntents bool                     `json:"execute_deletion_intents,omitempty"`
+	SemanticDedup          SemanticDedupOptions     `json:"semantic_dedup,omitempty"`
 	Audit                  string                   `json:"audit,omitempty"`
 	Force                  bool                     `json:"force,omitempty"`
 	Window                 ExtractionRunWindow      `json:"window,omitempty"`
@@ -136,7 +137,27 @@ type ExtractionRunResult struct {
 	RoutedDeletionIntents []DeletionIntentRoute   `json:"routed_deletion_intents,omitempty"`
 	RoutedForgetPreviews  []RoutedForgetPreview   `json:"routed_forget_previews,omitempty"`
 	RoutedPinIntents      []PinIntentRoute        `json:"routed_pin_intents,omitempty"`
+	DedupDiagnostics      *DedupDiagnostics       `json:"dedup_diagnostics,omitempty"`
 	DurationMS            int64                   `json:"duration_ms,omitempty"`
+}
+
+type DedupDiagnostics struct {
+	Ran            bool            `json:"ran"`
+	Shadow         bool            `json:"shadow"`
+	Degraded       bool            `json:"degraded,omitempty"`
+	SidecarStatus  string          `json:"sidecar_status,omitempty"`
+	FallbackReason string          `json:"fallback_reason,omitempty"`
+	CandidateCount int             `json:"candidate_count"`
+	Decisions      []DedupDecision `json:"decisions,omitempty"`
+}
+
+type DedupDecision struct {
+	CandidateID string  `json:"candidate_id,omitempty"`
+	NodeType    string  `json:"node_type,omitempty"`
+	NodeID      string  `json:"node_id,omitempty"`
+	Similarity  float64 `json:"similarity,omitempty"`
+	Action      string  `json:"action,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
 }
 
 type ExtractionPreFilterResponse struct {

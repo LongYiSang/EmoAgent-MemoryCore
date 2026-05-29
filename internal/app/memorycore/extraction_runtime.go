@@ -189,6 +189,9 @@ func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (Extracti
 		return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, nil)
 	}
 	result.RoutedForgetPreviews = previewExtractionDeletionIntents(ctx, r.service, req, resp, gate)
+	if deduper, ok := r.service.(extractionSemanticDeduper); ok {
+		result.DedupDiagnostics = deduper.RunExtractionSemanticDedup(ctx, req, resp, gate, runReq.SemanticDedup)
+	}
 
 	switch runReq.Mode {
 	case ExtractionRunModeValidate:
@@ -204,7 +207,7 @@ func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (Extracti
 			safe := sanitizedError("unclean_gate", "gate contains review or rejected candidates")
 			return finish(result, promptHash, responseHash, repairedHash, prefilterHash, &usage, safe)
 		}
-		apply := ApplyAcceptedFacts(ctx, r.service, r.db, req, resp, gate)
+		apply := ApplyAcceptedFactsWithSemanticDedup(ctx, r.service, r.db, req, resp, gate, result.DedupDiagnostics)
 		result.ApplyResult = &apply
 		result.AppliedCount = apply.AppliedCount
 		result.FailureCount = len(apply.Failures)
@@ -224,6 +227,8 @@ func (r *Runner) Run(ctx context.Context, runReq ExtractionRunRequest) (Extracti
 		case result.ForgetExecutedCount > 0:
 			result.Status = ExtractionRunStatusApplied
 		case apply.Status == "nothing_applied":
+			result.Status = ExtractionRunStatusNothingApplied
+		case apply.Status == "skipped":
 			result.Status = ExtractionRunStatusNothingApplied
 		default:
 			result.Status = ExtractionRunStatusFailed

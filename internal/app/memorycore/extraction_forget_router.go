@@ -32,7 +32,7 @@ func (s *service) PreviewExtractionDeletionIntents(ctx context.Context, req Extr
 		}
 		route := RoutedForgetPreview{
 			IntentCandidateID: intent.CandidateID,
-			ForgetLevel:       intent.ForgetLevel,
+			ForgetLevel:       defaultForgetLevel(intent.ForgetLevel),
 			PreviewOnly:       true,
 		}
 		previewReq, ok, code := forgetPreviewRequestFromDeletionIntent(req, intent)
@@ -42,6 +42,8 @@ func (s *service) PreviewExtractionDeletionIntents(ctx context.Context, req Extr
 			continue
 		}
 		applySafePreviewRequest(&route, previewReq)
+		previewReqCopy := previewReq
+		route.PreviewRequest = &previewReqCopy
 		preview, err := s.PreviewForget(ctx, previewReq)
 		if err != nil {
 			route.ErrorCode = forgetPreviewErrorCode(err)
@@ -50,6 +52,7 @@ func (s *service) PreviewExtractionDeletionIntents(ctx context.Context, req Extr
 			continue
 		}
 		route.Preview = preview
+		route.ExactTargets = exactNodeRefsFromForgetTargets(preview.Targets)
 		if preview.Status == "no_match" {
 			route.ErrorCode = "forget_preview_no_match"
 		}
@@ -88,27 +91,38 @@ func executeExtractionDeletionIntent(ctx context.Context, svc Service, route *Ro
 		route.SkipReason = "missing_persona"
 		return 0, 0
 	}
-	var verifyTargets []ForgetResolvedTarget
-	for _, target := range targets {
-		_, err := svc.Forget(ctx, ForgetRequest{
-			PersonaID:  personaID,
-			Actor:      ForgetActorSystem,
-			ReasonCode: ForgetReasonUserRequested,
-			Level:      ForgetLevelSoft,
-			Target: ForgetTarget{
-				ScopeMode: ForgetScopeExactNode,
-				NodeType:  ForgetNodeFact,
-				NodeID:    target.NodeID,
-			},
-		})
-		if err != nil {
-			route.FailureCount++
-			route.ErrorCode = "forget_execute_failed"
-			route.ErrorMessage = "forget execution failed"
-			continue
-		}
-		route.ExecutedCount++
-		verifyTargets = append(verifyTargets, target)
+	confirmedTargets := exactNodeRefsFromForgetTargets(targets)
+	if len(confirmedTargets) != len(targets) {
+		route.SkipReason = "unsupported_target"
+		return 0, 0
+	}
+	previewReq := ForgetPreviewRequest{}
+	if route.PreviewRequest != nil {
+		previewReq = *route.PreviewRequest
+	}
+	level := defaultForgetLevel(route.Preview.RequestedLevel)
+	executed, err := svc.ExecuteForget(ctx, ForgetExecuteRequest{
+		PersonaID:        personaID,
+		Actor:            ForgetActorSystem,
+		ReasonCode:       ForgetReasonUserRequested,
+		Level:            level,
+		PreviewRequest:   previewReq,
+		Preview:          *route.Preview,
+		PreviewHash:      route.Preview.PreviewHash,
+		ConfirmedTargets: confirmedTargets,
+		Confirmed:        true,
+	})
+	if err != nil {
+		route.FailureCount++
+		route.ErrorCode = "forget_execute_failed"
+		route.ErrorMessage = "forget execution failed"
+		return 0, route.FailureCount
+	}
+	route.ExecutedCount += executed.Executed
+	route.ExactTargets = confirmedTargets
+	verifyTargets := targets
+	if route.ExecutedCount == 0 {
+		verifyTargets = nil
 	}
 	if len(verifyTargets) > 0 {
 		verify, err := svc.VerifyForget(ctx, ForgetVerifyRequest{PersonaID: personaID, Targets: verifyTargets})
@@ -162,8 +176,12 @@ func executableExtractionDeletionTargets(route RoutedForgetPreview) ([]ForgetRes
 
 func forgetPreviewRequestFromDeletionIntent(req ExtractionRequest, intent ExtractedDeletionIntent) (ForgetPreviewRequest, bool, string) {
 	previewReq := ForgetPreviewRequest{
-		PersonaID: req.PersonaID,
-		Limit:     20,
+		RequestID:           extractionForgetPreviewRequestID(req, intent),
+		PersonaID:           req.PersonaID,
+		Actor:               ForgetActorUser,
+		RequestedLevel:      defaultForgetLevel(intent.ForgetLevel),
+		RequireConfirmation: true,
+		Limit:               20,
 	}
 	if nodeType, nodeID, ok := exactForgetNodeFromIntent(intent); ok {
 		previewReq.ScopeMode = ForgetScopeExactNode
@@ -196,6 +214,46 @@ func forgetPreviewRequestFromDeletionIntent(req ExtractionRequest, intent Extrac
 	previewReq.ScopeMode = ForgetScopeBroadTopic
 	previewReq.Topic = target
 	return previewReq, true, ""
+}
+
+func defaultForgetLevel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ForgetLevelSoft
+	}
+	return value
+}
+
+func extractionForgetPreviewRequestID(req ExtractionRequest, intent ExtractedDeletionIntent) string {
+	seed := strings.Join([]string{
+		strings.TrimSpace(req.RequestID),
+		strings.TrimSpace(intent.CandidateID),
+		strings.TrimSpace(intent.SourceEpisodeID),
+	}, "|")
+	hash := hashText(seed)
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	return "extraction_forget_" + hash
+}
+
+func exactNodeRefsFromForgetTargets(targets []ForgetResolvedTarget) []ExactNodeRef {
+	out := make([]ExactNodeRef, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		nodeType := strings.TrimSpace(target.NodeType)
+		nodeID := strings.TrimSpace(target.NodeID)
+		if nodeType == "" || nodeID == "" {
+			continue
+		}
+		key := nodeType + "\x00" + nodeID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ExactNodeRef{NodeType: nodeType, NodeID: nodeID})
+	}
+	return out
 }
 
 func applySafePreviewRequest(route *RoutedForgetPreview, req ForgetPreviewRequest) {

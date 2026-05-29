@@ -11,6 +11,10 @@ from memorycore_sidecar.protocol import (
     ACTIVATION_RESPONSE_SCHEMA_VERSION,
     CANDIDATE_REQUEST_SCHEMA_VERSION,
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
+    DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+    DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION,
+    DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+    DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION,
     QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
     QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION,
     RERANK_REQUEST_SCHEMA_VERSION,
@@ -230,6 +234,178 @@ def test_server_retrieval_candidates_returns_safe_cache_miss_degraded():
         assert body["degraded"] is True
         assert body["fallback_reason"] == "embedding_cache_miss"
         assert "secret-cache-key" not in str(body)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_memory_dedup_search_roundtrip_uses_safe_summary():
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        _upsert_node(base_url, "fact-morning", "用户不喜欢早会。")
+        body = _post_json(
+            base_url,
+            "/memory/dedup-search",
+            {
+                "schema_version": DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+                "request_id": "dedup-1",
+                "persona_id": "default",
+                "candidate": {
+                    "candidate_id": "cand-1",
+                    "safe_summary": "用户不喜欢早会。",
+                    "fact_type": "stable_preference",
+                    "predicate": "dislikes",
+                    "subject_entity_id": "ent_user",
+                    "object_literal": "早会",
+                },
+                "policy": {"limit": 12, "shadow": True, "threshold_profile": "default_v0"},
+            },
+        )
+
+        assert body["schema_version"] == DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "dedup-1"
+        assert body["status"] == "ok"
+        assert body["degraded"] is False
+        assert body["candidates"][0]["node_type"] == "fact"
+        assert body["candidates"][0]["node_id"] == "fact-morning"
+        assert body["candidates"][0]["match_class"] == "near_duplicate"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_memory_delete_candidates_roundtrip_does_not_return_rationale():
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        _upsert_node(base_url, "fact-cilantro", "用户不吃香菜。")
+        body = _post_json(
+            base_url,
+            "/memory/delete-candidates",
+            {
+                "schema_version": DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+                "request_id": "delete-1",
+                "persona_id": "default",
+                "intent": {
+                    "raw_text": "忘掉我之前说过不吃香菜",
+                    "operation_purpose": "forget_delete",
+                    "operation_target_only": True,
+                },
+                "scope": {},
+                "policy": {
+                    "limit": 20,
+                    "allow_fact_candidates": True,
+                    "include_safe_summary": True,
+                },
+            },
+        )
+
+        assert body["schema_version"] == DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION
+        assert body["request_id"] == "delete-1"
+        assert body["status"] == "ok"
+        assert body["degraded"] is False
+        assert body["preview_hash_seed"]
+        assert body["candidates"][0]["node_id"] == "fact-cilantro"
+        assert body["candidates"][0]["safe_summary"] == "用户不吃香菜。"
+        assert "rationale" not in json.dumps(body, ensure_ascii=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_memory_delete_candidates_honors_safe_summary_policy():
+    server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        _upsert_node(base_url, "fact-cilantro", "用户不吃香菜。")
+        body = _post_json(
+            base_url,
+            "/memory/delete-candidates",
+            {
+                "schema_version": DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+                "request_id": "delete-no-summary",
+                "persona_id": "default",
+                "intent": {
+                    "raw_text": "忘掉我之前说过不吃香菜",
+                    "operation_purpose": "forget_delete",
+                    "operation_target_only": True,
+                },
+                "scope": {},
+                "policy": {
+                    "limit": 20,
+                    "allow_fact_candidates": True,
+                    "include_safe_summary": False,
+                },
+            },
+        )
+
+        assert body["schema_version"] == DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION
+        assert body["degraded"] is False
+        assert body["candidates"][0]["node_id"] == "fact-cilantro"
+        assert "safe_summary" not in body["candidates"][0]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_memory_candidates_degrade_without_candidate_mapping():
+    server = create_server(("127.0.0.1", 0), object())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        dedup = _post_json(
+            base_url,
+            "/memory/dedup-search",
+            {
+                "schema_version": DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+                "request_id": "dedup-degraded",
+                "persona_id": "default",
+                "candidate": {
+                    "candidate_id": "cand-1",
+                    "safe_summary": "用户不喜欢早会。",
+                },
+                "policy": {"limit": 12, "shadow": True, "threshold_profile": "default_v0"},
+            },
+        )
+        delete = _post_json(
+            base_url,
+            "/memory/delete-candidates",
+            {
+                "schema_version": DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+                "request_id": "delete-degraded",
+                "persona_id": "default",
+                "intent": {
+                    "raw_text": "忘掉早会偏好",
+                    "operation_purpose": "forget_delete",
+                    "operation_target_only": True,
+                },
+                "scope": {},
+                "policy": {
+                    "limit": 20,
+                    "allow_fact_candidates": True,
+                    "include_safe_summary": True,
+                },
+            },
+        )
+
+        assert dedup["degraded"] is True
+        assert dedup["fallback_reason"] == "candidate_mapping_unavailable"
+        assert dedup["candidates"] == []
+        assert delete["degraded"] is True
+        assert delete["fallback_reason"] == "candidate_mapping_unavailable"
+        assert delete["candidates"] == []
     finally:
         server.shutdown()
         server.server_close()

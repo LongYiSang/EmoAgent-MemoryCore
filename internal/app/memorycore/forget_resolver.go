@@ -2,20 +2,55 @@ package memorycore
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
+	"sort"
 	"strings"
 	"time"
 )
 
 func (s *service) PreviewForget(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error) {
+	result, err := s.resolveForgetPreview(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recordSemanticDecisionAudit(ctx, semanticDecisionAuditRecord{
+		RequestID:       result.RequestID,
+		PersonaID:       result.PersonaID,
+		DecisionType:    "forget_preview",
+		Actor:           defaultString(req.Actor, ForgetActorUser),
+		ReasonCode:      defaultString(req.RequestedLevel, req.ScopeMode),
+		CandidateHash:   forgetPreviewCandidateHash(result.Targets),
+		SelectedNodeIDs: exactRefsFromResolvedTargets(result.Targets),
+		PreviewHash:     result.PreviewHash,
+		PolicySnapshot: map[string]any{
+			"scope_mode":           result.ScopeMode,
+			"requested_level":      strings.TrimSpace(req.RequestedLevel),
+			"require_confirmation": req.RequireConfirmation,
+			"risk_flags":           append([]string(nil), result.RiskFlags...),
+		},
+		SidecarStatus:   result.SidecarStatus,
+		DiagnosticsJSON: map[string]any{"status": result.Status},
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *service) resolveForgetPreview(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	scope := defaultString(req.ScopeMode, ForgetScopeExactNode)
 	result := &ForgetPreviewResult{
-		PersonaID: personaID,
-		ScopeMode: scope,
-		Status:    "resolved",
+		PersonaID:      personaID,
+		RequestID:      defaultString(req.RequestID, "forget_preview_"+uuid.NewString()),
+		RequestedLevel: strings.TrimSpace(req.RequestedLevel),
+		ScopeMode:      scope,
+		Status:         "resolved",
+		SidecarStatus:  "skipped",
 	}
 	switch scope {
 	case ForgetScopeExactNode:
@@ -54,12 +89,26 @@ func (s *service) PreviewForget(ctx context.Context, req ForgetPreviewRequest) (
 		result.Targets = targets
 		result.RequiresConfirmation = true
 		result.Reason = "broad_topic_requires_confirmation"
+	case ForgetScopeSemanticQuery:
+		targets, sidecarStatus, err := s.previewSemanticForgetQuery(ctx, personaID, req)
+		if err != nil {
+			return nil, err
+		}
+		result.Targets = targets
+		result.SidecarStatus = sidecarStatus
+		result.RequiresConfirmation = true
+		result.Reason = "semantic_query_requires_confirmation"
 	default:
 		return nil, fmt.Errorf("%w: unsupported forget scope %s", ErrInvalidRequest, scope)
 	}
 	if len(result.Targets) == 0 {
 		result.Status = "no_match"
 	}
+	if req.RequireConfirmation {
+		result.RequiresConfirmation = true
+	}
+	result.RiskFlags = forgetPreviewRiskFlags(req, *result)
+	result.PreviewHash = forgetPreviewHash(*result)
 	return result, nil
 }
 
@@ -71,28 +120,49 @@ func (s *service) ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (
 	personaID := defaultString(req.PersonaID, previewReq.PersonaID)
 	personaID = defaultString(personaID, s.persona)
 	previewReq.PersonaID = personaID
-	preview, err := s.PreviewForget(ctx, previewReq)
+	executeLevel := strings.TrimSpace(req.Level)
+	if executeLevel == "" {
+		executeLevel = strings.TrimSpace(previewReq.RequestedLevel)
+	}
+	if strings.TrimSpace(previewReq.RequestedLevel) == "" {
+		previewReq.RequestedLevel = executeLevel
+	}
+	if strings.TrimSpace(previewReq.RequestedLevel) == "" {
+		return nil, fmt.Errorf("%w: execute requires preview requested level", ErrInvalidRequest)
+	}
+	if executeLevel != strings.TrimSpace(previewReq.RequestedLevel) {
+		return nil, fmt.Errorf("%w: preview_level_mismatch", ErrInvalidRequest)
+	}
+	preview, err := s.resolveForgetPreview(ctx, previewReq)
 	if err != nil {
 		return nil, err
 	}
-	if req.Preview.ScopeMode != "" && !sameForgetPreview(req.Preview, *preview) {
-		return nil, fmt.Errorf("%w: forget preview changed", ErrInvalidRequest)
+	expectedHash := strings.TrimSpace(req.PreviewHash)
+	if expectedHash == "" {
+		expectedHash = strings.TrimSpace(req.Preview.PreviewHash)
 	}
-	if preview.ScopeMode == ForgetScopeBroadTopic {
-		return nil, fmt.Errorf("%w: broad_topic preview is not executable", ErrInvalidRequest)
+	if expectedHash == "" {
+		return nil, fmt.Errorf("%w: execute requires preview hash", ErrInvalidRequest)
+	}
+	if expectedHash != "" && expectedHash != preview.PreviewHash {
+		return nil, fmt.Errorf("%w: preview_changed", ErrInvalidRequest)
 	}
 	if preview.RequiresConfirmation && !req.Confirmed {
 		return nil, fmt.Errorf("%w: forget preview requires confirmation", ErrInvalidRequest)
 	}
+	targets, err := confirmedForgetTargets(req, *preview)
+	if err != nil {
+		return nil, err
+	}
 	actor := defaultString(req.Actor, ForgetActorUser)
 	reason := defaultString(req.ReasonCode, ForgetReasonUserRequested)
-	result := &ForgetExecuteResult{PersonaID: personaID}
-	for _, target := range preview.Targets {
+	result := &ForgetExecuteResult{PersonaID: personaID, PreviewHash: preview.PreviewHash}
+	for _, target := range targets {
 		forget, err := s.Forget(ctx, ForgetRequest{
 			PersonaID:  personaID,
 			Actor:      actor,
 			ReasonCode: reason,
-			Level:      req.Level,
+			Level:      executeLevel,
 			Target: ForgetTarget{
 				ScopeMode: ForgetScopeExactNode,
 				NodeType:  target.NodeType,
@@ -105,37 +175,141 @@ func (s *service) ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (
 		result.Executed++
 		result.Results = append(result.Results, *forget)
 	}
+	if err := s.recordSemanticDecisionAudit(ctx, semanticDecisionAuditRecord{
+		RequestID:       defaultString(previewReq.RequestID, preview.RequestID),
+		PersonaID:       personaID,
+		DecisionType:    "forget_execute",
+		Actor:           actor,
+		ReasonCode:      reason,
+		CandidateHash:   forgetPreviewCandidateHash(preview.Targets),
+		SelectedNodeIDs: exactRefsFromResolvedTargets(targets),
+		PreviewHash:     preview.PreviewHash,
+		PolicySnapshot: map[string]any{
+			"level":           executeLevel,
+			"requested_level": strings.TrimSpace(preview.RequestedLevel),
+			"scope_mode":      preview.ScopeMode,
+		},
+		SidecarStatus:   preview.SidecarStatus,
+		DiagnosticsJSON: map[string]any{"executed": result.Executed},
+	}); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
-func sameForgetPreview(left ForgetPreviewResult, right ForgetPreviewResult) bool {
-	if left.PersonaID != "" && left.PersonaID != right.PersonaID {
-		return false
+func confirmedForgetTargets(req ForgetExecuteRequest, preview ForgetPreviewResult) ([]ForgetResolvedTarget, error) {
+	if len(req.ConfirmedTargets) == 0 {
+		return nil, fmt.Errorf("%w: execute requires confirmed exact targets", ErrInvalidRequest)
 	}
-	if left.ScopeMode != right.ScopeMode || left.RequiresConfirmation != right.RequiresConfirmation || len(left.Targets) != len(right.Targets) {
-		return false
-	}
-	leftTargets := forgetPreviewTargetSet(left.Targets)
-	rightTargets := forgetPreviewTargetSet(right.Targets)
-	if len(leftTargets) != len(rightTargets) {
-		return false
-	}
-	for key := range leftTargets {
-		if _, ok := rightTargets[key]; !ok {
-			return false
+	allowed := map[string]ForgetResolvedTarget{}
+	for _, target := range preview.Targets {
+		if strings.TrimSpace(target.NodeType) == "" || strings.TrimSpace(target.NodeID) == "" {
+			continue
 		}
+		allowed[exactNodeKey(target.NodeType, target.NodeID)] = target
 	}
-	return true
+	selected := make([]ForgetResolvedTarget, 0, len(req.ConfirmedTargets))
+	seen := map[string]struct{}{}
+	for _, target := range req.ConfirmedTargets {
+		nodeType := strings.TrimSpace(target.NodeType)
+		nodeID := strings.TrimSpace(target.NodeID)
+		if nodeType == "" || nodeID == "" {
+			return nil, fmt.Errorf("%w: confirmed target requires node type and node id", ErrInvalidRequest)
+		}
+		key := exactNodeKey(nodeType, nodeID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		resolved, ok := allowed[key]
+		if !ok {
+			return nil, fmt.Errorf("%w: confirmed target is not in preview", ErrInvalidRequest)
+		}
+		seen[key] = struct{}{}
+		selected = append(selected, resolved)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("%w: execute requires confirmed exact targets", ErrInvalidRequest)
+	}
+	return selected, nil
 }
 
-func forgetPreviewTargetSet(targets []ForgetResolvedTarget) map[string]struct{} {
-	out := make(map[string]struct{}, len(targets))
-	for _, target := range targets {
-		key := strings.TrimSpace(target.NodeType) + "\x1f" + strings.TrimSpace(target.NodeID)
-		if strings.TrimSpace(target.NodeType) != "" && strings.TrimSpace(target.NodeID) != "" {
-			out[key] = struct{}{}
+func exactNodeKey(nodeType string, nodeID string) string {
+	return strings.TrimSpace(nodeType) + "\x1f" + strings.TrimSpace(nodeID)
+}
+
+func forgetPreviewHash(preview ForgetPreviewResult) string {
+	payload := map[string]any{
+		"persona_id":      preview.PersonaID,
+		"requested_level": strings.TrimSpace(preview.RequestedLevel),
+		"risk_flags":      sortedStrings(preview.RiskFlags),
+		"scope_mode":      preview.ScopeMode,
+		"targets":         exactRefsFromResolvedTargets(preview.Targets),
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func sortedStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
 		}
 	}
+	sort.Strings(out)
+	return out
+}
+
+func forgetPreviewCandidateHash(targets []ForgetResolvedTarget) string {
+	data, _ := json.Marshal(exactRefsFromResolvedTargets(targets))
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func exactRefsFromResolvedTargets(targets []ForgetResolvedTarget) []ExactNodeRef {
+	refs := make([]ExactNodeRef, 0, len(targets))
+	for _, target := range targets {
+		nodeType := strings.TrimSpace(target.NodeType)
+		nodeID := strings.TrimSpace(target.NodeID)
+		if nodeType == "" || nodeID == "" {
+			continue
+		}
+		refs = append(refs, ExactNodeRef{NodeType: nodeType, NodeID: nodeID})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].NodeType == refs[j].NodeType {
+			return refs[i].NodeID < refs[j].NodeID
+		}
+		return refs[i].NodeType < refs[j].NodeType
+	})
+	return refs
+}
+
+func forgetPreviewRiskFlags(req ForgetPreviewRequest, result ForgetPreviewResult) []string {
+	flags := map[string]struct{}{}
+	switch result.ScopeMode {
+	case ForgetScopeBroadTopic:
+		flags["broad_topic"] = struct{}{}
+	case ForgetScopeEntity:
+		flags["entity_scope"] = struct{}{}
+	case ForgetScopeSemanticQuery:
+		flags["semantic_query"] = struct{}{}
+	case ForgetScopeRecentEpisodeWindow:
+		flags["recent_episode_window"] = struct{}{}
+	}
+	if len(result.Targets) > 1 {
+		flags["batch"] = struct{}{}
+	}
+	if strings.TrimSpace(req.RequestedLevel) == ForgetLevelPurge {
+		flags["purge"] = struct{}{}
+	}
+	out := make([]string, 0, len(flags))
+	for flag := range flags {
+		out = append(out, flag)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -266,6 +440,121 @@ LIMIT ?`, personaID, entityID, entityID, limit)
 	return scanForgetTargetIDs(rows, ForgetNodeFact)
 }
 
+func (s *service) previewSemanticForgetQuery(ctx context.Context, personaID string, req ForgetPreviewRequest) ([]ForgetResolvedTarget, string, error) {
+	query := strings.TrimSpace(derefString(req.SemanticQuery))
+	if query == "" {
+		query = strings.TrimSpace(req.Topic)
+	}
+	if query == "" {
+		return nil, "skipped", fmt.Errorf("%w: semantic_query requires query text", ErrInvalidRequest)
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	targets := []ForgetResolvedTarget{}
+	sidecarStatus := "skipped"
+	if s.semanticOps.Forget.PreviewEnabled {
+		if adapter, ok := s.mirrorAdapter.(MirrorDeleteCandidatesAdapter); ok {
+			result, err := adapter.DeleteCandidates(ctx, MirrorDeleteCandidatesRequest{
+				RequestID: req.RequestID,
+				PersonaID: personaID,
+				Intent: MirrorDeleteCandidateIntent{
+					RawText:             query,
+					OperationPurpose:    "forget_delete",
+					OperationTargetOnly: true,
+				},
+				Scope: MirrorDeleteCandidateScope{
+					SessionID: strings.TrimSpace(req.SessionID),
+				},
+				Policy: MirrorDeleteCandidatePolicy{
+					Limit:                  limit,
+					AllowEpisodeCandidates: true,
+					AllowFactCandidates:    true,
+					IncludeSafeSummary:     true,
+				},
+			})
+			switch {
+			case err != nil:
+				sidecarStatus = "failed"
+			case result.Degraded:
+				sidecarStatus = "degraded"
+			default:
+				sidecarStatus = "ok"
+			}
+			if err == nil {
+				targets = s.authorityFilterForgetCandidates(ctx, personaID, result.Candidates)
+			}
+		}
+	}
+	if len(targets) > 0 {
+		return targets, sidecarStatus, nil
+	}
+	fallback, err := s.previewBroadTopic(ctx, personaID, query, limit)
+	if err != nil {
+		return nil, sidecarStatus, err
+	}
+	return fallback, sidecarStatus, nil
+}
+
+func (s *service) authorityFilterForgetCandidates(ctx context.Context, personaID string, candidates []MirrorDeleteCandidate) []ForgetResolvedTarget {
+	targets := make([]ForgetResolvedTarget, 0, len(candidates))
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		nodeType := strings.TrimSpace(candidate.NodeType)
+		nodeID := strings.TrimSpace(candidate.NodeID)
+		if nodeType == "" || nodeID == "" {
+			continue
+		}
+		if _, ok := seen[exactNodeKey(nodeType, nodeID)]; ok {
+			continue
+		}
+		target, ok := s.previewAuthorityForgetTarget(ctx, personaID, nodeType, nodeID, candidate.SafeSummary)
+		if !ok {
+			continue
+		}
+		targets = append(targets, target)
+		seen[exactNodeKey(nodeType, nodeID)] = struct{}{}
+	}
+	return targets
+}
+
+func (s *service) previewAuthorityForgetTarget(ctx context.Context, personaID string, nodeType string, nodeID string, safeSummary string) (ForgetResolvedTarget, bool) {
+	var exists int
+	var err error
+	switch nodeType {
+	case ForgetNodeFact:
+		err = s.sqlDB.QueryRowContext(ctx, `
+SELECT 1
+FROM facts
+WHERE persona_id = ?
+  AND id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1
+  AND validity_status = 'valid'
+  AND lifecycle_status = 'active'`, personaID, nodeID).Scan(&exists)
+	case ForgetNodeEpisode:
+		err = s.sqlDB.QueryRowContext(ctx, `
+SELECT 1
+FROM episodes
+WHERE persona_id = ?
+  AND id = ?
+  AND visibility_status = 'visible'
+  AND searchable = 1`, personaID, nodeID).Scan(&exists)
+	default:
+		return ForgetResolvedTarget{}, false
+	}
+	if err != nil {
+		return ForgetResolvedTarget{}, false
+	}
+	target := safeForgetTarget(nodeType, nodeID)
+	if strings.TrimSpace(safeSummary) != "" {
+		target.Summary = strings.TrimSpace(safeSummary)
+		target.SafeSummary = strings.TrimSpace(safeSummary)
+	}
+	return target, true
+}
+
 func (s *service) previewBroadTopic(ctx context.Context, personaID string, topic string, limit int) ([]ForgetResolvedTarget, error) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
@@ -375,4 +664,85 @@ SELECT COUNT(*)
 FROM sqlite_master
 WHERE name = ?`, table).Scan(&count)
 	return count > 0, err
+}
+
+type semanticDecisionAuditRecord struct {
+	RequestID        string
+	PersonaID        string
+	DecisionType     string
+	Actor            string
+	ReasonCode       string
+	CandidateHash    string
+	SelectedNodeIDs  []ExactNodeRef
+	PreviewHash      string
+	PolicySnapshot   map[string]any
+	SimilarityScores map[string]any
+	SidecarStatus    string
+	DiagnosticsJSON  map[string]any
+}
+
+func (s *service) recordSemanticDecisionAudit(ctx context.Context, rec semanticDecisionAuditRecord) error {
+	if s == nil || s.sqlDB == nil {
+		return nil
+	}
+	exists, err := forgetTableExists(ctx, s.sqlDB, "semantic_decision_audit")
+	if err != nil || !exists {
+		return err
+	}
+	selected, err := json.Marshal(rec.SelectedNodeIDs)
+	if err != nil {
+		return err
+	}
+	policy, err := nullableJSON(rec.PolicySnapshot)
+	if err != nil {
+		return err
+	}
+	scores, err := nullableJSON(rec.SimilarityScores)
+	if err != nil {
+		return err
+	}
+	diagnostics, err := nullableJSON(rec.DiagnosticsJSON)
+	if err != nil {
+		return err
+	}
+	_, err = s.sqlDB.ExecContext(ctx, `
+INSERT INTO semantic_decision_audit (
+    id, request_id, persona_id, decision_type, actor, reason_code,
+    candidate_hash, selected_node_ids, preview_hash, policy_snapshot,
+    similarity_scores, sidecar_status, diagnostics_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"semantic_audit_"+uuid.NewString(),
+		defaultString(rec.RequestID, "semantic_"+uuid.NewString()),
+		defaultString(rec.PersonaID, s.persona),
+		strings.TrimSpace(rec.DecisionType),
+		defaultString(rec.Actor, ForgetActorSystem),
+		semanticNullableString(rec.ReasonCode),
+		semanticNullableString(rec.CandidateHash),
+		string(selected),
+		semanticNullableString(rec.PreviewHash),
+		policy,
+		scores,
+		defaultString(rec.SidecarStatus, "skipped"),
+		diagnostics,
+	)
+	return err
+}
+
+func nullableJSON(value map[string]any) (any, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
+
+func semanticNullableString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
 }

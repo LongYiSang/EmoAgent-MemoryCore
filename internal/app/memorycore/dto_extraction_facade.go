@@ -25,8 +25,9 @@ type RunExtractionRequest struct {
 	Runtime  ExtractionRuntimeOverride  `json:"runtime,omitempty"`
 	Provider ExtractionProviderOverride `json:"provider,omitempty"`
 
-	Force  bool                     `json:"force,omitempty"`
-	RawLog *ExtractionRawLogOptions `json:"raw_log,omitempty"`
+	SemanticDedup SemanticDedupOptions     `json:"semantic_dedup,omitempty"`
+	Force         bool                     `json:"force,omitempty"`
+	RawLog        *ExtractionRawLogOptions `json:"raw_log,omitempty"`
 }
 
 type ExtractionBuildSelector struct {

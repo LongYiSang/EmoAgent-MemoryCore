@@ -3,6 +3,7 @@ package mirror
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ const (
 	sidecarClearResponseSchemaVersion      = "memory_mirror_clear_namespace_result.v0.1"
 	sidecarCandidateRequestSchemaVersion   = "memory_mirror_candidate_request.v0.2"
 	sidecarCandidateResponseSchemaVersion  = "memory_mirror_candidates.v0.2"
+	sidecarDedupSearchSchemaVersion        = "memory_dedup_search.v0.1"
+	sidecarDeleteCandidatesSchemaVersion   = "memory_delete_candidates.v0.1"
 	sidecarActivationRequestSchemaVersion  = "memory_graph_activation_request.v0.1"
 	sidecarActivationResponseSchemaVersion = "memory_graph_activation_result.v0.1"
 	sidecarRerankRequestSchemaVersion      = "memory_rerank_request.v0.1"
@@ -96,6 +99,97 @@ type CandidateResult struct {
 	EmbeddingCacheMisses   int
 	EmbeddingLiveCallCount int
 	Diagnostics            CandidateDiagnostics
+}
+
+type DedupSearchRequest struct {
+	RequestID string
+	PersonaID string
+	Candidate DedupSearchCandidate
+	Policy    DedupSearchPolicy
+}
+
+type DedupSearchCandidate struct {
+	CandidateID      string
+	SafeSummary      string
+	FactType         string
+	Predicate        string
+	SubjectEntityID  string
+	ObjectEntityID   *string
+	ObjectLiteral    string
+	SourceEpisodeIDs []string
+}
+
+type DedupSearchPolicy struct {
+	Limit             int
+	SameSubjectBoost  bool
+	SameFactTypeBoost bool
+	ThresholdProfile  string
+	Shadow            bool
+}
+
+type DedupSearchCandidateResult struct {
+	NodeType    string
+	NodeID      string
+	Similarity  float64
+	MatchClass  string
+	MatchReason string
+	MergeHint   string
+}
+
+type DedupSearchResult struct {
+	RequestID      string
+	Status         string
+	Degraded       bool
+	FallbackReason string
+	Candidates     []DedupSearchCandidateResult
+	Diagnostics    map[string]any
+}
+
+type DeleteCandidatesRequest struct {
+	RequestID string
+	PersonaID string
+	Intent    DeleteCandidateIntent
+	Scope     DeleteCandidateScope
+	Policy    DeleteCandidatePolicy
+}
+
+type DeleteCandidateIntent struct {
+	RawText             string
+	OperationPurpose    string
+	OperationTargetOnly bool
+}
+
+type DeleteCandidateScope struct {
+	SessionID           string
+	RecentPromptItemIDs []string
+	EntityIDs           []string
+	TimeWindow          map[string]string
+}
+
+type DeleteCandidatePolicy struct {
+	Limit                  int
+	AllowEpisodeCandidates bool
+	AllowFactCandidates    bool
+	IncludeSafeSummary     bool
+}
+
+type DeleteCandidate struct {
+	NodeType    string
+	NodeID      string
+	SafeSummary string
+	Score       float64
+	WhyMatched  []string
+	RiskFlags   []string
+}
+
+type DeleteCandidatesResult struct {
+	RequestID       string
+	Status          string
+	Degraded        bool
+	FallbackReason  string
+	PreviewHashSeed string
+	Candidates      []DeleteCandidate
+	Diagnostics     map[string]any
 }
 
 type ActivationRequest struct {
@@ -485,6 +579,170 @@ func (c *SidecarClient) FindCandidates(ctx context.Context, request CandidateReq
 	return result, nil
 }
 
+func (c *SidecarClient) DedupSearch(ctx context.Context, request DedupSearchRequest) (DedupSearchResult, error) {
+	endpoint, err := c.endpoint("/memory/dedup-search")
+	if err != nil {
+		return DedupSearchResult{}, err
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID == "" {
+		requestID = dedupSearchRequestID(request)
+	}
+	body, err := json.Marshal(map[string]any{
+		"schema_version": sidecarDedupSearchSchemaVersion,
+		"request_id":     requestID,
+		"persona_id":     strings.TrimSpace(request.PersonaID),
+		"candidate":      dedupSearchCandidateJSON(request.Candidate),
+		"policy":         dedupSearchPolicyJSON(request.Policy),
+	})
+	if err != nil {
+		return DedupSearchResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return DedupSearchResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return DedupSearchResult{}, fmt.Errorf("sidecar dedup search request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			return DedupSearchResult{}, fmt.Errorf("sidecar dedup search status %d", resp.StatusCode)
+		}
+		return DedupSearchResult{}, fmt.Errorf("sidecar dedup search status %d: %s", resp.StatusCode, message)
+	}
+	var response sidecarDedupSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return DedupSearchResult{}, fmt.Errorf("sidecar dedup search response decode: %w", err)
+	}
+	if response.SchemaVersion != sidecarDedupSearchSchemaVersion {
+		return DedupSearchResult{}, fmt.Errorf("sidecar dedup search response schema mismatch: %q", response.SchemaVersion)
+	}
+	if response.RequestID != requestID {
+		return DedupSearchResult{}, fmt.Errorf("sidecar dedup search response request_id mismatch: %q", response.RequestID)
+	}
+	result := DedupSearchResult{
+		RequestID:      response.RequestID,
+		Status:         response.Status,
+		Degraded:       response.Degraded,
+		FallbackReason: response.FallbackReason,
+		Candidates:     make([]DedupSearchCandidateResult, 0, len(response.Candidates)),
+		Diagnostics:    response.Diagnostics,
+	}
+	limit := request.Policy.Limit
+	if limit <= 0 {
+		limit = 12
+	}
+	for _, candidate := range response.Candidates {
+		if len(result.Candidates) >= limit {
+			break
+		}
+		nodeType := strings.TrimSpace(candidate.NodeType)
+		nodeID := strings.TrimSpace(candidate.NodeID)
+		score, ok := normalizedCandidateScore(candidate.Similarity)
+		if nodeType == "" || nodeID == "" || !ok {
+			continue
+		}
+		result.Candidates = append(result.Candidates, DedupSearchCandidateResult{
+			NodeType:    nodeType,
+			NodeID:      nodeID,
+			Similarity:  score,
+			MatchClass:  strings.TrimSpace(candidate.MatchClass),
+			MatchReason: strings.TrimSpace(candidate.MatchReason),
+			MergeHint:   strings.TrimSpace(candidate.MergeHint),
+		})
+	}
+	return result, nil
+}
+
+func (c *SidecarClient) DeleteCandidates(ctx context.Context, request DeleteCandidatesRequest) (DeleteCandidatesResult, error) {
+	endpoint, err := c.endpoint("/memory/delete-candidates")
+	if err != nil {
+		return DeleteCandidatesResult{}, err
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID == "" {
+		requestID = deleteCandidatesRequestID(request)
+	}
+	body, err := json.Marshal(map[string]any{
+		"schema_version": sidecarDeleteCandidatesSchemaVersion,
+		"request_id":     requestID,
+		"persona_id":     strings.TrimSpace(request.PersonaID),
+		"intent":         deleteCandidateIntentJSON(request.Intent),
+		"scope":          deleteCandidateScopeJSON(request.Scope),
+		"policy":         deleteCandidatePolicyJSON(request.Policy),
+	})
+	if err != nil {
+		return DeleteCandidatesResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return DeleteCandidatesResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates status %d", resp.StatusCode)
+		}
+		return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates status %d: %s", resp.StatusCode, message)
+	}
+	var response sidecarDeleteCandidatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates response decode: %w", err)
+	}
+	if response.SchemaVersion != sidecarDeleteCandidatesSchemaVersion {
+		return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates response schema mismatch: %q", response.SchemaVersion)
+	}
+	if response.RequestID != requestID {
+		return DeleteCandidatesResult{}, fmt.Errorf("sidecar delete candidates response request_id mismatch: %q", response.RequestID)
+	}
+	result := DeleteCandidatesResult{
+		RequestID:       response.RequestID,
+		Status:          response.Status,
+		Degraded:        response.Degraded,
+		FallbackReason:  response.FallbackReason,
+		PreviewHashSeed: strings.TrimSpace(response.PreviewHashSeed),
+		Candidates:      make([]DeleteCandidate, 0, len(response.Candidates)),
+		Diagnostics:     response.Diagnostics,
+	}
+	limit := request.Policy.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	for _, candidate := range response.Candidates {
+		if len(result.Candidates) >= limit {
+			break
+		}
+		nodeType := strings.TrimSpace(candidate.NodeType)
+		nodeID := strings.TrimSpace(candidate.NodeID)
+		score, ok := normalizedCandidateScore(candidate.Score)
+		if nodeType == "" || nodeID == "" || !ok {
+			continue
+		}
+		result.Candidates = append(result.Candidates, DeleteCandidate{
+			NodeType:    nodeType,
+			NodeID:      nodeID,
+			SafeSummary: strings.TrimSpace(candidate.SafeSummary),
+			Score:       score,
+			WhyMatched:  stringListJSON(candidate.WhyMatched),
+			RiskFlags:   stringListJSON(candidate.RiskFlags),
+		})
+	}
+	return result, nil
+}
+
 func (c *SidecarClient) ActivateGraph(ctx context.Context, request ActivationRequest) (ActivationResult, error) {
 	endpoint, err := c.endpoint("/retrieval/activate")
 	if err != nil {
@@ -697,6 +955,41 @@ type sidecarCandidateResponse struct {
 	Diagnostics sidecarCandidateDiagnostics `json:"diagnostics,omitempty"`
 }
 
+type sidecarDedupSearchResponse struct {
+	SchemaVersion  string `json:"schema_version"`
+	RequestID      string `json:"request_id,omitempty"`
+	Status         string `json:"status"`
+	Degraded       bool   `json:"degraded"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	Candidates     []struct {
+		NodeType    string  `json:"node_type"`
+		NodeID      string  `json:"node_id"`
+		Similarity  float64 `json:"similarity"`
+		MatchClass  string  `json:"match_class,omitempty"`
+		MatchReason string  `json:"match_reason,omitempty"`
+		MergeHint   string  `json:"merge_hint,omitempty"`
+	} `json:"candidates"`
+	Diagnostics map[string]any `json:"diagnostics,omitempty"`
+}
+
+type sidecarDeleteCandidatesResponse struct {
+	SchemaVersion   string `json:"schema_version"`
+	RequestID       string `json:"request_id,omitempty"`
+	Status          string `json:"status"`
+	Degraded        bool   `json:"degraded"`
+	FallbackReason  string `json:"fallback_reason,omitempty"`
+	PreviewHashSeed string `json:"preview_hash_seed,omitempty"`
+	Candidates      []struct {
+		NodeType    string   `json:"node_type"`
+		NodeID      string   `json:"node_id"`
+		SafeSummary string   `json:"safe_summary,omitempty"`
+		Score       float64  `json:"score"`
+		WhyMatched  []string `json:"why_matched,omitempty"`
+		RiskFlags   []string `json:"risk_flags,omitempty"`
+	} `json:"candidates"`
+	Diagnostics map[string]any `json:"diagnostics,omitempty"`
+}
+
 type sidecarCandidateDiagnostics struct {
 	QueryCount                   int            `json:"query_count,omitempty"`
 	RawQueryCount                int            `json:"raw_query_count,omitempty"`
@@ -861,6 +1154,41 @@ func candidateRequestID(request CandidateRequest) string {
 		strings.TrimSpace(queryText),
 		fmt.Sprintf("%d", request.Limit),
 	}, ":")
+}
+
+func dedupSearchRequestID(request DedupSearchRequest) string {
+	return strings.Join([]string{
+		"dedup",
+		strings.TrimSpace(request.PersonaID),
+		strings.TrimSpace(request.Candidate.CandidateID),
+		strings.TrimSpace(request.Candidate.SafeSummary),
+		fmt.Sprintf("%d", request.Policy.Limit),
+	}, ":")
+}
+
+func deleteCandidatesRequestID(request DeleteCandidatesRequest) string {
+	limit := request.Policy.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	return "delete-candidates:" + shortStableHash(
+		strings.TrimSpace(request.PersonaID),
+		strings.TrimSpace(request.Intent.RawText),
+		fmt.Sprintf("%d", limit),
+	)
+}
+
+func shortStableHash(values ...string) string {
+	hash := sha256.New()
+	for _, value := range values {
+		hash.Write([]byte(value))
+		hash.Write([]byte{0})
+	}
+	sum := fmt.Sprintf("%x", hash.Sum(nil))
+	if len(sum) > 16 {
+		return sum[:16]
+	}
+	return sum
 }
 
 func activationRequestID(request ActivationRequest) string {
@@ -1057,6 +1385,79 @@ func candidateSourceBreakdownFromResponse(values []struct {
 		})
 	}
 	return result
+}
+
+func dedupSearchCandidateJSON(candidate DedupSearchCandidate) map[string]any {
+	item := map[string]any{
+		"candidate_id":       strings.TrimSpace(candidate.CandidateID),
+		"safe_summary":       strings.TrimSpace(candidate.SafeSummary),
+		"fact_type":          strings.TrimSpace(candidate.FactType),
+		"predicate":          strings.TrimSpace(candidate.Predicate),
+		"subject_entity_id":  strings.TrimSpace(candidate.SubjectEntityID),
+		"object_literal":     strings.TrimSpace(candidate.ObjectLiteral),
+		"source_episode_ids": stringListJSON(candidate.SourceEpisodeIDs),
+	}
+	if candidate.ObjectEntityID != nil && strings.TrimSpace(*candidate.ObjectEntityID) != "" {
+		item["object_entity_id"] = strings.TrimSpace(*candidate.ObjectEntityID)
+	}
+	return item
+}
+
+func dedupSearchPolicyJSON(policy DedupSearchPolicy) map[string]any {
+	limit := policy.Limit
+	if limit <= 0 {
+		limit = 12
+	}
+	return map[string]any{
+		"limit":                limit,
+		"same_subject_boost":   policy.SameSubjectBoost,
+		"same_fact_type_boost": policy.SameFactTypeBoost,
+		"threshold_profile":    strings.TrimSpace(policy.ThresholdProfile),
+		"shadow":               policy.Shadow,
+	}
+}
+
+func deleteCandidateIntentJSON(intent DeleteCandidateIntent) map[string]any {
+	return map[string]any{
+		"raw_text":              strings.TrimSpace(intent.RawText),
+		"operation_purpose":     strings.TrimSpace(intent.OperationPurpose),
+		"operation_target_only": intent.OperationTargetOnly,
+	}
+}
+
+func deleteCandidateScopeJSON(scope DeleteCandidateScope) map[string]any {
+	item := map[string]any{
+		"recent_prompt_item_ids": stringListJSON(scope.RecentPromptItemIDs),
+		"entity_ids":             stringListJSON(scope.EntityIDs),
+	}
+	if strings.TrimSpace(scope.SessionID) != "" {
+		item["session_id"] = strings.TrimSpace(scope.SessionID)
+	}
+	if len(scope.TimeWindow) > 0 {
+		item["time_window"] = scope.TimeWindow
+	}
+	return item
+}
+
+func deleteCandidatePolicyJSON(policy DeleteCandidatePolicy) map[string]any {
+	limit := policy.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	allowEpisode := policy.AllowEpisodeCandidates
+	allowFact := policy.AllowFactCandidates
+	includeSafeSummary := policy.IncludeSafeSummary
+	if !allowEpisode && !allowFact && !includeSafeSummary {
+		allowEpisode = true
+		allowFact = true
+		includeSafeSummary = true
+	}
+	return map[string]any{
+		"limit":                    limit,
+		"allow_episode_candidates": allowEpisode,
+		"allow_fact_candidates":    allowFact,
+		"include_safe_summary":     includeSafeSummary,
+	}
 }
 
 func sanitizeDebugReason(value string, limit int) string {

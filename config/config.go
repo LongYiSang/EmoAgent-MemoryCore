@@ -26,6 +26,7 @@ type Config struct {
 	Retrieval         RetrievalConfig         `yaml:"retrieval" json:"retrieval"`
 	Sidecar           SidecarConfig           `yaml:"sidecar" json:"sidecar"`
 	Mirror            MirrorConfig            `yaml:"mirror" json:"mirror"`
+	SemanticOps       SemanticOpsConfig       `yaml:"semantic_ops" json:"semantic_ops"`
 	Retention         RetentionConfig         `yaml:"retention" json:"retention"`
 	ForgettingPrivacy ForgettingPrivacyConfig `yaml:"forgetting_privacy" json:"forgetting_privacy"`
 	AgentAffect       AgentAffectConfig       `yaml:"agent_affect" json:"agent_affect"`
@@ -309,6 +310,26 @@ type SidecarActivationBudgetConfig struct {
 	MaxEdgesScannedPerRequest int `yaml:"max_edges_scanned_per_request" json:"max_edges_scanned_per_request"`
 	MaxNeighborsPerNode       int `yaml:"max_neighbors_per_node" json:"max_neighbors_per_node"`
 	MaxWallMS                 int `yaml:"max_wall_ms" json:"max_wall_ms"`
+}
+
+type SemanticOpsConfig struct {
+	SemanticMirrorMetaEnabled       bool                 `yaml:"semantic_mirror_meta_enabled" json:"semantic_mirror_meta_enabled"`
+	SemanticSidecarAuthTokenEnabled bool                 `yaml:"semantic_sidecar_auth_token_enabled" json:"semantic_sidecar_auth_token_enabled"`
+	Dedup                           SemanticDedupConfig  `yaml:"dedup" json:"dedup"`
+	Forget                          SemanticForgetConfig `yaml:"forget" json:"forget"`
+}
+
+type SemanticDedupConfig struct {
+	Enabled          bool   `yaml:"enabled" json:"enabled"`
+	Shadow           bool   `yaml:"shadow" json:"shadow"`
+	Enforce          bool   `yaml:"enforce" json:"enforce"`
+	CandidateLimit   int    `yaml:"candidate_limit" json:"candidate_limit"`
+	ThresholdProfile string `yaml:"threshold_profile" json:"threshold_profile"`
+}
+
+type SemanticForgetConfig struct {
+	PreviewEnabled bool `yaml:"preview_enabled" json:"preview_enabled"`
+	ExecuteEnabled bool `yaml:"execute_enabled" json:"execute_enabled"`
 }
 
 type MirrorConfig struct {
@@ -684,6 +705,12 @@ func DefaultConfig() Config {
 			RebuildOnStart:      false,
 			StaleLagThresholdMS: 30000,
 		},
+		SemanticOps: SemanticOpsConfig{
+			Dedup: SemanticDedupConfig{
+				CandidateLimit:   12,
+				ThresholdProfile: "default_v0",
+			},
+		},
 		Retention: RetentionConfig{
 			Jobs: RetentionJobsConfig{
 				LazyDecay:            true,
@@ -796,6 +823,9 @@ func (c Config) Validate() error {
 	if c.Mirror.SyncLimit <= 0 {
 		return fmt.Errorf("mirror.sync_limit must be > 0")
 	}
+	if err := c.validateSemanticOps(); err != nil {
+		return err
+	}
 	if c.Retention.Jobs.MonthlyArchive && c.Retention.Thresholds.DeepArchiveAfterDays <= 0 {
 		return fmt.Errorf("retention.thresholds.deep_archive_after_days must be > 0 when retention.jobs.monthly_archive=true")
 	}
@@ -804,6 +834,16 @@ func (c Config) Validate() error {
 	}
 	if err := c.validateAgentAffect(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c Config) validateSemanticOps() error {
+	if c.SemanticOps.Dedup.CandidateLimit <= 0 {
+		return fmt.Errorf("semantic_ops.dedup.candidate_limit must be > 0")
+	}
+	if strings.TrimSpace(c.SemanticOps.Dedup.ThresholdProfile) == "" {
+		return fmt.Errorf("semantic_ops.dedup.threshold_profile is required")
 	}
 	return nil
 }
@@ -1170,6 +1210,21 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		EnableFTS:     c.Core.EnableFTS,
 		MirrorAdapter: adapter,
 		Extraction:    c.ExtractionOptions(),
+		SemanticOps: memorycore.SemanticOpsOptions{
+			SemanticMirrorMetaEnabled:       c.SemanticOps.SemanticMirrorMetaEnabled,
+			SemanticSidecarAuthTokenEnabled: c.SemanticOps.SemanticSidecarAuthTokenEnabled,
+			Dedup: memorycore.SemanticDedupOptions{
+				Enabled:          c.SemanticOps.Dedup.Enabled,
+				Shadow:           c.SemanticOps.Dedup.Shadow,
+				Enforce:          c.SemanticOps.Dedup.Enforce,
+				CandidateLimit:   c.SemanticOps.Dedup.CandidateLimit,
+				ThresholdProfile: c.SemanticOps.Dedup.ThresholdProfile,
+			},
+			Forget: memorycore.SemanticForgetOptions{
+				PreviewEnabled: c.SemanticOps.Forget.PreviewEnabled,
+				ExecuteEnabled: c.SemanticOps.Forget.ExecuteEnabled,
+			},
+		},
 		QueryAnalysis: memorycore.QueryAnalysisOptions{
 			Provider:                         provider,
 			Mode:                             memorycore.QueryAnalysisMode(runtimeQueryAnalysisMode(qa)),
@@ -1273,7 +1328,6 @@ func (c Config) ExtractionOptions() memorycore.ExtractionOptions {
 			MaxLinks:                 c.WritePolicy.Extraction.MaxLinksPerRequest,
 			RequireCleanGate:         false,
 			ApplyAcceptedFacts:       true,
-			ExecuteDeletionIntents:   true,
 		},
 		Runtime: memorycore.ExtractionRuntimeOptions{
 			Configured:    true,

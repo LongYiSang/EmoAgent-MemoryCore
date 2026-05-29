@@ -125,8 +125,9 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "安静的早晨", "用户喜欢安静的早晨。", episode.ID).Fact
 
 	previewReq := memorycore.ForgetPreviewRequest{
-		ScopeMode: memorycore.ForgetScopeEntity,
-		EntityID:  userID,
+		RequestedLevel: memorycore.ForgetLevelHard,
+		ScopeMode:      memorycore.ForgetScopeEntity,
+		EntityID:       userID,
 	}
 	preview, err := svc.PreviewForget(ctx, previewReq)
 	if err != nil {
@@ -145,10 +146,11 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 	}
 
 	executed, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
-		Level:          memorycore.ForgetLevelHard,
-		PreviewRequest: previewReq,
-		Preview:        *preview,
-		Confirmed:      true,
+		Level:            memorycore.ForgetLevelHard,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: []memorycore.ExactNodeRef{{NodeType: memorycore.ForgetNodeFact, NodeID: fact.ID}},
+		Confirmed:        true,
 	})
 	if err != nil {
 		t.Fatalf("execute entity forget: %v", err)
@@ -207,7 +209,7 @@ func TestServiceForgetResolverRecentPromptItemAndEpisodeWindow(t *testing.T) {
 	}
 }
 
-func TestServiceForgetResolverBroadTopicPreviewIsSafeAndNotExecutable(t *testing.T) {
+func TestServiceForgetResolverBroadTopicPreviewIsSafeAndRequiresExactSelection(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := openConsolidationService(t, ctx)
 	defer svc.Close()
@@ -217,9 +219,10 @@ func TestServiceForgetResolverBroadTopicPreviewIsSafeAndNotExecutable(t *testing
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "银行卡尾号4111", "用户的银行卡尾号是4111。", episode.ID).Fact
 
 	previewReq := memorycore.ForgetPreviewRequest{
-		ScopeMode: memorycore.ForgetScopeBroadTopic,
-		Topic:     "4111",
-		Limit:     5,
+		RequestedLevel: memorycore.ForgetLevelHard,
+		ScopeMode:      memorycore.ForgetScopeBroadTopic,
+		Topic:          "4111",
+		Limit:          5,
 	}
 	preview, err := svc.PreviewForget(ctx, previewReq)
 	if err != nil {
@@ -231,13 +234,18 @@ func TestServiceForgetResolverBroadTopicPreviewIsSafeAndNotExecutable(t *testing
 	if strings.Contains(preview.Targets[0].Summary, "4111") || strings.Contains(preview.Targets[0].SafeSummary, "4111") {
 		t.Fatalf("broad topic preview leaked raw semantic text: %#v", preview.Targets[0])
 	}
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
-		Level:          memorycore.ForgetLevelHard,
-		PreviewRequest: previewReq,
-		Preview:        *preview,
-		Confirmed:      true,
-	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
-		t.Fatalf("execute broad topic error = %v, want ErrInvalidRequest", err)
+	executed, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:            memorycore.ForgetLevelHard,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: []memorycore.ExactNodeRef{{NodeType: memorycore.ForgetNodeFact, NodeID: fact.ID}},
+		Confirmed:        true,
+	})
+	if err != nil {
+		t.Fatalf("execute broad topic exact selection: %v", err)
+	}
+	if executed.Executed != 1 {
+		t.Fatalf("executed = %d, want 1", executed.Executed)
 	}
 }
 
@@ -252,9 +260,10 @@ func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 	tea := consolidateLiteral(t, ctx, svc, userID, "likes", "茶", "用户喜欢茶。", episode.ID).Fact
 
 	req := memorycore.ForgetPreviewRequest{
-		ScopeMode: memorycore.ForgetScopeExactNode,
-		NodeType:  memorycore.ForgetNodeFact,
-		NodeID:    coffee.ID,
+		RequestedLevel: memorycore.ForgetLevelHard,
+		ScopeMode:      memorycore.ForgetScopeExactNode,
+		NodeType:       memorycore.ForgetNodeFact,
+		NodeID:         coffee.ID,
 	}
 	preview, err := svc.PreviewForget(ctx, req)
 	if err != nil {
@@ -263,10 +272,11 @@ func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 	forged := *preview
 	forged.Targets = []memorycore.ForgetResolvedTarget{{NodeType: memorycore.ForgetNodeFact, NodeID: tea.ID}}
 	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
-		Level:          memorycore.ForgetLevelHard,
-		PreviewRequest: req,
-		Preview:        forged,
-		Confirmed:      true,
+		Level:            memorycore.ForgetLevelHard,
+		PreviewRequest:   req,
+		PreviewHash:      forged.PreviewHash,
+		ConfirmedTargets: []memorycore.ExactNodeRef{{NodeType: memorycore.ForgetNodeFact, NodeID: tea.ID}},
+		Confirmed:        true,
 	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("execute forged preview error = %v, want ErrInvalidRequest", err)
 	}
@@ -276,6 +286,83 @@ func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 		t.Fatalf("retrieve tea after forged execute: %v", err)
 	}
 	requireMemoryItem(t, retrieved, tea.ID, tea.ContentSummary, "")
+}
+
+func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡和茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	coffee := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+	tea := consolidateLiteral(t, ctx, svc, userID, "likes", "茶", "用户喜欢茶。", episode.ID).Fact
+
+	previewReq := memorycore.ForgetPreviewRequest{
+		RequestID:      "req_preview_hash",
+		RequestedLevel: memorycore.ForgetLevelSoft,
+		ScopeMode:      memorycore.ForgetScopeEntity,
+		EntityID:       userID,
+	}
+	preview, err := svc.PreviewForget(ctx, previewReq)
+	if err != nil {
+		t.Fatalf("preview entity forget: %v", err)
+	}
+	if preview.PreviewHash == "" {
+		t.Fatal("preview hash is empty")
+	}
+
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:            memorycore.ForgetLevelSoft,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: nil,
+		Confirmed:        true,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("execute without exact targets err = %v, want ErrInvalidRequest", err)
+	}
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:            memorycore.ForgetLevelHard,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: []memorycore.ExactNodeRef{{NodeType: memorycore.ForgetNodeFact, NodeID: coffee.ID}},
+		Confirmed:        true,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) || !strings.Contains(err.Error(), "preview_level_mismatch") {
+		t.Fatalf("execute level mismatch err = %v, want preview_level_mismatch", err)
+	}
+
+	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+		Actor:      memorycore.ForgetActorUser,
+		ReasonCode: memorycore.ForgetReasonUserRequested,
+		Level:      memorycore.ForgetLevelSoft,
+		Target: memorycore.ForgetTarget{
+			ScopeMode: memorycore.ForgetScopeExactNode,
+			NodeType:  memorycore.ForgetNodeFact,
+			NodeID:    tea.ID,
+		},
+	}); err != nil {
+		t.Fatalf("pre-change soft forget tea: %v", err)
+	}
+
+	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		Level:            memorycore.ForgetLevelSoft,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: []memorycore.ExactNodeRef{{NodeType: memorycore.ForgetNodeFact, NodeID: coffee.ID}},
+		Confirmed:        true,
+	}); !errors.Is(err, memorycore.ErrInvalidRequest) || !strings.Contains(err.Error(), "preview_changed") {
+		t.Fatalf("execute changed preview err = %v, want preview_changed", err)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	var auditRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM semantic_decision_audit WHERE request_id = ? AND decision_type = 'forget_preview'`, "req_preview_hash").Scan(&auditRows); err != nil {
+		t.Fatalf("query semantic audit: %v", err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("forget preview audit rows = %d, want 1", auditRows)
+	}
 }
 
 func isFTSTablePresent(t *testing.T, db *sql.DB) bool {

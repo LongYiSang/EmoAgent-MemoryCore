@@ -60,6 +60,19 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 	if cfg.Retention.AutoDelete {
 		t.Fatal("retention.auto_delete default = true, want false")
 	}
+	if cfg.SemanticOps.SemanticMirrorMetaEnabled ||
+		cfg.SemanticOps.SemanticSidecarAuthTokenEnabled ||
+		cfg.SemanticOps.Dedup.Enabled ||
+		cfg.SemanticOps.Dedup.Shadow ||
+		cfg.SemanticOps.Dedup.Enforce ||
+		cfg.SemanticOps.Forget.PreviewEnabled ||
+		cfg.SemanticOps.Forget.ExecuteEnabled {
+		t.Fatalf("semantic ops defaults should be disabled: %#v", cfg.SemanticOps)
+	}
+	if cfg.SemanticOps.Dedup.CandidateLimit != 12 ||
+		cfg.SemanticOps.Dedup.ThresholdProfile != "default_v0" {
+		t.Fatalf("semantic dedup defaults = %#v", cfg.SemanticOps.Dedup)
+	}
 }
 
 func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
@@ -108,7 +121,7 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 		opts.Extraction.Provider.MaxTokens != 7000 ||
 		opts.Extraction.Provider.ResponseFormat != memorycore.ExtractionResponseFormatJSONSchema ||
 		opts.Extraction.Defaults.Mode != memorycore.ExtractionRunModeApply ||
-		!opts.Extraction.Defaults.ExecuteDeletionIntents ||
+		opts.Extraction.Defaults.ExecuteDeletionIntents ||
 		!opts.Extraction.Runtime.UsePreFilter ||
 		!opts.Extraction.Runtime.RepairEnabled ||
 		opts.Extraction.Audit.Enabled ||
@@ -161,6 +174,50 @@ core:
 		cfg.Retrieval.FinalMemoryCount != 8 ||
 		cfg.AgentAffect.Retrieval.WeightCap != 0.03 {
 		t.Fatalf("defaults not applied: pipelines=%#v retrieval=%#v affect=%#v", cfg.Pipelines, cfg.Retrieval, cfg.AgentAffect)
+	}
+}
+
+func TestSemanticOpsConfigMapsFeatureFlagsToOptions(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: ./semantic.db
+sidecar:
+  enabled: true
+  url: http://127.0.0.1:8765
+semantic_ops:
+  semantic_mirror_meta_enabled: true
+  semantic_sidecar_auth_token_enabled: true
+  dedup:
+    enabled: true
+    shadow: true
+    enforce: false
+    candidate_limit: 7
+    threshold_profile: conservative_v1
+  forget:
+    preview_enabled: true
+    execute_enabled: false
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		t.Fatalf("ToOptions: %v", err)
+	}
+	if !opts.SemanticOps.SemanticMirrorMetaEnabled ||
+		!opts.SemanticOps.SemanticSidecarAuthTokenEnabled ||
+		!opts.SemanticOps.Dedup.Enabled ||
+		!opts.SemanticOps.Dedup.Shadow ||
+		opts.SemanticOps.Dedup.Enforce ||
+		opts.SemanticOps.Dedup.CandidateLimit != 7 ||
+		opts.SemanticOps.Dedup.ThresholdProfile != "conservative_v1" ||
+		!opts.SemanticOps.Forget.PreviewEnabled ||
+		opts.SemanticOps.Forget.ExecuteEnabled {
+		t.Fatalf("semantic options = %#v", opts.SemanticOps)
 	}
 }
 

@@ -90,6 +90,97 @@ func TestRunExtractionFacadeMinimalOptionsUseSafeDefaults(t *testing.T) {
 	}
 }
 
+func TestRunExtractionSemanticDedupShadowRecordsDiagnosticsWithoutChangingApply(t *testing.T) {
+	ctx := context.Background()
+	adapter := &semanticDedupTestAdapter{}
+	svc := openExtractionSemanticTestService(t, ctx, mockExtractionOptions(), SemanticOpsOptions{
+		Dedup: SemanticDedupOptions{Enabled: true, Shadow: true, CandidateLimit: 12, ThresholdProfile: "default_v0"},
+	}, adapter)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_semantic_shadow", "ep_seed", "我讨厌晨间会议。")
+	existing := seedExtractionFact(t, ctx, svc, "ent_user_session_semantic_shadow", "晨间会议", "用户讨厌晨间会议。", "ep_seed")
+	adapter.dedupResult = &MirrorDedupSearchResult{
+		Status: "ok",
+		Candidates: []MirrorDedupSearchCandidate{{
+			NodeType:    ForgetNodeFact,
+			NodeID:      existing.Fact.ID,
+			Similarity:  0.97,
+			MatchClass:  "near_duplicate",
+			MatchReason: "same_subject_similar_object",
+		}},
+	}
+	if _, err := svc.AppendEpisode(ctx, AppendEpisodeRequest{ID: "ep_shadow", SessionID: "session_semantic_shadow", Role: RoleUser, Content: "我不喜欢早上八点开会。", SourceType: SourceTypeChat}); err != nil {
+		t.Fatalf("append episode: %v", err)
+	}
+
+	sessionID := "session_semantic_shadow"
+	result, err := svc.RunExtraction(ctx, RunExtractionRequest{
+		SessionID: &sessionID,
+		Mode:      ExtractionRunModeApply,
+		Build:     &ExtractionBuildSelector{EpisodeIDs: []string{"ep_shadow"}, SessionID: &sessionID, Limit: 1},
+		Force:     true,
+	})
+	if err != nil {
+		t.Fatalf("RunExtraction: %v", err)
+	}
+	if result.DedupDiagnostics == nil || !result.DedupDiagnostics.Ran || !result.DedupDiagnostics.Shadow || result.DedupDiagnostics.CandidateCount != 1 {
+		t.Fatalf("dedup diagnostics = %#v, want shadow candidate", result.DedupDiagnostics)
+	}
+	if len(result.DedupDiagnostics.Decisions) != 1 || result.DedupDiagnostics.Decisions[0].Action != "review_or_merge" {
+		t.Fatalf("dedup decisions = %#v, want shadow review_or_merge", result.DedupDiagnostics.Decisions)
+	}
+	if result.AppliedCount != 1 || extractionFactCount(t, svc) != 2 {
+		t.Fatalf("applied/facts = %d/%d, want shadow to keep normal apply", result.AppliedCount, extractionFactCount(t, svc))
+	}
+}
+
+func TestRunExtractionSemanticDedupEnforceDiscardsAuthorityCheckedDuplicate(t *testing.T) {
+	ctx := context.Background()
+	adapter := &semanticDedupTestAdapter{}
+	svc := openExtractionSemanticTestService(t, ctx, mockExtractionOptions(), SemanticOpsOptions{
+		Dedup: SemanticDedupOptions{Enabled: true, Enforce: true, CandidateLimit: 12, ThresholdProfile: "default_v0"},
+	}, adapter)
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_semantic_enforce", "ep_seed", "我讨厌晨间会议。")
+	existing := seedExtractionFact(t, ctx, svc, "ent_user_session_semantic_enforce", "晨间会议", "用户讨厌晨间会议。", "ep_seed")
+	adapter.dedupResult = &MirrorDedupSearchResult{
+		Status: "ok",
+		Candidates: []MirrorDedupSearchCandidate{{
+			NodeType:    ForgetNodeFact,
+			NodeID:      existing.Fact.ID,
+			Similarity:  0.97,
+			MatchClass:  "near_duplicate",
+			MatchReason: "same_subject_similar_object",
+		}},
+	}
+	if _, err := svc.AppendEpisode(ctx, AppendEpisodeRequest{ID: "ep_enforce", SessionID: "session_semantic_enforce", Role: RoleUser, Content: "我不喜欢早上八点开会。", SourceType: SourceTypeChat}); err != nil {
+		t.Fatalf("append episode: %v", err)
+	}
+
+	sessionID := "session_semantic_enforce"
+	result, err := svc.RunExtraction(ctx, RunExtractionRequest{
+		SessionID: &sessionID,
+		Mode:      ExtractionRunModeApply,
+		Build:     &ExtractionBuildSelector{EpisodeIDs: []string{"ep_enforce"}, SessionID: &sessionID, Limit: 1},
+		Force:     true,
+	})
+	if err != nil {
+		t.Fatalf("RunExtraction: %v", err)
+	}
+	if result.DedupDiagnostics == nil || result.DedupDiagnostics.Shadow || len(result.DedupDiagnostics.Decisions) != 1 {
+		t.Fatalf("dedup diagnostics = %#v, want enforce decision", result.DedupDiagnostics)
+	}
+	if result.DedupDiagnostics.Decisions[0].Action != ConsolidationActionDiscardDuplicate {
+		t.Fatalf("dedup action = %#v, want discard_duplicate", result.DedupDiagnostics.Decisions)
+	}
+	if result.AppliedCount != 0 || extractionFactCount(t, svc) != 1 {
+		t.Fatalf("applied/facts = %d/%d, want semantic duplicate discarded", result.AppliedCount, extractionFactCount(t, svc))
+	}
+	if result.Status != ExtractionRunStatusNothingApplied {
+		t.Fatalf("status = %q, want nothing_applied", result.Status)
+	}
+}
+
 func TestRunExtractionFacadeRawLogEnabledWithoutDirectoryFails(t *testing.T) {
 	ctx := context.Background()
 	svc := openExtractionTestService(t, ctx, mockExtractionOptions())
@@ -144,6 +235,13 @@ func TestRunExtractionFacadeManualForgetRoutesOnlyAndDoesNotWriteFact(t *testing
 	}
 	if got := extractionFactCount(t, svc); got != 0 {
 		t.Fatalf("manual forget fact count = %d, want 0", got)
+	}
+}
+
+func TestNormalizeExtractionOptionsKeepsDeletionIntentsPreviewOnlyByDefault(t *testing.T) {
+	opts := normalizeExtractionOptions(ExtractionOptions{})
+	if opts.Defaults.ExecuteDeletionIntents {
+		t.Fatal("ExecuteDeletionIntents = true, want false by default")
 	}
 }
 
@@ -692,6 +790,97 @@ func openExtractionTestService(t *testing.T, ctx context.Context, extraction Ext
 		t.Fatalf("open service: %v", err)
 	}
 	return svc
+}
+
+func openExtractionSemanticTestService(t *testing.T, ctx context.Context, extraction ExtractionOptions, semantic SemanticOpsOptions, adapter MirrorAdapter) Service {
+	t.Helper()
+	svc, err := Open(ctx, Options{
+		DBPath:        filepath.Join(t.TempDir(), "memory.db"),
+		AutoMigrate:   true,
+		EnableFTS:     false,
+		MirrorAdapter: adapter,
+		Extraction:    extraction,
+		SemanticOps:   semantic,
+	})
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	return svc
+}
+
+func seedExtractionFact(t *testing.T, ctx context.Context, svc Service, subjectEntityID string, object string, summary string, sourceEpisodeID string) *ConsolidationResult {
+	t.Helper()
+	inserted, err := svc.ConsolidateCandidate(ctx, ConsolidateCandidateRequest{
+		Candidate: ManualFactCandidate{
+			SubjectEntityID:  subjectEntityID,
+			Predicate:        "dislikes",
+			ObjectLiteral:    stringPtrValue(object),
+			ContentSummary:   summary,
+			SourceEpisodeIDs: []string{sourceEpisodeID},
+			Confidence:       ConfidenceExplicit,
+			Importance:       0.8,
+		},
+		Policy: ConsolidationPolicy{Approved: true},
+	})
+	if err != nil {
+		t.Fatalf("seed fact: %v", err)
+	}
+	if inserted.Fact == nil {
+		t.Fatalf("seed fact result = %#v", inserted)
+	}
+	return inserted
+}
+
+type semanticDedupTestAdapter struct {
+	dedupCalls  int
+	dedupResult *MirrorDedupSearchResult
+	dedupErr    error
+	lastDedup   MirrorDedupSearchRequest
+
+	deleteCalls  int
+	deleteResult *MirrorDeleteCandidatesResult
+	deleteErr    error
+	lastDelete   MirrorDeleteCandidatesRequest
+}
+
+func (a *semanticDedupTestAdapter) UpsertNode(ctx context.Context, payload MirrorNodePayload) (MirrorNodeUpsertResult, error) {
+	return MirrorNodeUpsertResult{}, nil
+}
+
+func (a *semanticDedupTestAdapter) DeleteNode(ctx context.Context, ref MirrorNodeRef) error {
+	return nil
+}
+
+func (a *semanticDedupTestAdapter) UpsertEdge(ctx context.Context, payload MirrorEdgePayload) error {
+	return nil
+}
+
+func (a *semanticDedupTestAdapter) DeleteEdge(ctx context.Context, ref MirrorEdgeRef) error {
+	return nil
+}
+
+func (a *semanticDedupTestAdapter) DedupSearch(ctx context.Context, req MirrorDedupSearchRequest) (*MirrorDedupSearchResult, error) {
+	a.dedupCalls++
+	a.lastDedup = req
+	if a.dedupErr != nil {
+		return nil, a.dedupErr
+	}
+	if a.dedupResult == nil {
+		return &MirrorDedupSearchResult{Status: "ok"}, nil
+	}
+	return a.dedupResult, nil
+}
+
+func (a *semanticDedupTestAdapter) DeleteCandidates(ctx context.Context, req MirrorDeleteCandidatesRequest) (*MirrorDeleteCandidatesResult, error) {
+	a.deleteCalls++
+	a.lastDelete = req
+	if a.deleteErr != nil {
+		return nil, a.deleteErr
+	}
+	if a.deleteResult == nil {
+		return &MirrorDeleteCandidatesResult{Status: "ok"}, nil
+	}
+	return a.deleteResult, nil
 }
 
 func mockExtractionOptions() ExtractionOptions {

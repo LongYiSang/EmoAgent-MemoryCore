@@ -125,6 +125,97 @@ type MirrorCandidateResult struct {
 	Diagnostics            MirrorCandidateSidecarDiagnostics `json:"diagnostics,omitempty"`
 }
 
+type MirrorDedupSearchRequest struct {
+	RequestID string                  `json:"request_id,omitempty"`
+	PersonaID string                  `json:"persona_id"`
+	Candidate MirrorDedupCandidate    `json:"candidate"`
+	Policy    MirrorDedupSearchPolicy `json:"policy"`
+}
+
+type MirrorDedupCandidate struct {
+	CandidateID      string   `json:"candidate_id"`
+	SafeSummary      string   `json:"safe_summary"`
+	FactType         string   `json:"fact_type,omitempty"`
+	Predicate        string   `json:"predicate,omitempty"`
+	SubjectEntityID  string   `json:"subject_entity_id,omitempty"`
+	ObjectEntityID   *string  `json:"object_entity_id,omitempty"`
+	ObjectLiteral    string   `json:"object_literal,omitempty"`
+	SourceEpisodeIDs []string `json:"source_episode_ids,omitempty"`
+}
+
+type MirrorDedupSearchPolicy struct {
+	Limit             int    `json:"limit,omitempty"`
+	SameSubjectBoost  bool   `json:"same_subject_boost,omitempty"`
+	SameFactTypeBoost bool   `json:"same_fact_type_boost,omitempty"`
+	ThresholdProfile  string `json:"threshold_profile,omitempty"`
+	Shadow            bool   `json:"shadow,omitempty"`
+}
+
+type MirrorDedupSearchResult struct {
+	RequestID      string                       `json:"request_id,omitempty"`
+	Status         string                       `json:"status"`
+	Degraded       bool                         `json:"degraded"`
+	FallbackReason string                       `json:"fallback_reason,omitempty"`
+	Candidates     []MirrorDedupSearchCandidate `json:"candidates"`
+	Diagnostics    map[string]any               `json:"diagnostics,omitempty"`
+}
+
+type MirrorDedupSearchCandidate struct {
+	NodeType    string  `json:"node_type"`
+	NodeID      string  `json:"node_id"`
+	Similarity  float64 `json:"similarity"`
+	MatchClass  string  `json:"match_class,omitempty"`
+	MatchReason string  `json:"match_reason,omitempty"`
+	MergeHint   string  `json:"merge_hint,omitempty"`
+}
+
+type MirrorDeleteCandidatesRequest struct {
+	RequestID string                      `json:"request_id,omitempty"`
+	PersonaID string                      `json:"persona_id"`
+	Intent    MirrorDeleteCandidateIntent `json:"intent"`
+	Scope     MirrorDeleteCandidateScope  `json:"scope,omitempty"`
+	Policy    MirrorDeleteCandidatePolicy `json:"policy,omitempty"`
+}
+
+type MirrorDeleteCandidateIntent struct {
+	RawText             string `json:"raw_text"`
+	OperationPurpose    string `json:"operation_purpose"`
+	OperationTargetOnly bool   `json:"operation_target_only"`
+}
+
+type MirrorDeleteCandidateScope struct {
+	SessionID           string            `json:"session_id,omitempty"`
+	RecentPromptItemIDs []string          `json:"recent_prompt_item_ids,omitempty"`
+	EntityIDs           []string          `json:"entity_ids,omitempty"`
+	TimeWindow          map[string]string `json:"time_window,omitempty"`
+}
+
+type MirrorDeleteCandidatePolicy struct {
+	Limit                  int  `json:"limit,omitempty"`
+	AllowEpisodeCandidates bool `json:"allow_episode_candidates,omitempty"`
+	AllowFactCandidates    bool `json:"allow_fact_candidates,omitempty"`
+	IncludeSafeSummary     bool `json:"include_safe_summary,omitempty"`
+}
+
+type MirrorDeleteCandidatesResult struct {
+	RequestID       string                  `json:"request_id,omitempty"`
+	Status          string                  `json:"status"`
+	Degraded        bool                    `json:"degraded"`
+	FallbackReason  string                  `json:"fallback_reason,omitempty"`
+	PreviewHashSeed string                  `json:"preview_hash_seed,omitempty"`
+	Candidates      []MirrorDeleteCandidate `json:"candidates"`
+	Diagnostics     map[string]any          `json:"diagnostics,omitempty"`
+}
+
+type MirrorDeleteCandidate struct {
+	NodeType    string   `json:"node_type"`
+	NodeID      string   `json:"node_id"`
+	SafeSummary string   `json:"safe_summary,omitempty"`
+	Score       float64  `json:"score"`
+	WhyMatched  []string `json:"why_matched,omitempty"`
+	RiskFlags   []string `json:"risk_flags,omitempty"`
+}
+
 type MirrorActivationRequest struct {
 	PersonaID string                 `json:"persona_id"`
 	Seeds     []MirrorActivationSeed `json:"seeds"`
@@ -236,6 +327,14 @@ type MirrorNamespaceAdapter interface {
 
 type MirrorCandidateAdapter interface {
 	FindCandidates(ctx context.Context, req MirrorCandidateRequest) (*MirrorCandidateResult, error)
+}
+
+type MirrorDedupSearchAdapter interface {
+	DedupSearch(ctx context.Context, req MirrorDedupSearchRequest) (*MirrorDedupSearchResult, error)
+}
+
+type MirrorDeleteCandidatesAdapter interface {
+	DeleteCandidates(ctx context.Context, req MirrorDeleteCandidatesRequest) (*MirrorDeleteCandidatesResult, error)
 }
 
 type MirrorActivationAdapter interface {

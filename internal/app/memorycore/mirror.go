@@ -441,6 +441,99 @@ func (a sidecarMirrorAdapter) FindCandidates(ctx context.Context, req MirrorCand
 	return out, nil
 }
 
+func (a sidecarMirrorAdapter) DedupSearch(ctx context.Context, req MirrorDedupSearchRequest) (*MirrorDedupSearchResult, error) {
+	result, err := a.client.DedupSearch(ctx, internalmirror.DedupSearchRequest{
+		RequestID: req.RequestID,
+		PersonaID: req.PersonaID,
+		Candidate: internalmirror.DedupSearchCandidate{
+			CandidateID:      req.Candidate.CandidateID,
+			SafeSummary:      req.Candidate.SafeSummary,
+			FactType:         req.Candidate.FactType,
+			Predicate:        req.Candidate.Predicate,
+			SubjectEntityID:  req.Candidate.SubjectEntityID,
+			ObjectEntityID:   req.Candidate.ObjectEntityID,
+			ObjectLiteral:    req.Candidate.ObjectLiteral,
+			SourceEpisodeIDs: append([]string(nil), req.Candidate.SourceEpisodeIDs...),
+		},
+		Policy: internalmirror.DedupSearchPolicy{
+			Limit:             req.Policy.Limit,
+			SameSubjectBoost:  req.Policy.SameSubjectBoost,
+			SameFactTypeBoost: req.Policy.SameFactTypeBoost,
+			ThresholdProfile:  req.Policy.ThresholdProfile,
+			Shadow:            req.Policy.Shadow,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &MirrorDedupSearchResult{
+		RequestID:      result.RequestID,
+		Status:         result.Status,
+		Degraded:       result.Degraded,
+		FallbackReason: result.FallbackReason,
+		Candidates:     make([]MirrorDedupSearchCandidate, 0, len(result.Candidates)),
+		Diagnostics:    result.Diagnostics,
+	}
+	for _, candidate := range result.Candidates {
+		out.Candidates = append(out.Candidates, MirrorDedupSearchCandidate{
+			NodeType:    candidate.NodeType,
+			NodeID:      candidate.NodeID,
+			Similarity:  candidate.Similarity,
+			MatchClass:  candidate.MatchClass,
+			MatchReason: candidate.MatchReason,
+			MergeHint:   candidate.MergeHint,
+		})
+	}
+	return out, nil
+}
+
+func (a sidecarMirrorAdapter) DeleteCandidates(ctx context.Context, req MirrorDeleteCandidatesRequest) (*MirrorDeleteCandidatesResult, error) {
+	result, err := a.client.DeleteCandidates(ctx, internalmirror.DeleteCandidatesRequest{
+		RequestID: req.RequestID,
+		PersonaID: req.PersonaID,
+		Intent: internalmirror.DeleteCandidateIntent{
+			RawText:             req.Intent.RawText,
+			OperationPurpose:    req.Intent.OperationPurpose,
+			OperationTargetOnly: req.Intent.OperationTargetOnly,
+		},
+		Scope: internalmirror.DeleteCandidateScope{
+			SessionID:           req.Scope.SessionID,
+			RecentPromptItemIDs: append([]string(nil), req.Scope.RecentPromptItemIDs...),
+			EntityIDs:           append([]string(nil), req.Scope.EntityIDs...),
+			TimeWindow:          cloneStringMap(req.Scope.TimeWindow),
+		},
+		Policy: internalmirror.DeleteCandidatePolicy{
+			Limit:                  req.Policy.Limit,
+			AllowEpisodeCandidates: req.Policy.AllowEpisodeCandidates,
+			AllowFactCandidates:    req.Policy.AllowFactCandidates,
+			IncludeSafeSummary:     req.Policy.IncludeSafeSummary,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &MirrorDeleteCandidatesResult{
+		RequestID:       result.RequestID,
+		Status:          result.Status,
+		Degraded:        result.Degraded,
+		FallbackReason:  result.FallbackReason,
+		PreviewHashSeed: result.PreviewHashSeed,
+		Candidates:      make([]MirrorDeleteCandidate, 0, len(result.Candidates)),
+		Diagnostics:     result.Diagnostics,
+	}
+	for _, candidate := range result.Candidates {
+		out.Candidates = append(out.Candidates, MirrorDeleteCandidate{
+			NodeType:    candidate.NodeType,
+			NodeID:      candidate.NodeID,
+			SafeSummary: candidate.SafeSummary,
+			Score:       candidate.Score,
+			WhyMatched:  append([]string(nil), candidate.WhyMatched...),
+			RiskFlags:   append([]string(nil), candidate.RiskFlags...),
+		})
+	}
+	return out, nil
+}
+
 func mirrorCandidateSourceBreakdownFromInternal(values []internalmirror.CandidateSourceBreakdown) []MirrorCandidateSourceBreakdown {
 	result := make([]MirrorCandidateSourceBreakdown, 0, len(values))
 	for _, value := range values {

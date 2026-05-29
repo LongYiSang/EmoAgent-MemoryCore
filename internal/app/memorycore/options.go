@@ -12,6 +12,27 @@ type Options struct {
 	QueryAnalysis     QueryAnalysisOptions
 	SidecarResilience SidecarResilienceOptions
 	Extraction        ExtractionOptions
+	SemanticOps       SemanticOpsOptions
+}
+
+type SemanticOpsOptions struct {
+	SemanticMirrorMetaEnabled       bool
+	SemanticSidecarAuthTokenEnabled bool
+	Dedup                           SemanticDedupOptions
+	Forget                          SemanticForgetOptions
+}
+
+type SemanticDedupOptions struct {
+	Enabled          bool   `json:"enabled,omitempty"`
+	Shadow           bool   `json:"shadow,omitempty"`
+	Enforce          bool   `json:"enforce,omitempty"`
+	CandidateLimit   int    `json:"candidate_limit,omitempty"`
+	ThresholdProfile string `json:"threshold_profile,omitempty"`
+}
+
+type SemanticForgetOptions struct {
+	PreviewEnabled bool
+	ExecuteEnabled bool
 }
 
 type ExtractionOptions struct {

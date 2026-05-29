@@ -15,6 +15,8 @@ type (
 	ConsolidationPolicy                 = appcore.ConsolidationPolicy
 	ConsolidationResult                 = appcore.ConsolidationResult
 	DeletionIntentRoute                 = appcore.DeletionIntentRoute
+	DedupDecision                       = appcore.DedupDecision
+	DedupDiagnostics                    = appcore.DedupDiagnostics
 	DryRunSummary                       = appcore.DryRunSummary
 	EndSessionRequest                   = appcore.EndSessionRequest
 	EnsureEntityRequest                 = appcore.EnsureEntityRequest
@@ -32,6 +34,7 @@ type (
 	ExtractedLinkCandidate              = appcore.ExtractedLinkCandidate
 	ExtractedPinIntent                  = appcore.ExtractedPinIntent
 	ExtractedRejectedCandidate          = appcore.ExtractedRejectedCandidate
+	ExactNodeRef                        = appcore.ExactNodeRef
 	ExtractionApplyResult               = appcore.ExtractionApplyResult
 	ExtractionBatchRequest              = appcore.ExtractionBatchRequest
 	ExtractionBatchResult               = appcore.ExtractionBatchResult
@@ -115,6 +118,19 @@ type (
 	MirrorCandidateDiagnostics          = appcore.MirrorCandidateDiagnostics
 	MirrorCandidateRequest              = appcore.MirrorCandidateRequest
 	MirrorCandidateResult               = appcore.MirrorCandidateResult
+	MirrorDedupCandidate                = appcore.MirrorDedupCandidate
+	MirrorDedupSearchAdapter            = appcore.MirrorDedupSearchAdapter
+	MirrorDedupSearchCandidate          = appcore.MirrorDedupSearchCandidate
+	MirrorDedupSearchPolicy             = appcore.MirrorDedupSearchPolicy
+	MirrorDedupSearchRequest            = appcore.MirrorDedupSearchRequest
+	MirrorDedupSearchResult             = appcore.MirrorDedupSearchResult
+	MirrorDeleteCandidate               = appcore.MirrorDeleteCandidate
+	MirrorDeleteCandidateIntent         = appcore.MirrorDeleteCandidateIntent
+	MirrorDeleteCandidatePolicy         = appcore.MirrorDeleteCandidatePolicy
+	MirrorDeleteCandidateScope          = appcore.MirrorDeleteCandidateScope
+	MirrorDeleteCandidatesAdapter       = appcore.MirrorDeleteCandidatesAdapter
+	MirrorDeleteCandidatesRequest       = appcore.MirrorDeleteCandidatesRequest
+	MirrorDeleteCandidatesResult        = appcore.MirrorDeleteCandidatesResult
 	MirrorEdgePayload                   = appcore.MirrorEdgePayload
 	MirrorEdgeRef                       = appcore.MirrorEdgeRef
 	MirrorNamespaceAdapter              = appcore.MirrorNamespaceAdapter
@@ -168,6 +184,9 @@ type (
 	RunMirrorSyncRequest                = appcore.RunMirrorSyncRequest
 	RunMirrorSyncResult                 = appcore.RunMirrorSyncResult
 	RunExtractionRequest                = appcore.RunExtractionRequest
+	SemanticDedupOptions                = appcore.SemanticDedupOptions
+	SemanticForgetOptions               = appcore.SemanticForgetOptions
+	SemanticOpsOptions                  = appcore.SemanticOpsOptions
 	SidecarActivationBudgetOptions      = appcore.SidecarActivationBudgetOptions
 	SidecarBreakerMode                  = appcore.SidecarBreakerMode
 	SidecarBreakerOptions               = appcore.SidecarBreakerOptions
@@ -291,6 +310,7 @@ const (
 	ForgetScopeExactNode                      = appcore.ForgetScopeExactNode
 	ForgetScopeRecentEpisodeWindow            = appcore.ForgetScopeRecentEpisodeWindow
 	ForgetScopeRecentPromptItem               = appcore.ForgetScopeRecentPromptItem
+	ForgetScopeSemanticQuery                  = appcore.ForgetScopeSemanticQuery
 	ForgottenPlaceholder                      = appcore.ForgottenPlaceholder
 	MemoryAbilityBoundary                     = appcore.MemoryAbilityBoundary
 	MemoryAbilityCausalExplain                = appcore.MemoryAbilityCausalExplain

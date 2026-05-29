@@ -16,6 +16,10 @@ from memorycore_sidecar.protocol import (
     CANDIDATE_RESPONSE_SCHEMA_VERSION,
     CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION,
     CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION,
+    DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+    DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION,
+    DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+    DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION,
     EVAL_CONFIG_REQUEST_SCHEMA_VERSION,
     QUERY_ANALYSIS_REQUEST_SCHEMA_VERSION,
     QUERY_ANALYSIS_RESPONSE_SCHEMA_VERSION,
@@ -25,12 +29,16 @@ from memorycore_sidecar.protocol import (
     RESPONSE_SCHEMA_VERSION,
     ProtocolError,
     build_activation_result,
+    build_dedup_search_result,
+    build_delete_candidates_result,
     build_query_analysis_result,
     build_rerank_result,
     build_result,
     parse_activation_request,
     parse_candidate_request,
     parse_clear_namespace_request,
+    parse_dedup_search_request,
+    parse_delete_candidates_request,
     parse_eval_config_request,
     parse_operation_request,
     parse_query_analysis_request,
@@ -207,6 +215,63 @@ def test_parse_candidate_request_rejects_non_boolean_debug_scores():
                 "query": {"raw_text": "coffee"},
             }
         )
+
+
+def test_parse_dedup_search_request_requires_safe_summary():
+    with pytest.raises(ProtocolError, match="safe_summary"):
+        parse_dedup_search_request(
+            {
+                "schema_version": DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+                "request_id": "dedup-1",
+                "persona_id": "default",
+                "candidate": {"candidate_id": "cand-1"},
+                "policy": {"limit": 12, "shadow": True},
+            }
+        )
+
+
+def test_parse_delete_candidates_request_accepts_operation_target_only():
+    request = parse_delete_candidates_request(
+        {
+            "schema_version": DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION,
+            "request_id": "delete-1",
+            "persona_id": "default",
+            "intent": {
+                "raw_text": "忘掉我之前说的那个忌口",
+                "operation_purpose": "forget_delete",
+                "operation_target_only": True,
+            },
+            "scope": {"session_id": "s1", "entity_ids": ["ent_user"]},
+            "policy": {
+                "limit": 20,
+                "allow_episode_candidates": True,
+                "allow_fact_candidates": True,
+                "include_safe_summary": True,
+            },
+        }
+    )
+
+    assert request["schema_version"] == DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION
+    assert request["intent"]["operation_target_only"] is True
+    assert request["scope"]["session_id"] == "s1"
+    assert request["policy"]["limit"] == 20
+
+
+def test_build_semantic_memory_results_use_dedicated_schema():
+    dedup = build_dedup_search_result(
+        "dedup-1",
+        candidates=[{"node_type": "fact", "node_id": "fact-1", "similarity": 0.9}],
+    )
+    delete = build_delete_candidates_result(
+        "delete-1",
+        candidates=[{"node_type": "fact", "node_id": "fact-1", "safe_summary": "safe", "score": 0.9}],
+        preview_hash_seed="seed-1",
+    )
+
+    assert dedup["schema_version"] == DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION
+    assert dedup["request_id"] == "dedup-1"
+    assert delete["schema_version"] == DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION
+    assert delete["preview_hash_seed"] == "seed-1"
 
 
 def test_parse_query_analysis_request_preserves_go_context_fields():

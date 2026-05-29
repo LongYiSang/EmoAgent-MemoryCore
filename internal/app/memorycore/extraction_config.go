@@ -32,7 +32,6 @@ func normalizeExtractionOptions(opts ExtractionOptions) ExtractionOptions {
 	if !opts.Defaults.Configured {
 		opts.Defaults.AllowInference = true
 		opts.Defaults.ApplyAcceptedFacts = true
-		opts.Defaults.ExecuteDeletionIntents = true
 	}
 	if !opts.Runtime.Configured {
 		opts.Runtime.RepairEnabled = true

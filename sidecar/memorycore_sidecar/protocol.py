@@ -10,6 +10,10 @@ CLEAR_NAMESPACE_REQUEST_SCHEMA_VERSION = "memory_mirror_clear_namespace.v0.1"
 CLEAR_NAMESPACE_RESPONSE_SCHEMA_VERSION = "memory_mirror_clear_namespace_result.v0.1"
 CANDIDATE_REQUEST_SCHEMA_VERSION = "memory_mirror_candidate_request.v0.2"
 CANDIDATE_RESPONSE_SCHEMA_VERSION = "memory_mirror_candidates.v0.2"
+DEDUP_SEARCH_REQUEST_SCHEMA_VERSION = "memory_dedup_search.v0.1"
+DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION = "memory_dedup_search.v0.1"
+DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION = "memory_delete_candidates.v0.1"
+DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION = "memory_delete_candidates.v0.1"
 ACTIVATION_REQUEST_SCHEMA_VERSION = "memory_graph_activation_request.v0.1"
 ACTIVATION_RESPONSE_SCHEMA_VERSION = "memory_graph_activation_result.v0.1"
 RERANK_REQUEST_SCHEMA_VERSION = "memory_rerank_request.v0.1"
@@ -196,6 +200,129 @@ def parse_candidate_request(data: Any) -> dict[str, Any]:
     }
 
 
+def parse_dedup_search_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != DEDUP_SEARCH_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(
+            f"schema_version must be {DEDUP_SEARCH_REQUEST_SCHEMA_VERSION}"
+        )
+    request_id = _required_string(data.get("request_id"), "request_id")
+    persona_id = _required_string(data.get("persona_id"), "persona_id")
+    candidate = _parse_dedup_candidate(data.get("candidate"))
+    policy = _parse_dedup_policy(data.get("policy", {}))
+    return {
+        "schema_version": schema_version,
+        "request_id": request_id,
+        "persona_id": persona_id,
+        "candidate": candidate,
+        "policy": policy,
+    }
+
+
+def _parse_dedup_candidate(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProtocolError("candidate must be a JSON object")
+    return {
+        "candidate_id": _optional_string(value.get("candidate_id")),
+        "safe_summary": _required_string(value.get("safe_summary"), "candidate.safe_summary"),
+        "fact_type": _optional_string(value.get("fact_type")),
+        "predicate": _optional_string(value.get("predicate")),
+        "subject_entity_id": _optional_string(value.get("subject_entity_id")),
+        "object_entity_id": _optional_string(value.get("object_entity_id")),
+        "object_literal": _optional_string(value.get("object_literal")),
+        "source_episode_ids": _string_list(
+            value.get("source_episode_ids", []), "candidate.source_episode_ids"
+        ),
+    }
+
+
+def _parse_dedup_policy(value: Any) -> dict[str, Any]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ProtocolError("policy must be a JSON object")
+    limit = value.get("limit", 12)
+    if not isinstance(limit, int) or limit <= 0:
+        raise ProtocolError("policy.limit must be a positive integer")
+    return {
+        "limit": min(limit, 50),
+        "same_subject_boost": bool(value.get("same_subject_boost", False)),
+        "same_fact_type_boost": bool(value.get("same_fact_type_boost", False)),
+        "threshold_profile": _optional_string(value.get("threshold_profile")),
+        "shadow": bool(value.get("shadow", False)),
+    }
+
+
+def parse_delete_candidates_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProtocolError("request body must be a JSON object")
+    schema_version = data.get("schema_version")
+    if schema_version != DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION:
+        raise ProtocolError(
+            f"schema_version must be {DELETE_CANDIDATES_REQUEST_SCHEMA_VERSION}"
+        )
+    request_id = _required_string(data.get("request_id"), "request_id")
+    persona_id = _required_string(data.get("persona_id"), "persona_id")
+    intent = _parse_delete_intent(data.get("intent"))
+    scope = _parse_delete_scope(data.get("scope", {}))
+    policy = _parse_delete_policy(data.get("policy", {}))
+    return {
+        "schema_version": schema_version,
+        "request_id": request_id,
+        "persona_id": persona_id,
+        "intent": intent,
+        "scope": scope,
+        "policy": policy,
+    }
+
+
+def _parse_delete_intent(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProtocolError("intent must be a JSON object")
+    return {
+        "raw_text": _required_string(value.get("raw_text"), "intent.raw_text"),
+        "operation_purpose": _optional_string(value.get("operation_purpose"))
+        or "forget_delete",
+        "operation_target_only": bool(value.get("operation_target_only", False)),
+    }
+
+
+def _parse_delete_scope(value: Any) -> dict[str, Any]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ProtocolError("scope must be a JSON object")
+    time_window = value.get("time_window")
+    if time_window is not None and not isinstance(time_window, dict):
+        raise ProtocolError("scope.time_window must be a JSON object")
+    return {
+        "session_id": _optional_string(value.get("session_id")),
+        "recent_prompt_item_ids": _string_list(
+            value.get("recent_prompt_item_ids", []), "scope.recent_prompt_item_ids"
+        ),
+        "entity_ids": _string_list(value.get("entity_ids", []), "scope.entity_ids"),
+        "time_window": time_window or {},
+    }
+
+
+def _parse_delete_policy(value: Any) -> dict[str, Any]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ProtocolError("policy must be a JSON object")
+    limit = value.get("limit", 20)
+    if not isinstance(limit, int) or limit <= 0:
+        raise ProtocolError("policy.limit must be a positive integer")
+    return {
+        "limit": min(limit, 100),
+        "allow_episode_candidates": bool(value.get("allow_episode_candidates", True)),
+        "allow_fact_candidates": bool(value.get("allow_fact_candidates", True)),
+        "include_safe_summary": bool(value.get("include_safe_summary", True)),
+    }
+
+
 def _parse_candidate_query(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("query must be a JSON object")
@@ -367,6 +494,12 @@ def _candidate_score(value: Any, field_name: str) -> float:
     if not math.isfinite(score) or score < 0:
         raise ProtocolError(f"{field_name} must be a finite nonnegative number")
     return score
+
+
+def _required_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ProtocolError(f"{field_name} is required")
+    return value.strip()
 
 
 def _optional_string(value: Any) -> str:
@@ -598,6 +731,53 @@ def build_candidates_result(
         result["fallback_reason"] = fallback_reason
     if embedding_cache_stats is not None:
         result["embedding_cache_stats"] = embedding_cache_stats
+    if diagnostics is not None:
+        result["diagnostics"] = diagnostics
+    return result
+
+
+def build_dedup_search_result(
+    request_id: str,
+    candidates: list[dict[str, Any]] | None = None,
+    status: str = "ok",
+    degraded: bool = False,
+    fallback_reason: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": DEDUP_SEARCH_RESPONSE_SCHEMA_VERSION,
+        "request_id": request_id,
+        "status": status,
+        "degraded": degraded,
+        "candidates": candidates or [],
+    }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    if diagnostics is not None:
+        result["diagnostics"] = diagnostics
+    return result
+
+
+def build_delete_candidates_result(
+    request_id: str,
+    candidates: list[dict[str, Any]] | None = None,
+    status: str = "ok",
+    degraded: bool = False,
+    fallback_reason: str | None = None,
+    preview_hash_seed: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": DELETE_CANDIDATES_RESPONSE_SCHEMA_VERSION,
+        "request_id": request_id,
+        "status": status,
+        "degraded": degraded,
+        "candidates": candidates or [],
+    }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    if preview_hash_seed:
+        result["preview_hash_seed"] = preview_hash_seed
     if diagnostics is not None:
         result["diagnostics"] = diagnostics
     return result

@@ -51,6 +51,11 @@ func (s *service) RunExtraction(ctx context.Context, req RunExtractionRequest) (
 	if mode == "" {
 		mode = cfg.Defaults.Mode
 	}
+	semanticDedup := s.semanticOps.Dedup
+	if semanticDedupOverrideConfigured(req.SemanticDedup) {
+		semanticDedup = req.SemanticDedup
+	}
+	semanticDedup = normalizeSemanticDedupOptions(semanticDedup)
 	runReq := ExtractionRunRequest{
 		Request:                *extractionReq,
 		Mode:                   mode,
@@ -65,6 +70,7 @@ func (s *service) RunExtraction(ctx context.Context, req RunExtractionRequest) (
 		RepairEnabled:          cfg.Runtime.RepairEnabled,
 		RequireCleanGate:       cfg.Defaults.RequireCleanGate,
 		ExecuteDeletionIntents: cfg.Defaults.ExecuteDeletionIntents,
+		SemanticDedup:          semanticDedup,
 		Audit:                  audit,
 		Force:                  req.Force || cfg.Audit.Force,
 		RawLog:                 rawLog,

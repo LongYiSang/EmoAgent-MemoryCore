@@ -11,6 +11,10 @@ import (
 )
 
 func ApplyAcceptedFacts(ctx context.Context, svc Service, db *sql.DB, req ExtractionRequest, resp ExtractionResponse, gate ExtractionGateResult) ExtractionApplyResult {
+	return ApplyAcceptedFactsWithSemanticDedup(ctx, svc, db, req, resp, gate, nil)
+}
+
+func ApplyAcceptedFactsWithSemanticDedup(ctx context.Context, svc Service, db *sql.DB, req ExtractionRequest, resp ExtractionResponse, gate ExtractionGateResult, dedup *DedupDiagnostics) ExtractionApplyResult {
 	result := ExtractionApplyResult{
 		RequestID: req.RequestID,
 		PersonaID: req.PersonaID,
@@ -44,6 +48,15 @@ func ApplyAcceptedFacts(ctx context.Context, svc Service, db *sql.DB, req Extrac
 			result.Failures = append(result.Failures, FactApplyFailure{CandidateID: fact.CandidateID, Reason: err.Error()})
 			continue
 		}
+		if dedupDecision, ok := semanticDedupApplyDecision(dedup, fact.CandidateID); ok {
+			consolidated, err := semanticDedupDiscardResult(ctx, db, req.PersonaID, dedupDecision)
+			if err != nil {
+				result.Failures = append(result.Failures, FactApplyFailure{CandidateID: fact.CandidateID, Reason: err.Error()})
+				continue
+			}
+			result.Results = append(result.Results, FactApplyResult{CandidateID: fact.CandidateID, Status: consolidated.Status, Result: consolidated})
+			continue
+		}
 		consolidated, err := svc.ConsolidateCandidate(ctx, reqCandidate)
 		if err != nil {
 			result.Failures = append(result.Failures, FactApplyFailure{CandidateID: fact.CandidateID, Reason: err.Error()})
@@ -64,7 +77,7 @@ func ApplyAcceptedFacts(ctx context.Context, svc Service, db *sql.DB, req Extrac
 		if extractionLinkFactEligible(*consolidated.Fact) {
 			candidateFacts[fact.CandidateID] = consolidated.Fact.ID
 		}
-		if consolidated.Status != ConsolidationStatusSkipped {
+		if consolidationStatusApplied(consolidated.Status) {
 			result.AppliedCount++
 		}
 		result.Results = append(result.Results, FactApplyResult{CandidateID: fact.CandidateID, Status: consolidated.Status, Result: consolidated})
@@ -80,6 +93,15 @@ func ApplyAcceptedFacts(ctx context.Context, svc Service, db *sql.DB, req Extrac
 		result.Status = "skipped"
 	}
 	return result
+}
+
+func consolidationStatusApplied(status string) bool {
+	switch status {
+	case ConsolidationStatusInserted, ConsolidationStatusReinforced, ConsolidationStatusSuperseded, ConsolidationStatusCoexisted:
+		return true
+	default:
+		return false
+	}
 }
 
 type entityResolutionNeedsReviewError struct {

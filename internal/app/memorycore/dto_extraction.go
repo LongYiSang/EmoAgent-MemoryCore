@@ -281,20 +281,22 @@ type DeletionIntentRoute struct {
 }
 
 type RoutedForgetPreview struct {
-	IntentCandidateID string               `json:"intent_candidate_id"`
-	ForgetLevel       string               `json:"forget_level"`
-	ScopeMode         string               `json:"scope_mode,omitempty"`
-	NodeType          string               `json:"node_type,omitempty"`
-	NodeID            string               `json:"node_id,omitempty"`
-	EntityID          string               `json:"entity_id,omitempty"`
-	Preview           *ForgetPreviewResult `json:"preview,omitempty"`
-	ErrorCode         string               `json:"error_code,omitempty"`
-	ErrorMessage      string               `json:"error_message,omitempty"`
-	SkipReason        string               `json:"skip_reason,omitempty"`
-	ExecutedCount     int                  `json:"executed_count,omitempty"`
-	FailureCount      int                  `json:"failure_count,omitempty"`
-	Verify            *ForgetVerifyResult  `json:"verify,omitempty"`
-	PreviewOnly       bool                 `json:"preview_only"`
+	IntentCandidateID string                `json:"intent_candidate_id"`
+	ForgetLevel       string                `json:"forget_level"`
+	ScopeMode         string                `json:"scope_mode,omitempty"`
+	NodeType          string                `json:"node_type,omitempty"`
+	NodeID            string                `json:"node_id,omitempty"`
+	EntityID          string                `json:"entity_id,omitempty"`
+	ExactTargets      []ExactNodeRef        `json:"exact_targets,omitempty"`
+	PreviewRequest    *ForgetPreviewRequest `json:"-"`
+	Preview           *ForgetPreviewResult  `json:"preview,omitempty"`
+	ErrorCode         string                `json:"error_code,omitempty"`
+	ErrorMessage      string                `json:"error_message,omitempty"`
+	SkipReason        string                `json:"skip_reason,omitempty"`
+	ExecutedCount     int                   `json:"executed_count,omitempty"`
+	FailureCount      int                   `json:"failure_count,omitempty"`
+	Verify            *ForgetVerifyResult   `json:"verify,omitempty"`
+	PreviewOnly       bool                  `json:"preview_only"`
 }
 
 type PinIntentRoute struct {

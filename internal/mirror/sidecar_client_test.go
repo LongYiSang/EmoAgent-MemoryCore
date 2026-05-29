@@ -287,6 +287,185 @@ func TestSidecarClientFindCandidates(t *testing.T) {
 	}
 }
 
+func TestSidecarClientDedupSearchUsesDedicatedSchemaAndEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/memory/dedup-search" {
+			t.Fatalf("path = %s, want /memory/dedup-search", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request["schema_version"] != "memory_dedup_search.v0.1" {
+			t.Fatalf("schema_version = %v", request["schema_version"])
+		}
+		candidate := request["candidate"].(map[string]any)
+		if candidate["safe_summary"] != "用户不喜欢早会。" {
+			t.Fatalf("safe_summary = %#v", candidate["safe_summary"])
+		}
+		if strings.Contains(candidate["safe_summary"].(string), "raw episode") {
+			t.Fatalf("dedup request leaked raw content: %#v", candidate)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_dedup_search.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"degraded":       false,
+			"candidates": []map[string]any{{
+				"node_type":    "fact",
+				"node_id":      "fact_1",
+				"similarity":   0.96,
+				"match_class":  "near_duplicate",
+				"match_reason": "same_subject_similar_object",
+				"merge_hint":   "reinforce",
+			}},
+			"diagnostics": map[string]any{"source": "fake"},
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.DedupSearch(context.Background(), DedupSearchRequest{
+		RequestID: "req_1",
+		PersonaID: "default",
+		Candidate: DedupSearchCandidate{
+			CandidateID:      "cand_1",
+			SafeSummary:      "用户不喜欢早会。",
+			FactType:         "stable_preference",
+			Predicate:        "dislikes",
+			SubjectEntityID:  "ent_user",
+			ObjectLiteral:    "早会",
+			SourceEpisodeIDs: []string{"ep_1"},
+		},
+		Policy: DedupSearchPolicy{Limit: 12, Shadow: true, ThresholdProfile: "default_v0"},
+	})
+	if err != nil {
+		t.Fatalf("dedup search: %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].NodeID != "fact_1" || result.Candidates[0].Similarity != 0.96 {
+		t.Fatalf("dedup candidates = %#v", result.Candidates)
+	}
+}
+
+func TestSidecarClientDeleteCandidatesDefaultPolicyAndOpaqueRequestID(t *testing.T) {
+	rawText := "忘掉我之前说过不吃香菜"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/memory/delete-candidates" {
+			t.Fatalf("path = %s, want /memory/delete-candidates", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestID, _ := request["request_id"].(string)
+		if requestID == "" || strings.Contains(requestID, rawText) {
+			t.Fatalf("request_id leaked raw text: %q", requestID)
+		}
+		policy := request["policy"].(map[string]any)
+		if policy["allow_episode_candidates"] != true || policy["allow_fact_candidates"] != true || policy["include_safe_summary"] != true {
+			t.Fatalf("zero policy = %#v, want sidecar defaults preserved", policy)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_delete_candidates.v0.1",
+			"request_id":     requestID,
+			"status":         "ok",
+			"degraded":       false,
+			"candidates":     []map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	if _, err := client.DeleteCandidates(context.Background(), DeleteCandidatesRequest{
+		PersonaID: "default",
+		Intent: DeleteCandidateIntent{
+			RawText:             rawText,
+			OperationPurpose:    "forget_delete",
+			OperationTargetOnly: true,
+		},
+	}); err != nil {
+		t.Fatalf("delete candidates: %v", err)
+	}
+}
+
+func TestSidecarClientDeleteCandidatesCanDisableSafeSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		policy := request["policy"].(map[string]any)
+		if policy["allow_fact_candidates"] != true || policy["include_safe_summary"] != false {
+			t.Fatalf("policy = %#v, want fact candidates without safe summaries", policy)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_delete_candidates.v0.1",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+			"degraded":       false,
+			"candidates": []map[string]any{{
+				"node_type": "fact",
+				"node_id":   "fact_1",
+				"score":     0.9,
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	result, err := client.DeleteCandidates(context.Background(), DeleteCandidatesRequest{
+		PersonaID: "default",
+		Intent: DeleteCandidateIntent{
+			RawText:             "忘掉香菜",
+			OperationPurpose:    "forget_delete",
+			OperationTargetOnly: true,
+		},
+		Policy: DeleteCandidatePolicy{Limit: 20, AllowFactCandidates: true},
+	})
+	if err != nil {
+		t.Fatalf("delete candidates: %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].SafeSummary != "" {
+		t.Fatalf("candidates = %#v, want no safe summary", result.Candidates)
+	}
+}
+
+func TestSidecarClientDeleteCandidatesRejectsWrongSchema(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/memory/delete-candidates" {
+			t.Fatalf("path = %s, want /memory/delete-candidates", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request["schema_version"] != "memory_delete_candidates.v0.1" {
+			t.Fatalf("schema_version = %v", request["schema_version"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "wrong",
+			"request_id":     request["request_id"],
+			"status":         "ok",
+		})
+	}))
+	defer server.Close()
+
+	client := NewSidecarClient(SidecarClientOptions{BaseURL: server.URL, Timeout: time.Second})
+	_, err := client.DeleteCandidates(context.Background(), DeleteCandidatesRequest{
+		RequestID: "req_delete",
+		PersonaID: "default",
+		Intent: DeleteCandidateIntent{
+			RawText:             "忘掉我之前说过不吃香菜",
+			OperationPurpose:    "forget_delete",
+			OperationTargetOnly: true,
+		},
+		Policy: DeleteCandidatePolicy{Limit: 20, AllowFactCandidates: true, IncludeSafeSummary: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("err = %v, want schema mismatch", err)
+	}
+}
+
 func TestSidecarClientConfigureEvalReadsCapabilitiesAndMirrorStats(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/eval/configure" {
