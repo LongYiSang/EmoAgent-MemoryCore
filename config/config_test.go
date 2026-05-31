@@ -80,7 +80,8 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.SemanticOps.Curation.MaxFactsPerGroup != 8 ||
 		cfg.SemanticOps.Curation.MinAutoApplyConfidence != 0.88 ||
 		cfg.SemanticOps.Curation.LLM.ProviderID != "default_llm" ||
-		cfg.SemanticOps.Curation.LLM.Model != "memory-curator" {
+		cfg.SemanticOps.Curation.LLM.Model != "memory-curator" ||
+		cfg.SemanticOps.Curation.LLM.ResponseFormat != "json_object" {
 		t.Fatalf("semantic curation defaults = %#v", cfg.SemanticOps.Curation)
 	}
 }
@@ -226,6 +227,7 @@ semantic_ops:
       model: memory-curator-test
       temperature: 0
       max_tokens: 2048
+      response_format: json_object
       timeout_ms: 12345
 `)
 
@@ -256,6 +258,7 @@ semantic_ops:
 		opts.SemanticOps.Curation.LLM.Provider.Kind != memorycore.ExtractionProviderMock ||
 		opts.SemanticOps.Curation.LLM.Provider.Model != "memory-curator-test" ||
 		opts.SemanticOps.Curation.LLM.Provider.MaxTokens != 2048 ||
+		opts.SemanticOps.Curation.LLM.Provider.ResponseFormat != memorycore.ExtractionResponseFormatJSONObject ||
 		opts.SemanticOps.Curation.LLM.Provider.Timeout != 12345*time.Millisecond {
 		t.Fatalf("semantic options = %#v", opts.SemanticOps)
 	}
@@ -484,6 +487,7 @@ func TestDocsDescriptorIsStableAndJSONSerializable(t *testing.T) {
 		"pipelines.extraction.audit.force",
 		"pipelines.extraction.raw_log.enabled",
 		"pipelines.extraction.raw_log.directory",
+		"semantic_ops.curation.llm.response_format",
 		"write_policy.triggers.manual_forget.enabled",
 		"retrieval.activation.max_hops",
 		"forgetting_privacy.cleanup.delete_trivium_nodes",

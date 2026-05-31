@@ -77,6 +77,50 @@ func TestServiceRunCurationApplyMergesEquivalentDrinkPreferences(t *testing.T) {
 	requireMemoryItemAbsent(t, contextResult, sourceID)
 }
 
+func TestServiceRunCurationDoesNotMergeUnrelatedSamePredicateSources(t *testing.T) {
+	ctx := context.Background()
+	svc, dbPath := openCurationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	noSugarEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	lowSweetEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	coconutEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝椰子水。", time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
+	grandmaEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢外婆做的家常菜。", time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", noSugarEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", lowSweetEpisode.ID).Fact
+	coconut := consolidateLiteral(t, ctx, svc, userID, "likes", "椰子水", "用户喜欢喝椰子水。", coconutEpisode.ID).Fact
+	grandma := consolidateLiteral(t, ctx, svc, userID, "likes", "外婆做的家常菜", "用户喜欢外婆做的家常菜。", grandmaEpisode.ID).Fact
+
+	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:                   "apply",
+		Trigger:                "test",
+		ProviderKind:           memorycore.ExtractionProviderMock,
+		ProviderID:             "mock",
+		MinAutoApplyConfidence: 0.88,
+		Force:                  true,
+	})
+	if err != nil {
+		t.Fatalf("run curation unrelated same predicate: %v", err)
+	}
+	if result.AppliedGroupCount != 1 {
+		t.Fatalf("applied group count = %d, want 1; result=%#v", result.AppliedGroupCount, result)
+	}
+
+	canonicalID := result.Groups[0].CanonicalFactID
+	sugarSourceID := first.ID
+	if canonicalID == first.ID {
+		sugarSourceID = second.ID
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireCurationAPIFactState(t, db, canonicalID, "active", 1)
+	requireCurationAPIFactState(t, db, sugarSourceID, "consolidated", 0)
+	requireCurationAPIFactState(t, db, coconut.ID, "active", 1)
+	requireCurationAPIFactState(t, db, grandma.ID, "active", 1)
+}
+
 func TestServiceRunCurationDoesNotAutoMergeComplementFacts(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openCurationService(t, ctx)

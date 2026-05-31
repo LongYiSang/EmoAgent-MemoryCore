@@ -40,3 +40,34 @@ func TestRunCurationRunDryRunAndApply(t *testing.T) {
 	requireContains(t, combinedNodes, "用户在饮料上偏好无糖、口味不甜。")
 	requireContains(t, combinedNodes, "lifecycle_status=consolidated")
 }
+
+func TestRunCurationRunProviderIDDoesNotImplicitlyUseMock(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	requireRunID(t,
+		"consolidate-fact",
+		"--db", dbPath,
+		"--subject", "ent_user",
+		"--predicate", "likes",
+		"--object-literal", "无糖饮料",
+		"--summary", "用户喜欢喝无糖饮料。",
+		"--source-episode", "ep_seed",
+		"--format", "id",
+	)
+	requireRunID(t,
+		"consolidate-fact",
+		"--db", dbPath,
+		"--subject", "ent_user",
+		"--predicate", "likes",
+		"--object-literal", "不甜的没有糖的饮料",
+		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--source-episode", "ep_seed",
+		"--format", "id",
+	)
+
+	stdout, stderr, code := runCLI("curation-run", "--db", dbPath, "--mode", "dry-run", "--provider-id", "default_llm", "--format", "json")
+	if code == 0 {
+		t.Fatalf("curation-run unexpectedly succeeded with implicit mock; stdout=%q stderr=%q", stdout, stderr)
+	}
+	requireContains(t, stderr, "curation run:")
+	requireNotContains(t, stderr, "mock")
+}

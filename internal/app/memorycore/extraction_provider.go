@@ -326,6 +326,13 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req ExtractionLL
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	providerResp.ProviderRawResponse = string(body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyText := strings.TrimSpace(providerResp.ProviderRawResponse)
+		if len(bodyText) > 800 {
+			bodyText = bodyText[:800] + "..."
+		}
+		if bodyText != "" {
+			return providerResp, fmt.Errorf("provider returned status %d: %s", resp.StatusCode, bodyText)
+		}
 		return providerResp, fmt.Errorf("provider returned status %d", resp.StatusCode)
 	}
 	var decoded struct {

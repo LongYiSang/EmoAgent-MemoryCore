@@ -238,6 +238,7 @@ semantic_ops:
       model: memory-curator
       temperature: 0.0
       max_tokens: 4096
+      response_format: json_object
       timeout_ms: 60000
     review:
       write_review_decisions: true

@@ -354,12 +354,13 @@ type CurationSourceAfterMerge struct {
 }
 
 type CurationLLMConfig struct {
-	ProviderID   string  `yaml:"provider_id" json:"provider_id"`
-	ProviderKind string  `yaml:"provider_kind" json:"provider_kind"`
-	Model        string  `yaml:"model" json:"model"`
-	Temperature  float64 `yaml:"temperature" json:"temperature"`
-	MaxTokens    int     `yaml:"max_tokens" json:"max_tokens"`
-	TimeoutMS    int     `yaml:"timeout_ms" json:"timeout_ms"`
+	ProviderID     string  `yaml:"provider_id" json:"provider_id"`
+	ProviderKind   string  `yaml:"provider_kind" json:"provider_kind"`
+	Model          string  `yaml:"model" json:"model"`
+	Temperature    float64 `yaml:"temperature" json:"temperature"`
+	MaxTokens      int     `yaml:"max_tokens" json:"max_tokens"`
+	ResponseFormat string  `yaml:"response_format" json:"response_format"`
+	TimeoutMS      int     `yaml:"timeout_ms" json:"timeout_ms"`
 }
 
 type CurationReviewConfig struct {
@@ -766,10 +767,11 @@ func DefaultConfig() Config {
 					Searchable:      false,
 				},
 				LLM: CurationLLMConfig{
-					ProviderID: "default_llm",
-					Model:      "memory-curator",
-					MaxTokens:  4096,
-					TimeoutMS:  60000,
+					ProviderID:     "default_llm",
+					Model:          "memory-curator",
+					MaxTokens:      4096,
+					ResponseFormat: "json_object",
+					TimeoutMS:      60000,
 				},
 				Review: CurationReviewConfig{WriteReviewDecisions: true},
 			},
@@ -930,6 +932,11 @@ func (c Config) validateSemanticOps() error {
 	}
 	if c.SemanticOps.Curation.SourceFactAfterMerge.Searchable {
 		return fmt.Errorf("semantic_ops.curation.source_fact_after_merge.searchable must be false")
+	}
+	switch strings.TrimSpace(c.SemanticOps.Curation.LLM.ResponseFormat) {
+	case "", "json_object", "json_schema":
+	default:
+		return fmt.Errorf("semantic_ops.curation.llm.response_format must be json_object or json_schema")
 	}
 	if c.SemanticOps.Curation.Enabled && strings.TrimSpace(c.SemanticOps.Curation.LLM.ProviderKind) == "" {
 		if provider := c.ProviderByID(c.SemanticOps.Curation.LLM.ProviderID); provider == nil {
@@ -1383,7 +1390,10 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 		Model:       cfg.LLM.Model,
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
-		Timeout:     time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+		ResponseFormat: memorycore.ExtractionResponseFormat(
+			strings.TrimSpace(cfg.LLM.ResponseFormat),
+		),
+		Timeout: time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
 	}
 	if providerConfig != nil {
 		if strings.TrimSpace(provider.Kind) == "" {
@@ -1411,7 +1421,10 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 			Model:        cfg.LLM.Model,
 			Temperature:  cfg.LLM.Temperature,
 			MaxTokens:    cfg.LLM.MaxTokens,
-			Timeout:      time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+			ResponseFormat: memorycore.ExtractionResponseFormat(
+				strings.TrimSpace(cfg.LLM.ResponseFormat),
+			),
+			Timeout: time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
 		},
 	}
 }

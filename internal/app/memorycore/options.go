@@ -49,13 +49,14 @@ type SemanticCurationOptions struct {
 }
 
 type CurationLLMOptions struct {
-	Provider     ExtractionProviderOptions
-	ProviderID   string
-	ProviderKind string
-	Model        string
-	Temperature  float64
-	MaxTokens    int
-	Timeout      time.Duration
+	Provider       ExtractionProviderOptions
+	ProviderID     string
+	ProviderKind   string
+	Model          string
+	Temperature    float64
+	MaxTokens      int
+	ResponseFormat ExtractionResponseFormat
+	Timeout        time.Duration
 }
 
 type ExtractionOptions struct {

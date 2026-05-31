@@ -67,6 +67,12 @@ func curationDeveloperPrompt() string {
 		"Decide whether the facts express the same memory, a refinement, a complement, a conflict, or distinct facts.",
 		"Only same/refinement with no or small answer gain should be eligible for automatic merge.",
 		"Do not merge complements or conflicts as the same fact.",
+		"Return a single JSON object with no markdown, comments, or extra text.",
+		"Allowed enum values:",
+		"decision: no_op, reinforce_existing, merge_into_existing, create_canonical_fact, coexist_related, conflict_needs_review, needs_review",
+		"semantic_relation: same, refinement, overlap, complement, distinct, conflict, unclear",
+		"answer_gain: none, small, material, unknown",
+		"If unsure, use decision=needs_review, semantic_relation=unclear, answer_gain=unknown, requires_review=true.",
 	}, "\n")
 }
 
@@ -79,7 +85,7 @@ func parseCurationLLMResponse(text string) (memsqlite.CurationDecision, error) {
 		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response schema_version is unsupported")
 	}
 	if !allowedCurationDecision(payload.Decision) || !allowedCurationRelation(payload.SemanticRelation) || !allowedCurationAnswerGain(payload.AnswerGain) {
-		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response contains unsupported decision fields")
+		return unsupportedCurationEnumDecision(payload), nil
 	}
 	if payload.Confidence < 0 || payload.Confidence > 1 {
 		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response confidence must be within [0, 1]")
@@ -100,6 +106,37 @@ func parseCurationLLMResponse(text string) (memsqlite.CurationDecision, error) {
 		ReasonCodes:              payload.ReasonCodes,
 		RequiresReview:           payload.RequiresReview,
 	}, nil
+}
+
+func unsupportedCurationEnumDecision(payload curationLLMResponsePayload) memsqlite.CurationDecision {
+	confidence := payload.Confidence
+	if confidence < 0 || confidence > 1 {
+		confidence = 0
+	}
+	if confidence > 0.5 {
+		confidence = 0.5
+	}
+	reasonCodes := append([]string(nil), payload.ReasonCodes...)
+	found := false
+	for _, code := range reasonCodes {
+		if code == "unsupported_llm_enum" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		reasonCodes = append(reasonCodes, "unsupported_llm_enum")
+	}
+	return memsqlite.CurationDecision{
+		Decision:         "needs_review",
+		SemanticRelation: "unclear",
+		AnswerGain:       "unknown",
+		Confidence:       confidence,
+		CanonicalFactID:  payload.CanonicalFactID,
+		SourceFactIDs:    payload.SourceFactIDs,
+		ReasonCodes:      reasonCodes,
+		RequiresReview:   true,
+	}
 }
 
 func allowedCurationDecision(value string) bool {
@@ -143,16 +180,22 @@ func deterministicCurationResponse(req ExtractionLLMRequest) string {
 		})
 	}
 	var hasNoSugar, hasLowSweet, hasSweetenerDislike bool
+	var mergeSourceIDs []string
 	for _, fact := range payload.Facts {
 		text := fact.ContentSummary + " " + fact.ObjectLiteral
-		if strings.Contains(text, "无糖") || strings.Contains(text, "没有糖") {
+		noSugar := strings.Contains(text, "无糖") || strings.Contains(text, "没有糖")
+		lowSweet := strings.Contains(text, "不甜") || strings.Contains(text, "低甜")
+		if noSugar {
 			hasNoSugar = true
 		}
-		if strings.Contains(text, "不甜") || strings.Contains(text, "低甜") {
+		if lowSweet {
 			hasLowSweet = true
 		}
 		if strings.Contains(text, "代糖") || fact.Predicate == "dislikes" {
 			hasSweetenerDislike = true
+		}
+		if noSugar || lowSweet {
+			mergeSourceIDs = append(mergeSourceIDs, fact.FactID)
 		}
 	}
 	sourceIDs := make([]string, 0, len(payload.Facts))
@@ -160,7 +203,7 @@ func deterministicCurationResponse(req ExtractionLLMRequest) string {
 		sourceIDs = append(sourceIDs, fact.FactID)
 	}
 	if hasNoSugar && hasLowSweet && !hasSweetenerDislike {
-		canonicalID := payload.Facts[0].FactID
+		canonicalID := mergeSourceIDs[0]
 		return marshalCurationMock(curationLLMResponsePayload{
 			SchemaVersion:          CurationResponseSchemaVersion,
 			Decision:               "merge_into_existing",
@@ -168,7 +211,7 @@ func deterministicCurationResponse(req ExtractionLLMRequest) string {
 			AnswerGain:             "small",
 			Confidence:             0.94,
 			CanonicalFactID:        canonicalID,
-			SourceFactIDs:          sourceIDs,
+			SourceFactIDs:          mergeSourceIDs,
 			MergedContentSummary:   "用户在饮料上偏好无糖、口味不甜。",
 			CanonicalPredicate:     "likes",
 			CanonicalFactType:      "stable_preference",

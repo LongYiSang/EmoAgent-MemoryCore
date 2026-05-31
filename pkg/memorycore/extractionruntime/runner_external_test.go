@@ -773,6 +773,30 @@ func TestOpenAICompatibleLLMSendsJSONSchemaResponseFormat(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleLLMIncludesProviderErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"unsupported response_format json_schema"}}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "error-model",
+	})
+
+	_, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeCuration,
+		UserPrompt: "{}",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported response_format json_schema") {
+		t.Fatalf("CompleteJSON error = %v, want provider body", err)
+	}
+}
+
 func TestOpenAICompatibleLLMRejectsEmptyProviderContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

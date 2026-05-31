@@ -273,6 +273,9 @@ func curationProviderOptions(defaults CurationLLMOptions, req RunCurationRequest
 	if provider.MaxTokens == 0 {
 		provider.MaxTokens = defaults.MaxTokens
 	}
+	if provider.ResponseFormat == "" {
+		provider.ResponseFormat = defaults.ResponseFormat
+	}
 	if provider.Timeout == 0 {
 		provider.Timeout = defaults.Timeout
 	}
@@ -307,7 +310,7 @@ func curationProviderOptions(defaults CurationLLMOptions, req RunCurationRequest
 		provider.MaxTokens = 4096
 	}
 	if provider.ResponseFormat == "" {
-		provider.ResponseFormat = ExtractionResponseFormatJSONSchema
+		provider.ResponseFormat = ExtractionResponseFormatJSONObject
 	}
 	return normalizeExtractionOptions(ExtractionOptions{Provider: provider}).Provider
 }
