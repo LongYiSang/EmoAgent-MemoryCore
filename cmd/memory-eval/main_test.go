@@ -911,7 +911,8 @@ func writeLiveExtractionProviderResponse(t *testing.T, w http.ResponseWriter, re
 		"choices": []any{map[string]any{
 			"finish_reason": "stop",
 			"message": map[string]any{
-				"content": responseText,
+				"content":           responseText,
+				"reasoning_content": responseText,
 			},
 		}},
 	}

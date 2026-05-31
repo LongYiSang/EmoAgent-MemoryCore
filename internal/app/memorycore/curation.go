@@ -30,6 +30,14 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 	if !req.Force && !s.semanticOps.Curation.Enabled {
 		return nil, extractionServiceError("curation_disabled", "memory curation is disabled")
 	}
+	rawLog := s.semanticOps.Curation.RawLog
+	if req.RawLog != nil {
+		rawLog = *req.RawLog
+	}
+	if err := validateCurationRawLogOptions(rawLog); err != nil {
+		return nil, err
+	}
+	trace := newCurationRawLogTrace(s.now(), req, rawLog)
 
 	limit := firstPositive(req.MaxNewFacts, s.semanticOps.Curation.MaxNewFactsPerRun, 100)
 	candidateLimit := firstPositive(req.CandidateLimitPerFact, s.semanticOps.Curation.CandidateLimitPerFact, 20)
@@ -74,9 +82,13 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 	prepared := make([]memsqlite.CurationPreparedGroup, 0, len(groups))
 	groupResults := make([]CurationGroupResult, 0, len(groups))
 	for _, group := range groups {
-		decision, err := s.analyzeCurationGroup(ctx, llm, provider, personaID, group)
+		decision, err := s.analyzeCurationGroup(ctx, llm, provider, personaID, group, trace)
 		if err != nil {
-			return nil, err
+			result := failedRunCurationResult(mode, len(deltaFacts), len(groups), groupResults, trace)
+			if rawLogErr := writeCurationRawLog(rawLog.Directory, result, trace); rawLogErr != nil {
+				return result, extractionServiceError("raw_log_write_failed", "could not write curation raw log")
+			}
+			return result, err
 		}
 		prepared = append(prepared, memsqlite.CurationPreparedGroup{
 			ID:       group.ID,
@@ -111,7 +123,7 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 			groupResults[i].GroupStatus = status
 		}
 	}
-	return &RunCurationResult{
+	result := &RunCurationResult{
 		RunID:               storeResult.RunID,
 		Status:              storeResult.Status,
 		Mode:                storeResult.Mode,
@@ -127,16 +139,20 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 		CursorToCreatedAt:   cursorToCreatedAt,
 		CursorToFactID:      cursorToFactID,
 		Groups:              groupResults,
-	}, nil
+	}
+	if err := writeCurationRawLog(rawLog.Directory, result, trace); err != nil {
+		return result, extractionServiceError("raw_log_write_failed", "could not write curation raw log")
+	}
+	return result, nil
 }
 
-func (s *service) analyzeCurationGroup(ctx context.Context, llm ExtractionLLM, provider ExtractionProviderOptions, personaID string, group memsqlite.CurationCandidateGroup) (memsqlite.CurationDecision, error) {
+func (s *service) analyzeCurationGroup(ctx context.Context, llm ExtractionLLM, provider ExtractionProviderOptions, personaID string, group memsqlite.CurationCandidateGroup, trace *curationRawLogTrace) (memsqlite.CurationDecision, error) {
 	payload, err := s.buildCurationPayload(ctx, personaID, group)
 	if err != nil {
 		return memsqlite.CurationDecision{}, err
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := llm.CompleteJSON(ctx, ExtractionLLMRequest{
+	llmReq := ExtractionLLMRequest{
 		Purpose:         ExtractionLLMPurposeCuration,
 		ProviderID:      provider.ID,
 		ProviderKind:    provider.Kind,
@@ -152,11 +168,22 @@ func (s *service) analyzeCurationGroup(ctx context.Context, llm ExtractionLLM, p
 			"schema_version": CurationResponseSchemaVersion,
 			"group_id":       group.ID,
 		},
-	})
+	}
+	resp, err := llm.CompleteJSON(ctx, llmReq)
 	if err != nil {
+		if trace != nil {
+			trace.recordGroup(group, payload, llmReq, resp, memsqlite.CurationDecision{}, err)
+		}
 		return memsqlite.CurationDecision{}, err
 	}
-	return parseCurationLLMResponse(resp.Text)
+	decision, parseErr := parseCurationLLMResponse(resp.Text)
+	if parseErr == nil {
+		decision = normalizeCurationDecisionForGroup(decision, group)
+	}
+	if trace != nil {
+		trace.recordGroup(group, payload, llmReq, resp, decision, parseErr)
+	}
+	return decision, parseErr
 }
 
 func (s *service) buildCurationPayload(ctx context.Context, personaID string, group memsqlite.CurationCandidateGroup) (curationLLMRequestPayload, error) {
@@ -278,6 +305,9 @@ func curationProviderOptions(defaults CurationLLMOptions, req RunCurationRequest
 	}
 	if provider.Timeout == 0 {
 		provider.Timeout = defaults.Timeout
+	}
+	if provider.Thinking == nil {
+		provider.Thinking = defaults.Thinking
 	}
 	if req.ProviderKind != "" {
 		provider.Kind = req.ProviderKind

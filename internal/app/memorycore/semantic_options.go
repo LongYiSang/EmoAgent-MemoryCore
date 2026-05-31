@@ -62,5 +62,8 @@ func normalizeSemanticCurationOptions(opts SemanticCurationOptions) SemanticCura
 	if opts.LLM.Timeout <= 0 && opts.LLM.Provider.Timeout <= 0 {
 		opts.LLM.Timeout = 60 * time.Second
 	}
+	if opts.LLM.Thinking == nil && opts.LLM.Provider.Thinking == nil {
+		opts.LLM.Thinking = &OpenAICompatibleThinkingOptions{Type: "disabled"}
+	}
 	return opts
 }

@@ -79,9 +79,12 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.SemanticOps.Curation.CandidateLimitPerFact != 20 ||
 		cfg.SemanticOps.Curation.MaxFactsPerGroup != 8 ||
 		cfg.SemanticOps.Curation.MinAutoApplyConfidence != 0.88 ||
+		cfg.SemanticOps.Curation.RawLog.Enabled ||
+		cfg.SemanticOps.Curation.RawLog.Directory != "" ||
 		cfg.SemanticOps.Curation.LLM.ProviderID != "default_llm" ||
 		cfg.SemanticOps.Curation.LLM.Model != "memory-curator" ||
-		cfg.SemanticOps.Curation.LLM.ResponseFormat != "json_object" {
+		cfg.SemanticOps.Curation.LLM.ResponseFormat != "json_object" ||
+		cfg.SemanticOps.Curation.LLM.Thinking.Type != "disabled" {
 		t.Fatalf("semantic curation defaults = %#v", cfg.SemanticOps.Curation)
 	}
 }
@@ -221,6 +224,9 @@ semantic_ops:
     exclude_fact_types:
       - core_identity
       - commitment
+    raw_log:
+      enabled: true
+      directory: ./debug/curation_raw
     llm:
       provider_id: default_llm
       provider_kind: mock
@@ -229,6 +235,8 @@ semantic_ops:
       max_tokens: 2048
       response_format: json_object
       timeout_ms: 12345
+      thinking:
+        type: enabled
 `)
 
 	cfg, err := memconfig.LoadYAML(path)
@@ -254,12 +262,16 @@ semantic_ops:
 		opts.SemanticOps.Curation.CandidateLimitPerFact != 11 ||
 		opts.SemanticOps.Curation.MaxFactsPerGroup != 6 ||
 		opts.SemanticOps.Curation.MinAutoApplyConfidence != 0.91 ||
+		!opts.SemanticOps.Curation.RawLog.Enabled ||
+		opts.SemanticOps.Curation.RawLog.Directory != "./debug/curation_raw" ||
 		opts.SemanticOps.Curation.LLM.Provider.ID != "default_llm" ||
 		opts.SemanticOps.Curation.LLM.Provider.Kind != memorycore.ExtractionProviderMock ||
 		opts.SemanticOps.Curation.LLM.Provider.Model != "memory-curator-test" ||
 		opts.SemanticOps.Curation.LLM.Provider.MaxTokens != 2048 ||
 		opts.SemanticOps.Curation.LLM.Provider.ResponseFormat != memorycore.ExtractionResponseFormatJSONObject ||
-		opts.SemanticOps.Curation.LLM.Provider.Timeout != 12345*time.Millisecond {
+		opts.SemanticOps.Curation.LLM.Provider.Timeout != 12345*time.Millisecond ||
+		opts.SemanticOps.Curation.LLM.Provider.Thinking == nil ||
+		opts.SemanticOps.Curation.LLM.Provider.Thinking.Type != "enabled" {
 		t.Fatalf("semantic options = %#v", opts.SemanticOps)
 	}
 }
@@ -341,6 +353,12 @@ providers:
 		cfg := memconfig.DefaultConfig()
 		cfg.Pipelines.Extraction.RawLog.Enabled = true
 		requireErrorContains(t, cfg.Validate(), "pipelines.extraction.raw_log.directory")
+	})
+
+	t.Run("curation raw log directory required when enabled", func(t *testing.T) {
+		cfg := memconfig.DefaultConfig()
+		cfg.SemanticOps.Curation.RawLog.Enabled = true
+		requireErrorContains(t, cfg.Validate(), "semantic_ops.curation.raw_log.directory")
 	})
 
 	t.Run("extraction mode must be supported", func(t *testing.T) {

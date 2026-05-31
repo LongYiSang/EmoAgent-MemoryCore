@@ -739,6 +739,82 @@ func TestOpenAICompatibleLLMSendsConfiguredThinkingType(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleLLMUsesContentWhenThinkingDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"content-model","choices":[{"finish_reason":"stop","message":{"content":"{\"ok\":true}","reasoning_content":"{\"wrong\":true}"}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "content-model",
+		Thinking:  &extractionruntime.OpenAICompatibleThinkingOptions{Type: "disabled"},
+	})
+
+	resp, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeCuration,
+		UserPrompt: "{}",
+	})
+	if err != nil {
+		t.Fatalf("CompleteJSON: %v", err)
+	}
+	if resp.Text != `{"ok":true}` || resp.ContentText != `{"ok":true}` || resp.ReasoningText != `{"wrong":true}` || resp.TextSource != "content" {
+		t.Fatalf("response = %#v, want content text selected", resp)
+	}
+}
+
+func TestOpenAICompatibleLLMUsesReasoningWhenThinkingEnabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"reasoning-model","choices":[{"finish_reason":"stop","message":{"content":"{\"wrong\":true}","reasoning_content":"{\"ok\":true}"}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "reasoning-model",
+		Thinking:  &extractionruntime.OpenAICompatibleThinkingOptions{Type: "enabled"},
+	})
+
+	resp, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeCuration,
+		UserPrompt: "{}",
+	})
+	if err != nil {
+		t.Fatalf("CompleteJSON: %v", err)
+	}
+	if resp.Text != `{"ok":true}` || resp.ContentText != `{"wrong":true}` || resp.ReasoningText != `{"ok":true}` || resp.TextSource != "reasoning_content" {
+		t.Fatalf("response = %#v, want reasoning content selected", resp)
+	}
+}
+
+func TestOpenAICompatibleLLMRejectsEmptyReasoningWhenThinkingEnabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"empty-reasoning-model","choices":[{"finish_reason":"stop","message":{"content":"{\"ok\":true}","reasoning_content":""}}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("TEST_EXTRACTION_API_KEY", "test-key")
+	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_EXTRACTION_API_KEY",
+		Model:     "empty-reasoning-model",
+		Thinking:  &extractionruntime.OpenAICompatibleThinkingOptions{Type: "enabled"},
+	})
+	if _, err := llm.CompleteJSON(context.Background(), memorycore.ExtractionLLMRequest{
+		Purpose:    memorycore.ExtractionLLMPurposeCuration,
+		UserPrompt: "{}",
+	}); err == nil || !strings.Contains(err.Error(), "provider response reasoning content was empty") {
+		t.Fatalf("CompleteJSON error = %v, want empty reasoning content error", err)
+	}
+}
+
 func TestOpenAICompatibleLLMSendsJSONSchemaResponseFormat(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

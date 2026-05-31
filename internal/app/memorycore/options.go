@@ -45,6 +45,7 @@ type SemanticCurationOptions struct {
 	MinAutoApplyConfidence float64
 	IncludeFactTypes       []string
 	ExcludeFactTypes       []string
+	RawLog                 CurationRawLogOptions
 	LLM                    CurationLLMOptions
 }
 
@@ -57,6 +58,7 @@ type CurationLLMOptions struct {
 	MaxTokens      int
 	ResponseFormat ExtractionResponseFormat
 	Timeout        time.Duration
+	Thinking       *OpenAICompatibleThinkingOptions
 }
 
 type ExtractionOptions struct {

@@ -23,8 +23,14 @@ type RunCurationRequest struct {
 	MaxTokens    int           `json:"max_tokens,omitempty"`
 	Timeout      time.Duration `json:"timeout,omitempty"`
 
-	Force            bool `json:"force,omitempty"`
-	UpdateCheckpoint bool `json:"update_checkpoint,omitempty"`
+	Force            bool                   `json:"force,omitempty"`
+	UpdateCheckpoint bool                   `json:"update_checkpoint,omitempty"`
+	RawLog           *CurationRawLogOptions `json:"raw_log,omitempty"`
+}
+
+type CurationRawLogOptions struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	Directory string `json:"directory,omitempty"`
 }
 
 type RunCurationResult struct {

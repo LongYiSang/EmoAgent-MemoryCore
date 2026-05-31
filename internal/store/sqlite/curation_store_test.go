@@ -90,6 +90,51 @@ func TestCurationRetrievesComparableFactsAndBuildsGroups(t *testing.T) {
 	}
 }
 
+func TestCurationBuildGroupsDoesNotUnionUnrelatedSamePredicateFacts(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedCurationGraph(t, ctx, db.SQLDB())
+
+	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_canonical", "likes", "用户在饮料上偏好无糖、口味不甜。", curationTime(1))
+	updateCurationFact(t, db.SQLDB(), canonical.ID, "object_literal = '无糖、低甜的饮料'")
+	noSugar := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_no_sugar", "likes", "用户喜欢喝无糖饮料。", curationTime(2))
+	lowSweet := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_low_sweet", "likes", "用户喜欢喝不甜的没有糖的饮料。", curationTime(3))
+	coconut := insertCurationFact(t, ctx, db.SQLDB(), "fact_coconut_water", "likes", "用户喜欢喝椰子水。", curationTime(4))
+	grandma := insertCurationFact(t, ctx, db.SQLDB(), "fact_grandma_food", "likes", "用户喜欢外婆做的家常菜。", curationTime(5))
+
+	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
+	deltaFacts := []core.Fact{canonical, noSugar, lowSweet, coconut, grandma}
+	candidates := map[string][]core.Fact{}
+	for _, fact := range deltaFacts {
+		found, err := repo.RetrieveComparableFacts(ctx, memsqlite.CurationComparableQuery{
+			PersonaID:             "default",
+			DeltaFactID:           fact.ID,
+			CandidateLimitPerFact: 10,
+		})
+		if err != nil {
+			t.Fatalf("retrieve comparable facts for %s: %v", fact.ID, err)
+		}
+		candidates[fact.ID] = found
+	}
+
+	groups := repo.BuildGroups(deltaFacts, candidates, 8)
+	if len(groups) != 1 {
+		t.Fatalf("groups = %#v, want only one drink-preference group", groups)
+	}
+	groupIDs := curationGroupFactIDs(groups[0].Facts)
+	for _, want := range []string{canonical.ID, noSugar.ID, lowSweet.ID} {
+		if !containsString(groupIDs, want) {
+			t.Fatalf("group ids = %#v, missing %s", groupIDs, want)
+		}
+	}
+	for _, unwanted := range []string{coconut.ID, grandma.ID} {
+		if containsString(groupIDs, unwanted) {
+			t.Fatalf("group ids = %#v, should not include unrelated same-predicate fact %s", groupIDs, unwanted)
+		}
+	}
+}
+
 func TestCurationDryRunWritesAuditWithoutMutationOrCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)

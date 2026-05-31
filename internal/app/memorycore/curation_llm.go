@@ -1,7 +1,9 @@
 package memorycore
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
@@ -67,7 +69,12 @@ func curationDeveloperPrompt() string {
 		"Decide whether the facts express the same memory, a refinement, a complement, a conflict, or distinct facts.",
 		"Only same/refinement with no or small answer gain should be eligible for automatic merge.",
 		"Do not merge complements or conflicts as the same fact.",
-		"Return a single JSON object with no markdown, comments, or extra text.",
+		"Return exactly one top-level JSON object using this schema: schema_version, decision, semantic_relation, answer_gain, confidence, canonical_fact_id, source_fact_ids, merged_content_summary, canonical_subject_entity_id, canonical_predicate, canonical_fact_type, canonical_object_literal, canonical_object_entity_id, reason_codes, requires_review.",
+		"For merge_into_existing and reinforce_existing, source_fact_ids must include canonical_fact_id plus every fact being merged. Do not use source_fact_ids to mean only non-canonical inputs.",
+		"confidence must be a JSON number from 0.0 to 1.0, not a string label such as high, medium, or low.",
+		"Do not return actions, arrays, multiple objects, or multiple clusters.",
+		"If the facts cannot be represented by one decision, return decision=needs_review, semantic_relation=unclear, answer_gain=unknown, requires_review=true.",
+		"Return no markdown, comments, or extra text.",
 		"Allowed enum values:",
 		"decision: no_op, reinforce_existing, merge_into_existing, create_canonical_fact, coexist_related, conflict_needs_review, needs_review",
 		"semantic_relation: same, refinement, overlap, complement, distinct, conflict, unclear",
@@ -77,15 +84,26 @@ func curationDeveloperPrompt() string {
 }
 
 func parseCurationLLMResponse(text string) (memsqlite.CurationDecision, error) {
+	responseHash := curationResponseHash(text)
+	shape, err := unsupportedCurationResponseShape(text)
+	if err != nil {
+		return memsqlite.CurationDecision{}, extractionServiceError("invalid_json", "curation provider returned invalid JSON")
+	}
+	if shape != "" {
+		return unsupportedCurationShapeDecision(shape, responseHash), nil
+	}
 	var payload curationLLMResponsePayload
 	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		if decision, ok := unsupportedCurationSchemaDecision(text, responseHash); ok {
+			return decision, nil
+		}
 		return memsqlite.CurationDecision{}, extractionServiceError("invalid_json", "curation provider returned invalid JSON")
 	}
 	if payload.SchemaVersion != "" && payload.SchemaVersion != CurationResponseSchemaVersion {
 		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response schema_version is unsupported")
 	}
 	if !allowedCurationDecision(payload.Decision) || !allowedCurationRelation(payload.SemanticRelation) || !allowedCurationAnswerGain(payload.AnswerGain) {
-		return unsupportedCurationEnumDecision(payload), nil
+		return unsupportedCurationEnumDecision(payload, responseHash), nil
 	}
 	if payload.Confidence < 0 || payload.Confidence > 1 {
 		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response confidence must be within [0, 1]")
@@ -104,11 +122,142 @@ func parseCurationLLMResponse(text string) (memsqlite.CurationDecision, error) {
 		CanonicalObjectLiteral:   payload.CanonicalObjectLiteral,
 		CanonicalObjectEntityID:  payload.CanonicalObjectEntityID,
 		ReasonCodes:              payload.ReasonCodes,
+		LLMResponseHash:          responseHash,
 		RequiresReview:           payload.RequiresReview,
 	}, nil
 }
 
-func unsupportedCurationEnumDecision(payload curationLLMResponsePayload) memsqlite.CurationDecision {
+func normalizeCurationDecisionForGroup(decision memsqlite.CurationDecision, group memsqlite.CurationCandidateGroup) memsqlite.CurationDecision {
+	switch decision.Decision {
+	case "merge_into_existing", "reinforce_existing":
+	default:
+		return decision
+	}
+	canonicalID := strings.TrimSpace(decision.CanonicalFactID)
+	if canonicalID == "" || !curationGroupContainsFact(group, canonicalID) {
+		return decision
+	}
+	sourceIDs := uniqueStrings(decision.SourceFactIDs)
+	if containsCurationSourceID(sourceIDs, canonicalID) {
+		decision.SourceFactIDs = sourceIDs
+		return decision
+	}
+	decision.SourceFactIDs = append([]string{canonicalID}, sourceIDs...)
+	decision.ReasonCodes = uniqueStrings(append(decision.ReasonCodes, "canonical_source_fact_id_added"))
+	return decision
+}
+
+func curationGroupContainsFact(group memsqlite.CurationCandidateGroup, factID string) bool {
+	for _, fact := range group.Facts {
+		if strings.TrimSpace(fact.FactID) == factID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCurationSourceID(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func unsupportedCurationResponseShape(text string) (string, error) {
+	var raw any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return "", err
+	}
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return "non_object", nil
+	}
+	if _, ok := object["actions"]; ok {
+		return "actions", nil
+	}
+	return "", nil
+}
+
+func unsupportedCurationShapeDecision(shape string, responseHash string) memsqlite.CurationDecision {
+	return memsqlite.CurationDecision{
+		Decision:         "needs_review",
+		SemanticRelation: "unclear",
+		AnswerGain:       "unknown",
+		Confidence:       0,
+		ReasonCodes: []string{
+			"unsupported_llm_enum",
+			"unsupported_response_shape=" + curationEnumReasonValue(shape),
+		},
+		LLMResponseHash: responseHash,
+		RequiresReview:  true,
+	}
+}
+
+func unsupportedCurationSchemaDecision(text string, responseHash string) (memsqlite.CurationDecision, bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return memsqlite.CurationDecision{}, false
+	}
+	confidence, ok := raw["confidence"]
+	if !ok || json.Unmarshal(confidence, new(float64)) == nil {
+		return memsqlite.CurationDecision{}, false
+	}
+	var payload struct {
+		CanonicalFactID string   `json:"canonical_fact_id"`
+		SourceFactIDs   []string `json:"source_fact_ids"`
+		ReasonCodes     []string `json:"reason_codes"`
+	}
+	_ = json.Unmarshal([]byte(text), &payload)
+	reasonCodes := append([]string(nil), payload.ReasonCodes...)
+	reasonCodes = append(reasonCodes, "unsupported_llm_schema", "unsupported_confidence_type="+curationJSONValueKind(confidence))
+	if value, ok := curationJSONStringValue(confidence); ok {
+		reasonCodes = append(reasonCodes, "unsupported_confidence="+curationEnumReasonValue(value))
+	}
+	return memsqlite.CurationDecision{
+		Decision:         "needs_review",
+		SemanticRelation: "unclear",
+		AnswerGain:       "unknown",
+		Confidence:       0,
+		CanonicalFactID:  payload.CanonicalFactID,
+		SourceFactIDs:    payload.SourceFactIDs,
+		ReasonCodes:      uniqueStrings(reasonCodes),
+		LLMResponseHash:  responseHash,
+		RequiresReview:   true,
+	}, true
+}
+
+func curationJSONValueKind(data json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "empty"
+	}
+	switch trimmed[0] {
+	case '"':
+		return "string"
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case 't', 'f':
+		return "bool"
+	case 'n':
+		return "null"
+	default:
+		return "unknown"
+	}
+}
+
+func curationJSONStringValue(data json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func unsupportedCurationEnumDecision(payload curationLLMResponsePayload, responseHash string) memsqlite.CurationDecision {
 	confidence := payload.Confidence
 	if confidence < 0 || confidence > 1 {
 		confidence = 0
@@ -127,6 +276,15 @@ func unsupportedCurationEnumDecision(payload curationLLMResponsePayload) memsqli
 	if !found {
 		reasonCodes = append(reasonCodes, "unsupported_llm_enum")
 	}
+	if !allowedCurationDecision(payload.Decision) {
+		reasonCodes = append(reasonCodes, "unsupported_decision="+curationEnumReasonValue(payload.Decision))
+	}
+	if !allowedCurationRelation(payload.SemanticRelation) {
+		reasonCodes = append(reasonCodes, "unsupported_semantic_relation="+curationEnumReasonValue(payload.SemanticRelation))
+	}
+	if !allowedCurationAnswerGain(payload.AnswerGain) {
+		reasonCodes = append(reasonCodes, "unsupported_answer_gain="+curationEnumReasonValue(payload.AnswerGain))
+	}
 	return memsqlite.CurationDecision{
 		Decision:         "needs_review",
 		SemanticRelation: "unclear",
@@ -135,8 +293,26 @@ func unsupportedCurationEnumDecision(payload curationLLMResponsePayload) memsqli
 		CanonicalFactID:  payload.CanonicalFactID,
 		SourceFactIDs:    payload.SourceFactIDs,
 		ReasonCodes:      reasonCodes,
+		LLMResponseHash:  responseHash,
 		RequiresReview:   true,
 	}
+}
+
+func curationEnumReasonValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Join(strings.Fields(value), "_")
+	if value == "" {
+		return "<empty>"
+	}
+	if len(value) > 80 {
+		return value[:80]
+	}
+	return value
+}
+
+func curationResponseHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 func allowedCurationDecision(value string) bool {

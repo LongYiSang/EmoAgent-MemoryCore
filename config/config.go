@@ -344,6 +344,7 @@ type CurationConfig struct {
 	IncludeFactTypes       []string                 `yaml:"include_fact_types" json:"include_fact_types"`
 	ExcludeFactTypes       []string                 `yaml:"exclude_fact_types" json:"exclude_fact_types"`
 	SourceFactAfterMerge   CurationSourceAfterMerge `yaml:"source_fact_after_merge" json:"source_fact_after_merge"`
+	RawLog                 CurationRawLogConfig     `yaml:"raw_log" json:"raw_log"`
 	LLM                    CurationLLMConfig        `yaml:"llm" json:"llm"`
 	Review                 CurationReviewConfig     `yaml:"review" json:"review"`
 }
@@ -353,14 +354,20 @@ type CurationSourceAfterMerge struct {
 	Searchable      bool   `yaml:"searchable" json:"searchable"`
 }
 
+type CurationRawLogConfig struct {
+	Enabled   bool   `yaml:"enabled" json:"enabled"`
+	Directory string `yaml:"directory" json:"directory"`
+}
+
 type CurationLLMConfig struct {
-	ProviderID     string  `yaml:"provider_id" json:"provider_id"`
-	ProviderKind   string  `yaml:"provider_kind" json:"provider_kind"`
-	Model          string  `yaml:"model" json:"model"`
-	Temperature    float64 `yaml:"temperature" json:"temperature"`
-	MaxTokens      int     `yaml:"max_tokens" json:"max_tokens"`
-	ResponseFormat string  `yaml:"response_format" json:"response_format"`
-	TimeoutMS      int     `yaml:"timeout_ms" json:"timeout_ms"`
+	ProviderID     string         `yaml:"provider_id" json:"provider_id"`
+	ProviderKind   string         `yaml:"provider_kind" json:"provider_kind"`
+	Model          string         `yaml:"model" json:"model"`
+	Temperature    float64        `yaml:"temperature" json:"temperature"`
+	MaxTokens      int            `yaml:"max_tokens" json:"max_tokens"`
+	ResponseFormat string         `yaml:"response_format" json:"response_format"`
+	TimeoutMS      int            `yaml:"timeout_ms" json:"timeout_ms"`
+	Thinking       ThinkingConfig `yaml:"thinking" json:"thinking"`
 }
 
 type CurationReviewConfig struct {
@@ -772,6 +779,7 @@ func DefaultConfig() Config {
 					MaxTokens:      4096,
 					ResponseFormat: "json_object",
 					TimeoutMS:      60000,
+					Thinking:       ThinkingConfig{Type: "disabled"},
 				},
 				Review: CurationReviewConfig{WriteReviewDecisions: true},
 			},
@@ -933,10 +941,18 @@ func (c Config) validateSemanticOps() error {
 	if c.SemanticOps.Curation.SourceFactAfterMerge.Searchable {
 		return fmt.Errorf("semantic_ops.curation.source_fact_after_merge.searchable must be false")
 	}
+	if c.SemanticOps.Curation.RawLog.Enabled && strings.TrimSpace(c.SemanticOps.Curation.RawLog.Directory) == "" {
+		return fmt.Errorf("semantic_ops.curation.raw_log.directory is required when raw_log.enabled is true")
+	}
 	switch strings.TrimSpace(c.SemanticOps.Curation.LLM.ResponseFormat) {
 	case "", "json_object", "json_schema":
 	default:
 		return fmt.Errorf("semantic_ops.curation.llm.response_format must be json_object or json_schema")
+	}
+	switch c.SemanticOps.Curation.LLM.Thinking.Type {
+	case "", "enabled", "disabled":
+	default:
+		return fmt.Errorf("semantic_ops.curation.llm.thinking.type must be enabled or disabled")
 	}
 	if c.SemanticOps.Curation.Enabled && strings.TrimSpace(c.SemanticOps.Curation.LLM.ProviderKind) == "" {
 		if provider := c.ProviderByID(c.SemanticOps.Curation.LLM.ProviderID); provider == nil {
@@ -1390,6 +1406,7 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 		Model:       cfg.LLM.Model,
 		Temperature: cfg.LLM.Temperature,
 		MaxTokens:   cfg.LLM.MaxTokens,
+		Thinking:    &memorycore.OpenAICompatibleThinkingOptions{Type: cfg.LLM.Thinking.Type},
 		ResponseFormat: memorycore.ExtractionResponseFormat(
 			strings.TrimSpace(cfg.LLM.ResponseFormat),
 		),
@@ -1414,6 +1431,10 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 		MinAutoApplyConfidence: cfg.MinAutoApplyConfidence,
 		IncludeFactTypes:       append([]string(nil), cfg.IncludeFactTypes...),
 		ExcludeFactTypes:       append([]string(nil), cfg.ExcludeFactTypes...),
+		RawLog: memorycore.CurationRawLogOptions{
+			Enabled:   cfg.RawLog.Enabled,
+			Directory: cfg.RawLog.Directory,
+		},
 		LLM: memorycore.CurationLLMOptions{
 			Provider:     provider,
 			ProviderID:   cfg.LLM.ProviderID,
@@ -1424,7 +1445,8 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 			ResponseFormat: memorycore.ExtractionResponseFormat(
 				strings.TrimSpace(cfg.LLM.ResponseFormat),
 			),
-			Timeout: time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+			Timeout:  time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+			Thinking: &memorycore.OpenAICompatibleThinkingOptions{Type: cfg.LLM.Thinking.Type},
 		},
 	}
 }

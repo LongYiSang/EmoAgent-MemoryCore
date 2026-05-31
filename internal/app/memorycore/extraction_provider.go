@@ -340,7 +340,8 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req ExtractionLL
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
@@ -355,19 +356,35 @@ func (l *OpenAICompatibleLLM) CompleteJSON(ctx context.Context, req ExtractionLL
 	if len(decoded.Choices) == 0 {
 		return providerResp, fmt.Errorf("provider response had no choices")
 	}
-	content := decoded.Choices[0].Message.Content
-	providerResp.Text = content
+	choice := decoded.Choices[0]
+	content := choice.Message.Content
+	reasoning := choice.Message.ReasoningContent
+	providerResp.ContentText = content
+	providerResp.ReasoningText = reasoning
+	text, source := content, "content"
+	if providerThinkingEnabled(l.opts.Thinking) {
+		text, source = reasoning, "reasoning_content"
+	}
+	providerResp.Text = text
+	providerResp.TextSource = source
 	providerResp.Model = firstNonEmpty(decoded.Model, model)
-	providerResp.RawFinishReason = decoded.Choices[0].FinishReason
+	providerResp.RawFinishReason = choice.FinishReason
 	providerResp.Usage = LLMUsage{
 		PromptTokens:     decoded.Usage.PromptTokens,
 		CompletionTokens: decoded.Usage.CompletionTokens,
 		TotalTokens:      decoded.Usage.TotalTokens,
 	}
-	if strings.TrimSpace(content) == "" {
+	if strings.TrimSpace(text) == "" {
+		if source == "reasoning_content" {
+			return providerResp, fmt.Errorf("provider response reasoning content was empty")
+		}
 		return providerResp, fmt.Errorf("provider response content was empty")
 	}
 	return providerResp, nil
+}
+
+func providerThinkingEnabled(opts *OpenAICompatibleThinkingOptions) bool {
+	return opts != nil && strings.TrimSpace(strings.ToLower(opts.Type)) == "enabled"
 }
 
 func thinkingPayload(opts *OpenAICompatibleThinkingOptions) (map[string]string, error) {

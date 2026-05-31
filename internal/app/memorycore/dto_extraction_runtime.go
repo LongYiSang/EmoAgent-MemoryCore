@@ -38,6 +38,9 @@ type ExtractionLLMRequest struct {
 
 type ExtractionLLMResponse struct {
 	Text                string   `json:"text"`
+	ContentText         string   `json:"content_text,omitempty"`
+	ReasoningText       string   `json:"reasoning_text,omitempty"`
+	TextSource          string   `json:"text_source,omitempty"`
 	Model               string   `json:"model,omitempty"`
 	Usage               LLMUsage `json:"usage,omitempty"`
 	RawFinishReason     string   `json:"raw_finish_reason,omitempty"`

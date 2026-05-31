@@ -232,6 +232,9 @@ semantic_ops:
     source_fact_after_merge:
       lifecycle_status: consolidated
       searchable: false
+    raw_log:
+      enabled: false
+      directory: ""
     llm:
       provider_id: default_llm
       provider_kind: ""
@@ -240,6 +243,8 @@ semantic_ops:
       max_tokens: 4096
       response_format: json_object
       timeout_ms: 60000
+      thinking:
+        type: disabled
     review:
       write_review_decisions: true
       auto_apply_pinned_sources: false

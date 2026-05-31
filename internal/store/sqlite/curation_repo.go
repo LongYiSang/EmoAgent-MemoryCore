@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
@@ -315,7 +316,9 @@ func (r *CurationRepository) BuildGroups(deltaFacts []core.Fact, candidates map[
 	for deltaID, comparable := range candidates {
 		for _, fact := range comparable {
 			addFact(fact)
-			union(deltaID, fact.ID)
+			if curationFactsComparable(factsByID[deltaID], fact) {
+				union(deltaID, fact.ID)
+			}
 		}
 	}
 	grouped := map[string][]string{}
@@ -1110,6 +1113,128 @@ func compatibleCurationPredicates(predicate string) []string {
 	default:
 		return []string{predicate}
 	}
+}
+
+func curationFactsComparable(left core.Fact, right core.Fact) bool {
+	if strings.TrimSpace(left.ID) == "" || strings.TrimSpace(right.ID) == "" {
+		return false
+	}
+	if left.SubjectEntityID == nil || right.SubjectEntityID == nil || strings.TrimSpace(*left.SubjectEntityID) != strings.TrimSpace(*right.SubjectEntityID) {
+		return false
+	}
+	if left.Predicate != right.Predicate || left.FactType != right.FactType {
+		return false
+	}
+	leftObject := normalizeCurationComparableText(derefStringPtr(left.ObjectLiteral))
+	rightObject := normalizeCurationComparableText(derefStringPtr(right.ObjectLiteral))
+	if leftObject != "" && leftObject == rightObject {
+		return true
+	}
+	leftTags := curationComparableTags(left)
+	rightTags := curationComparableTags(right)
+	for tag := range leftTags {
+		if _, ok := rightTags[tag]; ok {
+			return true
+		}
+	}
+	leftTerms := curationComparableTerms(left)
+	rightTerms := curationComparableTerms(right)
+	overlap := 0
+	for term := range leftTerms {
+		if _, ok := rightTerms[term]; ok {
+			overlap++
+			if overlap >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func curationComparableTags(fact core.Fact) map[string]struct{} {
+	text := curationFactComparableText(fact)
+	tags := map[string]struct{}{}
+	if strings.Contains(text, "无糖") || strings.Contains(text, "没有糖") || strings.Contains(text, "不加糖") {
+		tags["no_sugar"] = struct{}{}
+	}
+	if strings.Contains(text, "不甜") || strings.Contains(text, "低甜") || strings.Contains(text, "少甜") {
+		tags["low_sweet"] = struct{}{}
+	}
+	if strings.Contains(text, "代糖") {
+		tags["sweetener"] = struct{}{}
+	}
+	return tags
+}
+
+func curationComparableTerms(fact core.Fact) map[string]struct{} {
+	text := curationFactComparableText(fact)
+	terms := map[string]struct{}{}
+	for _, term := range curationCJKBigrams(text) {
+		if _, generic := genericCurationComparableTerms[term]; generic {
+			continue
+		}
+		terms[term] = struct{}{}
+	}
+	return terms
+}
+
+func curationFactComparableText(fact core.Fact) string {
+	return normalizeCurationComparableText(fact.ContentSummary + " " + derefStringPtr(fact.ObjectLiteral))
+}
+
+func normalizeCurationComparableText(value string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(strings.ToLower(value)) {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || r == '，' || r == '。' || r == '、' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func curationCJKBigrams(value string) []string {
+	var runes []rune
+	flush := func(out *[]string) {
+		for i := 0; i+1 < len(runes); i++ {
+			*out = append(*out, string(runes[i:i+2]))
+		}
+		runes = nil
+	}
+	var terms []string
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			runes = append(runes, r)
+			continue
+		}
+		flush(&terms)
+	}
+	flush(&terms)
+	return terms
+}
+
+var genericCurationComparableTerms = map[string]struct{}{
+	"用户": {},
+	"户喜": {},
+	"喜欢": {},
+	"欢喝": {},
+	"不喜": {},
+	"讨厌": {},
+	"偏好": {},
+	"饮料": {},
+	"口味": {},
+	"东西": {},
+	"内容": {},
+	"记忆": {},
+	"的饮": {},
+	"做的": {},
+}
+
+func derefStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func reorderComparableArgs(args []any, predicateCount int) []any {

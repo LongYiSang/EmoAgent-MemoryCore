@@ -27,6 +27,9 @@ type curationRunFlags struct {
 	Temperature            float64
 	MaxTokens              int
 	Timeout                time.Duration
+	Thinking               string
+	RawLog                 bool
+	RawLogDir              string
 	MaxNewFacts            int
 	CandidateLimitPerFact  int
 	MaxFactsPerGroup       int
@@ -87,6 +90,7 @@ func runCurationRun(args []string, stdout io.Writer, stderr io.Writer) int {
 		Temperature:            flags.Temperature,
 		MaxTokens:              flags.MaxTokens,
 		Timeout:                flags.Timeout,
+		RawLog:                 &memorycore.CurationRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
 		Force:                  true,
 		UpdateCheckpoint:       flags.UpdateCheckpoint,
 	})
@@ -114,6 +118,7 @@ func parseCurationRunFlags(fs *flag.FlagSet) *curationRunFlags {
 		Model:                  "memory-curator",
 		MaxTokens:              4096,
 		Timeout:                60 * time.Second,
+		Thinking:               "disabled",
 		MaxNewFacts:            100,
 		CandidateLimitPerFact:  20,
 		MaxFactsPerGroup:       8,
@@ -134,6 +139,9 @@ func parseCurationRunFlags(fs *flag.FlagSet) *curationRunFlags {
 	fs.Float64Var(&flags.Temperature, "temperature", flags.Temperature, "LLM temperature")
 	fs.IntVar(&flags.MaxTokens, "max-tokens", flags.MaxTokens, "maximum output tokens")
 	fs.DurationVar(&flags.Timeout, "timeout", flags.Timeout, "provider timeout")
+	fs.StringVar(&flags.Thinking, "thinking", flags.Thinking, "disabled or enabled")
+	fs.BoolVar(&flags.RawLog, "raw-log", false, "write one raw curation debug log JSON file per run")
+	fs.StringVar(&flags.RawLogDir, "raw-log-dir", "", "directory for raw curation debug log JSON files")
 	fs.IntVar(&flags.MaxNewFacts, "max-new-facts", flags.MaxNewFacts, "maximum new facts per curation run")
 	fs.IntVar(&flags.CandidateLimitPerFact, "candidate-limit-per-fact", flags.CandidateLimitPerFact, "maximum comparable facts per new fact")
 	fs.IntVar(&flags.MaxFactsPerGroup, "max-facts-per-group", flags.MaxFactsPerGroup, "maximum facts in one semantic curation group")
@@ -166,6 +174,15 @@ func validateCurationRunFlags(stderr io.Writer, fs *flag.FlagSet, flags *curatio
 	}
 	if flags.ProviderKind == memorycore.ExtractionProviderDisabled {
 		return usageError(stderr, fs, "--provider-kind disabled cannot run curation")
+	}
+	if strings.TrimSpace(flags.RawLogDir) != "" {
+		flags.RawLog = true
+	}
+	if flags.RawLog && strings.TrimSpace(flags.RawLogDir) == "" {
+		return usageError(stderr, fs, "--raw-log-dir is required when --raw-log is set")
+	}
+	if err := validateOneOf("--thinking", flags.Thinking, "disabled", "enabled"); err != nil {
+		return usageError(stderr, fs, err.Error())
 	}
 	if flags.MaxNewFacts <= 0 {
 		return usageError(stderr, fs, "--max-new-facts must be positive")
@@ -260,6 +277,26 @@ func applyCurationRunConfig(flags *curationRunFlags, cfg *memconfig.Config, expl
 	} else if curation.LLM.TimeoutMS > 0 {
 		flags.Timeout = time.Duration(curation.LLM.TimeoutMS) * time.Millisecond
 	}
+	if explicit["thinking"] {
+		warnConfigOverride(stderr, "thinking", "semantic_ops.curation.llm.thinking.type")
+		curation.LLM.Thinking.Type = flags.Thinking
+	} else if strings.TrimSpace(curation.LLM.Thinking.Type) != "" {
+		flags.Thinking = curation.LLM.Thinking.Type
+	}
+	if explicit["raw-log"] {
+		warnConfigOverride(stderr, "raw-log", "semantic_ops.curation.raw_log.enabled")
+		curation.RawLog.Enabled = flags.RawLog
+	} else {
+		flags.RawLog = curation.RawLog.Enabled
+	}
+	if explicit["raw-log-dir"] {
+		warnConfigOverride(stderr, "raw-log-dir", "semantic_ops.curation.raw_log.directory")
+		flags.RawLog = true
+		curation.RawLog.Enabled = true
+		curation.RawLog.Directory = flags.RawLogDir
+	} else {
+		flags.RawLogDir = curation.RawLog.Directory
+	}
 	if flags.ProviderID == memorycore.ExtractionProviderMock && strings.TrimSpace(flags.ProviderKind) == "" {
 		flags.ProviderKind = memorycore.ExtractionProviderMock
 		curation.LLM.ProviderKind = memorycore.ExtractionProviderMock
@@ -295,7 +332,9 @@ func openCurationService(ctx context.Context, opts commonOptions, flags *curatio
 					MaxTokens:      flags.MaxTokens,
 					ResponseFormat: memorycore.ExtractionResponseFormatJSONObject,
 					Timeout:        flags.Timeout,
+					Thinking:       &memorycore.OpenAICompatibleThinkingOptions{Type: flags.Thinking},
 				},
+				RawLog: memorycore.CurationRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
 			},
 		},
 	})

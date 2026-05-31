@@ -43,7 +43,7 @@ LLM model parameters live in each pipeline under `params`, including `temperatur
 
 `pipelines.query_analysis.fallback_mode` must remain `rule_only`. If LLM or sidecar query analysis fails, safe SQLite-backed retrieval still uses the deterministic rule analyzer.
 
-`semantic_ops.curation` controls delta memory curation for facts created after the last curation checkpoint. It is disabled by default, defaults to `dry_run`, and only auto-applies high-confidence `same` or `refinement` decisions with no/small answer gain. Manual CLI runs use `memoryctl curation-run`; scheduled loops remain host-owned.
+`semantic_ops.curation` controls delta memory curation for facts created after the last curation checkpoint. It is disabled by default, defaults to `dry_run`, and only auto-applies high-confidence `same` or `refinement` decisions with no/small answer gain. Manual CLI runs use `memoryctl curation-run`; scheduled loops remain host-owned. Curation raw logs live under `semantic_ops.curation.raw_log` and are off by default because they contain full prompt and provider payloads. `semantic_ops.curation.llm.thinking.type` defaults to `disabled`; when set to `enabled`, OpenAI-compatible curation parsing reads `reasoning_content` instead of the normal message content.
 
 ## Secrets
 
