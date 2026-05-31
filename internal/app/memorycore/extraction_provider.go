@@ -43,6 +43,12 @@ func (m *MockLLM) CompleteJSON(ctx context.Context, req ExtractionLLMRequest) (E
 			return ExtractionLLMResponse{Text: m.RepairResponse, Model: "mock"}, nil
 		}
 		return ExtractionLLMResponse{Text: deterministicExtractionResponse(req), Model: "mock"}, nil
+	case ExtractionLLMPurposeCuration:
+		m.ExtractCalls++
+		if m.FixedResponse != "" {
+			return ExtractionLLMResponse{Text: m.FixedResponse, Model: "mock"}, nil
+		}
+		return ExtractionLLMResponse{Text: deterministicCurationResponse(req), Model: "mock"}, nil
 	default:
 		m.ExtractCalls++
 		if m.FixedResponse != "" {

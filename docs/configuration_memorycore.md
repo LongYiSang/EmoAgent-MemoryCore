@@ -37,10 +37,13 @@ Pipelines reference providers by `provider_id`:
 - `pipelines.embedding`
 - `pipelines.rerank`
 - `pipelines.narrative_insight`
+- `semantic_ops.curation`
 
 LLM model parameters live in each pipeline under `params`, including `temperature`, `top_p`, `max_output_tokens`, `response_format`, `stream`, `seed`, and `timeout_ms`. `pipelines.extraction` defaults to deterministic JSON-schema extraction with one schema-repair attempt.
 
 `pipelines.query_analysis.fallback_mode` must remain `rule_only`. If LLM or sidecar query analysis fails, safe SQLite-backed retrieval still uses the deterministic rule analyzer.
+
+`semantic_ops.curation` controls delta memory curation for facts created after the last curation checkpoint. It is disabled by default, defaults to `dry_run`, and only auto-applies high-confidence `same` or `refinement` decisions with no/small answer gain. Manual CLI runs use `memoryctl curation-run`; scheduled loops remain host-owned.
 
 ## Secrets
 
@@ -75,6 +78,7 @@ Usually safe to hot update in a host process:
 
 - Provider enabled flags and model names for host-owned LLM calls
 - LLM `params`
+- `semantic_ops.curation` enabled/mode/limits/model fields before starting a new run
 - Write-policy thresholds and max candidate counts
 - Retrieval count, budget, FTS/mirror switches, sensitivity permission, and MMR/ranking knobs
 - Observability detail flags
@@ -95,6 +99,7 @@ These cannot be disabled by config:
 - SQLite remains the source of truth.
 - TriviumDB and sidecar data are retrieval mirrors only.
 - Hidden, forgotten, purged, unsearchable, or over-sensitive nodes cannot enter the prompt.
+- Delta curation does not delete source facts; merged sources stay visible in SQLite but become consolidated and unsearchable.
 - Manual forget routing cannot depend on extraction LLM success.
 - Work logs cannot directly write long-term facts; only Emotion-approved `work_candidate` flows may be considered.
 - Agent Affect cannot write user facts, bypass sensitivity, bypass forget or purge, or increase negative memory retention.

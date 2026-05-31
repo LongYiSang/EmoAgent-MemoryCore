@@ -26,6 +26,7 @@ type Service interface {
 	RunRetention(ctx context.Context, req RunRetentionRequest) (*RunRetentionResult, error)
 	RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error)
 	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
+	RunCuration(ctx context.Context, req RunCurationRequest) (*RunCurationResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
 	PreviewForget(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error)
 	ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (*ForgetExecuteResult, error)
@@ -49,6 +50,7 @@ type service struct {
 	queryPipeline     queryAnalysisPipeline
 	retention         *memsqlite.RetentionRepository
 	compress          *memsqlite.CompressionRepository
+	curation          *memsqlite.CurationRepository
 	forget            *memsqlite.ForgetRepository
 	mirrorAdapter     MirrorAdapter
 	mirrorQueue       *memsqlite.MirrorQueueRepository
@@ -102,6 +104,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		queryPipeline:     queryPipeline,
 		retention:         memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
 		compress:          memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
+		curation:          memsqlite.NewCurationRepository(sqlDB, uuid.NewString, now),
 		forget:            memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
 		mirrorAdapter:     opts.MirrorAdapter,
 		mirrorQueue:       memsqlite.NewMirrorQueueRepository(sqlDB),

@@ -1,9 +1,13 @@
 package memorycore
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 func normalizeSemanticOpsOptions(opts SemanticOpsOptions) SemanticOpsOptions {
 	opts.Dedup = normalizeSemanticDedupOptions(opts.Dedup)
+	opts.Curation = normalizeSemanticCurationOptions(opts.Curation)
 	return opts
 }
 
@@ -23,4 +27,40 @@ func semanticDedupOverrideConfigured(opts SemanticDedupOptions) bool {
 		opts.Enforce ||
 		opts.CandidateLimit != 0 ||
 		strings.TrimSpace(opts.ThresholdProfile) != ""
+}
+
+func normalizeSemanticCurationOptions(opts SemanticCurationOptions) SemanticCurationOptions {
+	if strings.TrimSpace(opts.Mode) == "" {
+		opts.Mode = "dry_run"
+	}
+	if opts.MaxNewFactsPerRun <= 0 {
+		opts.MaxNewFactsPerRun = 100
+	}
+	if opts.CandidateLimitPerFact <= 0 {
+		opts.CandidateLimitPerFact = 20
+	}
+	if opts.MaxFactsPerGroup <= 0 {
+		opts.MaxFactsPerGroup = 8
+	}
+	if opts.MinAutoApplyConfidence <= 0 {
+		opts.MinAutoApplyConfidence = 0.88
+	}
+	if len(opts.IncludeFactTypes) == 0 {
+		opts.IncludeFactTypes = []string{
+			FactTypeStablePreference,
+			FactTypeRelationalState,
+			FactTypeTransientContext,
+			FactTypeTaskRelevantContext,
+		}
+	}
+	if len(opts.ExcludeFactTypes) == 0 {
+		opts.ExcludeFactTypes = []string{FactTypeCoreIdentity, FactTypeCommitment}
+	}
+	if opts.LLM.Provider.MaxTokens <= 0 && opts.LLM.MaxTokens <= 0 {
+		opts.LLM.MaxTokens = 4096
+	}
+	if opts.LLM.Timeout <= 0 && opts.LLM.Provider.Timeout <= 0 {
+		opts.LLM.Timeout = 60 * time.Second
+	}
+	return opts
 }

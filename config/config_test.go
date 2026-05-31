@@ -65,6 +65,7 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.SemanticOps.Dedup.Enabled ||
 		cfg.SemanticOps.Dedup.Shadow ||
 		cfg.SemanticOps.Dedup.Enforce ||
+		cfg.SemanticOps.Curation.Enabled ||
 		cfg.SemanticOps.Forget.PreviewEnabled ||
 		cfg.SemanticOps.Forget.ExecuteEnabled {
 		t.Fatalf("semantic ops defaults should be disabled: %#v", cfg.SemanticOps)
@@ -72,6 +73,15 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 	if cfg.SemanticOps.Dedup.CandidateLimit != 12 ||
 		cfg.SemanticOps.Dedup.ThresholdProfile != "default_v0" {
 		t.Fatalf("semantic dedup defaults = %#v", cfg.SemanticOps.Dedup)
+	}
+	if cfg.SemanticOps.Curation.Mode != "dry_run" ||
+		cfg.SemanticOps.Curation.MaxNewFactsPerRun != 100 ||
+		cfg.SemanticOps.Curation.CandidateLimitPerFact != 20 ||
+		cfg.SemanticOps.Curation.MaxFactsPerGroup != 8 ||
+		cfg.SemanticOps.Curation.MinAutoApplyConfidence != 0.88 ||
+		cfg.SemanticOps.Curation.LLM.ProviderID != "default_llm" ||
+		cfg.SemanticOps.Curation.LLM.Model != "memory-curator" {
+		t.Fatalf("semantic curation defaults = %#v", cfg.SemanticOps.Curation)
 	}
 }
 
@@ -198,6 +208,25 @@ semantic_ops:
   forget:
     preview_enabled: true
     execute_enabled: false
+  curation:
+    enabled: true
+    mode: apply
+    max_new_facts_per_run: 42
+    candidate_limit_per_fact: 11
+    max_facts_per_group: 6
+    min_auto_apply_confidence: 0.91
+    include_fact_types:
+      - stable_preference
+    exclude_fact_types:
+      - core_identity
+      - commitment
+    llm:
+      provider_id: default_llm
+      provider_kind: mock
+      model: memory-curator-test
+      temperature: 0
+      max_tokens: 2048
+      timeout_ms: 12345
 `)
 
 	cfg, err := memconfig.LoadYAML(path)
@@ -216,7 +245,18 @@ semantic_ops:
 		opts.SemanticOps.Dedup.CandidateLimit != 7 ||
 		opts.SemanticOps.Dedup.ThresholdProfile != "conservative_v1" ||
 		!opts.SemanticOps.Forget.PreviewEnabled ||
-		opts.SemanticOps.Forget.ExecuteEnabled {
+		opts.SemanticOps.Forget.ExecuteEnabled ||
+		!opts.SemanticOps.Curation.Enabled ||
+		opts.SemanticOps.Curation.Mode != "apply" ||
+		opts.SemanticOps.Curation.MaxNewFactsPerRun != 42 ||
+		opts.SemanticOps.Curation.CandidateLimitPerFact != 11 ||
+		opts.SemanticOps.Curation.MaxFactsPerGroup != 6 ||
+		opts.SemanticOps.Curation.MinAutoApplyConfidence != 0.91 ||
+		opts.SemanticOps.Curation.LLM.Provider.ID != "default_llm" ||
+		opts.SemanticOps.Curation.LLM.Provider.Kind != memorycore.ExtractionProviderMock ||
+		opts.SemanticOps.Curation.LLM.Provider.Model != "memory-curator-test" ||
+		opts.SemanticOps.Curation.LLM.Provider.MaxTokens != 2048 ||
+		opts.SemanticOps.Curation.LLM.Provider.Timeout != 12345*time.Millisecond {
 		t.Fatalf("semantic options = %#v", opts.SemanticOps)
 	}
 }

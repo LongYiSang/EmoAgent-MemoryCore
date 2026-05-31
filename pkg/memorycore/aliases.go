@@ -14,6 +14,8 @@ type (
 	ConsolidateCandidateRequest         = appcore.ConsolidateCandidateRequest
 	ConsolidationPolicy                 = appcore.ConsolidationPolicy
 	ConsolidationResult                 = appcore.ConsolidationResult
+	CurationLLMOptions                  = appcore.CurationLLMOptions
+	CurationGroupResult                 = appcore.CurationGroupResult
 	DeletionIntentRoute                 = appcore.DeletionIntentRoute
 	DedupDecision                       = appcore.DedupDecision
 	DedupDiagnostics                    = appcore.DedupDiagnostics
@@ -183,7 +185,10 @@ type (
 	RoutedForgetPreview                 = appcore.RoutedForgetPreview
 	RunMirrorSyncRequest                = appcore.RunMirrorSyncRequest
 	RunMirrorSyncResult                 = appcore.RunMirrorSyncResult
+	RunCurationRequest                  = appcore.RunCurationRequest
+	RunCurationResult                   = appcore.RunCurationResult
 	RunExtractionRequest                = appcore.RunExtractionRequest
+	SemanticCurationOptions             = appcore.SemanticCurationOptions
 	SemanticDedupOptions                = appcore.SemanticDedupOptions
 	SemanticForgetOptions               = appcore.SemanticForgetOptions
 	SemanticOpsOptions                  = appcore.SemanticOpsOptions
@@ -261,6 +266,7 @@ const (
 	ExtractionProviderOpenAICompatible        = appcore.ExtractionProviderOpenAICompatible
 	ExtractionLLMPurposeExtraction            = appcore.ExtractionLLMPurposeExtraction
 	ExtractionLLMPurposePreFilter             = appcore.ExtractionLLMPurposePreFilter
+	ExtractionLLMPurposeCuration              = appcore.ExtractionLLMPurposeCuration
 	ExtractionLLMPurposeRepair                = appcore.ExtractionLLMPurposeRepair
 	ExtractionPreFilterSchemaVersion          = appcore.ExtractionPreFilterSchemaVersion
 	ExtractionRequestSchemaVersion            = appcore.ExtractionRequestSchemaVersion

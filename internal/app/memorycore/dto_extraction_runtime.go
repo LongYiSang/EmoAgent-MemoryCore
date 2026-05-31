@@ -11,6 +11,7 @@ const (
 	ExtractionLLMPurposePreFilter  = "prefilter"
 	ExtractionLLMPurposeExtraction = "extraction"
 	ExtractionLLMPurposeRepair     = "repair"
+	ExtractionLLMPurposeCuration   = "curation"
 
 	ExtractionAuditOn  = "on"
 	ExtractionAuditOff = "off"

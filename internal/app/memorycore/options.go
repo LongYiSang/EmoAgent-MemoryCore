@@ -20,6 +20,7 @@ type SemanticOpsOptions struct {
 	SemanticSidecarAuthTokenEnabled bool
 	Dedup                           SemanticDedupOptions
 	Forget                          SemanticForgetOptions
+	Curation                        SemanticCurationOptions
 }
 
 type SemanticDedupOptions struct {
@@ -33,6 +34,28 @@ type SemanticDedupOptions struct {
 type SemanticForgetOptions struct {
 	PreviewEnabled bool
 	ExecuteEnabled bool
+}
+
+type SemanticCurationOptions struct {
+	Enabled                bool
+	Mode                   string
+	MaxNewFactsPerRun      int
+	CandidateLimitPerFact  int
+	MaxFactsPerGroup       int
+	MinAutoApplyConfidence float64
+	IncludeFactTypes       []string
+	ExcludeFactTypes       []string
+	LLM                    CurationLLMOptions
+}
+
+type CurationLLMOptions struct {
+	Provider     ExtractionProviderOptions
+	ProviderID   string
+	ProviderKind string
+	Model        string
+	Temperature  float64
+	MaxTokens    int
+	Timeout      time.Duration
 }
 
 type ExtractionOptions struct {

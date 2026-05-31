@@ -21,11 +21,13 @@ func formatTime(value time.Time) string {
 }
 
 func parseTime(value string) time.Time {
-	parsed, err := time.Parse(timeFormat, value)
-	if err != nil {
-		return time.Time{}
+	for _, layout := range []string{timeFormat, "2006-01-02 15:04:05"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC()
+		}
 	}
-	return parsed
+	return time.Time{}
 }
 
 func nullableString(value *string) sql.NullString {

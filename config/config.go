@@ -317,6 +317,7 @@ type SemanticOpsConfig struct {
 	SemanticSidecarAuthTokenEnabled bool                 `yaml:"semantic_sidecar_auth_token_enabled" json:"semantic_sidecar_auth_token_enabled"`
 	Dedup                           SemanticDedupConfig  `yaml:"dedup" json:"dedup"`
 	Forget                          SemanticForgetConfig `yaml:"forget" json:"forget"`
+	Curation                        CurationConfig       `yaml:"curation" json:"curation"`
 }
 
 type SemanticDedupConfig struct {
@@ -330,6 +331,40 @@ type SemanticDedupConfig struct {
 type SemanticForgetConfig struct {
 	PreviewEnabled bool `yaml:"preview_enabled" json:"preview_enabled"`
 	ExecuteEnabled bool `yaml:"execute_enabled" json:"execute_enabled"`
+}
+
+type CurationConfig struct {
+	Enabled                bool                     `yaml:"enabled" json:"enabled"`
+	Mode                   string                   `yaml:"mode" json:"mode"`
+	ScheduleEnabled        bool                     `yaml:"schedule_enabled" json:"schedule_enabled"`
+	MaxNewFactsPerRun      int                      `yaml:"max_new_facts_per_run" json:"max_new_facts_per_run"`
+	CandidateLimitPerFact  int                      `yaml:"candidate_limit_per_fact" json:"candidate_limit_per_fact"`
+	MaxFactsPerGroup       int                      `yaml:"max_facts_per_group" json:"max_facts_per_group"`
+	MinAutoApplyConfidence float64                  `yaml:"min_auto_apply_confidence" json:"min_auto_apply_confidence"`
+	IncludeFactTypes       []string                 `yaml:"include_fact_types" json:"include_fact_types"`
+	ExcludeFactTypes       []string                 `yaml:"exclude_fact_types" json:"exclude_fact_types"`
+	SourceFactAfterMerge   CurationSourceAfterMerge `yaml:"source_fact_after_merge" json:"source_fact_after_merge"`
+	LLM                    CurationLLMConfig        `yaml:"llm" json:"llm"`
+	Review                 CurationReviewConfig     `yaml:"review" json:"review"`
+}
+
+type CurationSourceAfterMerge struct {
+	LifecycleStatus string `yaml:"lifecycle_status" json:"lifecycle_status"`
+	Searchable      bool   `yaml:"searchable" json:"searchable"`
+}
+
+type CurationLLMConfig struct {
+	ProviderID   string  `yaml:"provider_id" json:"provider_id"`
+	ProviderKind string  `yaml:"provider_kind" json:"provider_kind"`
+	Model        string  `yaml:"model" json:"model"`
+	Temperature  float64 `yaml:"temperature" json:"temperature"`
+	MaxTokens    int     `yaml:"max_tokens" json:"max_tokens"`
+	TimeoutMS    int     `yaml:"timeout_ms" json:"timeout_ms"`
+}
+
+type CurationReviewConfig struct {
+	WriteReviewDecisions   bool `yaml:"write_review_decisions" json:"write_review_decisions"`
+	AutoApplyPinnedSources bool `yaml:"auto_apply_pinned_sources" json:"auto_apply_pinned_sources"`
 }
 
 type MirrorConfig struct {
@@ -710,6 +745,34 @@ func DefaultConfig() Config {
 				CandidateLimit:   12,
 				ThresholdProfile: "default_v0",
 			},
+			Curation: CurationConfig{
+				Mode:                   "dry_run",
+				MaxNewFactsPerRun:      100,
+				CandidateLimitPerFact:  20,
+				MaxFactsPerGroup:       8,
+				MinAutoApplyConfidence: 0.88,
+				IncludeFactTypes: []string{
+					memorycore.FactTypeStablePreference,
+					memorycore.FactTypeRelationalState,
+					memorycore.FactTypeTransientContext,
+					memorycore.FactTypeTaskRelevantContext,
+				},
+				ExcludeFactTypes: []string{
+					memorycore.FactTypeCoreIdentity,
+					memorycore.FactTypeCommitment,
+				},
+				SourceFactAfterMerge: CurationSourceAfterMerge{
+					LifecycleStatus: "consolidated",
+					Searchable:      false,
+				},
+				LLM: CurationLLMConfig{
+					ProviderID: "default_llm",
+					Model:      "memory-curator",
+					MaxTokens:  4096,
+					TimeoutMS:  60000,
+				},
+				Review: CurationReviewConfig{WriteReviewDecisions: true},
+			},
 		},
 		Retention: RetentionConfig{
 			Jobs: RetentionJobsConfig{
@@ -844,6 +907,36 @@ func (c Config) validateSemanticOps() error {
 	}
 	if strings.TrimSpace(c.SemanticOps.Dedup.ThresholdProfile) == "" {
 		return fmt.Errorf("semantic_ops.dedup.threshold_profile is required")
+	}
+	if c.SemanticOps.Curation.MaxNewFactsPerRun <= 0 {
+		return fmt.Errorf("semantic_ops.curation.max_new_facts_per_run must be > 0")
+	}
+	if c.SemanticOps.Curation.CandidateLimitPerFact <= 0 {
+		return fmt.Errorf("semantic_ops.curation.candidate_limit_per_fact must be > 0")
+	}
+	if c.SemanticOps.Curation.MaxFactsPerGroup <= 1 {
+		return fmt.Errorf("semantic_ops.curation.max_facts_per_group must be > 1")
+	}
+	if c.SemanticOps.Curation.MinAutoApplyConfidence < 0 || c.SemanticOps.Curation.MinAutoApplyConfidence > 1 {
+		return fmt.Errorf("semantic_ops.curation.min_auto_apply_confidence must be within [0, 1]")
+	}
+	switch c.SemanticOps.Curation.Mode {
+	case "dry_run", "dry-run", "apply":
+	default:
+		return fmt.Errorf("semantic_ops.curation.mode must be dry_run or apply")
+	}
+	if c.SemanticOps.Curation.SourceFactAfterMerge.LifecycleStatus != "consolidated" {
+		return fmt.Errorf("semantic_ops.curation.source_fact_after_merge.lifecycle_status must be consolidated")
+	}
+	if c.SemanticOps.Curation.SourceFactAfterMerge.Searchable {
+		return fmt.Errorf("semantic_ops.curation.source_fact_after_merge.searchable must be false")
+	}
+	if c.SemanticOps.Curation.Enabled && strings.TrimSpace(c.SemanticOps.Curation.LLM.ProviderKind) == "" {
+		if provider := c.ProviderByID(c.SemanticOps.Curation.LLM.ProviderID); provider == nil {
+			return fmt.Errorf("semantic_ops.curation.llm.provider_id %q does not exist", c.SemanticOps.Curation.LLM.ProviderID)
+		} else if !provider.Enabled {
+			return fmt.Errorf("semantic_ops.curation.llm.provider_id %q references a disabled provider", c.SemanticOps.Curation.LLM.ProviderID)
+		}
 	}
 	return nil
 }
@@ -1224,6 +1317,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 				PreviewEnabled: c.SemanticOps.Forget.PreviewEnabled,
 				ExecuteEnabled: c.SemanticOps.Forget.ExecuteEnabled,
 			},
+			Curation: c.CurationOptions(),
 		},
 		QueryAnalysis: memorycore.QueryAnalysisOptions{
 			Provider:                         provider,
@@ -1278,6 +1372,48 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 			},
 		},
 	}, nil
+}
+
+func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
+	cfg := c.SemanticOps.Curation
+	providerConfig := c.ProviderByID(cfg.LLM.ProviderID)
+	provider := memorycore.ExtractionProviderOptions{
+		Kind:        cfg.LLM.ProviderKind,
+		ID:          cfg.LLM.ProviderID,
+		Model:       cfg.LLM.Model,
+		Temperature: cfg.LLM.Temperature,
+		MaxTokens:   cfg.LLM.MaxTokens,
+		Timeout:     time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+	}
+	if providerConfig != nil {
+		if strings.TrimSpace(provider.Kind) == "" {
+			provider.Kind = extractionProviderKind(*providerConfig)
+		}
+		provider.BaseURL = providerConfig.BaseURL
+		provider.APIKeyEnv = providerConfig.APIKeyEnv
+		if provider.Timeout == 0 && providerConfig.TimeoutMS > 0 {
+			provider.Timeout = time.Duration(providerConfig.TimeoutMS) * time.Millisecond
+		}
+	}
+	return memorycore.SemanticCurationOptions{
+		Enabled:                cfg.Enabled,
+		Mode:                   strings.ReplaceAll(cfg.Mode, "-", "_"),
+		MaxNewFactsPerRun:      cfg.MaxNewFactsPerRun,
+		CandidateLimitPerFact:  cfg.CandidateLimitPerFact,
+		MaxFactsPerGroup:       cfg.MaxFactsPerGroup,
+		MinAutoApplyConfidence: cfg.MinAutoApplyConfidence,
+		IncludeFactTypes:       append([]string(nil), cfg.IncludeFactTypes...),
+		ExcludeFactTypes:       append([]string(nil), cfg.ExcludeFactTypes...),
+		LLM: memorycore.CurationLLMOptions{
+			Provider:     provider,
+			ProviderID:   cfg.LLM.ProviderID,
+			ProviderKind: cfg.LLM.ProviderKind,
+			Model:        cfg.LLM.Model,
+			Temperature:  cfg.LLM.Temperature,
+			MaxTokens:    cfg.LLM.MaxTokens,
+			Timeout:      time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
+		},
+	}
 }
 
 func runtimeQueryAnalysisMode(qa QueryAnalysisPipeline) string {

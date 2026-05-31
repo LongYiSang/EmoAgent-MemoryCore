@@ -47,6 +47,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRetentionJobs(args[1:], stdout, stderr)
 	case "compression-apply":
 		return runCompressionApply(args[1:], stdout, stderr)
+	case "curation-run":
+		return runCurationRun(args[1:], stdout, stderr)
 	case "mirror-sync-run":
 		return runMirrorSync(args[1:], stdout, stderr)
 	case "mirror-rebuild":

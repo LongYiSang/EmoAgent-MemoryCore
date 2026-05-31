@@ -212,6 +212,37 @@ mirror:
   rebuild_on_start: false
   stale_lag_threshold_ms: 30000
 
+semantic_ops:
+  curation:
+    enabled: false
+    mode: dry_run
+    schedule_enabled: false
+    max_new_facts_per_run: 100
+    candidate_limit_per_fact: 20
+    max_facts_per_group: 8
+    min_auto_apply_confidence: 0.88
+    include_fact_types:
+      - stable_preference
+      - relational_state
+      - transient_context
+      - task_relevant_context
+    exclude_fact_types:
+      - core_identity
+      - commitment
+    source_fact_after_merge:
+      lifecycle_status: consolidated
+      searchable: false
+    llm:
+      provider_id: default_llm
+      provider_kind: ""
+      model: memory-curator
+      temperature: 0.0
+      max_tokens: 4096
+      timeout_ms: 60000
+    review:
+      write_review_decisions: true
+      auto_apply_pinned_sources: false
+
 retention:
   jobs:
     lazy_decay: true
