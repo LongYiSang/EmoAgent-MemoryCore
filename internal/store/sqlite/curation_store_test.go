@@ -20,8 +20,8 @@ func TestCurationSelectsDeltaFactsFromCheckpoint(t *testing.T) {
 
 	before := insertCurationFact(t, ctx, db.SQLDB(), "fact_before", "likes", "用户喜欢热茶。", curationTime(0))
 	_ = before
-	delta := insertCurationFact(t, ctx, db.SQLDB(), "fact_delta", "likes", "用户喜欢无糖饮料。", curationTime(1))
-	other := insertCurationFact(t, ctx, db.SQLDB(), "fact_same_second", "likes", "用户喜欢不甜的饮料。", curationTime(1))
+	delta := insertCurationFact(t, ctx, db.SQLDB(), "fact_delta", "likes", "用户喜欢科幻小说。", curationTime(1))
+	other := insertCurationFact(t, ctx, db.SQLDB(), "fact_same_second", "likes", "用户喜欢历史小说。", curationTime(1))
 	excluded := insertCurationFact(t, ctx, db.SQLDB(), "fact_identity", "prefers_name", "用户偏好被叫 Long。", curationTime(2))
 	updateCurationFact(t, db.SQLDB(), excluded.ID, "fact_type = 'core_identity'")
 
@@ -50,11 +50,11 @@ func TestCurationRetrievesComparableFactsAndBuildsGroups(t *testing.T) {
 	defer db.Close()
 	seedCurationGraph(t, ctx, db.SQLDB())
 
-	delta := insertCurationFact(t, ctx, db.SQLDB(), "fact_delta_drink", "likes", "用户喜欢无糖饮料。", curationTime(3))
-	existing := insertCurationFact(t, ctx, db.SQLDB(), "fact_existing_drink", "likes", "用户喜欢不甜的没有糖的饮料。", curationTime(1))
-	inBatch := insertCurationFact(t, ctx, db.SQLDB(), "fact_batch_drink", "likes", "用户点饮料常选无糖。", curationTime(4))
-	dislikes := insertCurationFact(t, ctx, db.SQLDB(), "fact_dislikes_sweetener", "dislikes", "用户讨厌代糖味。", curationTime(2))
-	hidden := insertCurationFact(t, ctx, db.SQLDB(), "fact_hidden_drink", "likes", "隐藏候选不应参与。", curationTime(2))
+	delta := insertCurationFact(t, ctx, db.SQLDB(), "fact_delta_novel", "likes", "用户喜欢科幻小说。", curationTime(3))
+	existing := insertCurationFact(t, ctx, db.SQLDB(), "fact_existing_novel", "likes", "用户周末喜欢读科幻小说。", curationTime(1))
+	inBatch := insertCurationFact(t, ctx, db.SQLDB(), "fact_batch_novel", "likes", "用户喜欢科幻小说和太空歌剧。", curationTime(4))
+	dislikes := insertCurationFact(t, ctx, db.SQLDB(), "fact_dislikes_novel", "dislikes", "用户不喜欢科幻小说剧透。", curationTime(2))
+	hidden := insertCurationFact(t, ctx, db.SQLDB(), "fact_hidden_novel", "likes", "隐藏候选不应参与。", curationTime(2))
 	updateCurationFact(t, db.SQLDB(), hidden.ID, "visibility_status = 'hidden'")
 
 	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
@@ -96,15 +96,15 @@ func TestCurationBuildGroupsDoesNotUnionUnrelatedSamePredicateFacts(t *testing.T
 	defer db.Close()
 	seedCurationGraph(t, ctx, db.SQLDB())
 
-	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_canonical", "likes", "用户在饮料上偏好无糖、口味不甜。", curationTime(1))
-	updateCurationFact(t, db.SQLDB(), canonical.ID, "object_literal = '无糖、低甜的饮料'")
-	noSugar := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_no_sugar", "likes", "用户喜欢喝无糖饮料。", curationTime(2))
-	lowSweet := insertCurationFact(t, ctx, db.SQLDB(), "fact_drink_low_sweet", "likes", "用户喜欢喝不甜的没有糖的饮料。", curationTime(3))
-	coconut := insertCurationFact(t, ctx, db.SQLDB(), "fact_coconut_water", "likes", "用户喜欢喝椰子水。", curationTime(4))
-	grandma := insertCurationFact(t, ctx, db.SQLDB(), "fact_grandma_food", "likes", "用户喜欢外婆做的家常菜。", curationTime(5))
+	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_novel_canonical", "likes", "用户喜欢科幻小说。", curationTime(1))
+	updateCurationFact(t, db.SQLDB(), canonical.ID, "object_literal = '科幻小说'")
+	weekend := insertCurationFact(t, ctx, db.SQLDB(), "fact_novel_weekend", "likes", "用户周末喜欢读科幻小说。", curationTime(2))
+	spaceOpera := insertCurationFact(t, ctx, db.SQLDB(), "fact_novel_space_opera", "likes", "用户喜欢科幻小说和太空歌剧。", curationTime(3))
+	jazz := insertCurationFact(t, ctx, db.SQLDB(), "fact_jazz_music", "likes", "用户喜欢听爵士乐。", curationTime(4))
+	hiking := insertCurationFact(t, ctx, db.SQLDB(), "fact_hiking", "likes", "用户喜欢周末徒步旅行。", curationTime(5))
 
 	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
-	deltaFacts := []core.Fact{canonical, noSugar, lowSweet, coconut, grandma}
+	deltaFacts := []core.Fact{canonical, weekend, spaceOpera, jazz, hiking}
 	candidates := map[string][]core.Fact{}
 	for _, fact := range deltaFacts {
 		found, err := repo.RetrieveComparableFacts(ctx, memsqlite.CurationComparableQuery{
@@ -120,18 +120,46 @@ func TestCurationBuildGroupsDoesNotUnionUnrelatedSamePredicateFacts(t *testing.T
 
 	groups := repo.BuildGroups(deltaFacts, candidates, 8)
 	if len(groups) != 1 {
-		t.Fatalf("groups = %#v, want only one drink-preference group", groups)
+		t.Fatalf("groups = %#v, want only one overlapping preference group", groups)
 	}
 	groupIDs := curationGroupFactIDs(groups[0].Facts)
-	for _, want := range []string{canonical.ID, noSugar.ID, lowSweet.ID} {
+	for _, want := range []string{canonical.ID, weekend.ID, spaceOpera.ID} {
 		if !containsString(groupIDs, want) {
 			t.Fatalf("group ids = %#v, missing %s", groupIDs, want)
 		}
 	}
-	for _, unwanted := range []string{coconut.ID, grandma.ID} {
+	for _, unwanted := range []string{jazz.ID, hiking.ID} {
 		if containsString(groupIDs, unwanted) {
 			t.Fatalf("group ids = %#v, should not include unrelated same-predicate fact %s", groupIDs, unwanted)
 		}
+	}
+}
+
+func TestCurationBuildGroupsRetainsDeltaWhenGroupIsTruncated(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedCurationGraph(t, ctx, db.SQLDB())
+
+	oldA := insertCurationFact(t, ctx, db.SQLDB(), "fact_old_a", "likes", "用户喜欢科幻小说。", curationTime(1))
+	oldB := insertCurationFact(t, ctx, db.SQLDB(), "fact_old_b", "likes", "用户周末喜欢读科幻小说。", curationTime(2))
+	delta := insertCurationFact(t, ctx, db.SQLDB(), "fact_new_delta", "likes", "用户喜欢科幻小说和太空歌剧。", curationTime(3))
+
+	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
+	groups := repo.BuildGroups(
+		[]core.Fact{delta},
+		map[string][]core.Fact{delta.ID: {oldA, oldB}},
+		2,
+	)
+	if len(groups) != 1 {
+		t.Fatalf("groups = %#v, want one truncated group", groups)
+	}
+	groupIDs := curationGroupFactIDs(groups[0].Facts)
+	if !containsString(groupIDs, delta.ID) {
+		t.Fatalf("group ids = %#v, want delta retained after truncation", groupIDs)
+	}
+	if len(groupIDs) != 2 {
+		t.Fatalf("group ids = %#v, want max group size preserved", groupIDs)
 	}
 }
 
@@ -141,8 +169,8 @@ func TestCurationDryRunWritesAuditWithoutMutationOrCheckpoint(t *testing.T) {
 	defer db.Close()
 	seedCurationGraph(t, ctx, db.SQLDB())
 
-	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_dry_canonical", "likes", "用户喜欢无糖饮料。", curationTime(1))
-	source := insertCurationFact(t, ctx, db.SQLDB(), "fact_dry_source", "likes", "用户喜欢不甜的没有糖的饮料。", curationTime(2))
+	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_dry_canonical", "likes", "用户喜欢科幻小说。", curationTime(1))
+	source := insertCurationFact(t, ctx, db.SQLDB(), "fact_dry_source", "likes", "用户周末喜欢读科幻小说。", curationTime(2))
 	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
 
 	result, err := repo.ApplyDecisions(ctx, memsqlite.CurationApplyRequest{
@@ -163,9 +191,9 @@ func TestCurationDryRunWritesAuditWithoutMutationOrCheckpoint(t *testing.T) {
 				Confidence:             0.95,
 				CanonicalFactID:        canonical.ID,
 				SourceFactIDs:          []string{canonical.ID, source.ID},
-				MergedContentSummary:   "用户在饮料上偏好无糖、口味不甜。",
+				MergedContentSummary:   "用户喜欢科幻小说，尤其周末会读。",
 				CanonicalPredicate:     "likes",
-				CanonicalObjectLiteral: "无糖、低甜的饮料",
+				CanonicalObjectLiteral: "科幻小说",
 				CanonicalFactType:      string(core.FactTypeStablePreference),
 			},
 		}},
@@ -189,8 +217,8 @@ func TestCurationMergeIntoExistingMarksSourcesUnsearchableAndCopiesEvidence(t *t
 	defer db.Close()
 	seedCurationGraph(t, ctx, db.SQLDB())
 
-	canonical := insertCurationFactWithEvidence(t, ctx, db.SQLDB(), "fact_canonical_drink", "likes", "用户喜欢无糖饮料。", "ep_old", curationTime(1))
-	source := insertCurationFactWithEvidence(t, ctx, db.SQLDB(), "fact_source_drink", "likes", "用户喜欢不甜的没有糖的饮料。", "ep_new", curationTime(2))
+	canonical := insertCurationFactWithEvidence(t, ctx, db.SQLDB(), "fact_canonical_novel", "likes", "用户喜欢科幻小说。", "ep_old", curationTime(1))
+	source := insertCurationFactWithEvidence(t, ctx, db.SQLDB(), "fact_source_novel", "likes", "用户周末喜欢读科幻小说。", "ep_new", curationTime(2))
 	insertIndexMapWithTriviumID(t, db.SQLDB(), core.NodeTypeFact, canonical.ID, 2001)
 	insertIndexMapWithTriviumID(t, db.SQLDB(), core.NodeTypeFact, source.ID, 2002)
 
@@ -217,11 +245,11 @@ func TestCurationMergeIntoExistingMarksSourcesUnsearchableAndCopiesEvidence(t *t
 				Confidence:             0.95,
 				CanonicalFactID:        canonical.ID,
 				SourceFactIDs:          []string{canonical.ID, source.ID},
-				MergedContentSummary:   "用户在饮料上偏好无糖、口味不甜。",
+				MergedContentSummary:   "用户喜欢科幻小说，尤其周末会读。",
 				CanonicalPredicate:     "likes",
-				CanonicalObjectLiteral: "无糖、低甜的饮料",
+				CanonicalObjectLiteral: "科幻小说",
 				CanonicalFactType:      string(core.FactTypeStablePreference),
-				ReasonCodes:            []string{"same_user_preference", "same_beverage_domain"},
+				ReasonCodes:            []string{"same_user_preference", "adds_context"},
 			},
 		}},
 	})
@@ -232,7 +260,7 @@ func TestCurationMergeIntoExistingMarksSourcesUnsearchableAndCopiesEvidence(t *t
 		t.Fatalf("apply result = %#v", result)
 	}
 
-	requireCurationFactSummary(t, db.SQLDB(), canonical.ID, "用户在饮料上偏好无糖、口味不甜。", "无糖、低甜的饮料")
+	requireCurationFactSummary(t, db.SQLDB(), canonical.ID, "用户喜欢科幻小说，尤其周末会读。", "科幻小说")
 	requireCurationFactSearchable(t, db.SQLDB(), canonical.ID, string(core.LifecycleActive), true)
 	requireCurationFactSearchable(t, db.SQLDB(), source.ID, string(core.LifecycleConsolidated), false)
 	requireCurationSearchDocument(t, db.SQLDB(), canonical.ID, true)
@@ -253,8 +281,8 @@ func TestCurationCheckpointOnlyUpdatesAfterSuccessfulApply(t *testing.T) {
 	defer db.Close()
 	seedCurationGraph(t, ctx, db.SQLDB())
 
-	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_checkpoint_canonical", "likes", "用户喜欢无糖饮料。", curationTime(1))
-	source := insertCurationFact(t, ctx, db.SQLDB(), "fact_checkpoint_source", "likes", "用户喜欢不甜的饮料。", curationTime(2))
+	canonical := insertCurationFact(t, ctx, db.SQLDB(), "fact_checkpoint_canonical", "likes", "用户喜欢科幻小说。", curationTime(1))
+	source := insertCurationFact(t, ctx, db.SQLDB(), "fact_checkpoint_source", "likes", "用户周末喜欢读科幻小说。", curationTime(2))
 	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
 	_, err := repo.ApplyDecisions(ctx, memsqlite.CurationApplyRequest{
 		PersonaID:              "default",
@@ -290,8 +318,8 @@ func seedCurationGraph(t *testing.T, ctx context.Context, db *sql.DB) {
 	seedConsolidationStoreGraph(t, ctx, db)
 	episodes := memsqlite.NewEpisodeRepository(db)
 	for _, episode := range []core.Episode{
-		{ID: "ep_old", PersonaID: "default", SessionID: "s1", Role: core.RoleUser, Content: "我喜欢无糖饮料。", OccurredAt: curationTime(1), SourceType: core.SourceTypeChat},
-		{ID: "ep_new", PersonaID: "default", SessionID: "s1", Role: core.RoleUser, Content: "我喜欢不甜的没有糖的饮料。", OccurredAt: curationTime(2), SourceType: core.SourceTypeChat},
+		{ID: "ep_old", PersonaID: "default", SessionID: "s1", Role: core.RoleUser, Content: "我喜欢科幻小说。", OccurredAt: curationTime(1), SourceType: core.SourceTypeChat},
+		{ID: "ep_new", PersonaID: "default", SessionID: "s1", Role: core.RoleUser, Content: "我周末喜欢读科幻小说。", OccurredAt: curationTime(2), SourceType: core.SourceTypeChat},
 	} {
 		if err := episodes.Append(ctx, episode); err != nil {
 			t.Fatalf("append curation episode %s: %v", episode.ID, err)

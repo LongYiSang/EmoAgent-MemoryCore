@@ -232,9 +232,6 @@ semantic_ops:
     exclude_fact_types:
       - core_identity
       - commitment
-    source_fact_after_merge:
-      lifecycle_status: consolidated
-      searchable: false
     raw_log:
       enabled: false
       directory: ""
@@ -248,9 +245,6 @@ semantic_ops:
       timeout_ms: 60000
       thinking:
         type: disabled
-    review:
-      write_review_decisions: true
-      auto_apply_pinned_sources: false
 
 retention:
   jobs:

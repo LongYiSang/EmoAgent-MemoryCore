@@ -16,16 +16,16 @@ import (
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
-func TestServiceRunCurationApplyMergesEquivalentDrinkPreferences(t *testing.T) {
+func TestServiceRunCurationApplyMergesOverlappingPreferences(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openCurationService(t, ctx)
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	first := consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID).Fact
-	second := consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID).Fact
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID).Fact
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
@@ -56,7 +56,7 @@ func TestServiceRunCurationApplyMergesEquivalentDrinkPreferences(t *testing.T) {
 	defer db.Close()
 	requireCurationAPIFactState(t, db, canonicalID, "active", 1)
 	requireCurationAPIFactState(t, db, sourceID, "consolidated", 0)
-	requireCurationAPIFactSummary(t, db, canonicalID, "用户在饮料上偏好无糖、口味不甜。")
+	requireCurationAPIFactSummary(t, db, canonicalID, "用户周末喜欢读科幻小说；用户喜欢科幻小说。")
 	requireCurationAPISearchDocument(t, db, canonicalID, true)
 	requireCurationAPISearchDocument(t, db, sourceID, false)
 	requireCurationAPILink(t, db, canonicalID, "EVIDENCED_BY", oldEpisode.ID)
@@ -69,7 +69,7 @@ func TestServiceRunCurationApplyMergesEquivalentDrinkPreferences(t *testing.T) {
 
 	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
-		QueryText: "无糖饮料",
+		QueryText: "科幻小说",
 		Policy: memorycore.RetrievalPolicy{
 			UseFTS:           true,
 			UseMirror:        false,
@@ -79,7 +79,7 @@ func TestServiceRunCurationApplyMergesEquivalentDrinkPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrieve after curation: %v", err)
 	}
-	requireMemoryItem(t, contextResult, canonicalID, "用户在饮料上偏好无糖、口味不甜。", "")
+	requireMemoryItem(t, contextResult, canonicalID, "用户周末喜欢读科幻小说；用户喜欢科幻小说。", "")
 	requireMemoryItemAbsent(t, contextResult, sourceID)
 }
 
@@ -89,14 +89,14 @@ func TestServiceRunCurationDoesNotMergeUnrelatedSamePredicateSources(t *testing.
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	noSugarEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	lowSweetEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	coconutEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝椰子水。", time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
-	grandmaEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢外婆做的家常菜。", time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
-	first := consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", noSugarEpisode.ID).Fact
-	second := consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", lowSweetEpisode.ID).Fact
-	coconut := consolidateLiteral(t, ctx, svc, userID, "likes", "椰子水", "用户喜欢喝椰子水。", coconutEpisode.ID).Fact
-	grandma := consolidateLiteral(t, ctx, svc, userID, "likes", "外婆做的家常菜", "用户喜欢外婆做的家常菜。", grandmaEpisode.ID).Fact
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	jazzEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢听爵士乐。", time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC))
+	hikingEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢周末徒步旅行。", time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", firstEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", secondEpisode.ID).Fact
+	jazz := consolidateLiteral(t, ctx, svc, userID, "likes", "爵士乐", "用户喜欢听爵士乐。", jazzEpisode.ID).Fact
+	hiking := consolidateLiteral(t, ctx, svc, userID, "likes", "周末徒步旅行", "用户喜欢周末徒步旅行。", hikingEpisode.ID).Fact
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
@@ -114,22 +114,23 @@ func TestServiceRunCurationDoesNotMergeUnrelatedSamePredicateSources(t *testing.
 	}
 
 	canonicalID := result.Groups[0].CanonicalFactID
-	sugarSourceID := first.ID
+	mergedSourceID := first.ID
 	if canonicalID == first.ID {
-		sugarSourceID = second.ID
+		mergedSourceID = second.ID
 	}
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	requireCurationAPIFactState(t, db, canonicalID, "active", 1)
-	requireCurationAPIFactState(t, db, sugarSourceID, "consolidated", 0)
-	requireCurationAPIFactState(t, db, coconut.ID, "active", 1)
-	requireCurationAPIFactState(t, db, grandma.ID, "active", 1)
+	requireCurationAPIFactState(t, db, mergedSourceID, "consolidated", 0)
+	requireCurationAPIFactState(t, db, jazz.ID, "active", 1)
+	requireCurationAPIFactState(t, db, hiking.ID, "active", 1)
 }
 
 func TestServiceRunCurationAddsCanonicalSourceFactIDBeforeApply(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("TEST_CURATION_API_KEY", "test-key")
+	var canonicalFactID, sourceFactID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var providerReq struct {
 			Messages []struct {
@@ -156,17 +157,19 @@ func TestServiceRunCurationAddsCanonicalSourceFactIDBeforeApply(t *testing.T) {
 		if err := json.Unmarshal([]byte(userContent[jsonStart:]), &payload); err != nil {
 			t.Fatalf("decode curation payload: %v", err)
 		}
-		var canonicalID, sourceID string
-		for _, fact := range payload.Facts {
-			switch fact.ObjectLiteral {
-			case "椰子水":
-				canonicalID = fact.FactID
-			case "骑行时喝椰子水":
-				sourceID = fact.FactID
-			}
+		if len(payload.Facts) != 2 {
+			t.Fatalf("payload facts = %#v, want two comparable facts", payload.Facts)
 		}
-		if canonicalID == "" || sourceID == "" {
-			t.Fatalf("payload facts = %#v, want coconut canonical and riding source", payload.Facts)
+		if canonicalFactID == "" || sourceFactID == "" {
+			t.Fatal("test fact ids were not initialized")
+		}
+		var sawCanonical, sawSource bool
+		for _, fact := range payload.Facts {
+			sawCanonical = sawCanonical || fact.FactID == canonicalFactID
+			sawSource = sawSource || fact.FactID == sourceFactID
+		}
+		if !sawCanonical || !sawSource {
+			t.Fatalf("payload facts = %#v, want canonical/source ids", payload.Facts)
 		}
 		content, err := json.Marshal(map[string]any{
 			"schema_version":              "memory_delta_curation.v0.1.response",
@@ -174,13 +177,13 @@ func TestServiceRunCurationAddsCanonicalSourceFactIDBeforeApply(t *testing.T) {
 			"semantic_relation":           "refinement",
 			"answer_gain":                 "small",
 			"confidence":                  0.9,
-			"canonical_fact_id":           canonicalID,
-			"source_fact_ids":             []string{sourceID},
-			"merged_content_summary":      "用户喜欢喝椰子水，尤其是在骑行时和骑行后喝冰椰子水。",
+			"canonical_fact_id":           canonicalFactID,
+			"source_fact_ids":             []string{sourceFactID},
+			"merged_content_summary":      "用户喜欢科幻小说，尤其周末会读。",
 			"canonical_subject_entity_id": "ent_user",
 			"canonical_predicate":         "likes",
 			"canonical_fact_type":         "stable_preference",
-			"canonical_object_literal":    "椰子水",
+			"canonical_object_literal":    "科幻小说",
 			"canonical_object_entity_id":  nil,
 			"reason_codes":                []string{"refines_context", "adds_condition"},
 			"requires_review":             false,
@@ -227,10 +230,12 @@ func TestServiceRunCurationAddsCanonicalSourceFactIDBeforeApply(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝椰子水。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢在骑行时喝椰子水，骑完后也喝冰椰子水。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	canonical := consolidateLiteral(t, ctx, svc, userID, "likes", "椰子水", "用户喜欢喝椰子水。", oldEpisode.ID).Fact
-	source := consolidateLiteral(t, ctx, svc, userID, "likes", "骑行时喝椰子水", "用户喜欢在骑行时喝椰子水，骑完后也喝冰椰子水。", newEpisode.ID).Fact
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	canonical := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID).Fact
+	source := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID).Fact
+	canonicalFactID = canonical.ID
+	sourceFactID = source.ID
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
@@ -263,10 +268,10 @@ func TestServiceRunCurationDoesNotAutoMergeComplementFacts(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	likeEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	dislikeEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我讨厌代糖味。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	likeFact := consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢无糖饮料。", likeEpisode.ID).Fact
-	dislikeFact := consolidateLiteral(t, ctx, svc, userID, "dislikes", "代糖味", "用户讨厌代糖味。", dislikeEpisode.ID).Fact
+	likeEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	dislikeEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我讨厌科幻小说剧透。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	likeFact := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", likeEpisode.ID).Fact
+	dislikeFact := consolidateLiteral(t, ctx, svc, userID, "dislikes", "科幻小说剧透", "用户讨厌科幻小说剧透。", dislikeEpisode.ID).Fact
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
@@ -300,10 +305,10 @@ func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近喜欢上骑自行车。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢吃完晚饭后出去骑行。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	first := consolidateLiteral(t, ctx, svc, userID, "likes", "骑自行车", "用户最近喜欢上骑自行车。", firstEpisode.ID).Fact
-	second := consolidateLiteral(t, ctx, svc, userID, "likes", "晚饭后骑行", "用户喜欢吃完晚饭后出去骑行。", secondEpisode.ID).Fact
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", firstEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", secondEpisode.ID).Fact
 	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
 		Status: "ok",
 		Candidates: []memorycore.MirrorDedupSearchCandidate{{
@@ -351,7 +356,7 @@ func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 	}
 	facts, ok := groups[0].(map[string]any)["facts"].([]any)
 	if !ok || !rawLogFactsContain(facts, first.ID) || !rawLogFactsContain(facts, second.ID) {
-		t.Fatalf("raw log group facts = %#v, want cycling facts", facts)
+		t.Fatalf("raw log group facts = %#v, want mirror-selected facts", facts)
 	}
 
 	db := openSQLDB(t, dbPath)
@@ -371,10 +376,10 @@ func TestServiceRunCurationMirrorCandidateAuthorityDrop(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近喜欢上骑自行车。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢吃完晚饭后出去骑行。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	first := consolidateLiteral(t, ctx, svc, userID, "likes", "骑自行车", "用户最近喜欢上骑自行车。", firstEpisode.ID).Fact
-	second := consolidateLiteral(t, ctx, svc, userID, "dislikes", "晚饭后骑行", "用户不喜欢吃完晚饭后出去骑行。", secondEpisode.ID).Fact
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我不喜欢科幻小说剧透。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", firstEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "dislikes", "科幻小说剧透", "用户不喜欢科幻小说剧透。", secondEpisode.ID).Fact
 	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
 		Status: "ok",
 		Candidates: []memorycore.MirrorDedupSearchCandidate{{
@@ -415,10 +420,10 @@ func TestServiceRunCurationMirrorFirstFallsBackToSQL(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
-	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
@@ -445,10 +450,10 @@ func TestServiceRunCurationMirrorOnlyDoesNotFallbackToSQL(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
-	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
@@ -465,16 +470,80 @@ func TestServiceRunCurationMirrorOnlyDoesNotFallbackToSQL(t *testing.T) {
 	}
 }
 
+func TestServiceRunCurationRejectsInvalidCandidateRetrievalOverride(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openCurationService(t, ctx)
+	defer svc.Close()
+
+	_, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:    "dry_run",
+		Trigger: "test",
+		Force:   true,
+		CandidateRetrieval: &memorycore.CurationCandidateRetrievalOptions{
+			Mode:                "vectorish",
+			MirrorMinSimilarity: 0.70,
+		},
+	})
+	if !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:    "dry_run",
+		Trigger: "test",
+		Force:   true,
+		CandidateRetrieval: &memorycore.CurationCandidateRetrievalOptions{
+			Mode:                "mirror_first",
+			MirrorMinSimilarity: 1.5,
+		},
+	})
+	if !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestServiceRunCurationRejectsJSONSchemaResponseFormat(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	svc, err := memorycore.Open(ctx, memorycore.Options{
+		DBPath:      dbPath,
+		AutoMigrate: true,
+		SemanticOps: memorycore.SemanticOpsOptions{
+			Curation: memorycore.SemanticCurationOptions{
+				Enabled: true,
+				LLM: memorycore.CurationLLMOptions{
+					ProviderKind:   memorycore.ExtractionProviderMock,
+					ProviderID:     "mock",
+					ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("open curation service: %v", err)
+	}
+	defer svc.Close()
+
+	_, err = svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:    "dry_run",
+		Trigger: "test",
+		Force:   true,
+	})
+	if !errors.Is(err, memorycore.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestServiceRunCurationPinnedSourceRequiresReview(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openCurationService(t, ctx)
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	first := consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID).Fact
-	second := consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID).Fact
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID).Fact
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
@@ -545,10 +614,10 @@ func TestServiceRunCurationRawLogRecordsSchemaDriftProviderResponse(t *testing.T
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
-	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
@@ -632,10 +701,10 @@ func TestServiceRunCurationRawLogRecordsProviderErrorResponse(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
-	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
-	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
-	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢科幻小说。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
 	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",

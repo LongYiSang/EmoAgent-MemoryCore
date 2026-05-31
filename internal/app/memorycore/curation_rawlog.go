@@ -28,16 +28,16 @@ type curationRawLogCandidateRetrieval struct {
 }
 
 type curationRawLogCandidateDelta struct {
-	DeltaFactID           string                          `json:"delta_fact_id"`
-	Strategy              string                          `json:"strategy"`
-	MirrorStatus          string                          `json:"mirror_status,omitempty"`
-	MirrorDegraded        bool                            `json:"mirror_degraded,omitempty"`
-	MirrorFallbackReason  string                          `json:"mirror_fallback_reason,omitempty"`
-	FallbackSQLUsed       bool                            `json:"fallback_sql_used,omitempty"`
-	FallbackReason        string                          `json:"fallback_reason,omitempty"`
-	MirrorCandidates      []curationRawLogMirrorCandidate `json:"mirror_candidates,omitempty"`
-	SQLCandidateFactIDs   []string                        `json:"sql_candidate_fact_ids,omitempty"`
-	FinalCandidateFactIDs []string                        `json:"final_candidate_fact_ids,omitempty"`
+	DeltaFactID               string                          `json:"delta_fact_id"`
+	Strategy                  string                          `json:"strategy"`
+	MirrorStatus              string                          `json:"mirror_status,omitempty"`
+	MirrorDegraded            bool                            `json:"mirror_degraded,omitempty"`
+	MirrorFallbackReason      string                          `json:"mirror_fallback_reason,omitempty"`
+	FallbackSQLUsed           bool                            `json:"fallback_sql_used,omitempty"`
+	FallbackReason            string                          `json:"fallback_reason,omitempty"`
+	MirrorCandidates          []curationRawLogMirrorCandidate `json:"mirror_candidates,omitempty"`
+	SQLCandidateFactIDs       []string                        `json:"sql_candidate_fact_ids,omitempty"`
+	AuthorityCandidateFactIDs []string                        `json:"authority_candidate_fact_ids,omitempty"`
 }
 
 type curationRawLogMirrorCandidate struct {

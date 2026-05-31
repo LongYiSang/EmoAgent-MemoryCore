@@ -66,7 +66,7 @@ func FieldDescriptors() []FieldDescriptor {
 		{"semantic_ops.curation.llm.provider_id", "string", "default_llm", "provider id", "curation.enabled=true unless provider_kind=mock", "LLM provider used for semantic curation analysis."},
 		{"semantic_ops.curation.llm.provider_kind", "string", "", "mock|openai-compatible|disabled", "optional", "Provider implementation override for curation tests or CLI runs."},
 		{"semantic_ops.curation.llm.model", "string", "memory-curator", "model id", "host-dependent", "Curation analysis model name."},
-		{"semantic_ops.curation.llm.response_format", "string", "json_object", "json_object|json_schema", "always", "OpenAI-compatible response format for curation JSON decisions."},
+		{"semantic_ops.curation.llm.response_format", "string", "json_object", "json_object", "always", "OpenAI-compatible response format for curation JSON decisions."},
 		{"semantic_ops.curation.llm.timeout_ms", "int", "60000", "> 0", "always", "Curation LLM request timeout."},
 		{"semantic_ops.curation.llm.thinking.type", "string", "disabled", "disabled|enabled", "always", "OpenAI-compatible thinking control; enabled parses reasoning_content instead of content."},
 		{"pipelines.embedding.provider_id", "string", "default_embedder", "provider id", "embedding.enabled=true", "Embedding provider id."},

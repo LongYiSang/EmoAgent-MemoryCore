@@ -963,9 +963,9 @@ func (c Config) validateSemanticOps() error {
 		return fmt.Errorf("semantic_ops.curation.raw_log.directory is required when raw_log.enabled is true")
 	}
 	switch strings.TrimSpace(c.SemanticOps.Curation.LLM.ResponseFormat) {
-	case "", "json_object", "json_schema":
+	case "", "json_object":
 	default:
-		return fmt.Errorf("semantic_ops.curation.llm.response_format must be json_object or json_schema")
+		return fmt.Errorf("semantic_ops.curation.llm.response_format must be json_object")
 	}
 	switch c.SemanticOps.Curation.LLM.Thinking.Type {
 	case "", "enabled", "disabled":

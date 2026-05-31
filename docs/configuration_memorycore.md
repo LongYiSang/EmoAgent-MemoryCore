@@ -37,13 +37,12 @@ Pipelines reference providers by `provider_id`:
 - `pipelines.embedding`
 - `pipelines.rerank`
 - `pipelines.narrative_insight`
-- `semantic_ops.curation`
 
 LLM model parameters live in each pipeline under `params`, including `temperature`, `top_p`, `max_output_tokens`, `response_format`, `stream`, `seed`, and `timeout_ms`. `pipelines.extraction` defaults to deterministic JSON-schema extraction with one schema-repair attempt.
 
 `pipelines.query_analysis.fallback_mode` must remain `rule_only`. If LLM or sidecar query analysis fails, safe SQLite-backed retrieval still uses the deterministic rule analyzer.
 
-`semantic_ops.curation` controls delta memory curation for facts created after the last curation checkpoint. It is disabled by default, defaults to `dry_run`, and only auto-applies high-confidence `same` or `refinement` decisions with no/small answer gain. Candidate retrieval defaults to `candidate_retrieval.mode: mirror_first`, using mirror semantic candidates when available and falling back to SQLite comparable facts when mirror retrieval is unavailable. Manual CLI runs use `memoryctl curation-run`; scheduled loops remain host-owned. Curation raw logs live under `semantic_ops.curation.raw_log` and are off by default because they contain full prompt and provider payloads. `semantic_ops.curation.llm.thinking.type` defaults to `disabled`; when set to `enabled`, OpenAI-compatible curation parsing reads `reasoning_content` instead of the normal message content.
+`semantic_ops.curation` is not a standard pipeline entry: it has its own `semantic_ops.curation.llm` block instead of pipeline `params`. It controls delta memory curation for facts created after the last curation checkpoint. It is disabled by default, defaults to `dry_run`, and only auto-applies high-confidence `same` or `refinement` decisions with no/small answer gain. Candidate retrieval defaults to `candidate_retrieval.mode: mirror_first`, using mirror semantic candidates when available and falling back to SQLite comparable facts when mirror retrieval is unavailable. Manual CLI runs use `memoryctl curation-run`; scheduled loops remain host-owned. Curation raw logs live under `semantic_ops.curation.raw_log` and are off by default because they contain full prompt and provider payloads. `semantic_ops.curation.llm.response_format` is `json_object`. `semantic_ops.curation.llm.thinking.type` defaults to `disabled`; when set to `enabled`, OpenAI-compatible curation parsing reads `reasoning_content` instead of the normal message content.
 
 ## Secrets
 

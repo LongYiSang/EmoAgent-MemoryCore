@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
@@ -368,6 +369,10 @@ func allowedCurationAnswerGain(value string) bool {
 func deterministicCurationResponse(req ExtractionLLMRequest) string {
 	var payload curationLLMRequestPayload
 	_ = json.Unmarshal([]byte(req.UserPrompt), &payload)
+	sourceIDs := make([]string, 0, len(payload.Facts))
+	for _, fact := range payload.Facts {
+		sourceIDs = append(sourceIDs, fact.FactID)
+	}
 	if len(payload.Facts) < 2 {
 		return marshalCurationMock(curationLLMResponsePayload{
 			SchemaVersion:    CurationResponseSchemaVersion,
@@ -378,68 +383,43 @@ func deterministicCurationResponse(req ExtractionLLMRequest) string {
 			ReasonCodes:      []string{"insufficient_group"},
 		})
 	}
-	var hasNoSugar, hasLowSweet, hasSweetenerDislike bool
-	var mergeSourceIDs []string
-	for _, fact := range payload.Facts {
-		text := fact.ContentSummary + " " + fact.ObjectLiteral
-		noSugar := strings.Contains(text, "无糖") || strings.Contains(text, "没有糖")
-		lowSweet := strings.Contains(text, "不甜") || strings.Contains(text, "低甜")
-		if noSugar {
-			hasNoSugar = true
-		}
-		if lowSweet {
-			hasLowSweet = true
-		}
-		if strings.Contains(text, "代糖") || fact.Predicate == "dislikes" {
-			hasSweetenerDislike = true
-		}
-		if noSugar || lowSweet {
-			mergeSourceIDs = append(mergeSourceIDs, fact.FactID)
-		}
-	}
-	sourceIDs := make([]string, 0, len(payload.Facts))
-	for _, fact := range payload.Facts {
-		sourceIDs = append(sourceIDs, fact.FactID)
-	}
-	if hasNoSugar && hasLowSweet && !hasSweetenerDislike {
-		canonicalID := mergeSourceIDs[0]
-		return marshalCurationMock(curationLLMResponsePayload{
-			SchemaVersion:          CurationResponseSchemaVersion,
-			Decision:               "merge_into_existing",
-			SemanticRelation:       "refinement",
-			AnswerGain:             "small",
-			Confidence:             0.94,
-			CanonicalFactID:        canonicalID,
-			SourceFactIDs:          mergeSourceIDs,
-			MergedContentSummary:   "用户在饮料上偏好无糖、口味不甜。",
-			CanonicalPredicate:     "likes",
-			CanonicalFactType:      "stable_preference",
-			CanonicalObjectLiteral: "无糖、低甜的饮料",
-			ReasonCodes:            []string{"same_user_preference", "same_beverage_domain"},
-		})
-	}
-	if hasNoSugar && hasSweetenerDislike {
-		return marshalCurationMock(curationLLMResponsePayload{
-			SchemaVersion:    CurationResponseSchemaVersion,
-			Decision:         "coexist_related",
-			SemanticRelation: "complement",
-			AnswerGain:       "material",
-			Confidence:       0.91,
-			SourceFactIDs:    sourceIDs,
-			ReasonCodes:      []string{"complement_not_duplicate"},
-			RequiresReview:   false,
-		})
-	}
+	canonical := payload.Facts[0]
 	return marshalCurationMock(curationLLMResponsePayload{
-		SchemaVersion:    CurationResponseSchemaVersion,
-		Decision:         "needs_review",
-		SemanticRelation: "unclear",
-		AnswerGain:       "unknown",
-		Confidence:       0.5,
-		SourceFactIDs:    sourceIDs,
-		ReasonCodes:      []string{"mock_unclear"},
-		RequiresReview:   true,
+		SchemaVersion:            CurationResponseSchemaVersion,
+		Decision:                 "merge_into_existing",
+		SemanticRelation:         "refinement",
+		AnswerGain:               "small",
+		Confidence:               0.94,
+		CanonicalFactID:          canonical.FactID,
+		SourceFactIDs:            sourceIDs,
+		MergedContentSummary:     curationMockMergedSummary(payload.Facts),
+		CanonicalSubjectEntityID: canonical.SubjectEntityID,
+		CanonicalPredicate:       canonical.Predicate,
+		CanonicalFactType:        canonical.FactType,
+		CanonicalObjectLiteral:   canonical.ObjectLiteral,
+		ReasonCodes:              []string{"mock_group_merge"},
 	})
+}
+
+func curationMockMergedSummary(facts []curationPromptFact) string {
+	seen := map[string]struct{}{}
+	var summaries []string
+	for _, fact := range facts {
+		summary := strings.TrimSpace(fact.ContentSummary)
+		if summary == "" {
+			continue
+		}
+		if _, ok := seen[summary]; ok {
+			continue
+		}
+		seen[summary] = struct{}{}
+		summaries = append(summaries, strings.TrimSuffix(summary, "。"))
+	}
+	if len(summaries) == 0 {
+		return ""
+	}
+	sort.Strings(summaries)
+	return strings.Join(summaries, "；") + "。"
 }
 
 func marshalCurationMock(payload curationLLMResponsePayload) string {

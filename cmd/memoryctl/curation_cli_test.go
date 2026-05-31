@@ -9,8 +9,8 @@ func TestRunCurationRunDryRunAndApply(t *testing.T) {
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "无糖饮料",
-		"--summary", "用户喜欢喝无糖饮料。",
+		"--object-literal", "科幻小说",
+		"--summary", "用户喜欢科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -19,8 +19,8 @@ func TestRunCurationRunDryRunAndApply(t *testing.T) {
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "不甜的没有糖的饮料",
-		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--object-literal", "周末读科幻小说",
+		"--summary", "用户周末喜欢读科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -37,7 +37,7 @@ func TestRunCurationRunDryRunAndApply(t *testing.T) {
 	firstNode := requireRunOK(t, "get-node", "--db", dbPath, "--node-type", "fact", "--id", first, "--all")
 	secondNode := requireRunOK(t, "get-node", "--db", dbPath, "--node-type", "fact", "--id", second, "--all")
 	combinedNodes := firstNode + secondNode
-	requireContains(t, combinedNodes, "用户在饮料上偏好无糖、口味不甜。")
+	requireContains(t, combinedNodes, "用户喜欢科幻小说")
 	requireContains(t, combinedNodes, "lifecycle_status=consolidated")
 }
 
@@ -48,8 +48,8 @@ func TestRunCurationRunProviderIDDoesNotImplicitlyUseMock(t *testing.T) {
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "无糖饮料",
-		"--summary", "用户喜欢喝无糖饮料。",
+		"--object-literal", "科幻小说",
+		"--summary", "用户喜欢科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -58,8 +58,8 @@ func TestRunCurationRunProviderIDDoesNotImplicitlyUseMock(t *testing.T) {
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "不甜的没有糖的饮料",
-		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--object-literal", "周末读科幻小说",
+		"--summary", "用户周末喜欢读科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -92,8 +92,8 @@ semantic_ops:
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "无糖饮料",
-		"--summary", "用户喜欢喝无糖饮料。",
+		"--object-literal", "科幻小说",
+		"--summary", "用户喜欢科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -102,8 +102,8 @@ semantic_ops:
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "不甜的没有糖的饮料",
-		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--object-literal", "周末读科幻小说",
+		"--summary", "用户周末喜欢读科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -143,8 +143,8 @@ semantic_ops:
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "无糖饮料",
-		"--summary", "用户喜欢喝无糖饮料。",
+		"--object-literal", "科幻小说",
+		"--summary", "用户喜欢科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)
@@ -153,8 +153,8 @@ semantic_ops:
 		"--db", dbPath,
 		"--subject", "ent_user",
 		"--predicate", "likes",
-		"--object-literal", "不甜的没有糖的饮料",
-		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--object-literal", "周末读科幻小说",
+		"--summary", "用户周末喜欢读科幻小说。",
 		"--source-episode", "ep_seed",
 		"--format", "id",
 	)

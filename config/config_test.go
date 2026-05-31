@@ -368,6 +368,12 @@ providers:
 		requireErrorContains(t, cfg.Validate(), "semantic_ops.curation.raw_log.directory")
 	})
 
+	t.Run("curation response format is json object", func(t *testing.T) {
+		cfg := memconfig.DefaultConfig()
+		cfg.SemanticOps.Curation.LLM.ResponseFormat = "json_schema"
+		requireErrorContains(t, cfg.Validate(), "semantic_ops.curation.llm.response_format")
+	})
+
 	t.Run("extraction mode must be supported", func(t *testing.T) {
 		cfg := memconfig.DefaultConfig()
 		cfg.Pipelines.Extraction.Mode = "invalid"

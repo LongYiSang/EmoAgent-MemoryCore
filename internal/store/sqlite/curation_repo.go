@@ -427,9 +427,7 @@ func (r *CurationRepository) BuildGroupsWithCandidateSources(deltaFacts []core.F
 			}
 			return left.CreatedAt.Before(right.CreatedAt)
 		})
-		if len(ids) > maxFactsPerGroup {
-			ids = ids[:maxFactsPerGroup]
-		}
+		ids = trimCurationGroupIDs(ids, deltaSet, maxFactsPerGroup)
 		group := CurationCandidateGroup{ID: r.newID(), Facts: make([]CurationGroupFact, 0, len(ids))}
 		for _, id := range ids {
 			role := "existing_candidate"
@@ -441,6 +439,28 @@ func (r *CurationRepository) BuildGroupsWithCandidateSources(deltaFacts []core.F
 		result = append(result, group)
 	}
 	return result
+}
+
+func trimCurationGroupIDs(ids []string, deltaSet map[string]struct{}, maxFactsPerGroup int) []string {
+	if maxFactsPerGroup <= 0 || len(ids) <= maxFactsPerGroup {
+		return ids
+	}
+	var deltas []string
+	var candidates []string
+	for _, id := range ids {
+		if _, ok := deltaSet[id]; ok {
+			deltas = append(deltas, id)
+		} else {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(deltas) >= maxFactsPerGroup {
+		return deltas
+	}
+	out := make([]string, 0, maxFactsPerGroup)
+	out = append(out, deltas...)
+	out = append(out, candidates[:maxFactsPerGroup-len(deltas)]...)
+	return out
 }
 
 func (r *CurationRepository) ApplyDecisions(ctx context.Context, req CurationApplyRequest) (result CurationApplyResult, err error) {
@@ -1213,13 +1233,6 @@ func curationFactsComparable(left core.Fact, right core.Fact) bool {
 	if leftObject != "" && leftObject == rightObject {
 		return true
 	}
-	leftTags := curationComparableTags(left)
-	rightTags := curationComparableTags(right)
-	for tag := range leftTags {
-		if _, ok := rightTags[tag]; ok {
-			return true
-		}
-	}
 	leftTerms := curationComparableTerms(left)
 	rightTerms := curationComparableTerms(right)
 	overlap := 0
@@ -1250,21 +1263,6 @@ func containsCurationPredicate(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func curationComparableTags(fact core.Fact) map[string]struct{} {
-	text := curationFactComparableText(fact)
-	tags := map[string]struct{}{}
-	if strings.Contains(text, "无糖") || strings.Contains(text, "没有糖") || strings.Contains(text, "不加糖") {
-		tags["no_sugar"] = struct{}{}
-	}
-	if strings.Contains(text, "不甜") || strings.Contains(text, "低甜") || strings.Contains(text, "少甜") {
-		tags["low_sweet"] = struct{}{}
-	}
-	if strings.Contains(text, "代糖") {
-		tags["sweetener"] = struct{}{}
-	}
-	return tags
 }
 
 func curationComparableTerms(fact core.Fact) map[string]struct{} {
@@ -1322,13 +1320,9 @@ var genericCurationComparableTerms = map[string]struct{}{
 	"不喜": {},
 	"讨厌": {},
 	"偏好": {},
-	"饮料": {},
-	"口味": {},
 	"东西": {},
 	"内容": {},
 	"记忆": {},
-	"的饮": {},
-	"做的": {},
 }
 
 func derefStringPtr(value *string) string {

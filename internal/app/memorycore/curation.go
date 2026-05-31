@@ -46,10 +46,16 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 	if minConfidence <= 0 {
 		minConfidence = 0.88
 	}
-	candidateRetrieval := curationCandidateRetrievalOptions(s.semanticOps.Curation.CandidateRetrieval, req.CandidateRetrieval)
+	candidateRetrieval, err := curationCandidateRetrievalOptions(s.semanticOps.Curation.CandidateRetrieval, req.CandidateRetrieval)
+	if err != nil {
+		return nil, err
+	}
 	trace.recordCandidateRetrievalStart(candidateRetrieval, candidateLimit)
 
 	provider := curationProviderOptions(s.semanticOps.Curation.LLM, req)
+	if provider.ResponseFormat != "" && provider.ResponseFormat != ExtractionResponseFormatDefault && provider.ResponseFormat != ExtractionResponseFormatJSONObject {
+		return nil, fmt.Errorf("%w: curation response_format must be json_object", ErrInvalidRequest)
+	}
 	llm, err := newExtractionLLM(provider)
 	if err != nil {
 		return nil, err

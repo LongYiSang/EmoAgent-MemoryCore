@@ -2,6 +2,7 @@ package memorycore
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
@@ -14,17 +15,26 @@ const (
 	curationCandidateSourceMirrorOnly  = "mirror_only"
 )
 
-func curationCandidateRetrievalOptions(defaults CurationCandidateRetrievalOptions, override *CurationCandidateRetrievalOptions) CurationCandidateRetrievalOptions {
+func curationCandidateRetrievalOptions(defaults CurationCandidateRetrievalOptions, override *CurationCandidateRetrievalOptions) (CurationCandidateRetrievalOptions, error) {
 	opts := defaults
 	if override != nil {
 		if strings.TrimSpace(override.Mode) != "" {
 			opts.Mode = strings.TrimSpace(override.Mode)
 		}
-		if override.MirrorMinSimilarity > 0 {
+		if override.MirrorMinSimilarity != 0 {
 			opts.MirrorMinSimilarity = override.MirrorMinSimilarity
 		}
 	}
-	return normalizeCurationCandidateRetrievalOptions(opts)
+	opts = normalizeCurationCandidateRetrievalOptions(opts)
+	switch opts.Mode {
+	case curationCandidateSourceMirrorFirst, curationCandidateSourceSQLiteOnly, curationCandidateSourceMirrorOnly:
+	default:
+		return CurationCandidateRetrievalOptions{}, fmt.Errorf("%w: candidate_retrieval.mode must be mirror_first, sqlite_only, or mirror_only", ErrInvalidRequest)
+	}
+	if opts.MirrorMinSimilarity <= 0 || opts.MirrorMinSimilarity > 1 {
+		return CurationCandidateRetrievalOptions{}, fmt.Errorf("%w: candidate_retrieval.mirror_min_similarity must be within (0, 1]", ErrInvalidRequest)
+	}
+	return opts, nil
 }
 
 func (s *service) retrieveCurationComparableCandidates(ctx context.Context, personaID string, delta core.Fact, limit int, opts CurationCandidateRetrievalOptions) ([]memsqlite.CurationComparableCandidate, curationRawLogCandidateDelta, error) {
@@ -35,7 +45,7 @@ func (s *service) retrieveCurationComparableCandidates(ctx context.Context, pers
 	if opts.Mode == curationCandidateSourceSQLiteOnly {
 		candidates, ids, err := s.retrieveSQLCurationComparableCandidates(ctx, personaID, delta.ID, limit)
 		item.SQLCandidateFactIDs = ids
-		item.FinalCandidateFactIDs = curationComparableCandidateIDs(candidates)
+		item.AuthorityCandidateFactIDs = curationComparableCandidateIDs(candidates)
 		return candidates, item, err
 	}
 
@@ -44,19 +54,19 @@ func (s *service) retrieveCurationComparableCandidates(ctx context.Context, pers
 		return nil, item, err
 	}
 	if !mirrorFailed {
-		item.FinalCandidateFactIDs = curationComparableCandidateIDs(mirrorCandidates)
+		item.AuthorityCandidateFactIDs = curationComparableCandidateIDs(mirrorCandidates)
 		return mirrorCandidates, item, nil
 	}
 	item.FallbackReason = fallbackReason
 	if opts.Mode == curationCandidateSourceMirrorOnly {
-		item.FinalCandidateFactIDs = nil
+		item.AuthorityCandidateFactIDs = nil
 		return nil, item, nil
 	}
 
 	sqlCandidates, ids, err := s.retrieveSQLCurationComparableCandidates(ctx, personaID, delta.ID, limit)
 	item.FallbackSQLUsed = true
 	item.SQLCandidateFactIDs = ids
-	item.FinalCandidateFactIDs = curationComparableCandidateIDs(sqlCandidates)
+	item.AuthorityCandidateFactIDs = curationComparableCandidateIDs(sqlCandidates)
 	return sqlCandidates, item, err
 }
 
@@ -111,6 +121,7 @@ func (s *service) retrieveMirrorCurationComparableCandidates(ctx context.Context
 	if !stageOK {
 		item.MirrorStatus = sidecarStatusSkippedByBudget
 		item.MirrorDegraded = true
+		s.recordSidecarStage(personaID, sidecarStageMirror, item.MirrorStatus, "sidecar_timeout")
 		return nil, true, "sidecar_timeout", nil
 	}
 	defer stageCancel()
