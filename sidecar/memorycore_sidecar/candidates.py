@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -397,11 +397,12 @@ def _run_dense_searches(
     max_workers = min(len(queries), DEFAULT_MAX_DENSE_QUERY_WORKERS)
     results: list[DenseSearchResult | None] = [None] * len(queries)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(_run_dense_search, query, search)
-            for query in queries
-        ]
-        for index, future in enumerate(futures):
+        futures = {
+            executor.submit(_run_dense_search, query, search): index
+            for index, query in enumerate(queries)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
             results[index] = future.result()
     return [
         (query, result)

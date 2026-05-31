@@ -20,11 +20,7 @@ func LoadYAML(path string) (Config, error) {
 }
 
 func LoadYAMLWithOptions(path string, opts LoadOptions) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg, err := loadYAMLBytes(data, !opts.SkipValidate)
+	cfg, err := loadConfigFile(path, !opts.SkipValidate, decodeYAMLConfig)
 	if err != nil {
 		return Config{}, fmt.Errorf("load yaml config %s: %w", path, err)
 	}
@@ -36,45 +32,22 @@ func LoadJSON(path string) (Config, error) {
 }
 
 func LoadJSONWithOptions(path string, opts LoadOptions) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg, err := loadJSONBytes(data, !opts.SkipValidate)
+	cfg, err := loadConfigFile(path, !opts.SkipValidate, decodeJSONConfig)
 	if err != nil {
 		return Config{}, fmt.Errorf("load json config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func loadYAMLBytes(data []byte, validate bool) (Config, error) {
-	cfg := Default()
-	if len(bytes.TrimSpace(data)) == 0 {
-		if validate {
-			return cfg, cfg.Validate()
-		}
-		return cfg, nil
-	}
-	type plain Config
-	decoded := plain(cfg)
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&decoded); err != nil {
-		if errors.Is(err, io.EOF) {
-			return cfg, cfg.Validate()
-		}
+func loadConfigFile(path string, validate bool, decode func([]byte, Config) (Config, error)) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return Config{}, err
 	}
-	cfg = Config(decoded)
-	if validate {
-		if err := cfg.Validate(); err != nil {
-			return Config{}, err
-		}
-	}
-	return cfg, nil
+	return loadConfigBytes(data, validate, decode)
 }
 
-func loadJSONBytes(data []byte, validate bool) (Config, error) {
+func loadConfigBytes(data []byte, validate bool, decode func([]byte, Config) (Config, error)) (Config, error) {
 	cfg := Default()
 	if len(bytes.TrimSpace(data)) == 0 {
 		if validate {
@@ -82,11 +55,8 @@ func loadJSONBytes(data []byte, validate bool) (Config, error) {
 		}
 		return cfg, nil
 	}
-	type plain Config
-	decoded := plain(cfg)
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&decoded); err != nil {
+	cfg, err := decode(data, cfg)
+	if err != nil {
 		if errors.Is(err, io.EOF) {
 			if validate {
 				return cfg, cfg.Validate()
@@ -95,11 +65,32 @@ func loadJSONBytes(data []byte, validate bool) (Config, error) {
 		}
 		return Config{}, err
 	}
-	cfg = Config(decoded)
 	if validate {
 		if err := cfg.Validate(); err != nil {
 			return Config{}, err
 		}
 	}
 	return cfg, nil
+}
+
+func decodeYAMLConfig(data []byte, cfg Config) (Config, error) {
+	type plain Config
+	decoded := plain(cfg)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&decoded); err != nil {
+		return Config{}, err
+	}
+	return Config(decoded), nil
+}
+
+func decodeJSONConfig(data []byte, cfg Config) (Config, error) {
+	type plain Config
+	decoded := plain(cfg)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return Config{}, err
+	}
+	return Config(decoded), nil
 }

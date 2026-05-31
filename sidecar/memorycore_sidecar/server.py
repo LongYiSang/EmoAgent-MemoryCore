@@ -4,7 +4,6 @@ import argparse
 import errno
 import hashlib
 import json
-import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -317,29 +316,7 @@ def _memory_node_matches(
             False,
         )
 
-    nodes = getattr(adapter, "_nodes", None)
-    if not isinstance(nodes, dict):
-        return [], True
-    matches: list[dict[str, Any]] = []
-    for (node_persona_id, node_type, sqlite_node_id), node in sorted(nodes.items()):
-        if node_persona_id != persona_id:
-            continue
-        if node_type not in allowed_node_types:
-            continue
-        searchable_text = str(node.get("searchable_text", ""))
-        score = _text_overlap_score(query_text, searchable_text)
-        if score <= 0:
-            continue
-        matches.append(
-            {
-                "node_type": str(node_type),
-                "node_id": str(sqlite_node_id),
-                "safe_summary": searchable_text,
-                "score": score,
-            }
-        )
-    matches.sort(key=lambda item: (-item["score"], item["node_type"], item["node_id"]))
-    return matches[:limit], False
+    return [], True
 
 
 def _delete_candidate_node_types(policy: dict[str, Any]) -> set[str]:
@@ -349,35 +326,6 @@ def _delete_candidate_node_types(policy: dict[str, Any]) -> set[str]:
     if policy["allow_episode_candidates"]:
         out.add("episode")
     return out
-
-
-def _text_overlap_score(query_text: str, searchable_text: str) -> float:
-    query = _normalize_text(query_text)
-    target = _normalize_text(searchable_text)
-    if not query or not target:
-        return 0.0
-    if query in target or target in query:
-        return 1.0
-    query_terms = _semantic_terms(query)
-    target_terms = _semantic_terms(target)
-    if not query_terms or not target_terms:
-        return 0.0
-    overlap = query_terms & target_terms
-    if not overlap:
-        return 0.0
-    return round(min(1.0, len(overlap) / max(1, len(target_terms))), 6)
-
-
-def _semantic_terms(value: str) -> set[str]:
-    terms = set(re.findall(r"[0-9a-z_]+|[\u4e00-\u9fff]", value))
-    cjk = [ch for ch in value if "\u4e00" <= ch <= "\u9fff"]
-    for idx in range(len(cjk) - 1):
-        terms.add("".join(cjk[idx : idx + 2]))
-    return terms
-
-
-def _normalize_text(value: str) -> str:
-    return "".join(str(value).casefold().split())
 
 
 def _preview_hash_seed(request_id: str, candidates: list[dict[str, Any]]) -> str:

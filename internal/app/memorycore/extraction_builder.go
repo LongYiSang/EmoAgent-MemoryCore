@@ -231,39 +231,43 @@ ORDER BY entity_type, canonical_name`, personaID)
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-
-	for i := range entities {
-		aliases, err := loadEntityAliases(ctx, db, personaID, entities[i].EntityID)
-		if err != nil {
-			return nil, err
-		}
-		entities[i].Aliases = aliases
+	if len(entities) == 0 {
+		return entities, nil
 	}
-	return entities, nil
-}
 
-func loadEntityAliases(ctx context.Context, db *sql.DB, personaID string, entityID string) ([]ExtractionEntityAlias, error) {
-	rows, err := db.QueryContext(ctx, `
-SELECT alias, alias_type, confidence, source_episode_id
-FROM entity_aliases
-WHERE persona_id = ? AND entity_id = ?
-ORDER BY created_at ASC`, personaID, entityID)
+	aliasRows, err := db.QueryContext(ctx, `
+SELECT a.entity_id, a.alias, a.alias_type, a.confidence, a.source_episode_id
+FROM entity_aliases a
+JOIN entities e ON e.id = a.entity_id
+WHERE a.persona_id = ?
+  AND e.persona_id = ?
+  AND e.visibility_status = 'visible'
+  AND e.searchable = 1
+ORDER BY a.created_at ASC`, personaID, personaID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer aliasRows.Close()
 
-	var aliases []ExtractionEntityAlias
-	for rows.Next() {
+	aliasesByEntity := map[string][]ExtractionEntityAlias{}
+	for aliasRows.Next() {
+		var entityID string
 		var alias ExtractionEntityAlias
 		var sourceID sql.NullString
-		if err := rows.Scan(&alias.Alias, &alias.AliasType, &alias.Confidence, &sourceID); err != nil {
+		if err := aliasRows.Scan(&entityID, &alias.Alias, &alias.AliasType, &alias.Confidence, &sourceID); err != nil {
 			return nil, err
 		}
 		alias.SourceEpisodeID = stringPtr(sourceID)
-		aliases = append(aliases, alias)
+		aliasesByEntity[entityID] = append(aliasesByEntity[entityID], alias)
 	}
-	return aliases, rows.Err()
+	if err := aliasRows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range entities {
+		entities[i].Aliases = aliasesByEntity[entities[i].EntityID]
+	}
+	return entities, nil
 }
 
 func loadPredicateSchemas(ctx context.Context, db *sql.DB) ([]ExtractionPredicateSchema, error) {

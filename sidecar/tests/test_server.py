@@ -433,6 +433,44 @@ def test_server_memory_candidates_degrade_without_candidate_mapping():
         thread.join(timeout=2)
 
 
+def test_server_memory_candidates_ignore_internal_nodes_without_adapter_method():
+    class NodesOnlyAdapter:
+        def __init__(self):
+            self._nodes = {
+                ("default", "fact", "fact-1"): {
+                    "searchable_text": "用户不喜欢早会。",
+                }
+            }
+
+    server = create_server(("127.0.0.1", 0), NodesOnlyAdapter())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        body = _post_json(
+            base_url,
+            "/memory/dedup-search",
+            {
+                "schema_version": DEDUP_SEARCH_REQUEST_SCHEMA_VERSION,
+                "request_id": "dedup-nodes-only",
+                "persona_id": "default",
+                "candidate": {
+                    "candidate_id": "cand-1",
+                    "safe_summary": "用户不喜欢早会。",
+                },
+                "policy": {"limit": 12, "shadow": True, "threshold_profile": "default_v0"},
+            },
+        )
+
+        assert body["degraded"] is True
+        assert body["fallback_reason"] == "candidate_mapping_unavailable"
+        assert body["candidates"] == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_server_query_analysis_provider_none_returns_degraded_fallback():
     server = create_server(("127.0.0.1", 0), FakeMirrorAdapter())
     thread = threading.Thread(target=server.serve_forever, daemon=True)

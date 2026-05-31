@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -756,6 +757,83 @@ func TestRunExtractionBatchFacadeKeepsServiceRuntimeDefaults(t *testing.T) {
 	llm, ok := artifact["llm"].(map[string]any)
 	if !ok || llm["prefilter"] == nil {
 		t.Fatalf("raw log llm = %#v, want prefilter call from service runtime default", artifact["llm"])
+	}
+}
+
+func TestBuildRequestKnownEntitiesKeepsAliasesGroupedByEntity(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, ExtractionOptions{})
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_aliases", "ep_aliases", "我提到了 Alpha 和 Beta。")
+
+	if _, err := svc.EnsureEntity(ctx, EnsureEntityRequest{
+		ID:            "ent_alpha",
+		CanonicalName: "Alpha",
+		EntityType:    EntityTypeConcept,
+	}); err != nil {
+		t.Fatalf("ensure alpha: %v", err)
+	}
+	if _, err := svc.EnsureEntity(ctx, EnsureEntityRequest{
+		ID:            "ent_beta",
+		CanonicalName: "Beta",
+		EntityType:    EntityTypeConcept,
+	}); err != nil {
+		t.Fatalf("ensure beta: %v", err)
+	}
+
+	coreSvc := svc.(*service)
+	if _, err := coreSvc.sqlDB.ExecContext(ctx, `
+INSERT INTO entities(id, persona_id, canonical_name, entity_type, visibility_status, searchable)
+VALUES ('ent_hidden_alias', 'default', 'Hidden', 'concept', 'hidden', 1)`); err != nil {
+		t.Fatalf("insert hidden entity: %v", err)
+	}
+	for _, alias := range []struct {
+		id        string
+		entityID  string
+		value     string
+		createdAt string
+	}{
+		{"alias_beta_old", "ent_beta", "B-old", "2026-05-31T01:00:00Z"},
+		{"alias_alpha_old", "ent_alpha", "A-old", "2026-05-31T02:00:00Z"},
+		{"alias_beta_new", "ent_beta", "B-new", "2026-05-31T03:00:00Z"},
+		{"alias_alpha_new", "ent_alpha", "A-new", "2026-05-31T04:00:00Z"},
+		{"alias_hidden", "ent_hidden_alias", "hidden-alias", "2026-05-31T05:00:00Z"},
+	} {
+		if _, err := coreSvc.sqlDB.ExecContext(ctx, `
+INSERT INTO entity_aliases(id, persona_id, entity_id, alias, alias_type, confidence, created_at)
+VALUES (?, 'default', ?, ?, 'surface', 1.0, ?)`, alias.id, alias.entityID, alias.value, alias.createdAt); err != nil {
+			t.Fatalf("insert alias %s: %v", alias.id, err)
+		}
+	}
+
+	sessionID := "session_aliases"
+	req, err := BuildRequest(ctx, coreSvc.sqlDB, BuildRequestOptions{
+		SessionID: &sessionID,
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if len(req.KnownEntities) < 2 {
+		t.Fatalf("known entities = %#v, want alpha and beta", req.KnownEntities)
+	}
+
+	gotAliases := map[string][]string{}
+	for _, entity := range req.KnownEntities {
+		for _, alias := range entity.Aliases {
+			gotAliases[entity.EntityID] = append(gotAliases[entity.EntityID], alias.Alias)
+		}
+	}
+	if want := []string{"A-old", "A-new"}; !slices.Equal(gotAliases["ent_alpha"], want) {
+		t.Fatalf("alpha aliases = %#v, want %#v", gotAliases["ent_alpha"], want)
+	}
+	if want := []string{"B-old", "B-new"}; !slices.Equal(gotAliases["ent_beta"], want) {
+		t.Fatalf("beta aliases = %#v, want %#v", gotAliases["ent_beta"], want)
+	}
+	for _, entity := range req.KnownEntities {
+		if entity.EntityID == "ent_hidden_alias" {
+			t.Fatalf("hidden entity included in known entities: %#v", entity)
+		}
 	}
 }
 
