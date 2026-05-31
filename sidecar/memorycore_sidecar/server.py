@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import re
@@ -186,14 +187,38 @@ def create_server(
             return
 
         def _write_json(self, status: HTTPStatus, body: dict[str, Any]) -> None:
-            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            _write_json_response(self, status, body)
 
     return AdapterClosingHTTPServer(address, Handler, adapter)
+
+
+def _write_json_response(
+    handler: BaseHTTPRequestHandler, status: HTTPStatus, body: dict[str, Any]
+) -> bool:
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+        return True
+    except OSError as exc:
+        if _is_client_disconnect(exc):
+            return False
+        raise
+
+
+def _is_client_disconnect(exc: OSError) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+        return True
+    if getattr(exc, "errno", None) in {
+        errno.EPIPE,
+        errno.ECONNABORTED,
+        errno.ECONNRESET,
+    }:
+        return True
+    return getattr(exc, "winerror", None) in {10053, 10054}
 
 
 def _semantic_dedup_search(

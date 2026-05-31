@@ -1,6 +1,7 @@
 import json
 import threading
 import urllib.request
+from http import HTTPStatus
 
 import pytest
 
@@ -23,7 +24,7 @@ from memorycore_sidecar.protocol import (
     RESPONSE_SCHEMA_VERSION,
 )
 from memorycore_sidecar.embedding import EmbeddingCacheMiss
-from memorycore_sidecar.server import create_server
+from memorycore_sidecar.server import create_server, _write_json_response
 
 
 def test_server_retrieval_activate_roundtrip_uses_trivium_seed_id():
@@ -90,6 +91,26 @@ def test_server_retrieval_activate_roundtrip_uses_trivium_seed_id():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_write_json_response_ignores_client_disconnect():
+    class AbortedWriter:
+        def write(self, _data):
+            raise ConnectionAbortedError(10053, "client aborted")
+
+    class Handler:
+        wfile = AbortedWriter()
+
+        def send_response(self, _status):
+            return None
+
+        def send_header(self, _name, _value):
+            return None
+
+        def end_headers(self):
+            return None
+
+    assert _write_json_response(Handler(), HTTPStatus.OK, {"status": "ok"}) is False
 
 
 def test_server_retrieval_activate_returns_budget_degraded_partial_candidates():
