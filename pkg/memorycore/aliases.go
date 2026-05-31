@@ -16,6 +16,7 @@ type (
 	ConsolidationResult                 = appcore.ConsolidationResult
 	CurationLLMOptions                  = appcore.CurationLLMOptions
 	CurationGroupResult                 = appcore.CurationGroupResult
+	CurationCandidateRetrievalOptions   = appcore.CurationCandidateRetrievalOptions
 	CurationRawLogOptions               = appcore.CurationRawLogOptions
 	DeletionIntentRoute                 = appcore.DeletionIntentRoute
 	DedupDecision                       = appcore.DedupDecision

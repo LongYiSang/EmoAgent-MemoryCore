@@ -44,6 +44,21 @@ type CurationComparableQuery struct {
 	CandidateLimitPerFact int
 }
 
+type CurationComparableSource string
+
+const (
+	CurationComparableSourceSQL    CurationComparableSource = "sql"
+	CurationComparableSourceMirror CurationComparableSource = "mirror"
+)
+
+type CurationComparableCandidate struct {
+	Fact        core.Fact
+	Source      CurationComparableSource
+	Similarity  float64
+	MatchClass  string
+	MatchReason string
+}
+
 type CurationGroupFact struct {
 	FactID           string
 	Role             string
@@ -272,9 +287,76 @@ LIMIT ?`, reorderComparableArgs(args, len(predicates))...)
 	return facts, rows.Err()
 }
 
+func (r *CurationRepository) LoadComparableFactCandidate(ctx context.Context, personaID string, delta core.Fact, candidateFactID string) (core.Fact, bool, string, error) {
+	personaID = strings.TrimSpace(personaID)
+	candidateFactID = strings.TrimSpace(candidateFactID)
+	if personaID == "" {
+		return core.Fact{}, false, "invalid_persona", invalidCuration("persona_id is required")
+	}
+	if candidateFactID == "" {
+		return core.Fact{}, false, "empty_candidate_id", nil
+	}
+	if candidateFactID == strings.TrimSpace(delta.ID) {
+		return core.Fact{}, false, "self_candidate", nil
+	}
+	fact, err := loadCurationFact(ctx, r.db, personaID, candidateFactID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Fact{}, false, "not_found", nil
+	}
+	if err != nil {
+		return core.Fact{}, false, "", err
+	}
+	if delta.SubjectEntityID == nil || strings.TrimSpace(*delta.SubjectEntityID) == "" {
+		return core.Fact{}, false, "delta_subject_missing", nil
+	}
+	if fact.SubjectEntityID == nil || strings.TrimSpace(*fact.SubjectEntityID) != strings.TrimSpace(*delta.SubjectEntityID) {
+		return core.Fact{}, false, "subject_mismatch", nil
+	}
+	if !containsCurationPredicate(compatibleCurationPredicates(delta.Predicate), fact.Predicate) {
+		return core.Fact{}, false, "predicate_mismatch", nil
+	}
+	if fact.FactType != delta.FactType {
+		return core.Fact{}, false, "fact_type_mismatch", nil
+	}
+	if fact.VisibilityStatus != core.VisibilityVisible {
+		return core.Fact{}, false, "visibility_not_visible", nil
+	}
+	if !fact.Searchable {
+		return core.Fact{}, false, "not_searchable", nil
+	}
+	if fact.ValidityStatus != core.ValidityValid && fact.ValidityStatus != core.ValidityUncertain {
+		return core.Fact{}, false, "validity_not_eligible", nil
+	}
+	if fact.LifecycleStatus != core.LifecycleActive && fact.LifecycleStatus != core.LifecycleDormant {
+		return core.Fact{}, false, "lifecycle_not_eligible", nil
+	}
+	if fact.SensitivityLevel == core.SensitivityHighlySensitive {
+		return core.Fact{}, false, "sensitivity_highly_sensitive", nil
+	}
+	if fact.ExtractionConfidence == core.ExtractionConfidenceAmbiguous {
+		return core.Fact{}, false, "extraction_confidence_ambiguous", nil
+	}
+	return fact, true, "", nil
+}
+
 func (r *CurationRepository) BuildGroups(deltaFacts []core.Fact, candidates map[string][]core.Fact, maxFactsPerGroup int) []CurationCandidateGroup {
+	withSources := make(map[string][]CurationComparableCandidate, len(candidates))
+	for deltaID, facts := range candidates {
+		items := make([]CurationComparableCandidate, 0, len(facts))
+		for _, fact := range facts {
+			items = append(items, CurationComparableCandidate{Fact: fact, Source: CurationComparableSourceSQL})
+		}
+		withSources[deltaID] = items
+	}
+	return r.BuildGroupsWithCandidateSources(deltaFacts, withSources, maxFactsPerGroup, 0.70)
+}
+
+func (r *CurationRepository) BuildGroupsWithCandidateSources(deltaFacts []core.Fact, candidates map[string][]CurationComparableCandidate, maxFactsPerGroup int, mirrorMinSimilarity float64) []CurationCandidateGroup {
 	if maxFactsPerGroup <= 0 {
 		maxFactsPerGroup = 8
+	}
+	if mirrorMinSimilarity <= 0 {
+		mirrorMinSimilarity = 0.70
 	}
 	parent := map[string]string{}
 	factsByID := map[string]core.Fact{}
@@ -314,9 +396,10 @@ func (r *CurationRepository) BuildGroups(deltaFacts []core.Fact, candidates map[
 		deltaSet[fact.ID] = struct{}{}
 	}
 	for deltaID, comparable := range candidates {
-		for _, fact := range comparable {
+		for _, candidate := range comparable {
+			fact := candidate.Fact
 			addFact(fact)
-			if curationFactsComparable(factsByID[deltaID], fact) {
+			if curationCandidateComparable(factsByID[deltaID], candidate, mirrorMinSimilarity) {
 				union(deltaID, fact.ID)
 			}
 		}
@@ -1146,6 +1229,24 @@ func curationFactsComparable(left core.Fact, right core.Fact) bool {
 			if overlap >= 2 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func curationCandidateComparable(left core.Fact, candidate CurationComparableCandidate, mirrorMinSimilarity float64) bool {
+	switch candidate.Source {
+	case CurationComparableSourceMirror:
+		return candidate.Similarity >= mirrorMinSimilarity
+	default:
+		return curationFactsComparable(left, candidate.Fact)
+	}
+}
+
+func containsCurationPredicate(values []string, want string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == strings.TrimSpace(want) {
+			return true
 		}
 	}
 	return false

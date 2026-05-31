@@ -334,19 +334,25 @@ type SemanticForgetConfig struct {
 }
 
 type CurationConfig struct {
-	Enabled                bool                     `yaml:"enabled" json:"enabled"`
-	Mode                   string                   `yaml:"mode" json:"mode"`
-	ScheduleEnabled        bool                     `yaml:"schedule_enabled" json:"schedule_enabled"`
-	MaxNewFactsPerRun      int                      `yaml:"max_new_facts_per_run" json:"max_new_facts_per_run"`
-	CandidateLimitPerFact  int                      `yaml:"candidate_limit_per_fact" json:"candidate_limit_per_fact"`
-	MaxFactsPerGroup       int                      `yaml:"max_facts_per_group" json:"max_facts_per_group"`
-	MinAutoApplyConfidence float64                  `yaml:"min_auto_apply_confidence" json:"min_auto_apply_confidence"`
-	IncludeFactTypes       []string                 `yaml:"include_fact_types" json:"include_fact_types"`
-	ExcludeFactTypes       []string                 `yaml:"exclude_fact_types" json:"exclude_fact_types"`
-	SourceFactAfterMerge   CurationSourceAfterMerge `yaml:"source_fact_after_merge" json:"source_fact_after_merge"`
-	RawLog                 CurationRawLogConfig     `yaml:"raw_log" json:"raw_log"`
-	LLM                    CurationLLMConfig        `yaml:"llm" json:"llm"`
-	Review                 CurationReviewConfig     `yaml:"review" json:"review"`
+	Enabled                bool                             `yaml:"enabled" json:"enabled"`
+	Mode                   string                           `yaml:"mode" json:"mode"`
+	ScheduleEnabled        bool                             `yaml:"schedule_enabled" json:"schedule_enabled"`
+	MaxNewFactsPerRun      int                              `yaml:"max_new_facts_per_run" json:"max_new_facts_per_run"`
+	CandidateLimitPerFact  int                              `yaml:"candidate_limit_per_fact" json:"candidate_limit_per_fact"`
+	MaxFactsPerGroup       int                              `yaml:"max_facts_per_group" json:"max_facts_per_group"`
+	MinAutoApplyConfidence float64                          `yaml:"min_auto_apply_confidence" json:"min_auto_apply_confidence"`
+	CandidateRetrieval     CurationCandidateRetrievalConfig `yaml:"candidate_retrieval" json:"candidate_retrieval"`
+	IncludeFactTypes       []string                         `yaml:"include_fact_types" json:"include_fact_types"`
+	ExcludeFactTypes       []string                         `yaml:"exclude_fact_types" json:"exclude_fact_types"`
+	SourceFactAfterMerge   CurationSourceAfterMerge         `yaml:"source_fact_after_merge" json:"source_fact_after_merge"`
+	RawLog                 CurationRawLogConfig             `yaml:"raw_log" json:"raw_log"`
+	LLM                    CurationLLMConfig                `yaml:"llm" json:"llm"`
+	Review                 CurationReviewConfig             `yaml:"review" json:"review"`
+}
+
+type CurationCandidateRetrievalConfig struct {
+	Mode                string  `yaml:"mode" json:"mode"`
+	MirrorMinSimilarity float64 `yaml:"mirror_min_similarity" json:"mirror_min_similarity"`
 }
 
 type CurationSourceAfterMerge struct {
@@ -759,6 +765,10 @@ func DefaultConfig() Config {
 				CandidateLimitPerFact:  20,
 				MaxFactsPerGroup:       8,
 				MinAutoApplyConfidence: 0.88,
+				CandidateRetrieval: CurationCandidateRetrievalConfig{
+					Mode:                "mirror_first",
+					MirrorMinSimilarity: 0.70,
+				},
 				IncludeFactTypes: []string{
 					memorycore.FactTypeStablePreference,
 					memorycore.FactTypeRelationalState,
@@ -929,6 +939,14 @@ func (c Config) validateSemanticOps() error {
 	}
 	if c.SemanticOps.Curation.MinAutoApplyConfidence < 0 || c.SemanticOps.Curation.MinAutoApplyConfidence > 1 {
 		return fmt.Errorf("semantic_ops.curation.min_auto_apply_confidence must be within [0, 1]")
+	}
+	switch strings.TrimSpace(c.SemanticOps.Curation.CandidateRetrieval.Mode) {
+	case "mirror_first", "sqlite_only", "mirror_only":
+	default:
+		return fmt.Errorf("semantic_ops.curation.candidate_retrieval.mode must be mirror_first, sqlite_only, or mirror_only")
+	}
+	if c.SemanticOps.Curation.CandidateRetrieval.MirrorMinSimilarity <= 0 || c.SemanticOps.Curation.CandidateRetrieval.MirrorMinSimilarity > 1 {
+		return fmt.Errorf("semantic_ops.curation.candidate_retrieval.mirror_min_similarity must be within (0, 1]")
 	}
 	switch c.SemanticOps.Curation.Mode {
 	case "dry_run", "dry-run", "apply":
@@ -1429,8 +1447,12 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 		CandidateLimitPerFact:  cfg.CandidateLimitPerFact,
 		MaxFactsPerGroup:       cfg.MaxFactsPerGroup,
 		MinAutoApplyConfidence: cfg.MinAutoApplyConfidence,
-		IncludeFactTypes:       append([]string(nil), cfg.IncludeFactTypes...),
-		ExcludeFactTypes:       append([]string(nil), cfg.ExcludeFactTypes...),
+		CandidateRetrieval: memorycore.CurationCandidateRetrievalOptions{
+			Mode:                strings.TrimSpace(cfg.CandidateRetrieval.Mode),
+			MirrorMinSimilarity: cfg.CandidateRetrieval.MirrorMinSimilarity,
+		},
+		IncludeFactTypes: append([]string(nil), cfg.IncludeFactTypes...),
+		ExcludeFactTypes: append([]string(nil), cfg.ExcludeFactTypes...),
 		RawLog: memorycore.CurationRawLogOptions{
 			Enabled:   cfg.RawLog.Enabled,
 			Directory: cfg.RawLog.Directory,

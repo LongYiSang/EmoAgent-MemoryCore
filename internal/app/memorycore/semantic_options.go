@@ -45,6 +45,7 @@ func normalizeSemanticCurationOptions(opts SemanticCurationOptions) SemanticCura
 	if opts.MinAutoApplyConfidence <= 0 {
 		opts.MinAutoApplyConfidence = 0.88
 	}
+	opts.CandidateRetrieval = normalizeCurationCandidateRetrievalOptions(opts.CandidateRetrieval)
 	if len(opts.IncludeFactTypes) == 0 {
 		opts.IncludeFactTypes = []string{
 			FactTypeStablePreference,
@@ -64,6 +65,17 @@ func normalizeSemanticCurationOptions(opts SemanticCurationOptions) SemanticCura
 	}
 	if opts.LLM.Thinking == nil && opts.LLM.Provider.Thinking == nil {
 		opts.LLM.Thinking = &OpenAICompatibleThinkingOptions{Type: "disabled"}
+	}
+	return opts
+}
+
+func normalizeCurationCandidateRetrievalOptions(opts CurationCandidateRetrievalOptions) CurationCandidateRetrievalOptions {
+	if strings.TrimSpace(opts.Mode) == "" {
+		opts.Mode = "mirror_first"
+	}
+	opts.Mode = strings.TrimSpace(opts.Mode)
+	if opts.MirrorMinSimilarity <= 0 {
+		opts.MirrorMinSimilarity = 0.70
 	}
 	return opts
 }

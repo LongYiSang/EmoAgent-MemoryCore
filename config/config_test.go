@@ -79,6 +79,8 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.SemanticOps.Curation.CandidateLimitPerFact != 20 ||
 		cfg.SemanticOps.Curation.MaxFactsPerGroup != 8 ||
 		cfg.SemanticOps.Curation.MinAutoApplyConfidence != 0.88 ||
+		cfg.SemanticOps.Curation.CandidateRetrieval.Mode != "mirror_first" ||
+		cfg.SemanticOps.Curation.CandidateRetrieval.MirrorMinSimilarity != 0.70 ||
 		cfg.SemanticOps.Curation.RawLog.Enabled ||
 		cfg.SemanticOps.Curation.RawLog.Directory != "" ||
 		cfg.SemanticOps.Curation.LLM.ProviderID != "default_llm" ||
@@ -219,6 +221,9 @@ semantic_ops:
     candidate_limit_per_fact: 11
     max_facts_per_group: 6
     min_auto_apply_confidence: 0.91
+    candidate_retrieval:
+      mode: sqlite_only
+      mirror_min_similarity: 0.82
     include_fact_types:
       - stable_preference
     exclude_fact_types:
@@ -262,6 +267,8 @@ semantic_ops:
 		opts.SemanticOps.Curation.CandidateLimitPerFact != 11 ||
 		opts.SemanticOps.Curation.MaxFactsPerGroup != 6 ||
 		opts.SemanticOps.Curation.MinAutoApplyConfidence != 0.91 ||
+		opts.SemanticOps.Curation.CandidateRetrieval.Mode != "sqlite_only" ||
+		opts.SemanticOps.Curation.CandidateRetrieval.MirrorMinSimilarity != 0.82 ||
 		!opts.SemanticOps.Curation.RawLog.Enabled ||
 		opts.SemanticOps.Curation.RawLog.Directory != "./debug/curation_raw" ||
 		opts.SemanticOps.Curation.LLM.Provider.ID != "default_llm" ||

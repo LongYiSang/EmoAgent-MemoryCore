@@ -11,10 +11,11 @@ type RunCurationRequest struct {
 	UntilCreatedAt *time.Time `json:"until_created_at,omitempty"`
 	UntilFactID    string     `json:"until_fact_id,omitempty"`
 
-	CandidateLimitPerFact  int     `json:"candidate_limit_per_fact,omitempty"`
-	MaxNewFacts            int     `json:"max_new_facts,omitempty"`
-	MaxFactsPerGroup       int     `json:"max_facts_per_group,omitempty"`
-	MinAutoApplyConfidence float64 `json:"min_auto_apply_confidence,omitempty"`
+	CandidateLimitPerFact  int                                `json:"candidate_limit_per_fact,omitempty"`
+	MaxNewFacts            int                                `json:"max_new_facts,omitempty"`
+	MaxFactsPerGroup       int                                `json:"max_facts_per_group,omitempty"`
+	MinAutoApplyConfidence float64                            `json:"min_auto_apply_confidence,omitempty"`
+	CandidateRetrieval     *CurationCandidateRetrievalOptions `json:"candidate_retrieval,omitempty"`
 
 	ProviderID   string        `json:"provider_id,omitempty"`
 	ProviderKind string        `json:"provider_kind,omitempty"`

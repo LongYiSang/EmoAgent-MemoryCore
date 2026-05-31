@@ -124,3 +124,53 @@ semantic_ops:
 	requireRawLogFileCount(t, configDir, 0)
 	requireRawLogFileCount(t, flagDir, 1)
 }
+
+func TestRunCurationRunCandidateSourceOverridesConfigAndWarns(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+schema_version: memorycore.config.v0.2
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+semantic_ops:
+  curation:
+    candidate_retrieval:
+      mode: mirror_first
+      mirror_min_similarity: 0.70
+`)
+	requireRunID(t,
+		"consolidate-fact",
+		"--db", dbPath,
+		"--subject", "ent_user",
+		"--predicate", "likes",
+		"--object-literal", "无糖饮料",
+		"--summary", "用户喜欢喝无糖饮料。",
+		"--source-episode", "ep_seed",
+		"--format", "id",
+	)
+	requireRunID(t,
+		"consolidate-fact",
+		"--db", dbPath,
+		"--subject", "ent_user",
+		"--predicate", "likes",
+		"--object-literal", "不甜的没有糖的饮料",
+		"--summary", "用户喜欢喝不甜的没有糖的饮料。",
+		"--source-episode", "ep_seed",
+		"--format", "id",
+	)
+
+	stdout, stderr, code := runCLI(
+		"curation-run",
+		"--config", configPath,
+		"--provider-id", "mock",
+		"--candidate-source", "sqlite_only",
+		"--mirror-min-similarity", "0.82",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	requireContains(t, stdout, `"status":"succeeded"`)
+	requireContains(t, stderr, "warning: --candidate-source overrides memory.semantic_ops.curation.candidate_retrieval.mode from config")
+	requireContains(t, stderr, "warning: --mirror-min-similarity overrides memory.semantic_ops.curation.candidate_retrieval.mirror_min_similarity from config")
+}

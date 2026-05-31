@@ -32,6 +32,8 @@ type curationRunFlags struct {
 	RawLogDir              string
 	MaxNewFacts            int
 	CandidateLimitPerFact  int
+	CandidateSource        string
+	MirrorMinSimilarity    float64
 	MaxFactsPerGroup       int
 	MinAutoApplyConfidence float64
 }
@@ -84,15 +86,19 @@ func runCurationRun(args []string, stdout io.Writer, stderr io.Writer) int {
 		MaxNewFacts:            flags.MaxNewFacts,
 		MaxFactsPerGroup:       flags.MaxFactsPerGroup,
 		MinAutoApplyConfidence: flags.MinAutoApplyConfidence,
-		ProviderID:             flags.ProviderID,
-		ProviderKind:           flags.ProviderKind,
-		Model:                  flags.Model,
-		Temperature:            flags.Temperature,
-		MaxTokens:              flags.MaxTokens,
-		Timeout:                flags.Timeout,
-		RawLog:                 &memorycore.CurationRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
-		Force:                  true,
-		UpdateCheckpoint:       flags.UpdateCheckpoint,
+		CandidateRetrieval: &memorycore.CurationCandidateRetrievalOptions{
+			Mode:                flags.CandidateSource,
+			MirrorMinSimilarity: flags.MirrorMinSimilarity,
+		},
+		ProviderID:       flags.ProviderID,
+		ProviderKind:     flags.ProviderKind,
+		Model:            flags.Model,
+		Temperature:      flags.Temperature,
+		MaxTokens:        flags.MaxTokens,
+		Timeout:          flags.Timeout,
+		RawLog:           &memorycore.CurationRawLogOptions{Enabled: flags.RawLog, Directory: flags.RawLogDir},
+		Force:            true,
+		UpdateCheckpoint: flags.UpdateCheckpoint,
 	})
 	if err != nil {
 		return runtimeError(stderr, "curation run: %v", err)
@@ -121,6 +127,8 @@ func parseCurationRunFlags(fs *flag.FlagSet) *curationRunFlags {
 		Thinking:               "disabled",
 		MaxNewFacts:            100,
 		CandidateLimitPerFact:  20,
+		CandidateSource:        "mirror_first",
+		MirrorMinSimilarity:    0.70,
 		MaxFactsPerGroup:       8,
 		MinAutoApplyConfidence: 0.88,
 	}
@@ -144,6 +152,8 @@ func parseCurationRunFlags(fs *flag.FlagSet) *curationRunFlags {
 	fs.StringVar(&flags.RawLogDir, "raw-log-dir", "", "directory for raw curation debug log JSON files")
 	fs.IntVar(&flags.MaxNewFacts, "max-new-facts", flags.MaxNewFacts, "maximum new facts per curation run")
 	fs.IntVar(&flags.CandidateLimitPerFact, "candidate-limit-per-fact", flags.CandidateLimitPerFact, "maximum comparable facts per new fact")
+	fs.StringVar(&flags.CandidateSource, "candidate-source", flags.CandidateSource, "mirror_first, sqlite_only, or mirror_only")
+	fs.Float64Var(&flags.MirrorMinSimilarity, "mirror-min-similarity", flags.MirrorMinSimilarity, "minimum mirror similarity for curation grouping")
 	fs.IntVar(&flags.MaxFactsPerGroup, "max-facts-per-group", flags.MaxFactsPerGroup, "maximum facts in one semantic curation group")
 	fs.Float64Var(&flags.MinAutoApplyConfidence, "min-auto-apply-confidence", flags.MinAutoApplyConfidence, "minimum confidence for automatic same/refinement apply")
 	return flags
@@ -190,6 +200,15 @@ func validateCurationRunFlags(stderr io.Writer, fs *flag.FlagSet, flags *curatio
 	if flags.CandidateLimitPerFact <= 0 {
 		return usageError(stderr, fs, "--candidate-limit-per-fact must be positive")
 	}
+	if err := validateOneOf("--candidate-source", flags.CandidateSource, "mirror_first", "sqlite_only", "mirror_only"); err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if err := validateFloatRange("--mirror-min-similarity", flags.MirrorMinSimilarity, 0, 1); err != nil {
+		return usageError(stderr, fs, err.Error())
+	}
+	if flags.MirrorMinSimilarity == 0 {
+		return usageError(stderr, fs, "--mirror-min-similarity must be greater than 0")
+	}
 	if flags.MaxFactsPerGroup <= 1 {
 		return usageError(stderr, fs, "--max-facts-per-group must be greater than 1")
 	}
@@ -228,6 +247,18 @@ func applyCurationRunConfig(flags *curationRunFlags, cfg *memconfig.Config, expl
 		curation.CandidateLimitPerFact = flags.CandidateLimitPerFact
 	} else {
 		flags.CandidateLimitPerFact = curation.CandidateLimitPerFact
+	}
+	if explicit["candidate-source"] {
+		warnConfigOverride(stderr, "candidate-source", "semantic_ops.curation.candidate_retrieval.mode")
+		curation.CandidateRetrieval.Mode = flags.CandidateSource
+	} else {
+		flags.CandidateSource = curation.CandidateRetrieval.Mode
+	}
+	if explicit["mirror-min-similarity"] {
+		warnConfigOverride(stderr, "mirror-min-similarity", "semantic_ops.curation.candidate_retrieval.mirror_min_similarity")
+		curation.CandidateRetrieval.MirrorMinSimilarity = flags.MirrorMinSimilarity
+	} else {
+		flags.MirrorMinSimilarity = curation.CandidateRetrieval.MirrorMinSimilarity
 	}
 	if explicit["max-facts-per-group"] {
 		warnConfigOverride(stderr, "max-facts-per-group", "semantic_ops.curation.max_facts_per_group")
@@ -324,6 +355,10 @@ func openCurationService(ctx context.Context, opts commonOptions, flags *curatio
 				CandidateLimitPerFact:  flags.CandidateLimitPerFact,
 				MaxFactsPerGroup:       flags.MaxFactsPerGroup,
 				MinAutoApplyConfidence: flags.MinAutoApplyConfidence,
+				CandidateRetrieval: memorycore.CurationCandidateRetrievalOptions{
+					Mode:                flags.CandidateSource,
+					MirrorMinSimilarity: flags.MirrorMinSimilarity,
+				},
 				LLM: memorycore.CurationLLMOptions{
 					ProviderID:     flags.ProviderID,
 					ProviderKind:   flags.ProviderKind,

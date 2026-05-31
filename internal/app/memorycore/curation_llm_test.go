@@ -105,10 +105,47 @@ func TestParseCurationLLMResponseConfidenceStringBecomesNeedsReview(t *testing.T
 	}
 }
 
+func TestParseCurationLLMResponseUnsupportedSchemaVersionBecomesNeedsReview(t *testing.T) {
+	decision, err := parseCurationLLMResponse(`{
+		"schema_version":"memory_delta_curation.v0.1.request",
+		"decision":"coexist_related",
+		"semantic_relation":"complement",
+		"answer_gain":"small",
+		"confidence":0.9,
+		"canonical_fact_id":"fact_a",
+		"source_fact_ids":["fact_a","fact_b"],
+		"reason_codes":["model_schema_drift"],
+		"requires_review":false
+	}`)
+	if err != nil {
+		t.Fatalf("parse curation unsupported schema version response: %v", err)
+	}
+	if decision.Decision != "needs_review" ||
+		decision.SemanticRelation != "unclear" ||
+		decision.AnswerGain != "unknown" ||
+		decision.Confidence != 0 ||
+		!decision.RequiresReview {
+		t.Fatalf("decision = %#v, want conservative needs_review", decision)
+	}
+	for _, want := range []string{
+		"model_schema_drift",
+		"unsupported_llm_schema",
+		"unsupported_schema_version=memory_delta_curation.v0.1.request",
+	} {
+		if !containsCurationString(decision.ReasonCodes, want) {
+			t.Fatalf("reason codes = %#v, want %s", decision.ReasonCodes, want)
+		}
+	}
+	if !containsCurationString(decision.SourceFactIDs, "fact_b") {
+		t.Fatalf("source ids = %#v, want original ids preserved", decision.SourceFactIDs)
+	}
+}
+
 func TestCurationDeveloperPromptListsAllowedEnums(t *testing.T) {
 	prompt := curationDeveloperPrompt()
 	for _, want := range []string{
 		`Return exactly one top-level JSON object using this schema`,
+		`schema_version must be memory_delta_curation.v0.1.response`,
 		`source_fact_ids must include canonical_fact_id plus every fact being merged`,
 		`confidence must be a JSON number from 0.0 to 1.0, not a string label`,
 		`Do not return actions, arrays, multiple objects, or multiple clusters`,

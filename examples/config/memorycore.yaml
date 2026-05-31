@@ -221,6 +221,9 @@ semantic_ops:
     candidate_limit_per_fact: 20
     max_facts_per_group: 8
     min_auto_apply_confidence: 0.88
+    candidate_retrieval:
+      mode: mirror_first
+      mirror_min_similarity: 0.70
     include_fact_types:
       - stable_preference
       - relational_state

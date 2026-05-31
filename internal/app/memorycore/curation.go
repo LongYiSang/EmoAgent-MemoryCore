@@ -46,6 +46,8 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 	if minConfidence <= 0 {
 		minConfidence = 0.88
 	}
+	candidateRetrieval := curationCandidateRetrievalOptions(s.semanticOps.Curation.CandidateRetrieval, req.CandidateRetrieval)
+	trace.recordCandidateRetrievalStart(candidateRetrieval, candidateLimit)
 
 	provider := curationProviderOptions(s.semanticOps.Curation.LLM, req)
 	llm, err := newExtractionLLM(provider)
@@ -66,19 +68,16 @@ func (s *service) RunCuration(ctx context.Context, req RunCurationRequest) (*Run
 	if err != nil {
 		return nil, err
 	}
-	candidates := map[string][]core.Fact{}
+	candidates := map[string][]memsqlite.CurationComparableCandidate{}
 	for _, fact := range deltaFacts {
-		found, err := s.curation.RetrieveComparableFacts(ctx, memsqlite.CurationComparableQuery{
-			PersonaID:             personaID,
-			DeltaFactID:           fact.ID,
-			CandidateLimitPerFact: candidateLimit,
-		})
+		found, candidateTrace, err := s.retrieveCurationComparableCandidates(ctx, personaID, fact, candidateLimit, candidateRetrieval)
 		if err != nil {
 			return nil, err
 		}
+		trace.recordCandidateRetrievalDelta(candidateTrace)
 		candidates[fact.ID] = found
 	}
-	groups := s.curation.BuildGroups(deltaFacts, candidates, maxFactsPerGroup)
+	groups := s.curation.BuildGroupsWithCandidateSources(deltaFacts, candidates, maxFactsPerGroup, candidateRetrieval.MirrorMinSimilarity)
 	prepared := make([]memsqlite.CurationPreparedGroup, 0, len(groups))
 	groupResults := make([]CurationGroupResult, 0, len(groups))
 	for _, group := range groups {

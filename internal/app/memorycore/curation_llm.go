@@ -70,6 +70,7 @@ func curationDeveloperPrompt() string {
 		"Only same/refinement with no or small answer gain should be eligible for automatic merge.",
 		"Do not merge complements or conflicts as the same fact.",
 		"Return exactly one top-level JSON object using this schema: schema_version, decision, semantic_relation, answer_gain, confidence, canonical_fact_id, source_fact_ids, merged_content_summary, canonical_subject_entity_id, canonical_predicate, canonical_fact_type, canonical_object_literal, canonical_object_entity_id, reason_codes, requires_review.",
+		"schema_version must be memory_delta_curation.v0.1.response.",
 		"For merge_into_existing and reinforce_existing, source_fact_ids must include canonical_fact_id plus every fact being merged. Do not use source_fact_ids to mean only non-canonical inputs.",
 		"confidence must be a JSON number from 0.0 to 1.0, not a string label such as high, medium, or low.",
 		"Do not return actions, arrays, multiple objects, or multiple clusters.",
@@ -100,7 +101,7 @@ func parseCurationLLMResponse(text string) (memsqlite.CurationDecision, error) {
 		return memsqlite.CurationDecision{}, extractionServiceError("invalid_json", "curation provider returned invalid JSON")
 	}
 	if payload.SchemaVersion != "" && payload.SchemaVersion != CurationResponseSchemaVersion {
-		return memsqlite.CurationDecision{}, extractionServiceError("validation_failed", "curation response schema_version is unsupported")
+		return unsupportedCurationSchemaVersionDecision(payload, responseHash), nil
 	}
 	if !allowedCurationDecision(payload.Decision) || !allowedCurationRelation(payload.SemanticRelation) || !allowedCurationAnswerGain(payload.AnswerGain) {
 		return unsupportedCurationEnumDecision(payload, responseHash), nil
@@ -226,6 +227,28 @@ func unsupportedCurationSchemaDecision(text string, responseHash string) (memsql
 		LLMResponseHash:  responseHash,
 		RequiresReview:   true,
 	}, true
+}
+
+func unsupportedCurationSchemaVersionDecision(payload curationLLMResponsePayload, responseHash string) memsqlite.CurationDecision {
+	reasonCodes := append([]string(nil), payload.ReasonCodes...)
+	reasonCodes = append(reasonCodes, "unsupported_llm_schema", "unsupported_schema_version="+curationEnumReasonValue(payload.SchemaVersion))
+	return memsqlite.CurationDecision{
+		Decision:                 "needs_review",
+		SemanticRelation:         "unclear",
+		AnswerGain:               "unknown",
+		Confidence:               0,
+		CanonicalFactID:          payload.CanonicalFactID,
+		SourceFactIDs:            payload.SourceFactIDs,
+		MergedContentSummary:     payload.MergedContentSummary,
+		CanonicalSubjectEntityID: payload.CanonicalSubjectEntityID,
+		CanonicalPredicate:       payload.CanonicalPredicate,
+		CanonicalFactType:        payload.CanonicalFactType,
+		CanonicalObjectLiteral:   payload.CanonicalObjectLiteral,
+		CanonicalObjectEntityID:  payload.CanonicalObjectEntityID,
+		ReasonCodes:              uniqueStrings(reasonCodes),
+		LLMResponseHash:          responseHash,
+		RequiresReview:           true,
+	}
 }
 
 func curationJSONValueKind(data json.RawMessage) string {

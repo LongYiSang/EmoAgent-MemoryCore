@@ -57,6 +57,8 @@ func FieldDescriptors() []FieldDescriptor {
 		{"semantic_ops.curation.candidate_limit_per_fact", "int", "20", "> 0", "always", "Maximum comparable existing facts retrieved for each delta fact."},
 		{"semantic_ops.curation.max_facts_per_group", "int", "8", "> 1", "always", "Maximum facts sent to one semantic curation LLM group."},
 		{"semantic_ops.curation.min_auto_apply_confidence", "float", "0.88", "[0, 1]", "always", "Minimum confidence for automatic same/refinement curation apply."},
+		{"semantic_ops.curation.candidate_retrieval.mode", "string", "mirror_first", "mirror_first|sqlite_only|mirror_only", "always", "Candidate source for comparable fact retrieval."},
+		{"semantic_ops.curation.candidate_retrieval.mirror_min_similarity", "float", "0.70", "(0, 1]", "mirror modes", "Minimum mirror similarity allowed to connect a curation group edge."},
 		{"semantic_ops.curation.include_fact_types", "[]string", "stable_preference, relational_state, transient_context, task_relevant_context", "fact type list", "always", "Fact types eligible for delta curation."},
 		{"semantic_ops.curation.exclude_fact_types", "[]string", "core_identity, commitment", "fact type list", "always", "Fact types excluded from automatic source consolidation."},
 		{"semantic_ops.curation.raw_log.enabled", "bool", "false", "true|false", "always", "Write full raw curation debug artifacts. Contains sensitive prompt and provider data."},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -288,6 +289,182 @@ func TestServiceRunCurationDoesNotAutoMergeComplementFacts(t *testing.T) {
 	requireCurationAPIFactState(t, db, dislikeFact.ID, "active", 1)
 }
 
+func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
+	ctx := context.Background()
+	rawDir := t.TempDir()
+	adapter := &curationMirrorTestAdapter{results: map[string]*memorycore.MirrorDedupSearchResult{}}
+	svc, dbPath := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
+		Mode:                "mirror_only",
+		MirrorMinSimilarity: 0.70,
+	}, rawDir)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近喜欢上骑自行车。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢吃完晚饭后出去骑行。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "骑自行车", "用户最近喜欢上骑自行车。", firstEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "likes", "晚饭后骑行", "用户喜欢吃完晚饭后出去骑行。", secondEpisode.ID).Fact
+	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
+		Status: "ok",
+		Candidates: []memorycore.MirrorDedupSearchCandidate{{
+			NodeType:    "fact",
+			NodeID:      second.ID,
+			Similarity:  0.88,
+			MatchClass:  "related",
+			MatchReason: "dense_semantic",
+			MergeHint:   "review_or_merge",
+		}},
+	}
+
+	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:         "dry_run",
+		Trigger:      "test",
+		ProviderKind: memorycore.ExtractionProviderMock,
+		ProviderID:   "mock",
+		Force:        true,
+	})
+	if err != nil {
+		t.Fatalf("run mirror curation: %v", err)
+	}
+	if result.GroupCount != 1 || adapter.dedupCalls == 0 {
+		t.Fatalf("result = %#v, adapter calls = %d, want one mirror-backed group", result, adapter.dedupCalls)
+	}
+
+	artifact := readSingleCurationRawLog(t, rawDir)
+	retrieval, ok := artifact["candidate_retrieval"].(map[string]any)
+	if !ok {
+		t.Fatalf("candidate_retrieval = %#v", artifact["candidate_retrieval"])
+	}
+	if retrieval["mode"] != "mirror_only" {
+		t.Fatalf("candidate retrieval = %#v, want mirror_only", retrieval)
+	}
+	deltas, ok := retrieval["deltas"].([]any)
+	if !ok || len(deltas) == 0 {
+		t.Fatalf("candidate retrieval deltas = %#v", retrieval["deltas"])
+	}
+	if !rawLogCurationDeltaHasMappedCandidate(deltas, first.ID, second.ID) {
+		t.Fatalf("candidate retrieval deltas = %#v, want %s mapped for %s", deltas, second.ID, first.ID)
+	}
+	groups, ok := artifact["groups"].([]any)
+	if !ok || len(groups) != 1 {
+		t.Fatalf("raw log groups = %#v", artifact["groups"])
+	}
+	facts, ok := groups[0].(map[string]any)["facts"].([]any)
+	if !ok || !rawLogFactsContain(facts, first.ID) || !rawLogFactsContain(facts, second.ID) {
+		t.Fatalf("raw log group facts = %#v, want cycling facts", facts)
+	}
+
+	db := openSQLDB(t, dbPath)
+	defer db.Close()
+	requireCurationAPIFactState(t, db, first.ID, "active", 1)
+	requireCurationAPIFactState(t, db, second.ID, "active", 1)
+}
+
+func TestServiceRunCurationMirrorCandidateAuthorityDrop(t *testing.T) {
+	ctx := context.Background()
+	rawDir := t.TempDir()
+	adapter := &curationMirrorTestAdapter{results: map[string]*memorycore.MirrorDedupSearchResult{}}
+	svc, _ := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
+		Mode:                "mirror_only",
+		MirrorMinSimilarity: 0.70,
+	}, rawDir)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近喜欢上骑自行车。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢吃完晚饭后出去骑行。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	first := consolidateLiteral(t, ctx, svc, userID, "likes", "骑自行车", "用户最近喜欢上骑自行车。", firstEpisode.ID).Fact
+	second := consolidateLiteral(t, ctx, svc, userID, "dislikes", "晚饭后骑行", "用户不喜欢吃完晚饭后出去骑行。", secondEpisode.ID).Fact
+	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
+		Status: "ok",
+		Candidates: []memorycore.MirrorDedupSearchCandidate{{
+			NodeType:   "fact",
+			NodeID:     second.ID,
+			Similarity: 0.91,
+		}},
+	}
+
+	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:         "dry_run",
+		Trigger:      "test",
+		ProviderKind: memorycore.ExtractionProviderMock,
+		ProviderID:   "mock",
+		Force:        true,
+	})
+	if err != nil {
+		t.Fatalf("run mirror curation authority drop: %v", err)
+	}
+	if result.GroupCount != 0 {
+		t.Fatalf("result = %#v, want no group after authority drop", result)
+	}
+	artifact := readSingleCurationRawLog(t, rawDir)
+	retrieval := artifact["candidate_retrieval"].(map[string]any)
+	deltas := retrieval["deltas"].([]any)
+	if !rawLogCurationDeltaHasDropReason(deltas, first.ID, second.ID, "predicate_mismatch") {
+		t.Fatalf("candidate retrieval deltas = %#v, want predicate_mismatch drop", deltas)
+	}
+}
+
+func TestServiceRunCurationMirrorFirstFallsBackToSQL(t *testing.T) {
+	ctx := context.Background()
+	adapter := &curationMirrorTestAdapter{err: errors.New("sidecar unavailable")}
+	svc, _ := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
+		Mode:                "mirror_first",
+		MirrorMinSimilarity: 0.70,
+	}, "")
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+
+	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:         "dry_run",
+		Trigger:      "test",
+		ProviderKind: memorycore.ExtractionProviderMock,
+		ProviderID:   "mock",
+		Force:        true,
+	})
+	if err != nil {
+		t.Fatalf("run fallback curation: %v", err)
+	}
+	if result.GroupCount != 1 || adapter.dedupCalls == 0 {
+		t.Fatalf("result = %#v, adapter calls = %d, want SQL fallback group", result, adapter.dedupCalls)
+	}
+}
+
+func TestServiceRunCurationMirrorOnlyDoesNotFallbackToSQL(t *testing.T) {
+	ctx := context.Background()
+	adapter := &curationMirrorTestAdapter{err: errors.New("sidecar unavailable")}
+	svc, _ := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
+		Mode:                "mirror_only",
+		MirrorMinSimilarity: 0.70,
+	}, "")
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	oldEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝无糖饮料。", time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC))
+	newEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢喝不甜的没有糖的饮料。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "无糖饮料", "用户喜欢喝无糖饮料。", oldEpisode.ID)
+	consolidateLiteral(t, ctx, svc, userID, "likes", "不甜的没有糖的饮料", "用户喜欢喝不甜的没有糖的饮料。", newEpisode.ID)
+
+	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+		Mode:         "dry_run",
+		Trigger:      "test",
+		ProviderKind: memorycore.ExtractionProviderMock,
+		ProviderID:   "mock",
+		Force:        true,
+	})
+	if err != nil {
+		t.Fatalf("run mirror-only curation: %v", err)
+	}
+	if result.GroupCount != 0 || adapter.dedupCalls == 0 {
+		t.Fatalf("result = %#v, adapter calls = %d, want no SQL fallback", result, adapter.dedupCalls)
+	}
+}
+
 func TestServiceRunCurationPinnedSourceRequiresReview(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openCurationService(t, ctx)
@@ -514,6 +691,72 @@ func openCurationService(t *testing.T, ctx context.Context) (memorycore.Service,
 	return svc, dbPath
 }
 
+func openCurationServiceWithMirror(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, retrieval memorycore.CurationCandidateRetrievalOptions, rawDir string) (memorycore.Service, string) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	curation := memorycore.SemanticCurationOptions{
+		Enabled:            true,
+		CandidateRetrieval: retrieval,
+		LLM: memorycore.CurationLLMOptions{
+			ProviderKind: memorycore.ExtractionProviderMock,
+			ProviderID:   "mock",
+			Model:        "memory-curator",
+		},
+	}
+	if rawDir != "" {
+		curation.RawLog = memorycore.CurationRawLogOptions{Enabled: true, Directory: rawDir}
+	}
+	svc, err := memorycore.Open(ctx, memorycore.Options{
+		DBPath:        dbPath,
+		AutoMigrate:   true,
+		EnableFTS:     true,
+		MirrorAdapter: adapter,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+		},
+		SemanticOps: memorycore.SemanticOpsOptions{Curation: curation},
+	})
+	if err != nil {
+		t.Fatalf("open mirror curation service: %v", err)
+	}
+	return svc, dbPath
+}
+
+type curationMirrorTestAdapter struct {
+	dedupCalls int
+	results    map[string]*memorycore.MirrorDedupSearchResult
+	err        error
+}
+
+func (a *curationMirrorTestAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+	return memorycore.MirrorNodeUpsertResult{}, nil
+}
+
+func (a *curationMirrorTestAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+	return nil
+}
+
+func (a *curationMirrorTestAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+	return nil
+}
+
+func (a *curationMirrorTestAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+	return nil
+}
+
+func (a *curationMirrorTestAdapter) DedupSearch(ctx context.Context, req memorycore.MirrorDedupSearchRequest) (*memorycore.MirrorDedupSearchResult, error) {
+	a.dedupCalls++
+	if a.err != nil {
+		return nil, a.err
+	}
+	if a.results != nil {
+		if result := a.results[req.Candidate.CandidateID]; result != nil {
+			return result, nil
+		}
+	}
+	return &memorycore.MirrorDedupSearchResult{Status: "ok"}, nil
+}
+
 func requireMemoryItemAbsent(t *testing.T, contextResult *memorycore.MemoryContext, nodeID string) {
 	t.Helper()
 	for _, block := range contextResult.Blocks {
@@ -671,6 +914,50 @@ func containsAnyString(values []any, want string) bool {
 	for _, value := range values {
 		if s, ok := value.(string); ok && s == want {
 			return true
+		}
+	}
+	return false
+}
+
+func rawLogFactsContain(facts []any, factID string) bool {
+	for _, item := range facts {
+		fact, ok := item.(map[string]any)
+		if ok && fact["fact_id"] == factID {
+			return true
+		}
+	}
+	return false
+}
+
+func rawLogCurationDeltaHasMappedCandidate(deltas []any, deltaFactID string, candidateFactID string) bool {
+	for _, item := range deltas {
+		delta, ok := item.(map[string]any)
+		if !ok || delta["delta_fact_id"] != deltaFactID {
+			continue
+		}
+		candidates, _ := delta["mirror_candidates"].([]any)
+		for _, raw := range candidates {
+			candidate, ok := raw.(map[string]any)
+			if ok && candidate["mapped_fact_id"] == candidateFactID && candidate["authority_drop_reason"] == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rawLogCurationDeltaHasDropReason(deltas []any, deltaFactID string, candidateFactID string, reason string) bool {
+	for _, item := range deltas {
+		delta, ok := item.(map[string]any)
+		if !ok || delta["delta_fact_id"] != deltaFactID {
+			continue
+		}
+		candidates, _ := delta["mirror_candidates"].([]any)
+		for _, raw := range candidates {
+			candidate, ok := raw.(map[string]any)
+			if ok && candidate["node_id"] == candidateFactID && candidate["authority_drop_reason"] == reason {
+				return true
+			}
 		}
 	}
 	return false

@@ -43,10 +43,16 @@ type SemanticCurationOptions struct {
 	CandidateLimitPerFact  int
 	MaxFactsPerGroup       int
 	MinAutoApplyConfidence float64
+	CandidateRetrieval     CurationCandidateRetrievalOptions
 	IncludeFactTypes       []string
 	ExcludeFactTypes       []string
 	RawLog                 CurationRawLogOptions
 	LLM                    CurationLLMOptions
+}
+
+type CurationCandidateRetrievalOptions struct {
+	Mode                string  `json:"mode,omitempty"`
+	MirrorMinSimilarity float64 `json:"mirror_min_similarity,omitempty"`
 }
 
 type CurationLLMOptions struct {

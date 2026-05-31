@@ -14,9 +14,42 @@ import (
 const curationRawLogSchemaVersion = "memory_curation_raw_log.v0.1"
 
 type curationRawLogTrace struct {
-	StartedAt time.Time
-	Request   RunCurationRequest
-	Groups    []curationRawLogGroup
+	StartedAt          time.Time
+	Request            RunCurationRequest
+	CandidateRetrieval *curationRawLogCandidateRetrieval
+	Groups             []curationRawLogGroup
+}
+
+type curationRawLogCandidateRetrieval struct {
+	Mode                string                         `json:"mode"`
+	CandidateLimit      int                            `json:"candidate_limit_per_fact"`
+	MirrorMinSimilarity float64                        `json:"mirror_min_similarity"`
+	Deltas              []curationRawLogCandidateDelta `json:"deltas"`
+}
+
+type curationRawLogCandidateDelta struct {
+	DeltaFactID           string                          `json:"delta_fact_id"`
+	Strategy              string                          `json:"strategy"`
+	MirrorStatus          string                          `json:"mirror_status,omitempty"`
+	MirrorDegraded        bool                            `json:"mirror_degraded,omitempty"`
+	MirrorFallbackReason  string                          `json:"mirror_fallback_reason,omitempty"`
+	FallbackSQLUsed       bool                            `json:"fallback_sql_used,omitempty"`
+	FallbackReason        string                          `json:"fallback_reason,omitempty"`
+	MirrorCandidates      []curationRawLogMirrorCandidate `json:"mirror_candidates,omitempty"`
+	SQLCandidateFactIDs   []string                        `json:"sql_candidate_fact_ids,omitempty"`
+	FinalCandidateFactIDs []string                        `json:"final_candidate_fact_ids,omitempty"`
+}
+
+type curationRawLogMirrorCandidate struct {
+	NodeType            string  `json:"node_type"`
+	NodeID              string  `json:"node_id"`
+	Source              string  `json:"source,omitempty"`
+	Similarity          float64 `json:"similarity"`
+	MatchClass          string  `json:"match_class,omitempty"`
+	MatchReason         string  `json:"match_reason,omitempty"`
+	MergeHint           string  `json:"merge_hint,omitempty"`
+	MappedFactID        string  `json:"mapped_fact_id,omitempty"`
+	AuthorityDropReason string  `json:"authority_drop_reason,omitempty"`
 }
 
 type curationRawLogGroup struct {
@@ -57,6 +90,24 @@ func newCurationRawLogTrace(start time.Time, req RunCurationRequest, opts Curati
 		return nil
 	}
 	return &curationRawLogTrace{StartedAt: start.UTC(), Request: req}
+}
+
+func (t *curationRawLogTrace) recordCandidateRetrievalStart(opts CurationCandidateRetrievalOptions, candidateLimit int) {
+	if t == nil {
+		return
+	}
+	t.CandidateRetrieval = &curationRawLogCandidateRetrieval{
+		Mode:                opts.Mode,
+		CandidateLimit:      candidateLimit,
+		MirrorMinSimilarity: opts.MirrorMinSimilarity,
+	}
+}
+
+func (t *curationRawLogTrace) recordCandidateRetrievalDelta(item curationRawLogCandidateDelta) {
+	if t == nil || t.CandidateRetrieval == nil {
+		return
+	}
+	t.CandidateRetrieval.Deltas = append(t.CandidateRetrieval.Deltas, item)
 }
 
 func validateCurationRawLogOptions(opts CurationRawLogOptions) error {
@@ -142,16 +193,18 @@ func writeCurationRawLog(dir string, result *RunCurationResult, trace *curationR
 	}
 	finishedAt := time.Now().UTC()
 	artifact := struct {
-		SchemaVersion string                `json:"schema_version"`
-		Request       RunCurationRequest    `json:"request"`
-		Groups        []curationRawLogGroup `json:"groups"`
-		Result        *RunCurationResult    `json:"result,omitempty"`
-		Timings       rawLogTimings         `json:"timings"`
+		SchemaVersion      string                            `json:"schema_version"`
+		Request            RunCurationRequest                `json:"request"`
+		CandidateRetrieval *curationRawLogCandidateRetrieval `json:"candidate_retrieval,omitempty"`
+		Groups             []curationRawLogGroup             `json:"groups"`
+		Result             *RunCurationResult                `json:"result,omitempty"`
+		Timings            rawLogTimings                     `json:"timings"`
 	}{
-		SchemaVersion: curationRawLogSchemaVersion,
-		Request:       trace.Request,
-		Groups:        trace.Groups,
-		Result:        result,
+		SchemaVersion:      curationRawLogSchemaVersion,
+		Request:            trace.Request,
+		CandidateRetrieval: trace.CandidateRetrieval,
+		Groups:             trace.Groups,
+		Result:             result,
 		Timings: rawLogTimings{
 			StartedAt:  trace.StartedAt,
 			FinishedAt: finishedAt,
