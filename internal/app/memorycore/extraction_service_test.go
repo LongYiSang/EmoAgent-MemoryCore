@@ -1016,6 +1016,13 @@ func requireExtractionServiceError(t *testing.T, err error, code string) {
 	if svcErr.Code != code {
 		t.Fatalf("error code = %q, want %q", svcErr.Code, code)
 	}
+	var coded interface{ ErrorCode() string }
+	if !errors.As(err, &coded) {
+		t.Fatalf("err = %v, want ErrorCode interface", err)
+	}
+	if coded.ErrorCode() != code {
+		t.Fatalf("ErrorCode() = %q, want %q", coded.ErrorCode(), code)
+	}
 }
 
 func readSingleExtractionRawLog(t *testing.T, dir string) map[string]any {

@@ -24,6 +24,13 @@ func (e *ExtractionServiceError) Error() string {
 	return e.Message
 }
 
+func (e *ExtractionServiceError) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return e.Code
+}
+
 func extractionServiceError(code string, message string) *ExtractionServiceError {
 	return &ExtractionServiceError{Code: code, Message: message}
 }
