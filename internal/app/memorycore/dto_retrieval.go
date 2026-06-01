@@ -35,6 +35,7 @@ const (
 	RetrievalCorrectiveFallbackReasonSemanticFailed  = "semantic_light_failed"
 	RetrievalHardFailureForbiddenCandidate           = "forbidden_candidate"
 	RetrievalHardFailureTemporalInconsistency        = "temporal_inconsistency"
+	RetrievalDiagnosticsLevelPipelineSummary         = "pipeline_summary"
 )
 
 type QueryTimeMode string
@@ -104,12 +105,13 @@ const (
 )
 
 type RetrievalRequest struct {
-	PersonaID string
-	SessionID *string
-	QueryText string
-	Now       time.Time
-	Policy    RetrievalPolicy
-	Context   RetrievalAffectContext
+	PersonaID        string
+	SessionID        *string
+	QueryText        string
+	DiagnosticsLevel string `json:"diagnostics_level,omitempty"`
+	Now              time.Time
+	Policy           RetrievalPolicy
+	Context          RetrievalAffectContext
 }
 
 type RetrievalPolicy struct {
@@ -137,6 +139,37 @@ type MemoryContext struct {
 	QueryAnalysis       *QueryAnalysis
 	AnchorFusion        *AnchorFusionDiagnostics `json:"anchor_fusion,omitempty"`
 	RetrievalConfidence *RetrievalConfidence     `json:"retrieval_confidence,omitempty"`
+	PipelineTrace       *MemoryPipelineTrace     `json:"pipeline_trace,omitempty"`
+}
+
+type MemoryPipelineTrace struct {
+	QueryAnalysis MemoryPipelineQueryAnalysis `json:"query_analysis"`
+	Stages        MemoryPipelineStages        `json:"stages"`
+}
+
+type MemoryPipelineQueryAnalysis struct {
+	Normalized string                    `json:"normalized,omitempty"`
+	Scores     MemoryPipelineQueryScores `json:"scores"`
+}
+
+type MemoryPipelineQueryScores struct {
+	RuleFit                     float64 `json:"rule_fit"`
+	AnchorReadiness             float64 `json:"anchor_readiness"`
+	SemanticNeed                float64 `json:"semantic_need"`
+	ExpectedRetrievalConfidence float64 `json:"expected_retrieval_confidence"`
+}
+
+type MemoryPipelineStages struct {
+	AnchorRecall          []MemoryPipelineTraceItem `json:"anchor_recall"`
+	RRFFusion             []MemoryPipelineTraceItem `json:"rrf_fusion"`
+	SQLiteAuthorityFilter []MemoryPipelineTraceItem `json:"sqlite_authority_filter"`
+	SafeRerank            []MemoryPipelineTraceItem `json:"safe_rerank"`
+	FinalSelectionMMR     []MemoryPipelineTraceItem `json:"final_selection_mmr"`
+}
+
+type MemoryPipelineTraceItem struct {
+	ContentSummary string  `json:"content_summary,omitempty"`
+	Score          float64 `json:"score"`
 }
 
 type RetrievalConfidence struct {

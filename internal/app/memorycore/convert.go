@@ -134,6 +134,7 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 		QueryAnalysis:       queryAnalysisFromStore(context.QueryAnalysis),
 		AnchorFusion:        anchorFusionDiagnosticsFromStore(context.AnchorFusion),
 		RetrievalConfidence: retrievalConfidenceFromStore(context.RetrievalConfidence),
+		PipelineTrace:       memoryPipelineTraceFromStore(context.PipelineTrace),
 	}
 	for _, block := range context.Blocks {
 		out := MemoryBlock{
@@ -150,6 +151,44 @@ func memoryContextFromStore(context memsqlite.MemoryContext) *MemoryContext {
 			NodeType: suppression.NodeType,
 			NodeID:   suppression.NodeID,
 			Reason:   suppression.Reason,
+		})
+	}
+	return result
+}
+
+func memoryPipelineTraceFromStore(value *memsqlite.MemoryPipelineTrace) *MemoryPipelineTrace {
+	if value == nil {
+		return nil
+	}
+	return &MemoryPipelineTrace{
+		QueryAnalysis: MemoryPipelineQueryAnalysis{
+			Normalized: value.QueryAnalysis.Normalized,
+			Scores: MemoryPipelineQueryScores{
+				RuleFit:                     value.QueryAnalysis.Scores.RuleFit,
+				AnchorReadiness:             value.QueryAnalysis.Scores.AnchorReadiness,
+				SemanticNeed:                value.QueryAnalysis.Scores.SemanticNeed,
+				ExpectedRetrievalConfidence: value.QueryAnalysis.Scores.ExpectedRetrievalConfidence,
+			},
+		},
+		Stages: MemoryPipelineStages{
+			AnchorRecall:          memoryPipelineTraceItemsFromStore(value.Stages.AnchorRecall),
+			RRFFusion:             memoryPipelineTraceItemsFromStore(value.Stages.RRFFusion),
+			SQLiteAuthorityFilter: memoryPipelineTraceItemsFromStore(value.Stages.SQLiteAuthorityFilter),
+			SafeRerank:            memoryPipelineTraceItemsFromStore(value.Stages.SafeRerank),
+			FinalSelectionMMR:     memoryPipelineTraceItemsFromStore(value.Stages.FinalSelectionMMR),
+		},
+	}
+}
+
+func memoryPipelineTraceItemsFromStore(items []memsqlite.MemoryPipelineTraceItem) []MemoryPipelineTraceItem {
+	if items == nil {
+		return nil
+	}
+	result := make([]MemoryPipelineTraceItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, MemoryPipelineTraceItem{
+			ContentSummary: item.ContentSummary,
+			Score:          item.Score,
 		})
 	}
 	return result

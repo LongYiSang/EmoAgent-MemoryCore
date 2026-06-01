@@ -11,8 +11,7 @@ func bestMMRCandidateIndex(candidates []scoredFact, selected []scoredFact) int {
 	bestIndex := -1
 	bestScore := 0.0
 	for index, candidate := range candidates {
-		similarity := maxFactSimilarity(candidate, selected)
-		score := defaultMMRLambda*candidate.Score - (1-defaultMMRLambda)*similarity
+		score := mmrCandidateScore(candidate, selected)
 		if bestIndex < 0 ||
 			score > bestScore ||
 			(score == bestScore && candidate.Score > candidates[bestIndex].Score) ||
@@ -22,6 +21,11 @@ func bestMMRCandidateIndex(candidates []scoredFact, selected []scoredFact) int {
 		}
 	}
 	return bestIndex
+}
+
+func mmrCandidateScore(candidate scoredFact, selected []scoredFact) float64 {
+	similarity := maxFactSimilarity(candidate, selected)
+	return defaultMMRLambda*candidate.Score - (1-defaultMMRLambda)*similarity
 }
 
 func removeScoredFactAt(candidates []scoredFact, index int) []scoredFact {

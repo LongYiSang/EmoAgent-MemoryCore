@@ -59,6 +59,127 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	}
 }
 
+func TestServiceRetrieveOmitsPipelineTraceByDefault(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID)
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "咖啡",
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if contextResult.PipelineTrace != nil {
+		t.Fatalf("pipeline trace = %#v, want nil by default", contextResult.PipelineTrace)
+	}
+}
+
+func TestServiceRetrievePipelineSummaryTrace(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+
+	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID:        &sessionID,
+		QueryText:        "咖啡",
+		DiagnosticsLevel: "pipeline_summary",
+	})
+	if err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	requireMemoryItem(t, contextResult, fact.ID, "用户喜欢咖啡。", "")
+	trace := contextResult.PipelineTrace
+	if trace == nil {
+		t.Fatalf("pipeline trace is nil")
+	}
+	if trace.QueryAnalysis.Normalized == "" {
+		t.Fatalf("query normalized is empty")
+	}
+	if trace.QueryAnalysis.Scores.ExpectedRetrievalConfidence == 0 {
+		t.Fatalf("query scores = %#v, want expected retrieval confidence", trace.QueryAnalysis.Scores)
+	}
+	if len(trace.Stages.AnchorRecall) == 0 || len(trace.Stages.RRFFusion) == 0 || len(trace.Stages.SQLiteAuthorityFilter) == 0 || len(trace.Stages.FinalSelectionMMR) == 0 {
+		t.Fatalf("stages = %#v, want populated anchor, rrf, sqlite authority, and final selection stages", trace.Stages)
+	}
+	if trace.Stages.SafeRerank != nil {
+		t.Fatalf("safe rerank = %#v, want nil when reranker is unavailable", trace.Stages.SafeRerank)
+	}
+	if trace.Stages.FinalSelectionMMR[0].ContentSummary != "用户喜欢咖啡。" || trace.Stages.FinalSelectionMMR[0].Score == 0 {
+		t.Fatalf("final selection = %#v, want selected item summary and score", trace.Stages.FinalSelectionMMR)
+	}
+}
+
+func TestServiceRetrieveRejectsUnknownDiagnosticsLevel(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		QueryText:        "咖啡",
+		DiagnosticsLevel: "full",
+	})
+	if err == nil {
+		t.Fatalf("retrieve err = nil, want invalid diagnostics level error")
+	}
+}
+
+func TestMemoryPipelineTraceJSONUsesSnakeCase(t *testing.T) {
+	trace := memorycore.MemoryPipelineTrace{
+		QueryAnalysis: memorycore.MemoryPipelineQueryAnalysis{
+			Normalized: "咖啡",
+			Scores: memorycore.MemoryPipelineQueryScores{
+				RuleFit:                     0.1,
+				AnchorReadiness:             0.2,
+				SemanticNeed:                0.3,
+				ExpectedRetrievalConfidence: 0.4,
+			},
+		},
+		Stages: memorycore.MemoryPipelineStages{
+			AnchorRecall:          []memorycore.MemoryPipelineTraceItem{{ContentSummary: "用户喜欢咖啡。", Score: 0.5}},
+			RRFFusion:             []memorycore.MemoryPipelineTraceItem{{Score: 0.6}},
+			SQLiteAuthorityFilter: []memorycore.MemoryPipelineTraceItem{{Score: 0.7}},
+			SafeRerank:            nil,
+			FinalSelectionMMR:     []memorycore.MemoryPipelineTraceItem{{ContentSummary: "用户喜欢咖啡。", Score: 0.8}},
+		},
+	}
+	raw, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	jsonText := string(raw)
+	for _, want := range []string{
+		`"query_analysis"`,
+		`"normalized"`,
+		`"anchor_readiness"`,
+		`"expected_retrieval_confidence"`,
+		`"anchor_recall"`,
+		`"rrf_fusion"`,
+		`"sqlite_authority_filter"`,
+		`"safe_rerank":null`,
+		`"final_selection_mmr"`,
+		`"content_summary"`,
+	} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json = %s, want %s", jsonText, want)
+		}
+	}
+	for _, forbidden := range []string{"QueryAnalysis", "AnchorReadiness", "ExpectedRetrievalConfidence", "AnchorRecall", "ContentSummary"} {
+		if strings.Contains(jsonText, forbidden) {
+			t.Fatalf("json = %s, should not contain %s", jsonText, forbidden)
+		}
+	}
+}
+
 func TestServiceRetrieveChineseCounterexampleExpansionWorksWithQueryAnalysisDisabled(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openRetrievalMirrorServiceWithQueryAnalysisOptions(t, ctx, nil, memorycore.QueryAnalysisOptions{

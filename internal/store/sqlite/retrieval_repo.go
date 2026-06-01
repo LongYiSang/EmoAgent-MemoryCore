@@ -37,15 +37,16 @@ const (
 	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
 	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
 
-	defaultMMRLambda          = 0.72
-	defaultDuplicateThreshold = 0.88
-	defaultMinFinalScore      = 0.20
-	rerankBoostWeight         = 0.08
-	defaultRerankTopN         = 30
-	rawFloorRerankTopN        = 12
-	maxRerankSafeSummaryRunes = 512
-	fatigueRecentWindow       = 5
-	fatigueSuppressThreshold  = 3
+	defaultMMRLambda                         = 0.72
+	defaultDuplicateThreshold                = 0.88
+	defaultMinFinalScore                     = 0.20
+	rerankBoostWeight                        = 0.08
+	defaultRerankTopN                        = 30
+	rawFloorRerankTopN                       = 12
+	maxRerankSafeSummaryRunes                = 512
+	fatigueRecentWindow                      = 5
+	fatigueSuppressThreshold                 = 3
+	RetrievalDiagnosticsLevelPipelineSummary = "pipeline_summary"
 )
 
 type RetrievalRepository struct {
@@ -59,6 +60,7 @@ type RetrievalRequest struct {
 	PersonaID                  string
 	SessionID                  *string
 	QueryText                  string
+	DiagnosticsLevel           string
 	Now                        time.Time
 	Policy                     RetrievalPolicy
 	Context                    RetrievalAffectContext
@@ -95,6 +97,37 @@ type MemoryContext struct {
 	QueryAnalysis       *QueryAnalysis
 	AnchorFusion        *AnchorFusionDiagnostics
 	RetrievalConfidence *RetrievalConfidence
+	PipelineTrace       *MemoryPipelineTrace
+}
+
+type MemoryPipelineTrace struct {
+	QueryAnalysis MemoryPipelineQueryAnalysis `json:"query_analysis"`
+	Stages        MemoryPipelineStages        `json:"stages"`
+}
+
+type MemoryPipelineQueryAnalysis struct {
+	Normalized string                    `json:"normalized,omitempty"`
+	Scores     MemoryPipelineQueryScores `json:"scores"`
+}
+
+type MemoryPipelineQueryScores struct {
+	RuleFit                     float64 `json:"rule_fit"`
+	AnchorReadiness             float64 `json:"anchor_readiness"`
+	SemanticNeed                float64 `json:"semantic_need"`
+	ExpectedRetrievalConfidence float64 `json:"expected_retrieval_confidence"`
+}
+
+type MemoryPipelineStages struct {
+	AnchorRecall          []MemoryPipelineTraceItem `json:"anchor_recall"`
+	RRFFusion             []MemoryPipelineTraceItem `json:"rrf_fusion"`
+	SQLiteAuthorityFilter []MemoryPipelineTraceItem `json:"sqlite_authority_filter"`
+	SafeRerank            []MemoryPipelineTraceItem `json:"safe_rerank"`
+	FinalSelectionMMR     []MemoryPipelineTraceItem `json:"final_selection_mmr"`
+}
+
+type MemoryPipelineTraceItem struct {
+	ContentSummary string  `json:"content_summary,omitempty"`
+	Score          float64 `json:"score"`
 }
 
 type MirrorDiagnostics struct {
@@ -489,6 +522,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 	query := finalCandidates.Query
 	policy := finalCandidates.Policy
 	fusedAnchors := finalCandidates.FusedAnchors
+	preRerankScored := append([]scoredFact(nil), finalCandidates.Scored...)
 	scored := append([]scoredFact(nil), finalCandidates.Scored...)
 	suppressions := append([]MemorySuppression(nil), finalCandidates.Suppressions...)
 	applyRerankResults(scored, rerankResults, rerankDiagnostics)
@@ -533,6 +567,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 	}
 	protected := finalRawFloorCandidates(selectable, rawFloorQuery)
 	selectedByFact := map[string]struct{}{}
+	selectionScores := map[string]float64{}
 	var selected []scoredFact
 	for _, candidate := range protected {
 		if len(selected) >= policy.FinalMemoryCount {
@@ -571,6 +606,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 			continue
 		}
 		selected = append(selected, candidate)
+		selectionScores[candidate.Fact.ID] = candidate.Score
 		selectedByFact[candidate.Fact.ID] = struct{}{}
 		contextResult.TokenEstimate += candidate.TokenCost
 	}
@@ -621,6 +657,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 			})
 			continue
 		}
+		selectionScores[candidate.Fact.ID] = mmrCandidateScore(candidate, selected)
 		selected = append(selected, candidate)
 		contextResult.TokenEstimate += candidate.TokenCost
 	}
@@ -704,6 +741,9 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 				breakdown:        candidate.Breakdown,
 			})
 		}
+	}
+	if req.DiagnosticsLevel == RetrievalDiagnosticsLevelPipelineSummary {
+		contextResult.PipelineTrace = buildMemoryPipelineTrace(query, fusedAnchors, preRerankScored, rerankResults, rerankDiagnostics, selected, selectionScores)
 	}
 	if logAccess {
 		if err := r.logAccessEvents(ctx, req, query, &confidence, accessLogs); err != nil {

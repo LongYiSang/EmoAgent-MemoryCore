@@ -2,6 +2,7 @@ package memorycore
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,10 @@ const (
 )
 
 func (s *service) Retrieve(ctx context.Context, req RetrievalRequest) (*MemoryContext, error) {
+	if err := validateDiagnosticsLevel(req.DiagnosticsLevel); err != nil {
+		return nil, err
+	}
+	req.DiagnosticsLevel = strings.TrimSpace(req.DiagnosticsLevel)
 	personaID := defaultString(req.PersonaID, s.persona)
 	policy := req.Policy
 	now := req.Now
@@ -313,6 +318,7 @@ func (s *service) runRetrievalAttempt(ctx context.Context, req RetrievalRequest,
 		PersonaID:                personaID,
 		SessionID:                req.SessionID,
 		QueryText:                req.QueryText,
+		DiagnosticsLevel:         req.DiagnosticsLevel,
 		Now:                      now,
 		PrecomputedQueryAnalysis: &analysis,
 		RawRuleQueryAnalysis:     &ruleAnalysis,
@@ -352,6 +358,15 @@ func (s *service) runRetrievalAttempt(ctx context.Context, req RetrievalRequest,
 		rerankResults:     rerankResults,
 		rerankDiagnostics: rerankDiagnostics,
 	}, nil
+}
+
+func validateDiagnosticsLevel(level string) error {
+	switch strings.TrimSpace(level) {
+	case "", RetrievalDiagnosticsLevelPipelineSummary:
+		return nil
+	default:
+		return errors.New(`diagnostics_level must be empty or "pipeline_summary"`)
+	}
 }
 
 func (s *service) completeRetrievalAttempt(ctx context.Context, attempt retrievalAttemptResult, logAccess bool) (*MemoryContext, error) {

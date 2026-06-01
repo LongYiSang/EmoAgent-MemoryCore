@@ -106,6 +106,11 @@ type (
 	MemoryContext                       = appcore.MemoryContext
 	MemoryContextItem                   = appcore.MemoryContextItem
 	MemoryDomain                        = appcore.MemoryDomain
+	MemoryPipelineQueryAnalysis         = appcore.MemoryPipelineQueryAnalysis
+	MemoryPipelineQueryScores           = appcore.MemoryPipelineQueryScores
+	MemoryPipelineStages                = appcore.MemoryPipelineStages
+	MemoryPipelineTrace                 = appcore.MemoryPipelineTrace
+	MemoryPipelineTraceItem             = appcore.MemoryPipelineTraceItem
 	MemoryRelatedFactRef                = appcore.MemoryRelatedFactRef
 	MemorySourceRef                     = appcore.MemorySourceRef
 	MemorySuppression                   = appcore.MemorySuppression
@@ -426,6 +431,7 @@ const (
 	RetrievalCorrectiveActionSQLiteFallback          = appcore.RetrievalCorrectiveActionSQLiteFallback
 	RetrievalCorrectiveActionSuppressMemoryInjection = appcore.RetrievalCorrectiveActionSuppressMemoryInjection
 	RetrievalCorrectiveFallbackReasonSemanticFailed  = appcore.RetrievalCorrectiveFallbackReasonSemanticFailed
+	RetrievalDiagnosticsLevelPipelineSummary         = appcore.RetrievalDiagnosticsLevelPipelineSummary
 	RetrievalHardFailureForbiddenCandidate           = appcore.RetrievalHardFailureForbiddenCandidate
 	RetrievalHardFailureTemporalInconsistency        = appcore.RetrievalHardFailureTemporalInconsistency
 )
