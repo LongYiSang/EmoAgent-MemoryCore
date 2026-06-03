@@ -465,13 +465,16 @@ type RuntimeValidationOptions struct {
 }
 
 type ConfigOverrides struct {
-	Enabled   *bool
-	Core      *CoreOverrides
-	Retrieval *RetrievalOverrides
-	Pipelines *PipelineOverrides
-	Sidecar   *SidecarOverrides
-	Mirror    *MirrorOverrides
-	Retention *RetentionOverrides
+	Enabled           *bool
+	Core              *CoreOverrides
+	Retrieval         *RetrievalOverrides
+	Pipelines         *PipelineOverrides
+	SemanticOps       *SemanticOpsOverrides
+	Sidecar           *SidecarOverrides
+	Mirror            *MirrorOverrides
+	Retention         *RetentionOverrides
+	ForgettingPrivacy *ForgettingPrivacyConfig
+	AgentAffect       *AgentAffectConfig
 }
 
 type CoreOverrides struct {
@@ -487,11 +490,27 @@ type RetrievalOverrides struct {
 }
 
 type PipelineOverrides struct {
-	Extraction    *LLMPipelineOverrides
-	QueryAnalysis *LLMPipelineOverrides
+	Prefilter        *LLMPipelineOverrides
+	Extraction       *LLMPipelineOverrides
+	ExtractionRepair *LLMPipelineOverrides
+	QueryAnalysis    *LLMPipelineOverrides
+	NarrativeInsight *LLMPipelineOverrides
 }
 
 type LLMPipelineOverrides struct {
+	ProviderID *string
+	Model      *string
+}
+
+type SemanticOpsOverrides struct {
+	Curation *CurationOverrides
+}
+
+type CurationOverrides struct {
+	LLM *CurationLLMOverrides
+}
+
+type CurationLLMOverrides struct {
 	ProviderID *string
 	Model      *string
 }
@@ -508,6 +527,7 @@ type MirrorOverrides struct {
 }
 
 type RetentionOverrides struct {
+	Config               *RetentionConfig
 	DeepArchiveAfterDays *int
 }
 
@@ -1682,11 +1702,25 @@ func (c *Config) ApplyOverrides(overrides ConfigOverrides) {
 		}
 	}
 	if overrides.Pipelines != nil {
+		if overrides.Pipelines.Prefilter != nil {
+			applyLLMPipelineOverrides(&c.Pipelines.Prefilter, *overrides.Pipelines.Prefilter)
+		}
 		if overrides.Pipelines.Extraction != nil {
 			applyLLMPipelineOverrides(&c.Pipelines.Extraction.LLMPipelineConfig, *overrides.Pipelines.Extraction)
 		}
+		if overrides.Pipelines.ExtractionRepair != nil {
+			applyLLMPipelineOverrides(&c.Pipelines.ExtractionRepair, *overrides.Pipelines.ExtractionRepair)
+		}
 		if overrides.Pipelines.QueryAnalysis != nil {
 			applyLLMPipelineOverrides(&c.Pipelines.QueryAnalysis.LLMPipelineConfig, *overrides.Pipelines.QueryAnalysis)
+		}
+		if overrides.Pipelines.NarrativeInsight != nil {
+			applyLLMPipelineOverrides(&c.Pipelines.NarrativeInsight, *overrides.Pipelines.NarrativeInsight)
+		}
+	}
+	if overrides.SemanticOps != nil {
+		if overrides.SemanticOps.Curation != nil && overrides.SemanticOps.Curation.LLM != nil {
+			applyCurationLLMOverrides(&c.SemanticOps.Curation.LLM, *overrides.SemanticOps.Curation.LLM)
 		}
 	}
 	if overrides.Sidecar != nil {
@@ -1708,8 +1742,19 @@ func (c *Config) ApplyOverrides(overrides ConfigOverrides) {
 			c.Mirror.SyncLimit = *overrides.Mirror.SyncLimit
 		}
 	}
-	if overrides.Retention != nil && overrides.Retention.DeepArchiveAfterDays != nil {
-		c.Retention.Thresholds.DeepArchiveAfterDays = *overrides.Retention.DeepArchiveAfterDays
+	if overrides.Retention != nil {
+		if overrides.Retention.Config != nil {
+			c.Retention = *overrides.Retention.Config
+		}
+		if overrides.Retention.DeepArchiveAfterDays != nil {
+			c.Retention.Thresholds.DeepArchiveAfterDays = *overrides.Retention.DeepArchiveAfterDays
+		}
+	}
+	if overrides.ForgettingPrivacy != nil {
+		c.ForgettingPrivacy = *overrides.ForgettingPrivacy
+	}
+	if overrides.AgentAffect != nil {
+		c.AgentAffect = *overrides.AgentAffect
 	}
 }
 
@@ -1719,6 +1764,15 @@ func applyLLMPipelineOverrides(pipeline *LLMPipelineConfig, overrides LLMPipelin
 	}
 	if overrides.Model != nil {
 		pipeline.Model = *overrides.Model
+	}
+}
+
+func applyCurationLLMOverrides(llm *CurationLLMConfig, overrides CurationLLMOverrides) {
+	if overrides.ProviderID != nil {
+		llm.ProviderID = *overrides.ProviderID
+	}
+	if overrides.Model != nil {
+		llm.Model = *overrides.Model
 	}
 }
 

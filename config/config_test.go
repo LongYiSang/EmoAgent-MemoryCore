@@ -418,6 +418,17 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	dbPath := "./override.db"
 	finalCount := 5
 	llmModel := "gpt-5.4-mini"
+	prefilterModel := "prefilter-model"
+	repairModel := "repair-model"
+	queryModel := "query-model"
+	curationProviderID := "emo_llm"
+	curationModel := "curation-model"
+	retention := memconfig.DefaultConfig().Retention
+	retention.Thresholds.DeepArchiveAfterDays = 77
+	forgetting := memconfig.DefaultConfig().ForgettingPrivacy
+	forgetting.Cleanup.VerifyAfterDelete = false
+	agentAffect := memconfig.DefaultConfig().AgentAffect
+	agentAffect.Retrieval.WeightCap = 0.02
 	cfg.ApplyOverrides(memconfig.ConfigOverrides{
 		Enabled: &enabled,
 		Core: &memconfig.CoreOverrides{
@@ -427,10 +438,30 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 			FinalMemoryCount: &finalCount,
 		},
 		Pipelines: &memconfig.PipelineOverrides{
+			Prefilter: &memconfig.LLMPipelineOverrides{
+				Model: &prefilterModel,
+			},
 			Extraction: &memconfig.LLMPipelineOverrides{
 				Model: &llmModel,
 			},
+			ExtractionRepair: &memconfig.LLMPipelineOverrides{
+				Model: &repairModel,
+			},
+			QueryAnalysis: &memconfig.LLMPipelineOverrides{
+				Model: &queryModel,
+			},
 		},
+		SemanticOps: &memconfig.SemanticOpsOverrides{
+			Curation: &memconfig.CurationOverrides{
+				LLM: &memconfig.CurationLLMOverrides{
+					ProviderID: &curationProviderID,
+					Model:      &curationModel,
+				},
+			},
+		},
+		Retention:         &memconfig.RetentionOverrides{Config: &retention},
+		ForgettingPrivacy: &forgetting,
+		AgentAffect:       &agentAffect,
 	})
 
 	cfg.ApplyProviderRegistry(memconfig.ProviderRegistry{
@@ -449,6 +480,27 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	}
 	if cfg.Pipelines.Extraction.Model != "gpt-5.4-mini" {
 		t.Fatalf("extraction model = %q", cfg.Pipelines.Extraction.Model)
+	}
+	if cfg.Pipelines.Prefilter.Model != "prefilter-model" {
+		t.Fatalf("prefilter model = %q", cfg.Pipelines.Prefilter.Model)
+	}
+	if cfg.Pipelines.ExtractionRepair.Model != "repair-model" {
+		t.Fatalf("extraction repair model = %q", cfg.Pipelines.ExtractionRepair.Model)
+	}
+	if cfg.Pipelines.QueryAnalysis.Model != "query-model" {
+		t.Fatalf("query analysis model = %q", cfg.Pipelines.QueryAnalysis.Model)
+	}
+	if cfg.SemanticOps.Curation.LLM.ProviderID != "emo_llm" || cfg.SemanticOps.Curation.LLM.Model != "curation-model" {
+		t.Fatalf("curation llm = %#v", cfg.SemanticOps.Curation.LLM)
+	}
+	if cfg.Retention.Thresholds.DeepArchiveAfterDays != 77 {
+		t.Fatalf("retention = %#v", cfg.Retention)
+	}
+	if cfg.ForgettingPrivacy.Cleanup.VerifyAfterDelete {
+		t.Fatalf("forgetting privacy = %#v", cfg.ForgettingPrivacy)
+	}
+	if cfg.AgentAffect.Retrieval.WeightCap != 0.02 {
+		t.Fatalf("agent affect = %#v", cfg.AgentAffect)
 	}
 	if got := cfg.ProviderByID("emo_llm"); got == nil || got.BaseURL != "https://llm.invalid/v1" {
 		t.Fatalf("registry provider = %#v", got)
