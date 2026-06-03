@@ -423,6 +423,7 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	queryModel := "query-model"
 	curationProviderID := "emo_llm"
 	curationModel := "curation-model"
+	thinkingEnabled := memconfig.ThinkingConfig{Type: "enabled"}
 	retention := memconfig.DefaultConfig().Retention
 	retention.Thresholds.DeepArchiveAfterDays = 77
 	forgetting := memconfig.DefaultConfig().ForgettingPrivacy
@@ -442,7 +443,8 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 				Model: &prefilterModel,
 			},
 			Extraction: &memconfig.LLMPipelineOverrides{
-				Model: &llmModel,
+				Model:    &llmModel,
+				Thinking: &thinkingEnabled,
 			},
 			ExtractionRepair: &memconfig.LLMPipelineOverrides{
 				Model: &repairModel,
@@ -456,6 +458,7 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 				LLM: &memconfig.CurationLLMOverrides{
 					ProviderID: &curationProviderID,
 					Model:      &curationModel,
+					Thinking:   &thinkingEnabled,
 				},
 			},
 		},
@@ -481,6 +484,9 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	if cfg.Pipelines.Extraction.Model != "gpt-5.4-mini" {
 		t.Fatalf("extraction model = %q", cfg.Pipelines.Extraction.Model)
 	}
+	if cfg.Pipelines.Extraction.Thinking.Type != "enabled" {
+		t.Fatalf("extraction thinking = %#v", cfg.Pipelines.Extraction.Thinking)
+	}
 	if cfg.Pipelines.Prefilter.Model != "prefilter-model" {
 		t.Fatalf("prefilter model = %q", cfg.Pipelines.Prefilter.Model)
 	}
@@ -492,6 +498,9 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	}
 	if cfg.SemanticOps.Curation.LLM.ProviderID != "emo_llm" || cfg.SemanticOps.Curation.LLM.Model != "curation-model" {
 		t.Fatalf("curation llm = %#v", cfg.SemanticOps.Curation.LLM)
+	}
+	if cfg.SemanticOps.Curation.LLM.Thinking.Type != "enabled" {
+		t.Fatalf("curation thinking = %#v", cfg.SemanticOps.Curation.LLM.Thinking)
 	}
 	if cfg.Retention.Thresholds.DeepArchiveAfterDays != 77 {
 		t.Fatalf("retention = %#v", cfg.Retention)

@@ -500,6 +500,7 @@ type PipelineOverrides struct {
 type LLMPipelineOverrides struct {
 	ProviderID *string
 	Model      *string
+	Thinking   *ThinkingConfig
 }
 
 type SemanticOpsOverrides struct {
@@ -513,6 +514,7 @@ type CurationOverrides struct {
 type CurationLLMOverrides struct {
 	ProviderID *string
 	Model      *string
+	Thinking   *ThinkingConfig
 }
 
 type SidecarOverrides struct {
@@ -1765,6 +1767,9 @@ func applyLLMPipelineOverrides(pipeline *LLMPipelineConfig, overrides LLMPipelin
 	if overrides.Model != nil {
 		pipeline.Model = *overrides.Model
 	}
+	if overrides.Thinking != nil {
+		pipeline.Thinking = *overrides.Thinking
+	}
 }
 
 func applyCurationLLMOverrides(llm *CurationLLMConfig, overrides CurationLLMOverrides) {
@@ -1773,6 +1778,9 @@ func applyCurationLLMOverrides(llm *CurationLLMConfig, overrides CurationLLMOver
 	}
 	if overrides.Model != nil {
 		llm.Model = *overrides.Model
+	}
+	if overrides.Thinking != nil {
+		llm.Thinking = *overrides.Thinking
 	}
 }
 
