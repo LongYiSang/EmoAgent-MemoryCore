@@ -25,7 +25,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 ┌──────────────────────────────────────────────────────┐
 │                   第三层：叙事层 (Narrative)           │
 │  高层关系叙事与洞察                                   │
-│  周/月 LLM 整合（规划中）                             │
+│  周/月 LLM 叙事生成（后续增强）                        │
 │  "这段关系最近整体感觉如何？"                          │
 └──────────────────────────────────────────────────────┘
                           ▲
@@ -53,11 +53,11 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 对话
   → Episode 同步写入（不可变）
   → 触发检测（会话结束 / 空闲 / 手动标记）
-  → 预过滤（低成本 LLM，规划中）
-  → 抽取（主力 LLM，规划中）
+  → 预过滤（可选 LLM gate，默认可关闭）
+  → 抽取运行时（mock / OpenAI-compatible provider；validate / dry-run / apply）
   → 整合（Go 逻辑：插入 / 替代 / 合并 / 丢弃）
   → Fact 存储（SQLite）
-  → 定期晋升为 Narrative（规划中）
+  → Retention / Compression / Delta Curation / Mirror Sync（可选运维链路）
 ```
 
 **读取路径（当前实现，Phase 5 读取增强已接入）**（存储 → 对话）：
@@ -78,13 +78,13 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 **Phase 5 可选 / 退化路径**：
 
 - `UseMirror=false`、sidecar 不可用、persona mirror 未 ready、sidecar degraded 或候选 unmapped/stale 时，读取链路退回 SQLite search / anchor / Go ranking。
-- Semantic query analysis 默认关闭：`query_analysis.provider=none`、`query_analysis.mode=rule_only`。启用后也只产生 request-local routing hints；失败、超时、degraded 或非法响应时退回 rule analysis，并继续用 raw query 跑 mirror dense。
+- Go YAML 中 `pipelines.query_analysis` 默认 `runtime_mode=rule_only`，只使用 Go 规则分析。Python sidecar TOML 的 `[query_analysis] provider = "none"` 是 sidecar 进程自己的 provider 默认值；两者是不同配置面。
 - `/retrieval/candidates` 当前协议为 breaking v0.2：raw query 永远参与，semantic rewrites / anchors 受数量、权重、generic text 和 generated weight cap 约束；sidecar 使用 Weighted Max + bounded RRF support 合并多路 dense 结果。
 - TriviumDB mirror candidates、Graph Activation、semantic rewrites 和 sidecar rerank 都只是候选或排序信号；SQLite authority filter 仍是 Prompt 注入前的最终安全边界。
-- Sidecar retrieval 是可选增强路径。Mirror candidates、Graph Activation 和 rerank 受 Go 侧短 stage timeout、总 sidecar budget、persona/stage circuit breaker 约束；timeout 或 degraded 状态会回退到 SQLite authority retrieval，并保留在检索 diagnostics 中。
+- Sidecar retrieval 是可选增强路径。Mirror candidates、Graph Activation 和 rerank 受 Go 侧可配置 stage timeout、总 sidecar budget、persona/stage circuit breaker 约束；直接使用 `memorycore.Options{}` 时有保守短默认，v0.2 YAML 默认值较宽。timeout 或 degraded 状态会回退到 SQLite authority retrieval，并保留在检索 diagnostics 中。
 - Reranker 默认 `provider=none`，DashScope provider 需要显式配置环境变量；缺 key、超时、HTTP 错误或 malformed response 时不阻断检索，只是不提供 rerank boost。
 - 真实 mirror 质量、夜间大规模延迟评估仍属于可选增强；SQLite-only deterministic eval 是当前基线。
-- 写入侧预过滤、真实 LLM 抽取、周/月叙事生成不属于 Phase 5 已实现读取链路。
+- 写入侧抽取、Retention、Compression、Delta Curation 是独立写入/治理链路，不属于 Phase 5 读取增强本身。
 
 ### 系统拓扑
 
@@ -94,6 +94,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 │                               │◄───────►│                                  │
 │  • 触发检测                    │         │  • Embedding 生成                  │
 │  • Episode 同步写入            │         │  • TriviumDB 检索镜像（Phase 4）      │
+│  • 抽取运行时 / Curation        │         │  • Dedup / delete candidates       │
 │  • 整合逻辑                    │         │  • Graph Activation（Phase 5C，可选） │
 │  • SQLite（权威记忆库）        │         │  • Semantic Query Analyzer（可选）     │
 │  • QueryAnalysis merge/clamp  │         │  • Candidates v0.2 multi-query dense │
@@ -139,28 +140,26 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 2A Operational CLI：start/end session、append-episode、ensure-entity/add-alias、consolidate-fact、retrieve、forget、rebuild-search、list-facts、get-node、smoke demo。
 - [x] Phase 2B Extraction Adapter + Dry-run Pipeline：extract-request / validate / dry-run / apply，strict JSON protocol，Go gate，accepted facts 通过 ConsolidateCandidate 写入；不接真实 LLM。
 - [x] Phase 2C 真实抽取运行时：public `ExtractionLLM` 注入接口、mock / OpenAI-compatible standalone provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit；runtime implemented, hardening follow-up applied。
-
-**后续 RoadMap**
-
-> 本节中的 `docs/Phase5参考/`、`docs/architecture/`、`docs/refactor/` 和 `docs/TODO/` 路径是本仓库的本地参考文档面；这些目录按当前 `.gitignore` 默认不进入普通提交。若需要把其中某份文档纳入历史，必须有意使用 force-add / 调整 ignore 规则，而不是把这些链接理解为已随包发布的 shipped docs。
-
 - [x] Phase 3A Privacy / Purge MVP：exact fact / episode purge、search/FTS cleanup、safe deletion audit、purged-only evidence retrieval block。
 - [x] Phase 3B Retention Lifecycle MVP：manual `RunRetention` / `memoryctl retention-run`、`valid_to` expiry、invalidated + archived state transition、search tier sync、historical retrieval gate。
 - [x] Phase 3C Retention 后续：SQLite-only deep archive transition、retention job runner、compression storage contract、narrative / insight provenance integration。
 - [x] Phase 4 TriviumDB Retrieval Mirror：sidecar adapter / sync worker / mirror rebuild / upsert-delete node-edge / UseMirror diagnostics；SQLite 权威过滤保持最后防线。当前运维说明见 `sidecar/README.md`。
-- [x] Phase 5 高级 Retrieval Activation：Phase 4 mirror 之后的安全检索激活层；SQLite 仍是权威库，TriviumDB / sidecar 只产出候选、activation 或可选 rerank signal。当前 5A-5G-B 已落地；MVP 只增强读取与上下文组装，不新增 Work / 环境经验主存储，不引入外部 memory framework 依赖。边界说明见 `docs/Phase5参考/phase5_mvp_scope_and_anti_overdesign.md`。
-  - [x] Phase 5A Retrieval Contract / QueryAnalyzer：扩展 `RetrievalRequest` / `QueryAnalysis`，识别 entity、time、causal、historical、provenance、sensitivity、debug 等检索控制信号；补充轻量 `memory_domain`、`memory_ability`、`evidence_need`，区分关系记忆、用户画像、Work / 环境经验、workflow / gotcha / premise check / relationship arc 等查询。这些字段只作为检索路由和 anchor 开关。当前链路先完成 QueryAnalysis merge/clamp，再调用 mirror candidates v0.2。参考设计见 `docs/Phase5参考/phase5a_query_contract_memory_experience.md`。
-  - [x] Phase 5B Hybrid Anchor / Weighted RRF：各 anchor source 独立产生 ranked hits，保留 source / rank / raw_score / debug_reason；通过 Weighted RRF 融合 entity exact、SQLite FTS / sparse、Trivium dense、pinned / core、recent important、narrative / insight 等异构来源，输出 `fused_anchor_score`、`seed_energy`、`source_breakdown`；不直接混加不同 source 的 raw score。参考设计见 `docs/Phase5参考/phase5b_rrf_anchor_fusion.md`。
+- [x] Phase 5 高级 Retrieval Activation：Phase 4 mirror 之后的安全检索激活层；SQLite 仍是权威库，TriviumDB / sidecar 只产出候选、activation 或可选 rerank signal。当前 5A-5G-B 已落地；MVP 只增强读取与上下文组装，不新增 Work / 环境经验主存储，不引入外部 memory framework 依赖。
+  - [x] Phase 5A Retrieval Contract / QueryAnalyzer：扩展 `RetrievalRequest` / `QueryAnalysis`，识别 entity、time、causal、historical、provenance、sensitivity、debug 等检索控制信号；补充轻量 `memory_domain`、`memory_ability`、`evidence_need`，区分关系记忆、用户画像、Work / 环境经验、workflow / gotcha / premise check / relationship arc 等查询。这些字段只作为检索路由和 anchor 开关。当前链路先完成 QueryAnalysis merge/clamp，再调用 mirror candidates v0.2。
+  - [x] Phase 5B Hybrid Anchor / Weighted RRF：各 anchor source 独立产生 ranked hits，保留 source / rank / raw_score / debug_reason；通过 Weighted RRF 融合 entity exact、SQLite FTS / sparse、Trivium dense、pinned / core、recent important、narrative / insight 等异构来源，输出 `fused_anchor_score`、`seed_energy`、`source_breakdown`；不直接混加不同 source 的 raw score。
   - [x] Phase 5C Graph Activation Sidecar：在 Python sidecar 中消费 Phase 5B 的 seed 分布，实现 HippoRAG-style seeded PPR / Spreading Activation、Hub suppression、edge weights，返回 candidate ids、score breakdown、activation paths；debug 可透传 `source_breakdown`，但算法核心不重新解释各 anchor source，也不裁决是否进入 Prompt。
-  - [x] Phase 5D Go Authority Ranking + MMR：交付 Go 侧 baseline final score、lifecycle multiplier、fatigue、MMR、多样性与 context budget 控制；sidecar reranker 仅作为通过 SQLite hard filters 后的可选增强，只返回 `rerank_score` / debug 信息，不能成为最终裁决器。DPP / ScalDPP 等集合选择算法不进入 MVP。参考设计见 `docs/Phase5参考/phase5d_authority_ranking_reranker_mmr.md`。
-  - [x] Phase 5E Context Reconstruction：基于 5D selected facts 和 1-hop safe `memory_links` 按 query mode 重构 `relevant_causal_memory` / `historical_transition_memory` / `provenance_memory` / `premise_check_memory` / `relationship_arc_memory` / `supportive_memory` / `experience_context` blocks；输出薄 Memory Context，显式标注 current / historical / superseded，并只暴露安全 source refs，不输出 episode 原文。参考设计见 `docs/Phase5参考/phase5e_context_reconstruction_eval_notes.md`。
-  - [x] Phase 5F Eval / Regression Baseline：已扩展 fixture / eval，覆盖 forbidden recall = 0、selected_recall@8、context_precision、MMR 去重、graph activation fallback、selected chain correctness、premise check 与 deterministic ablation；SQLite-only deterministic eval 已可作为基线，真实 mirror 质量、夜间大规模延迟评估保留为后续增强。参考设计见 `docs/Phase5参考/phase5e_context_reconstruction_eval_notes.md`。
-  - [x] Phase 5G-A Optional Safe Sidecar Reranker MVP：已落地协议、安全接入、fake / deterministic reranker 与 eval；reranker 仅接收 SQLite authority filter 后的 safe summary，不接收未授权候选或 episode 原文，只返回 `rerank_score` / `debug_reason` / fallback 信息。Go 仍负责 final score、MMR、fatigue、lifecycle、context budget 与最终 Prompt 注入；5G-A 不需要真实 API key，真实 provider 接入留作后续阶段。参考设计见 `docs/Phase5参考/phase5g_safe_sidecar_reranker.md`。
+  - [x] Phase 5D Go Authority Ranking + MMR：交付 Go 侧 baseline final score、lifecycle multiplier、fatigue、MMR、多样性与 context budget 控制；sidecar reranker 仅作为通过 SQLite hard filters 后的可选增强，只返回 `rerank_score` / debug 信息，不能成为最终裁决器。DPP / ScalDPP 等集合选择算法不进入 MVP。
+  - [x] Phase 5E Context Reconstruction：基于 5D selected facts 和 1-hop safe `memory_links` 按 query mode 重构 `relevant_causal_memory` / `historical_transition_memory` / `provenance_memory` / `premise_check_memory` / `relationship_arc_memory` / `supportive_memory` / `experience_context` blocks；输出薄 Memory Context，显式标注 current / historical / superseded，并只暴露安全 source refs，不输出 episode 原文。
+  - [x] Phase 5F Eval / Regression Baseline：已扩展 fixture / eval，覆盖 forbidden recall = 0、selected_recall@8、context_precision、MMR 去重、graph activation fallback、selected chain correctness、premise check 与 deterministic ablation；SQLite-only deterministic eval 已可作为基线，真实 mirror 质量、夜间大规模延迟评估保留为后续增强。
+  - [x] Phase 5G-A Optional Safe Sidecar Reranker MVP：已落地协议、安全接入、fake / deterministic reranker 与 eval；reranker 仅接收 SQLite authority filter 后的 safe summary，不接收未授权候选或 episode 原文，只返回 `rerank_score` / `debug_reason` / fallback 信息。Go 仍负责 final score、MMR、fatigue、lifecycle、context budget 与最终 Prompt 注入；5G-A 不需要真实 API key，真实 provider 接入留作后续阶段。
   - [x] Phase 5G-B DashScope qwen3-vl-rerank Provider：可选接入真实 DashScope rerank provider，默认不启用且不要求 API key；API key 仅通过环境变量注入，CI 仍使用 fake / mocked deterministic tests。真实 smoke 需手动设置 `MEMORYCORE_RERANK_SMOKE=1` 与 `DASHSCOPE_API_KEY`；provider 失败、超时、未配置或 degraded 时完全 fallback，且只发送 SQLite authority filter 后的 safe summary。
+- [x] v0.2 Config / Operational Surfaces：`config/` 包、`examples/config/memorycore.yaml`、`validate-config` / `config-docs`，覆盖 providers、pipelines、retrieval、sidecar、mirror、semantic_ops、retention、forgetting_privacy、agent_affect、eval。
+- [x] Delta Memory Curation：`semantic_ops.curation` 配置、`memoryctl curation-run`、checkpoint/run/group audit tables、mirror-first / sqlite fallback candidate retrieval，默认关闭且默认 dry-run。
+- [x] Quality / Debug 工具：retrieval profile matrix、live extraction quality eval、raw-log / report output、dev-only `debug-cleanup`。
 
 **Phase 5 当前对外口径**
 
-已实现的是读取增强链路：QueryAnalysis-before-mirror、Hybrid Anchor / Weighted RRF、`/retrieval/candidates` v0.2 multi-query dense、可选 Graph Activation Sidecar、Go authority ranking + MMR、Context Reconstruction、deterministic eval、Safe Sidecar Reranker 协议与可选 DashScope provider。默认和安全退化路径仍是 SQLite-only retrieval；任何 semantic analysis、sidecar、TriviumDB、activation 或 rerank 结果都必须经过 SQLite 权威过滤，并且只能影响候选或排序信号，不能直接决定 Prompt 注入。ADR 见 `docs/refactor/2026-05-19-semantic-query-analyzer-v0.2.md`。
+已实现的是读取增强链路：QueryAnalysis-before-mirror、Hybrid Anchor / Weighted RRF、`/retrieval/candidates` v0.2 multi-query dense、可选 Graph Activation Sidecar、Go authority ranking + MMR、Context Reconstruction、deterministic eval、Safe Sidecar Reranker 协议与可选 DashScope provider。默认和安全退化路径仍是 SQLite-only retrieval；任何 semantic analysis、sidecar、TriviumDB、activation 或 rerank 结果都必须经过 SQLite 权威过滤，并且只能影响候选或排序信号，不能直接决定 Prompt 注入。当前可跟踪的集成和配置说明见 `docs/emoagent_integration.md`、`docs/configuration_memorycore.md` 和 `sidecar/README.md`。
 
 ---
 
@@ -189,9 +188,13 @@ go run ./cmd/memoryctl config-docs --format markdown
 
 `enabled` 是嵌入方开关；`memoryctl --config` 执行显式命令时不会因为 `enabled: false` 被拦截。显式 CLI flags 会覆盖配置文件中的对应字段，并在 stderr 输出 warning。
 
-`query_analysis` 默认 `provider: none` / `mode: rule_only`，即只使用 Go 规则分析。启用 sidecar provider 时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic timeout、budget exhausted、degraded 或非法响应都会回退到 rule-only，不阻断 retrieval。
+Go YAML 的 QueryAnalysis 配置位于 `pipelines.query_analysis.*`：默认 `runtime_mode: rule_only`，即只使用 Go 规则分析。启用 semantic / sidecar 路径时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic timeout、budget exhausted、degraded 或非法响应都会回退到 rule-only，不阻断 retrieval。
 
-Phase 9 后的灰度模式是 `legacy_only`、`shadow_adaptive`、`adaptive_safe`、`adaptive_full`。Adaptive 路由阈值使用 `query_analysis.thresholds.*`，调用上限使用 `query_analysis.budget.*`，并用 `query_analysis.diagnostics.*` 控制 score breakdown / reason codes 的输出采样。
+Python sidecar 的 TOML 配置是另一个配置面，例如 `[query_analysis] provider = "none"`、`[rerank] provider = "none"`。sidecar TOML 控制 sidecar 进程自己的 provider；Go YAML / host options 控制 Go 侧是否调用该阶段。
+
+QueryAnalysis 的灰度运行模式包括 `legacy_only`、`shadow_adaptive`、`adaptive`、`adaptive_safe`、`adaptive_full`、`semantic_always`、`semantic_on_low_confidence`、`semantic_rewrite_only`。Adaptive 路由阈值使用 `pipelines.query_analysis.thresholds.*`，调用上限使用 `pipelines.query_analysis.budget.*`，并用 `pipelines.query_analysis.diagnostics.*` 控制 score breakdown / reason codes 的输出采样。
+
+`semantic_ops.curation` 是独立治理入口，不是标准 `pipelines.*`。它默认关闭、默认 dry-run，用于整理 checkpoint 之后的新事实；手动入口是 `go run ./cmd/memoryctl curation-run`。
 
 ### EmoAgent 外部接入
 
@@ -199,14 +202,40 @@ Phase 9 后的灰度模式是 `legacy_only`、`shadow_adaptive`、`adaptive_safe
 
 ### 检索质量评测
 
-`cmd/memory-eval` 是人工观察检索质量的入口，默认运行 `testdata/memory_eval/quality/retrieval/` 下的 no-stub fixture：
+`cmd/memory-eval` 是人工观察检索质量的入口。快速单跑可以使用 retrieval quality 目录下的 no-stub fixture：
 
 ```powershell
 scripts\memory_eval_quality.cmd -Mode full
 go run ./cmd/memory-eval --suite retrieval --mode full
 ```
 
-质量评测 fixture 禁止使用 `mirror_stub`、`graph_activation_stub`、`rerank_stub`。需要 stub 隔离下游行为的用例放在 `testdata/memory_eval/controlled/`，由 `go test ./internal/memory/eval` 作为受控回归执行。
+完整质量观察建议使用 profile matrix，默认比较 `sqlite_go`、`mirror_real_dense`、`mirror_real_graph`、`mirror_real_graph_rerank`、`mirror_real_rerank_no_graph`，输出到 `artifacts/memory_eval/manual-*`：
+
+```powershell
+scripts\memory_eval_matrix.cmd
+scripts\memory_eval_matrix.cmd -Fixture testdata\memory_eval\quality\retrieval\W001_work_rhythm_no_stub.yaml
+```
+
+质量评测 fixture 禁止使用 `mirror_stub`、`graph_activation_stub`、`rerank_stub`、`semantic_query_analysis_stub`。需要 stub 隔离下游行为的用例放在 `testdata/memory_eval/controlled/`，由 `go test ./internal/memory/eval` 作为受控回归执行。
+
+### 抽取质量评测
+
+真实 LLM 抽取质量用例位于 `testdata/memory_eval/quality/extract/`，入口是 `--suite extract --mode live`。该模式只在显式 live eval 时调用真实 provider，API key 只通过环境变量传入，报告和 raw-log 应写到 `artifacts/` 或本地临时目录。
+
+```powershell
+$env:MEMORYCORE_LLM_API_KEY = "<key>"
+go run ./cmd/memory-eval `
+  --suite extract `
+  --mode live `
+  --provider openai-compatible `
+  --base-url https://api.deepseek.com `
+  --model deepseek-v4-flash `
+  --api-key-env MEMORYCORE_LLM_API_KEY `
+  --thinking false `
+  --report-dir artifacts/memory_eval/live_extract
+```
+
+`.yaml.example` 是模板或草稿，不会被 fixture discover 自动执行；需要形成确定性回归时，把真实 LLM 响应固化为 JSON response fixture 后走 `extraction_consolidation` 回归。
 
 ### Public API 使用示例
 
@@ -252,7 +281,7 @@ func main() {
 go test ./...
 ```
 
-### Phase 4 侧车烟雾测试
+### Mirror 基础烟雾测试
 
 ```bash
 cd sidecar
@@ -265,6 +294,8 @@ go run ./cmd/memoryctl mirror-rebuild --db ./data/memory.db --sidecar-url http:/
 go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference" --use-mirror --sidecar-url http://127.0.0.1:8765
 ```
 
+这组命令验证 mirror sync / rebuild / retrieve 的基础路径。完整 semantic QueryAnalysis、Graph Activation、rerank 质量观察应走已配置的 Go options / host 集成或 `memory_eval_matrix` profile；仅配置 Python sidecar TOML 不等于 `memoryctl retrieve` 已启用完整 semantic routing。
+
 ---
 
 ## 项目结构
@@ -273,29 +304,37 @@ go run ./cmd/memoryctl retrieve --db ./data/memory.db --query "coffee preference
 EmoAgent-MemoryCore/
 ├── cmd/
 │   ├── memoryctl/             # CLI 入口，数据库管理与运维
-│   └── memory-eval/           # 人工检索质量评测入口
+│   └── memory-eval/           # 检索 / 抽取质量评测入口
+├── config/                    # v0.2 配置结构、加载、校验、字段文档生成
+├── examples/
+│   └── config/                # memorycore.yaml 配置示例
 ├── internal/
 │   ├── app/
 │   │   └── memorycore/            # Application service 层：Service 实现、DTO、use case 编排
 │   ├── core/                  # 领域类型：Episode、Fact、Entity、Link 等
 │   ├── memory/
 │   │   └── eval/              # YAML fixture 回归框架与质量报告格式化
+│   ├── mirror/                # Go 侧 sidecar client、mirror rebuild / sync 支撑
 │   └── store/
 │       └── sqlite/            # SQLite 驱动、迁移、仓储层
 ├── pkg/
 │   └── memorycore/            # 外部项目使用的 public API facade（alias / forwarding）
 ├── migrations/                # 嵌入式 SQL 迁移文件
-│   ├── 0001_foundation.sql    # Personas、sessions、episodes、entities、facts
-│   ├── 0002_graph_policy.sql  # Predicate schemas、memory links、同步队列
-│   ├── 0003_affect_audit.sql  # 情绪状态、Agent Affect 占位、删除审计
-│   └── 0004_search_fallback.sql  # SQLite FTS5 降级搜索
+│   └── 0001_foundation.sql ... 0012_memory_delta_curation.sql
+├── scripts/                   # 质量评测脚本：quick / matrix
+├── sidecar/                   # Python sidecar：fake / Trivium adapter、query-analysis、activation、rerank
 ├── testdata/
 │   └── memory_eval/
 │       ├── controlled/        # 允许 stub 的受控回归 fixture
 │       ├── quality/retrieval/ # 禁止 stub 的人工检索质量评测 fixture
-│       └── ...                # consolidation / retrieval / forgetting / retention fixtures
+│       ├── quality/extract/   # 真实 LLM 抽取质量评测 fixture
+│       └── ...                # consolidation / retrieval / forgetting / retention / phase5 / query_analysis fixtures
 ├── docs/
-│   └── architecture/          # 完整架构文档
+│   ├── configuration_memorycore.md
+│   ├── emoagent_integration.md
+│   └── architecture/          # 本地参考面，当前被 .gitignore 忽略
+├── artifacts/                 # 本地生成输出，ignored
+├── reports/                   # 本地报告输出，ignored
 ├── go.mod
 ├── go.sum
 ├── LICENSE                    # Apache 2.0
@@ -335,7 +374,19 @@ SQLite 持有所有事实、状态、策略、删除审计、双时间线和图�
 
 ## 架构文档
 
-本地架构参考文档位于 `docs/architecture/`。该目录当前被 `.gitignore` 忽略，默认作为本机参考面；如需把其中某份文档纳入仓库历史，需要有意 force-add / 调整 ignore 规则。
+当前随仓库跟踪的主要文档入口：
+
+| 文档 | 内容范围 |
+|------|---------|
+| `docs/emoagent_integration.md` | EmoAgent 嵌入、Go facade、配置加载、对话生命周期、检索、抽取、遗忘、Sidecar 可选增强和 CLI 运维边界 |
+| `docs/configuration_memorycore.md` | v0.2 配置结构、provider / pipeline、QueryAnalysis、Sidecar、semantic_ops.curation、热更新边界 |
+| `sidecar/README.md` | Python sidecar 安装、fake / Trivium adapter、QueryAnalysis、Candidates v0.2、Graph Activation、Safe Rerank、health / test |
+| `testdata/memory_eval/quality/retrieval/README.md` | 检索质量 world 编写、matrix profiles、报告解读 |
+| `testdata/memory_eval/quality/extract/README.md` | live extraction quality case 约定和运行方式 |
+
+本地架构参考文档可能位于 `docs/architecture/`。该目录当前被 `.gitignore` 忽略，默认作为本机参考面；如需把其中某份文档纳入仓库历史，需要有意 force-add / 调整 ignore 规则。运行入口、配置字段和 eval 命令以当前跟踪文档、CLI 和 fixture README 为准。
+
+常见本地参考面包括：
 
 | 文档 | 内容范围 |
 |------|---------|
@@ -348,9 +399,7 @@ SQLite 持有所有事实、状态、策略、删除审计、双时间线和图�
 | `记忆删除(用户要求)/memory_forgetting_privacy.md` | 用户主动遗忘、级联删除、隐私保障 |
 | `记忆删除(自然淡化)/memory_retention_lifecycle.md` | 自然衰减、TTL、生命周期状态转换 |
 | `记忆-情绪预留接口/memory_emotion_coupling.md` | 情绪 ↔ 记忆耦合、mood-safe 检索 |
-| `性能测评/memory_eval.md` | 测评框架、测试夹具、golden labels |
-
-Phase 5 的 MVP 边界与参考设计位于本地忽略目录 `docs/Phase5参考/`；其中 `phase5_mvp_scope_and_anti_overdesign.md` 用于约束“只增强读取激活，不扩展长期记忆主存储”的实现范围。QueryAnalysis-before-mirror 与 candidates v0.2 的 ADR 位于本地忽略目录 `docs/refactor/2026-05-19-semantic-query-analyzer-v0.2.md`。这些参考面默认不进入普通提交。
+| `性能测评/memory_eval.md` | 早期测评设计参考；实际运行入口以 `cmd/memory-eval`、`scripts/` 和 `testdata/memory_eval/quality/*/README.md` 为准 |
 
 ---
 
