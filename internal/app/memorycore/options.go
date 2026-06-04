@@ -7,6 +7,7 @@ type Options struct {
 	PersonaID         string
 	AutoMigrate       bool
 	EnableFTS         bool
+	Timezone          string
 	Now               func() time.Time
 	MirrorAdapter     MirrorAdapter
 	QueryAnalysis     QueryAnalysisOptions

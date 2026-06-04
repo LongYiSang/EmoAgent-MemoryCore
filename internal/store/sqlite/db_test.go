@@ -195,6 +195,7 @@ func TestRepositoriesRoundTripCoreRows(t *testing.T) {
 	if gotFact.ContentSummary != fact.ContentSummary {
 		t.Fatalf("fact summary = %q, want %q", gotFact.ContentSummary, fact.ContentSummary)
 	}
+	assertTextHasOffset(t, db.SQLDB(), "SELECT created_at FROM facts WHERE id = 'fact_01'", "+08:00")
 
 	links := memsqlite.NewLinkRepository(db.SQLDB())
 	if err := links.Insert(ctx, core.MemoryLink{
@@ -250,6 +251,10 @@ func openMigratedDB(t *testing.T, ctx context.Context) *memsqlite.DB {
 		t.Fatalf("migrate db: %v", err)
 	}
 	return db
+}
+
+func formatSQLiteTestTime(value time.Time) string {
+	return value.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format(time.RFC3339Nano)
 }
 
 func requireTable(t *testing.T, db *sql.DB, table string) {

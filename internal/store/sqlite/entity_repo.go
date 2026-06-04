@@ -9,11 +9,16 @@ import (
 )
 
 type EntityRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewEntityRepository(db *sql.DB) *EntityRepository {
-	return &EntityRepository{db: db}
+	return NewEntityRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewEntityRepositoryWithOptions(db *sql.DB, opts StoreOptions) *EntityRepository {
+	return &EntityRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *EntityRepository) Upsert(ctx context.Context, entity core.Entity) error {
@@ -27,11 +32,12 @@ func (r *EntityRepository) Upsert(ctx context.Context, entity core.Entity) error
 			_ = tx.Rollback()
 		}
 	}()
+	now := r.time.nowText()
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO entities (
     id, persona_id, canonical_name, entity_type, description,
-    visibility_status, sensitivity_level, searchable
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    visibility_status, sensitivity_level, searchable, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     canonical_name = excluded.canonical_name,
     entity_type = excluded.entity_type,
@@ -39,7 +45,7 @@ ON CONFLICT(id) DO UPDATE SET
     visibility_status = excluded.visibility_status,
     sensitivity_level = excluded.sensitivity_level,
     searchable = excluded.searchable,
-    updated_at = CURRENT_TIMESTAMP`,
+    updated_at = excluded.updated_at`,
 		entity.ID,
 		entity.PersonaID,
 		entity.CanonicalName,
@@ -48,6 +54,8 @@ ON CONFLICT(id) DO UPDATE SET
 		string(entity.VisibilityStatus),
 		string(entity.SensitivityLevel),
 		boolInt(entity.Searchable),
+		now,
+		now,
 	)
 	if err != nil {
 		return err

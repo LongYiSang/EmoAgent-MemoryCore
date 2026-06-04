@@ -65,7 +65,7 @@ func normalizeExtractionOptions(opts ExtractionOptions) ExtractionOptions {
 		opts.Defaults.Mode = ExtractionRunModeDryRun
 	}
 	if strings.TrimSpace(opts.Defaults.Timezone) == "" {
-		opts.Defaults.Timezone = "Asia/Singapore"
+		opts.Defaults.Timezone = "Asia/Shanghai"
 	}
 	if opts.Defaults.MaxFacts == 0 {
 		opts.Defaults.MaxFacts = 12

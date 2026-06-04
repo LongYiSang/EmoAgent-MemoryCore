@@ -917,6 +917,7 @@ def _config(
             searchable_text_version="search-v1",
             ttl_days_for_query=14,
             store_raw_text=False,
+            timezone="Asia/Shanghai",
         ),
         rerank=RerankConfig(
             provider=rerank_provider,

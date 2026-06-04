@@ -6,12 +6,12 @@ import (
 	"hash/fnv"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type MirrorIndexRepository struct {
 	db    *sql.DB
 	newID func() string
+	time  timeFormatter
 }
 
 type MirrorIndexedNode struct {
@@ -22,7 +22,11 @@ type MirrorIndexedNode struct {
 }
 
 func NewMirrorIndexRepository(db *sql.DB, newID func() string) *MirrorIndexRepository {
-	return &MirrorIndexRepository{db: db, newID: newID}
+	return NewMirrorIndexRepositoryWithOptions(db, newID, StoreOptions{})
+}
+
+func NewMirrorIndexRepositoryWithOptions(db *sql.DB, newID func() string, opts StoreOptions) *MirrorIndexRepository {
+	return &MirrorIndexRepository{db: db, newID: newID, time: newTimeFormatter(opts)}
 }
 
 func (r *MirrorIndexRepository) RecordNodeIndexed(ctx context.Context, node MirrorIndexedNode) error {
@@ -33,7 +37,7 @@ func (r *MirrorIndexRepository) RecordNodeIndexed(ctx context.Context, node Mirr
 	if id == "" {
 		id = node.PersonaID + ":" + node.NodeType + ":" + node.NodeID
 	}
-	now := formatTime(time.Now().UTC())
+	now := r.time.nowText()
 	if _, err := r.db.ExecContext(ctx, `
 DELETE FROM memory_index_map
 WHERE persona_id = ?
@@ -78,7 +82,7 @@ SET index_status = 'deleted',
 WHERE persona_id = ?
   AND node_type = ?
   AND node_id = ?`,
-		formatTime(time.Now().UTC()),
+		r.time.nowText(),
 		personaID,
 		nodeType,
 		nodeID,
@@ -94,7 +98,7 @@ SET index_status = 'deleted',
     error_message = NULL
 WHERE persona_id = ?
   AND index_status != 'deleted'`,
-		formatTime(time.Now().UTC()),
+		r.time.nowText(),
 		personaID,
 	)
 	return err
@@ -108,7 +112,7 @@ func (r *MirrorIndexRepository) MarkNodeFailed(ctx context.Context, personaID st
 	if id == "" {
 		id = personaID + ":" + nodeType + ":" + nodeID + ":failed"
 	}
-	now := formatTime(time.Now().UTC())
+	now := r.time.nowText()
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO memory_index_map (
     id, persona_id, node_type, node_id, trivium_node_id,

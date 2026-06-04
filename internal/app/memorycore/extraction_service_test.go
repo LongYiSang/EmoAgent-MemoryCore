@@ -837,6 +837,48 @@ VALUES (?, 'default', ?, ?, 'surface', 1.0, ?)`, alias.id, alias.entityID, alias
 	}
 }
 
+func TestBuildRequestDefaultsTimezoneToShanghai(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, ExtractionOptions{})
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_timezone_default", "ep_timezone_default", "我喜欢手冲咖啡。")
+
+	coreSvc := svc.(*service)
+	sessionID := "session_timezone_default"
+	req, err := BuildRequest(ctx, coreSvc.sqlDB, BuildRequestOptions{
+		SessionID: &sessionID,
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if req.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q, want Asia/Shanghai", req.Timezone)
+	}
+}
+
+func TestBuildRequestUsesSubsecondWindowForEpisodes(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, ExtractionOptions{})
+	defer svc.Close()
+	seedExtractionSession(t, ctx, svc, "session_subsecond_window", "ep_subsecond_window", "我喜欢绿茶。")
+
+	coreSvc := svc.(*service)
+	if _, err := coreSvc.sqlDB.ExecContext(ctx, `UPDATE episodes SET occurred_at = ? WHERE id = ?`, "2026-06-04T16:00:00.900Z", "ep_subsecond_window"); err != nil {
+		t.Fatalf("set episode occurred_at: %v", err)
+	}
+	sessionID := "session_subsecond_window"
+	until := time.Date(2026, 6, 4, 16, 0, 0, 100_000_000, time.UTC)
+	_, err := BuildRequest(ctx, coreSvc.sqlDB, BuildRequestOptions{
+		SessionID: &sessionID,
+		Until:     &until,
+		Limit:     1,
+	})
+	if err == nil {
+		t.Fatalf("BuildRequest accepted episode after subsecond until boundary")
+	}
+}
+
 func requireDecisionForTest(t *testing.T, decisions []CandidateGateDecision, candidateID string, decision string, reason string) {
 	t.Helper()
 	for _, got := range decisions {

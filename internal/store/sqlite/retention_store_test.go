@@ -44,6 +44,28 @@ func TestRetentionRepositoryExpiresFactsAndSyncsSearchTier(t *testing.T) {
 	}
 }
 
+func TestRetentionRepositoryNormalizesMixedValidToWindow(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_mixed_valid_to", "绿茶", "用户喜欢绿茶。", false)
+	if _, err := db.SQLDB().ExecContext(ctx, `UPDATE facts SET valid_to = ? WHERE id = ?`, "2026-06-04 08:00:00", fact.ID); err != nil {
+		t.Fatalf("set mixed valid_to: %v", err)
+	}
+	now := time.Date(2026, 6, 4, 7, 59, 59, 0, time.UTC)
+
+	repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+	result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DryRun: true})
+	if err != nil {
+		t.Fatalf("run retention: %v", err)
+	}
+	if result.EvaluatedFacts != 0 || result.ExpiredFacts != 0 {
+		t.Fatalf("retention result = %#v, want no fact before mixed valid_to boundary", result)
+	}
+}
+
 func TestRetentionRepositoryDryRunDoesNotMutate(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -179,6 +201,33 @@ func TestRetentionRepositoryDeepArchivesOldArchivedFacts(t *testing.T) {
 	requireSearchDocumentLifecycle(t, db.SQLDB(), fact.ID, string(core.LifecycleDeepArchived), string(core.SearchTierDeepCold))
 }
 
+func TestRetentionRepositoryNormalizesMixedDeepArchiveWindow(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	fact := insertRetentionFact(t, ctx, db.SQLDB(), "fact_retention_mixed_deep_archive", "旧项目", "用户以前参与过旧项目。", false)
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET lifecycle_status = 'archived',
+    updated_at = ?
+WHERE id = ?`, "2026-06-04 08:00:00", fact.ID); err != nil {
+		t.Fatalf("set mixed deep archive timestamp: %v", err)
+	}
+	cutoff := time.Date(2026, 6, 4, 7, 59, 59, 0, time.UTC)
+	now := cutoff.AddDate(0, 0, 180)
+
+	repo := memsqlite.NewRetentionRepository(db.SQLDB(), fixedRetentionIDs(), func() time.Time { return now })
+	result, err := repo.Run(ctx, memsqlite.RetentionRequest{PersonaID: "default", DeepArchiveAfterDays: 180, DryRun: true})
+	if err != nil {
+		t.Fatalf("run deep archive retention: %v", err)
+	}
+	if result.DeepArchivedFacts != 0 {
+		t.Fatalf("retention result = %#v, want no deep archive before mixed timestamp boundary", result)
+	}
+}
+
 func TestRetentionRepositoryDeepArchiveDryRunDoesNotMutate(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -267,7 +316,7 @@ func setFactValidTo(t *testing.T, db *sql.DB, factID string, validTo time.Time) 
 	if _, err := db.Exec(`
 UPDATE facts
 SET valid_to = ?
-WHERE id = ?`, validTo.UTC().Format(time.RFC3339Nano), factID); err != nil {
+WHERE id = ?`, formatSQLiteTestTime(validTo), factID); err != nil {
 		t.Fatalf("set fact valid_to: %v", err)
 	}
 }
@@ -279,7 +328,7 @@ func setFactArchivedAt(t *testing.T, db *sql.DB, factID string, archivedAt time.
 UPDATE facts
 SET lifecycle_status = 'archived',
     updated_at = ?
-WHERE id = ?`, archivedAt.UTC().Format(time.RFC3339Nano), factID); err != nil {
+WHERE id = ?`, formatSQLiteTestTime(archivedAt), factID); err != nil {
 		t.Fatalf("set fact archived_at proxy: %v", err)
 	}
 	if err := memsqlite.NewSearchRepository(db).UpsertFactDocument(context.Background(), "default", factID); err != nil {
@@ -361,8 +410,9 @@ WHERE id = ?`, factID).Scan(&validity, &lifecycle, &updatedAt); err != nil {
 		}
 		return
 	}
-	if !updatedAt.Valid || updatedAt.String != wantUpdatedAt.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("fact %s updated_at = %v, want %s", factID, updatedAt, wantUpdatedAt.UTC().Format(time.RFC3339Nano))
+	want := formatSQLiteTestTime(wantUpdatedAt)
+	if !updatedAt.Valid || updatedAt.String != want {
+		t.Fatalf("fact %s updated_at = %v, want %s", factID, updatedAt, want)
 	}
 }
 

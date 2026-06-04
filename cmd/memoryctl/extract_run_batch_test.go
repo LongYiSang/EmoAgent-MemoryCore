@@ -2,11 +2,20 @@ package main
 
 import (
 	"database/sql"
+	"io"
 	"os"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestParseExtractionRuntimeFlagsDefaultsTimezoneToShanghai(t *testing.T) {
+	fs := newFlagSet("extract-run", io.Discard)
+	flags := parseExtractionRuntimeFlags(fs, formatJSON)
+	if flags.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q, want Asia/Shanghai", flags.Timezone)
+	}
+}
 
 func TestRunExtractRunMockDryRunApplyAndAuditFlag(t *testing.T) {
 	dbPath := seedCLIConsolidationDB(t)

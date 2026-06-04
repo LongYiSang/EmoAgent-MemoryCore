@@ -17,6 +17,7 @@ type CompressionRepository struct {
 	db    *sql.DB
 	newID func() string
 	now   func() time.Time
+	time  timeFormatter
 }
 
 type CompressionRequest struct {
@@ -76,6 +77,10 @@ type compressionSourceFact struct {
 }
 
 func NewCompressionRepository(db *sql.DB, newID func() string, now func() time.Time) *CompressionRepository {
+	return NewCompressionRepositoryWithOptions(db, newID, now, StoreOptions{})
+}
+
+func NewCompressionRepositoryWithOptions(db *sql.DB, newID func() string, now func() time.Time, opts StoreOptions) *CompressionRepository {
 	if newID == nil {
 		counter := 0
 		newID = func() string {
@@ -86,7 +91,10 @@ func NewCompressionRepository(db *sql.DB, newID func() string, now func() time.T
 	if now == nil {
 		now = time.Now
 	}
-	return &CompressionRepository{db: db, newID: newID, now: now}
+	if opts.Now == nil {
+		opts.Now = now
+	}
+	return &CompressionRepository{db: db, newID: newID, now: now, time: newTimeFormatter(opts)}
 }
 
 func (r *CompressionRepository) Apply(ctx context.Context, req CompressionRequest) (CompressionResult, error) {
@@ -120,7 +128,7 @@ func (r *CompressionRepository) Apply(ctx context.Context, req CompressionReques
 		return CompressionResult{}, err
 	}
 	if prepared.Narrative != nil {
-		if err = insertNarrativeTx(ctx, tx, prepared.PersonaID, *prepared.Narrative, prepared.Now); err != nil {
+		if err = insertNarrativeTx(ctx, tx, prepared.PersonaID, *prepared.Narrative, prepared.Now, r.time); err != nil {
 			return CompressionResult{}, err
 		}
 		if err = enqueueCompressionNodeSyncTx(ctx, tx, r.newID(), prepared.PersonaID, "narrative", prepared.Narrative.ID); err != nil {
@@ -128,7 +136,7 @@ func (r *CompressionRepository) Apply(ctx context.Context, req CompressionReques
 		}
 	}
 	for _, insight := range prepared.Insights {
-		if err = insertInsightTx(ctx, tx, prepared.PersonaID, insight, prepared.Now); err != nil {
+		if err = insertInsightTx(ctx, tx, prepared.PersonaID, insight, prepared.Now, r.time); err != nil {
 			return CompressionResult{}, err
 		}
 		if err = enqueueCompressionNodeSyncTx(ctx, tx, r.newID(), prepared.PersonaID, "insight", insight.ID); err != nil {
@@ -143,25 +151,25 @@ func (r *CompressionRepository) Apply(ctx context.Context, req CompressionReques
 			return CompressionResult{}, err
 		}
 	}
-	if err = consolidateCompressionSourcesTx(ctx, tx, prepared.PersonaID, prepared.SourceFactIDs, prepared.Now); err != nil {
+	if err = consolidateCompressionSourcesTx(ctx, tx, prepared.PersonaID, prepared.SourceFactIDs, prepared.Now, r.time); err != nil {
 		return CompressionResult{}, err
 	}
 
 	result.SearchDocumentsSynced = 0
 	for _, factID := range prepared.SourceFactIDs {
-		if err = upsertFactSearchDocumentTx(ctx, tx, prepared.PersonaID, factID); err != nil {
+		if err = upsertFactSearchDocumentTxWithFormatter(ctx, tx, prepared.PersonaID, factID, r.time); err != nil {
 			return CompressionResult{}, err
 		}
 		result.SearchDocumentsSynced++
 	}
 	if prepared.Narrative != nil {
-		if err = upsertNarrativeSearchDocumentTx(ctx, tx, prepared.PersonaID, prepared.Narrative.ID); err != nil {
+		if err = upsertNarrativeSearchDocumentTxWithFormatter(ctx, tx, prepared.PersonaID, prepared.Narrative.ID, r.time); err != nil {
 			return CompressionResult{}, err
 		}
 		result.SearchDocumentsSynced++
 	}
 	for _, insight := range prepared.Insights {
-		if err = upsertInsightSearchDocumentTx(ctx, tx, prepared.PersonaID, insight.ID); err != nil {
+		if err = upsertInsightSearchDocumentTxWithFormatter(ctx, tx, prepared.PersonaID, insight.ID, r.time); err != nil {
 			return CompressionResult{}, err
 		}
 		result.SearchDocumentsSynced++
@@ -436,7 +444,7 @@ func compressionSourceIneligibleReason(source compressionSourceFact) string {
 	return ""
 }
 
-func insertNarrativeTx(ctx context.Context, tx *sql.Tx, personaID string, draft NarrativeDraft, now time.Time) error {
+func insertNarrativeTx(ctx context.Context, tx *sql.Tx, personaID string, draft NarrativeDraft, now time.Time, formatter timeFormatter) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO narratives (
     id, persona_id, scope, scope_ref, summary, emotional_tone,
@@ -452,15 +460,15 @@ INSERT INTO narratives (
 		nullableFloat(draft.ValenceAvg),
 		nullableFloat(draft.ArousalAvg),
 		draft.Importance,
-		nullableTime(draft.ValidFrom),
-		nullableTime(draft.ValidTo),
-		formatTime(now),
+		formatter.nullableTime(draft.ValidFrom),
+		formatter.nullableTime(draft.ValidTo),
+		formatter.formatTime(now),
 		draft.SensitivityLevel,
 	)
 	return err
 }
 
-func insertInsightTx(ctx context.Context, tx *sql.Tx, personaID string, draft InsightDraft, now time.Time) error {
+func insertInsightTx(ctx context.Context, tx *sql.Tx, personaID string, draft InsightDraft, now time.Time, formatter timeFormatter) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO insights (
     id, persona_id, insight_type, content, confidence, importance,
@@ -475,7 +483,7 @@ INSERT INTO insights (
 		draft.Importance,
 		draft.Valence,
 		draft.Arousal,
-		formatTime(now),
+		formatter.formatTime(now),
 		draft.SensitivityLevel,
 	)
 	return err
@@ -518,8 +526,8 @@ INSERT INTO memory_links (
 	return err
 }
 
-func consolidateCompressionSourcesTx(ctx context.Context, tx *sql.Tx, personaID string, sourceIDs []string, now time.Time) error {
-	updatedAt := formatTime(now)
+func consolidateCompressionSourcesTx(ctx context.Context, tx *sql.Tx, personaID string, sourceIDs []string, now time.Time, formatter timeFormatter) error {
+	updatedAt := formatter.formatTime(now)
 	for _, sourceID := range sourceIDs {
 		result, err := tx.ExecContext(ctx, `
 UPDATE facts

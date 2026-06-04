@@ -8,6 +8,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
 
@@ -475,6 +476,49 @@ def test_cached_embedding_provider_cleanup_expired_query_refs_removes_orphans(
     assert embedding_count == 1
 
 
+def test_cached_embedding_provider_writes_configured_timezone(tmp_path: Path):
+    provider = CachedEmbeddingProvider(
+        _CountingEmbeddingProvider({"hello": [0.1, 0.2, 0.3]}),
+        _embedding_config(),
+        _cache_config(tmp_path, mode="read_write", timezone="Asia/Shanghai"),
+    )
+
+    provider.embed("hello", ref={"kind": "query", "id": "q1", "persona_id": "default"})
+
+    with sqlite3.connect(tmp_path / "embedding-cache.sqlite3") as db:
+        created_at, updated_at = db.execute(
+            "SELECT created_at, updated_at FROM embeddings"
+        ).fetchone()
+        ref_created_at = db.execute(
+            "SELECT created_at FROM embedding_cache_refs"
+        ).fetchone()[0]
+
+    assert "+08:00" in created_at
+    assert "+08:00" in updated_at
+    assert "+08:00" in ref_created_at
+
+
+def test_cached_embedding_provider_uses_default_timezone_without_zoneinfo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def missing_zoneinfo(name: str):
+        raise ZoneInfoNotFoundError(name)
+
+    monkeypatch.setattr("memorycore_sidecar.embedding.ZoneInfo", missing_zoneinfo)
+    provider = CachedEmbeddingProvider(
+        _CountingEmbeddingProvider({"hello": [0.1, 0.2, 0.3]}),
+        _embedding_config(),
+        _cache_config(tmp_path, mode="read_write", timezone="Asia/Shanghai"),
+    )
+
+    provider.embed("hello", ref={"kind": "query", "id": "q1", "persona_id": "default"})
+
+    with sqlite3.connect(tmp_path / "embedding-cache.sqlite3") as db:
+        created_at = db.execute("SELECT created_at FROM embeddings").fetchone()[0]
+
+    assert "+08:00" in created_at
+
+
 def _embedding_config(**overrides: Any) -> EmbeddingConfig:
     values = {
         "provider": "openai-compatible",
@@ -497,6 +541,7 @@ def _cache_config(tmp_path: Path, **overrides: Any) -> EmbeddingCacheConfig:
         "searchable_text_version": "search-v1",
         "ttl_days_for_query": 14,
         "store_raw_text": False,
+        "timezone": "Asia/Shanghai",
     }
     values.update(overrides)
     return EmbeddingCacheConfig(**values)

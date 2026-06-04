@@ -343,6 +343,9 @@ func TestBuildRequestFiltersIneligibleEpisodesAndIncludesCatalogs(t *testing.T) 
 	if len(req.Episodes) != 1 || req.Episodes[0].EpisodeID != "ep_seed" {
 		t.Fatalf("episodes = %#v, want only visible/searchable ep_seed", req.Episodes)
 	}
+	if req.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q, want Asia/Shanghai", req.Timezone)
+	}
 	if len(req.KnownEntities) == 0 || req.KnownEntities[0].EntityID != "ent_user" {
 		t.Fatalf("known entities missing ent_user: %#v", req.KnownEntities)
 	}
@@ -357,6 +360,32 @@ func TestBuildRequestFiltersIneligibleEpisodesAndIncludesCatalogs(t *testing.T) 
 	})
 	if err == nil {
 		t.Fatalf("BuildRequest accepted explicitly requested hidden episode")
+	}
+}
+
+func TestBuildRequestUsesNormalizedWindowForMixedTimestampFormats(t *testing.T) {
+	ctx := context.Background()
+	dbPath, cleanup := seedExtractionDB(t)
+	defer cleanup()
+
+	db, err := memsqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.SQLDB().ExecContext(ctx, `UPDATE episodes SET occurred_at = ? WHERE id = ?`, "2026-06-04 08:00:00", "ep_seed"); err != nil {
+		t.Fatalf("set episode occurred_at: %v", err)
+	}
+
+	until := time.Date(2026, 6, 4, 7, 59, 59, 0, time.UTC)
+	_, err = extraction.BuildRequest(ctx, db.SQLDB(), extraction.BuildRequestOptions{
+		PersonaID: "default",
+		SessionID: stringPtr("session_seed"),
+		Trigger:   memorycore.ExtractionTriggerSessionEnd,
+		Until:     &until,
+	})
+	if err == nil {
+		t.Fatalf("BuildRequest accepted episode after mixed-format until boundary")
 	}
 }
 

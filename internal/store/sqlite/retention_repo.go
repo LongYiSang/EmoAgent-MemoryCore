@@ -15,6 +15,7 @@ type RetentionRepository struct {
 	db    *sql.DB
 	newID func() string
 	now   func() time.Time
+	time  timeFormatter
 }
 
 type RetentionRequest struct {
@@ -46,6 +47,10 @@ type deepArchiveFact struct {
 }
 
 func NewRetentionRepository(db *sql.DB, newID func() string, now func() time.Time) *RetentionRepository {
+	return NewRetentionRepositoryWithOptions(db, newID, now, StoreOptions{})
+}
+
+func NewRetentionRepositoryWithOptions(db *sql.DB, newID func() string, now func() time.Time, opts StoreOptions) *RetentionRepository {
 	if newID == nil {
 		counter := 0
 		newID = func() string {
@@ -56,7 +61,10 @@ func NewRetentionRepository(db *sql.DB, newID func() string, now func() time.Tim
 	if now == nil {
 		now = time.Now
 	}
-	return &RetentionRepository{db: db, newID: newID, now: now}
+	if opts.Now == nil {
+		opts.Now = now
+	}
+	return &RetentionRepository{db: db, newID: newID, now: now, time: newTimeFormatter(opts)}
 }
 
 func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (RetentionResult, error) {
@@ -100,7 +108,7 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 	result.SearchDocumentsSynced = 0
 	result.MirrorUpdatesEnqueued = 0
 	result.DeepArchivedFacts = 0
-	updatedAt := formatTime(now)
+	updatedAt := r.time.formatTime(now)
 	for _, fact := range facts {
 		var updated bool
 		updated, err = updateRetainedFactTx(ctx, tx, req.PersonaID, fact, updatedAt)
@@ -110,7 +118,7 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 		if !updated {
 			continue
 		}
-		if err = upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
+		if err = upsertFactSearchDocumentTxWithFormatter(ctx, tx, req.PersonaID, fact.ID, r.time); err != nil {
 			return RetentionResult{}, err
 		}
 		result.SearchDocumentsSynced++
@@ -140,7 +148,7 @@ func (r *RetentionRepository) Run(ctx context.Context, req RetentionRequest) (Re
 			continue
 		}
 		result.DeepArchivedFacts++
-		if err = upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
+		if err = upsertFactSearchDocumentTxWithFormatter(ctx, tx, req.PersonaID, fact.ID, r.time); err != nil {
 			return RetentionResult{}, err
 		}
 		result.SearchDocumentsSynced++
@@ -174,9 +182,9 @@ WHERE persona_id = ?
   AND visibility_status = 'visible'
   AND validity_status = 'valid'
   AND valid_to IS NOT NULL
-  AND valid_to <= ?
+  AND julianday(valid_to) <= julianday(?)
   AND lifecycle_status IN ('active', 'dormant', 'consolidated', 'archived')
-ORDER BY valid_to ASC, id ASC`, personaID, formatTime(now))
+ORDER BY julianday(valid_to) ASC, id ASC`, personaID, r.time.formatTime(now))
 	if err != nil {
 		return nil, err
 	}
@@ -211,8 +219,8 @@ WHERE persona_id = ?
   AND lifecycle_status = 'archived'
   AND pinned = 0
   AND fact_type NOT IN ('core_identity', 'commitment')
-  AND COALESCE(updated_at, valid_to, valid_from, created_at) <= ?
-ORDER BY COALESCE(updated_at, valid_to, valid_from, created_at) ASC, id ASC`, personaID, formatTime(cutoff))
+  AND julianday(COALESCE(updated_at, valid_to, valid_from, created_at)) <= julianday(?)
+ORDER BY julianday(COALESCE(updated_at, valid_to, valid_from, created_at)) ASC, id ASC`, personaID, r.time.formatTime(cutoff))
 	if err != nil {
 		return nil, err
 	}

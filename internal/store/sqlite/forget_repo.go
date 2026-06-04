@@ -37,6 +37,7 @@ type ForgetRepository struct {
 	db    *sql.DB
 	newID func() string
 	now   func() time.Time
+	time  timeFormatter
 }
 
 type ForgetRequest struct {
@@ -84,6 +85,10 @@ type mirrorDeleteEdgePayload struct {
 }
 
 func NewForgetRepository(db *sql.DB, newID func() string, now func() time.Time) *ForgetRepository {
+	return NewForgetRepositoryWithOptions(db, newID, now, StoreOptions{})
+}
+
+func NewForgetRepositoryWithOptions(db *sql.DB, newID func() string, now func() time.Time, opts StoreOptions) *ForgetRepository {
 	if newID == nil {
 		counter := 0
 		newID = func() string {
@@ -94,7 +99,10 @@ func NewForgetRepository(db *sql.DB, newID func() string, now func() time.Time) 
 	if now == nil {
 		now = time.Now
 	}
-	return &ForgetRepository{db: db, newID: newID, now: now}
+	if opts.Now == nil {
+		opts.Now = now
+	}
+	return &ForgetRepository{db: db, newID: newID, now: now, time: newTimeFormatter(opts)}
 }
 
 func (r *ForgetRepository) Forget(ctx context.Context, req ForgetRequest) (ForgetResult, error) {
@@ -154,8 +162,8 @@ SET visibility_status = 'hidden',
     pin_reason = NULL,
     pin_actor = NULL,
     pinned_at = NULL,
-    updated_at = CURRENT_TIMESTAMP
-WHERE persona_id = ? AND id = ?`, req.PersonaID, req.Target.NodeID)
+    updated_at = ?
+WHERE persona_id = ? AND id = ?`, r.time.nowText(), req.PersonaID, req.Target.NodeID)
 	if err != nil {
 		return ForgetResult{}, err
 	}
@@ -190,10 +198,11 @@ SET subject_entity_id = NULL,
     pin_reason = NULL,
     pin_actor = NULL,
     pinned_at = NULL,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
 		ForgottenPlaceholder,
 		ForgottenPlaceholder,
+		r.time.nowText(),
 		req.PersonaID,
 		req.Target.NodeID,
 	)
@@ -245,7 +254,7 @@ INSERT OR IGNORE INTO episode_tombstones (
 		req.PersonaID,
 		nullableStringValue(episode.SessionID),
 		nullableStringValue(episode.OccurredAt),
-		formatTime(r.now()),
+		r.time.formatTime(r.now()),
 		req.Level,
 		req.Actor,
 		req.ReasonCode,
@@ -311,10 +320,11 @@ SET subject_entity_id = NULL,
     pin_reason = NULL,
     pin_actor = NULL,
     pinned_at = NULL,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
 		ForgottenPlaceholder,
 		ForgottenPlaceholder,
+		r.time.nowText(),
 		req.PersonaID,
 		req.Target.NodeID,
 	)
@@ -370,7 +380,7 @@ INSERT OR IGNORE INTO episode_tombstones (
 		req.PersonaID,
 		nullableStringValue(episode.SessionID),
 		nullableStringValue(episode.OccurredAt),
-		formatTime(r.now()),
+		r.time.formatTime(r.now()),
 		req.Level,
 		req.Actor,
 		req.ReasonCode,
@@ -552,7 +562,7 @@ func (r *ForgetRepository) writeDeletionEventTx(ctx context.Context, tx *sql.Tx,
 	if err != nil {
 		return "", err
 	}
-	now := formatTime(r.now())
+	now := r.time.formatTime(r.now())
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO deletion_events (
     id, persona_id, deletion_level, target_node_type, target_node_id,

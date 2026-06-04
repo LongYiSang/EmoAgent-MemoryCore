@@ -126,7 +126,7 @@ func setServiceFactValidTo(t *testing.T, db *sql.DB, factID string, validTo time
 	if _, err := db.Exec(`
 UPDATE facts
 SET valid_to = ?
-WHERE id = ?`, validTo.UTC().Format(time.RFC3339Nano), factID); err != nil {
+WHERE id = ?`, formatServiceTestTime(validTo), factID); err != nil {
 		t.Fatalf("set fact valid_to: %v", err)
 	}
 }
@@ -138,7 +138,7 @@ func setServiceFactArchivedAt(t *testing.T, db *sql.DB, factID string, archivedA
 UPDATE facts
 SET lifecycle_status = 'archived',
     updated_at = ?
-WHERE id = ?`, archivedAt.UTC().Format(time.RFC3339Nano), factID); err != nil {
+WHERE id = ?`, formatServiceTestTime(archivedAt), factID); err != nil {
 		t.Fatalf("set fact archived_at proxy: %v", err)
 	}
 }

@@ -429,7 +429,7 @@ func requireCompressionFactState(t *testing.T, db *sql.DB, factID string, wantLi
 		}
 		return
 	}
-	want := wantUpdatedAt.UTC().Format(time.RFC3339Nano)
+	want := formatSQLiteTestTime(wantUpdatedAt)
 	if !updatedAt.Valid || updatedAt.String != want {
 		t.Fatalf("fact %s updated_at = %v, want %s", factID, updatedAt, want)
 	}
@@ -452,7 +452,7 @@ func requireCompressionFactFullState(t *testing.T, db *sql.DB, factID string, wa
 		}
 		return
 	}
-	want := wantUpdatedAt.UTC().Format(time.RFC3339Nano)
+	want := formatSQLiteTestTime(wantUpdatedAt)
 	if !updatedAt.Valid || updatedAt.String != want {
 		t.Fatalf("fact %s updated_at = %v, want %s", factID, updatedAt, want)
 	}

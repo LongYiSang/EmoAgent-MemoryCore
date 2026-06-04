@@ -25,6 +25,7 @@ DEFAULT_EMBEDDING_CACHE_TEXT_NORMALIZATION_VERSION = "v1"
 DEFAULT_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION = "v1"
 DEFAULT_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY = 14
 DEFAULT_EMBEDDING_CACHE_STORE_RAW_TEXT = False
+DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_RERANK_PROVIDER = "none"
 DEFAULT_RERANK_ENDPOINT_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
@@ -81,6 +82,7 @@ class EmbeddingCacheConfig:
     searchable_text_version: str
     ttl_days_for_query: int
     store_raw_text: bool
+    timezone: str
 
 
 @dataclass(frozen=True)
@@ -299,6 +301,16 @@ def load_config(
                     embedding_cache_data,
                     "store_raw_text",
                     DEFAULT_EMBEDDING_CACHE_STORE_RAW_TEXT,
+                ),
+            ),
+            timezone=_string(
+                "embedding_cache.timezone",
+                _env_or_value(
+                    env_values,
+                    "MEMORYCORE_TIMEZONE",
+                    embedding_cache_data,
+                    "timezone",
+                    DEFAULT_TIMEZONE,
                 ),
             ),
         ),

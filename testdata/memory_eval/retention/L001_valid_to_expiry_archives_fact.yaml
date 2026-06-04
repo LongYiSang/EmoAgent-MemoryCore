@@ -50,7 +50,7 @@ assertions:
   - type: fact_column
     fact_id: $busy_fact.fact_id
     column: valid_to
-    equals: "2026-04-27T15:59:00Z"
+    equals: "2026-04-27T23:59:00+08:00"
   - type: fact_column
     fact_id: $busy_fact.fact_id
     column: validity_status

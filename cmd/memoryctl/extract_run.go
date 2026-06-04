@@ -223,7 +223,7 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extractionRuntimeFlags {
-	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", ProviderID: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Singapore", Limit: 50, SessionLimit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096, ResponseFormat: string(memorycore.ExtractionResponseFormatJSONSchema), ExtractionEnabled: true}
+	flags := &extractionRuntimeFlags{Mode: string(memorycore.ExtractionRunModeDryRun), Provider: "mock", ProviderID: "mock", Trigger: memorycore.ExtractionTriggerSessionEnd, Timezone: "Asia/Shanghai", Limit: 50, SessionLimit: 50, EpisodeLimit: 50, MaxFacts: 12, MaxLinks: 20, AllowInference: true, Repair: true, Audit: memorycore.ExtractionAuditOn, APIKeyEnv: "MEMORYCORE_LLM_API_KEY", Timeout: 60 * time.Second, MaxTokens: 4096, ResponseFormat: string(memorycore.ExtractionResponseFormatJSONSchema), ExtractionEnabled: true}
 	addCommonFlags(fs, &flags.commonOptions, defaultFormat)
 	addConfigFlag(fs, &flags.commonOptions)
 	fs.StringVar(&flags.SessionID, "session", "", "session id")
@@ -234,7 +234,7 @@ func parseExtractionRuntimeFlags(fs *flag.FlagSet, defaultFormat string) *extrac
 	fs.IntVar(&flags.EpisodeLimit, "episode-limit", 50, "maximum episodes per session for extract-batch")
 	fs.StringVar(&flags.SinceValue, "since", "", "RFC3339 lower occurrence bound")
 	fs.StringVar(&flags.UntilValue, "until", "", "RFC3339 upper occurrence bound")
-	fs.StringVar(&flags.Timezone, "timezone", "Asia/Singapore", "request timezone")
+	fs.StringVar(&flags.Timezone, "timezone", "Asia/Shanghai", "request timezone")
 	fs.BoolVar(&flags.AllowSensitive, "allow-sensitive-extraction", false, "allow highly sensitive extraction without review")
 	fs.BoolVar(&flags.AllowInference, "allow-inference", true, "allow inferred candidates")
 	fs.BoolVar(&flags.ManualPin, "manual-pin", false, "mark request policy as manual pin")

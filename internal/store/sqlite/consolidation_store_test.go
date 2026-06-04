@@ -560,8 +560,9 @@ func requireSQLiteFactValidTo(t *testing.T, db *sql.DB, factID string, want time
 	if err := db.QueryRow(`SELECT valid_to FROM facts WHERE id = ?`, factID).Scan(&got); err != nil {
 		t.Fatalf("query fact valid_to: %v", err)
 	}
-	if got != want.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("valid_to = %q, want %q", got, want.UTC().Format(time.RFC3339Nano))
+	wantText := formatSQLiteTestTime(want)
+	if got != wantText {
+		t.Fatalf("valid_to = %q, want %q", got, wantText)
 	}
 }
 

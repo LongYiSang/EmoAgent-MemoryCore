@@ -371,16 +371,16 @@ func TestServiceRebuildMirrorRefusesWhenActiveProcessingRowsRemain(t *testing.T)
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 
-	now := time.Now().UTC()
-	staleUpdatedAt := now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
-	freshUpdatedAt := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	staleUpdatedAt := formatServiceTestTime(now.Add(-20 * time.Minute))
+	freshUpdatedAt := formatServiceTestTime(now.Add(-5 * time.Minute))
 	if _, err := db.Exec(`
 INSERT INTO index_sync_queue (id, persona_id, node_type, node_id, operation, priority, status, attempts, created_at, updated_at, error_message)
 VALUES
 ('q_stale_processing', 'default', 'fact', 'fact_stale_processing', 'upsert_node', 0, 'processing', 2, ?, ?, 'worker interrupted'),
 ('q_fresh_processing', 'default', 'fact', 'fact_fresh_processing', 'upsert_node', 1, 'processing', 1, ?, ?, 'still leased')`,
-		now.Add(-time.Hour).Format(time.RFC3339Nano), staleUpdatedAt,
-		now.Add(-time.Hour).Format(time.RFC3339Nano), freshUpdatedAt,
+		formatServiceTestTime(now.Add(-time.Hour)), staleUpdatedAt,
+		formatServiceTestTime(now.Add(-time.Hour)), freshUpdatedAt,
 	); err != nil {
 		t.Fatalf("insert processing queue rows: %v", err)
 	}

@@ -129,6 +129,9 @@ func TestLoadFullV02ConfigAndMapRuntimeOptions(t *testing.T) {
 	if opts.DBPath != "./full.db" || opts.PersonaID != "persona_full" || !opts.AutoMigrate || !opts.EnableFTS {
 		t.Fatalf("options core = %#v", opts)
 	}
+	if opts.Timezone != "Asia/Shanghai" {
+		t.Fatalf("options timezone = %q, want Asia/Shanghai", opts.Timezone)
+	}
 	if !opts.Extraction.Enabled ||
 		opts.Extraction.Provider.Kind != memorycore.ExtractionProviderOpenAICompatible ||
 		opts.Extraction.Provider.ID != "llm_main" ||
@@ -378,6 +381,12 @@ providers:
 		cfg := memconfig.DefaultConfig()
 		cfg.Pipelines.Extraction.Mode = "invalid"
 		requireErrorContains(t, cfg.Validate(), "pipelines.extraction.mode")
+	})
+
+	t.Run("core timezone must be IANA name", func(t *testing.T) {
+		cfg := memconfig.DefaultConfig()
+		cfg.Core.Timezone = "Not/AZone"
+		requireErrorContains(t, cfg.Validate(), "core.timezone")
 	})
 }
 

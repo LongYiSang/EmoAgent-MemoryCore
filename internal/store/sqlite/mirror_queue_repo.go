@@ -53,11 +53,16 @@ type MirrorQueueRow struct {
 }
 
 type MirrorQueueRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewMirrorQueueRepository(db *sql.DB) *MirrorQueueRepository {
-	return &MirrorQueueRepository{db: db}
+	return NewMirrorQueueRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewMirrorQueueRepositoryWithOptions(db *sql.DB, opts StoreOptions) *MirrorQueueRepository {
+	return &MirrorQueueRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *MirrorQueueRepository) Claim(ctx context.Context, limit int) ([]MirrorQueueRow, error) {
@@ -86,8 +91,8 @@ func (r *MirrorQueueRepository) PrepareForPersonaRebuild(ctx context.Context, pe
 		rollbackUnlessCommitted(tx)
 	}()
 
-	now := time.Now().UTC()
-	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID); err != nil {
+	now := r.time.nowTime()
+	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID, r.time); err != nil {
 		return 0, err
 	}
 
@@ -119,7 +124,7 @@ WHERE persona_id = ?
   AND status IN (?, ?)`,
 		string(MirrorQueueStatusDone),
 		supersedeReason,
-		formatTime(now),
+		r.time.formatTime(now),
 		personaID,
 		string(MirrorQueueStatusPending),
 		string(MirrorQueueStatusFailed),
@@ -151,8 +156,8 @@ func (r *MirrorQueueRepository) claim(ctx context.Context, personaID string, lim
 		rollbackUnlessCommitted(tx)
 	}()
 
-	now := time.Now().UTC()
-	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID); err != nil {
+	now := r.time.nowTime()
+	if err := expireStaleMirrorQueueLeases(ctx, tx, now, personaID, r.time); err != nil {
 		return nil, err
 	}
 
@@ -191,7 +196,7 @@ LIMIT ?`
 		return nil, err
 	}
 
-	nowText := formatTime(now)
+	nowText := r.time.formatTime(now)
 	for i := range claimed {
 		result, err := tx.ExecContext(ctx, `
 UPDATE index_sync_queue
@@ -228,7 +233,7 @@ WHERE id = ?
 	return claimed, nil
 }
 
-func expireStaleMirrorQueueLeases(ctx context.Context, tx *sql.Tx, now time.Time, personaID string) error {
+func expireStaleMirrorQueueLeases(ctx context.Context, tx *sql.Tx, now time.Time, personaID string, formatter timeFormatter) error {
 	query := `
 UPDATE index_sync_queue
 SET status = ?,
@@ -240,9 +245,9 @@ WHERE status = ?
 	args := []any{
 		string(MirrorQueueStatusFailed),
 		mirrorQueueLeaseExpiredMessage,
-		formatTime(now),
+		formatter.formatTime(now),
 		string(MirrorQueueStatusProcessing),
-		formatTime(now.Add(-mirrorQueueLeaseDuration)),
+		formatter.formatTime(now.Add(-mirrorQueueLeaseDuration)),
 	}
 	if personaID != "" {
 		query += ` AND persona_id = ?`
@@ -260,7 +265,7 @@ SET status = ?,
     updated_at = ?
 WHERE id = ?`,
 		string(MirrorQueueStatusDone),
-		formatTime(time.Now().UTC()),
+		r.time.nowText(),
 		id,
 	)
 	if err != nil {
@@ -279,7 +284,7 @@ SET status = ?,
 WHERE id = ?`,
 		string(MirrorQueueStatusFailed),
 		sanitizeMirrorQueueError(message),
-		formatTime(time.Now().UTC()),
+		r.time.nowText(),
 		id,
 	)
 	if err != nil {

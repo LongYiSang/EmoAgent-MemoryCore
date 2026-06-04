@@ -44,6 +44,49 @@ func TestCurationSelectsDeltaFactsFromCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCurationLoadDeltaFactsNormalizesMixedCreatedAtWindow(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedCurationGraph(t, ctx, db.SQLDB())
+
+	fact := insertCurationFact(t, ctx, db.SQLDB(), "fact_sqlite_created_at", "likes", "用户喜欢绿茶。", curationTime(1))
+	if _, err := db.SQLDB().ExecContext(ctx, `UPDATE facts SET created_at = ?, updated_at = NULL WHERE id = ?`, "2026-06-04 08:00:00", fact.ID); err != nil {
+		t.Fatalf("seed sqlite created_at: %v", err)
+	}
+	boundary := time.Date(2026, 6, 4, 7, 59, 59, 0, time.UTC)
+	repo := memsqlite.NewCurationRepository(db.SQLDB(), fixedCurationIDs(), fixedCurationNow)
+
+	t.Run("since", func(t *testing.T) {
+		facts, err := repo.LoadDeltaFacts(ctx, memsqlite.CurationDeltaQuery{
+			PersonaID:      "default",
+			SinceCreatedAt: ptrTime(boundary),
+			MaxNewFacts:    10,
+		})
+		if err != nil {
+			t.Fatalf("load delta facts: %v", err)
+		}
+		if !containsString(curationFactIDs(facts), fact.ID) {
+			t.Fatalf("delta fact ids = %#v, want %s", curationFactIDs(facts), fact.ID)
+		}
+	})
+
+	t.Run("until", func(t *testing.T) {
+		facts, err := repo.LoadDeltaFacts(ctx, memsqlite.CurationDeltaQuery{
+			PersonaID:        "default",
+			UntilCreatedAt:   ptrTime(boundary),
+			MaxNewFacts:      10,
+			IncludeFactTypes: []string{string(core.FactTypeStablePreference)},
+		})
+		if err != nil {
+			t.Fatalf("load delta facts: %v", err)
+		}
+		if containsString(curationFactIDs(facts), fact.ID) {
+			t.Fatalf("delta fact ids = %#v, want %s excluded before until boundary", curationFactIDs(facts), fact.ID)
+		}
+	})
+}
+
 func TestCurationRetrievesComparableFactsAndBuildsGroups(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -497,5 +540,5 @@ func ptrTime(value time.Time) *time.Time {
 }
 
 func formatTestTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return formatSQLiteTestTime(value)
 }

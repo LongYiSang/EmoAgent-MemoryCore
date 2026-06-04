@@ -28,6 +28,7 @@ def test_load_config_without_file_uses_defaults_relative_to_sidecar_project(monk
     assert config.embedding_cache.searchable_text_version == "v1"
     assert config.embedding_cache.ttl_days_for_query == 14
     assert config.embedding_cache.store_raw_text is False
+    assert config.embedding_cache.timezone == "Asia/Shanghai"
     assert config.rerank.provider == "none"
     assert (
         config.rerank.endpoint_url
@@ -148,6 +149,7 @@ def test_load_config_applies_environment_overrides(tmp_path):
         "MEMORYCORE_EMBEDDING_CACHE_SEARCHABLE_TEXT_VERSION": "search-env",
         "MEMORYCORE_EMBEDDING_CACHE_TTL_DAYS_FOR_QUERY": "3",
         "MEMORYCORE_EMBEDDING_CACHE_STORE_RAW_TEXT": "true",
+        "MEMORYCORE_TIMEZONE": "Asia/Tokyo",
         "MEMORYCORE_RERANK_PROVIDER": "dashscope-vl",
         "MEMORYCORE_RERANK_ENDPOINT_URL": "https://example.test/rerank",
         "MEMORYCORE_RERANK_API_KEY_ENV": "RERANK_KEY",
@@ -186,6 +188,7 @@ def test_load_config_applies_environment_overrides(tmp_path):
     assert config.embedding_cache.searchable_text_version == "search-env"
     assert config.embedding_cache.ttl_days_for_query == 3
     assert config.embedding_cache.store_raw_text is True
+    assert config.embedding_cache.timezone == "Asia/Tokyo"
     assert config.rerank.provider == "dashscope-vl"
     assert config.rerank.endpoint_url == "https://example.test/rerank"
     assert config.rerank.api_key_env == "RERANK_KEY"

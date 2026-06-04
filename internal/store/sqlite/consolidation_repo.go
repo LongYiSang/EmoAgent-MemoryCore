@@ -44,6 +44,7 @@ type ConsolidationRepository struct {
 	db    *sql.DB
 	newID func() string
 	now   func() time.Time
+	time  timeFormatter
 }
 
 type ConsolidateCandidateRequest struct {
@@ -99,6 +100,10 @@ type sourceEpisode struct {
 }
 
 func NewConsolidationRepository(db *sql.DB, newID func() string, now func() time.Time) *ConsolidationRepository {
+	return NewConsolidationRepositoryWithOptions(db, newID, now, StoreOptions{})
+}
+
+func NewConsolidationRepositoryWithOptions(db *sql.DB, newID func() string, now func() time.Time, opts StoreOptions) *ConsolidationRepository {
 	if newID == nil {
 		counter := 0
 		newID = func() string {
@@ -109,7 +114,10 @@ func NewConsolidationRepository(db *sql.DB, newID func() string, now func() time
 	if now == nil {
 		now = time.Now
 	}
-	return &ConsolidationRepository{db: db, newID: newID, now: now}
+	if opts.Now == nil {
+		opts.Now = now
+	}
+	return &ConsolidationRepository{db: db, newID: newID, now: now, time: newTimeFormatter(opts)}
 }
 
 func (r *ConsolidationRepository) ConsolidateCandidate(ctx context.Context, req ConsolidateCandidateRequest) (ConsolidationResult, error) {
@@ -262,14 +270,14 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	}
 	action := insertionAction(schema, len(existing))
 	fact := buildFact(req.PersonaID, candidate, schema, r.newID())
-	if err := insertFactTx(ctx, tx, fact); err != nil {
+	if err := insertFactTx(ctx, tx, fact, r.time); err != nil {
 		return ConsolidationResult{}, err
 	}
 	linkIDs, err := r.writeFactLinksTx(ctx, tx, req.PersonaID, fact, candidate, sources)
 	if err != nil {
 		return ConsolidationResult{}, err
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, fact.ID); err != nil {
+	if err := upsertFactSearchDocumentTxWithFormatter(ctx, tx, req.PersonaID, fact.ID, r.time); err != nil {
 		return ConsolidationResult{}, err
 	}
 	if err := r.enqueueIndexSyncTx(ctx, tx, req.PersonaID, string(core.NodeTypeFact), fact.ID, "upsert_node"); err != nil {
@@ -283,10 +291,10 @@ func (r *ConsolidationRepository) consolidateCandidateTx(ctx context.Context, tx
 	if schema.ConflictPolicy == core.ConflictPolicySupersede && len(existing) > 0 {
 		invalidationTime := invalidationTimeFor(candidate, sources, r.now())
 		for _, oldFact := range existing {
-			if err := invalidateFactTx(ctx, tx, req.PersonaID, oldFact.ID, invalidationTime); err != nil {
+			if err := invalidateFactTx(ctx, tx, req.PersonaID, oldFact.ID, invalidationTime, r.time); err != nil {
 				return ConsolidationResult{}, err
 			}
-			if err := upsertFactSearchDocumentTx(ctx, tx, req.PersonaID, oldFact.ID); err != nil {
+			if err := upsertFactSearchDocumentTxWithFormatter(ctx, tx, req.PersonaID, oldFact.ID, r.time); err != nil {
 				return ConsolidationResult{}, err
 			}
 			superseded = append(superseded, oldFact.ID)
@@ -346,11 +354,11 @@ func (r *ConsolidationRepository) reinforceFactTx(ctx context.Context, tx *sql.T
 		return ConsolidationResult{}, err
 	}
 	if canReinforce {
-		if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance); err != nil {
+		if err := reinforceFactTx(ctx, tx, personaID, fact.ID, importance, r.time); err != nil {
 			return ConsolidationResult{}, err
 		}
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, fact.ID); err != nil {
+	if err := upsertFactSearchDocumentTxWithFormatter(ctx, tx, personaID, fact.ID, r.time); err != nil {
 		return ConsolidationResult{}, err
 	}
 	if err := r.enqueueIndexSyncTx(ctx, tx, personaID, string(core.NodeTypeFact), fact.ID, "upsert_node"); err != nil {
@@ -736,8 +744,9 @@ func buildFact(personaID string, candidate ManualFactCandidate, schema core.Pred
 	}
 }
 
-func insertFactTx(ctx context.Context, tx *sql.Tx, fact core.Fact) error {
+func insertFactTx(ctx context.Context, tx *sql.Tx, fact core.Fact, formatter timeFormatter) error {
 	fact = normalizeFact(fact)
+	now := formatter.nowText()
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO facts (
     id, persona_id, subject_entity_id, predicate, object_entity_id, object_literal,
@@ -745,8 +754,8 @@ INSERT INTO facts (
     extraction_confidence, extraction_confidence_score, extraction_reasoning,
     importance, valence, arousal, sensitivity_level,
     validity_status, visibility_status, lifecycle_status,
-    pinned, pin_reason, pin_actor, searchable
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    pinned, pin_reason, pin_actor, searchable, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fact.ID,
 		fact.PersonaID,
 		nullableString(fact.SubjectEntityID),
@@ -771,6 +780,7 @@ INSERT INTO facts (
 		nullableString(fact.PinReason),
 		nullableString(fact.PinActor),
 		boolInt(fact.Searchable),
+		now,
 	)
 	return err
 }
@@ -788,15 +798,17 @@ WHERE persona_id = ? AND id = ?`, personaID, factID)
 	return scanFact(row)
 }
 
-func reinforceFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, importance float64) error {
+func reinforceFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, importance float64, formatter timeFormatter) error {
+	now := formatter.nowText()
 	_, err := tx.ExecContext(ctx, `
 UPDATE facts
 SET reinforcement_count = reinforcement_count + 1,
     importance = CASE WHEN importance > ? THEN importance ELSE ? END,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
 		importance,
 		importance,
+		now,
 		personaID,
 		factID,
 	)
@@ -825,14 +837,16 @@ INSERT OR IGNORE INTO consolidation_session_fact_writes (
 	return rows > 0, nil
 }
 
-func invalidateFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, validTo time.Time) error {
+func invalidateFactTx(ctx context.Context, tx *sql.Tx, personaID string, factID string, validTo time.Time, formatter timeFormatter) error {
+	now := formatter.nowText()
 	_, err := tx.ExecContext(ctx, `
 UPDATE facts
 SET validity_status = 'invalidated',
     valid_to = ?,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
-		formatTime(validTo),
+		formatter.formatTime(validTo),
+		now,
 		personaID,
 		factID,
 	)

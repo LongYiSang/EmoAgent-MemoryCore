@@ -10,24 +10,32 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return NewStoreWithOptions(db, StoreOptions{})
+}
+
+func NewStoreWithOptions(db *sql.DB, opts StoreOptions) *Store {
+	return &Store{db: db, time: newTimeFormatter(opts)}
 }
 
 func (s *Store) EnsurePersona(ctx context.Context, persona core.Persona) error {
+	now := s.time.nowText()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO personas(id, display_name, description)
-VALUES (?, ?, ?)
+INSERT INTO personas(id, display_name, description, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     display_name = excluded.display_name,
     description = excluded.description,
-    updated_at = CURRENT_TIMESTAMP`,
+    updated_at = excluded.updated_at`,
 		persona.ID,
 		persona.DisplayName,
 		nullableString(persona.Description),
+		now,
+		now,
 	)
 	return err
 }
@@ -38,20 +46,23 @@ func (s *Store) EnsureSession(ctx context.Context, session core.Session) error {
 		channel = core.ChannelCLI
 	}
 
+	now := s.time.nowText()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO sessions(id, persona_id, channel, title, summary, started_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO sessions(id, persona_id, channel, title, summary, started_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     channel = excluded.channel,
     title = excluded.title,
     summary = COALESCE(excluded.summary, sessions.summary),
-    updated_at = CURRENT_TIMESTAMP`,
+    updated_at = excluded.updated_at`,
 		session.ID,
 		session.PersonaID,
 		string(channel),
 		nullableString(session.Title),
 		nullableString(session.Summary),
-		formatTime(session.StartedAt),
+		s.time.formatTime(session.StartedAt),
+		now,
+		now,
 	)
 	return err
 }
@@ -73,10 +84,11 @@ func (s *Store) EndSession(ctx context.Context, session core.Session) (core.Sess
 UPDATE sessions
 SET ended_at = ?,
     summary = COALESCE(?, summary),
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
-		nullableTime(session.EndedAt),
+		s.time.nullableTime(session.EndedAt),
 		nullableString(session.Summary),
+		s.time.nowText(),
 		session.PersonaID,
 		session.ID,
 	)

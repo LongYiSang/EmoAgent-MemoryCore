@@ -48,7 +48,7 @@ func newRawLogTrace(start time.Time, runReq ExtractionRunRequest) *rawLogTrace {
 	if !runReq.RawLog.Enabled {
 		return nil
 	}
-	return &rawLogTrace{StartedAt: start.UTC(), Request: runReq.Request}
+	return &rawLogTrace{StartedAt: start, Request: runReq.Request}
 }
 
 func (t *rawLogTrace) recordPreFilterRequest(req ExtractionLLMRequest) {
@@ -164,7 +164,7 @@ func writeRawLog(dir string, result ExtractionRunResult, trace *rawLogTrace, aud
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	finishedAt := time.Now().UTC()
+	finishedAt := time.Now().In(trace.StartedAt.Location())
 	artifact := struct {
 		SchemaVersion string                  `json:"schema_version"`
 		Request       ExtractionRequest       `json:"request"`
@@ -221,7 +221,7 @@ func rawLogFilename(start time.Time, result ExtractionRunResult) string {
 		fingerprint = "nofp"
 	}
 	return fmt.Sprintf("%s_%s_%s_%s.json",
-		start.UTC().Format("20060102T150405.000000000Z"),
+		start.Format("20060102T150405.000000000-0700"),
 		sanitizeRawLogFilenamePart(result.RequestID),
 		sanitizeRawLogFilenamePart(string(result.Status)),
 		sanitizeRawLogFilenamePart(fingerprint),

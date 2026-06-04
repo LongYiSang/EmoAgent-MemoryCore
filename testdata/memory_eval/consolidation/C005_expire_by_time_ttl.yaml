@@ -33,7 +33,7 @@ assertions:
   - type: fact_column
     fact_id: $busy.fact_id
     column: valid_to
-    equals: "2026-05-19T01:00:00Z"
+    equals: "2026-05-19T09:00:00+08:00"
   - type: fact_column
     fact_id: $busy.fact_id
     column: lifecycle_status

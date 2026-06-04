@@ -8,15 +8,21 @@ import (
 )
 
 type FactRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewFactRepository(db *sql.DB) *FactRepository {
-	return &FactRepository{db: db}
+	return NewFactRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewFactRepositoryWithOptions(db *sql.DB, opts StoreOptions) *FactRepository {
+	return &FactRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *FactRepository) Insert(ctx context.Context, fact core.Fact) error {
 	fact = normalizeFact(fact)
+	now := r.time.nowText()
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO facts (
     id, persona_id, subject_entity_id, predicate, object_entity_id, object_literal,
@@ -24,8 +30,8 @@ INSERT INTO facts (
     extraction_confidence, extraction_confidence_score, extraction_reasoning,
     importance, valence, arousal, sensitivity_level,
     validity_status, visibility_status, lifecycle_status,
-    pinned, pin_reason, pin_actor, searchable
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    pinned, pin_reason, pin_actor, searchable, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fact.ID,
 		fact.PersonaID,
 		nullableString(fact.SubjectEntityID),
@@ -50,6 +56,7 @@ INSERT INTO facts (
 		nullableString(fact.PinReason),
 		nullableString(fact.PinActor),
 		boolInt(fact.Searchable),
+		now,
 	)
 	return err
 }

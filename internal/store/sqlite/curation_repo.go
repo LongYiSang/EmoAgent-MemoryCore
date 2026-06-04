@@ -25,6 +25,7 @@ type CurationRepository struct {
 	db    *sql.DB
 	newID func() string
 	now   func() time.Time
+	time  timeFormatter
 }
 
 type CurationDeltaQuery struct {
@@ -127,6 +128,10 @@ type CurationApplyResult struct {
 }
 
 func NewCurationRepository(db *sql.DB, newID func() string, now func() time.Time) *CurationRepository {
+	return NewCurationRepositoryWithOptions(db, newID, now, StoreOptions{})
+}
+
+func NewCurationRepositoryWithOptions(db *sql.DB, newID func() string, now func() time.Time, opts StoreOptions) *CurationRepository {
 	if newID == nil {
 		counter := 0
 		newID = func() string {
@@ -137,7 +142,10 @@ func NewCurationRepository(db *sql.DB, newID func() string, now func() time.Time
 	if now == nil {
 		now = time.Now
 	}
-	return &CurationRepository{db: db, newID: newID, now: now}
+	if opts.Now == nil {
+		opts.Now = now
+	}
+	return &CurationRepository{db: db, newID: newID, now: now, time: newTimeFormatter(opts)}
 }
 
 func (r *CurationRepository) LoadDeltaFacts(ctx context.Context, query CurationDeltaQuery) ([]core.Fact, error) {
@@ -173,18 +181,18 @@ func (r *CurationRepository) LoadDeltaFacts(ctx context.Context, query CurationD
 		"extraction_confidence != 'ambiguous'",
 	}
 	if sinceCreatedAt != nil && !sinceCreatedAt.IsZero() {
-		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
-		formatted := formatTime(*sinceCreatedAt)
+		where = append(where, "(julianday(created_at) > julianday(?) OR (julianday(created_at) = julianday(?) AND id > ?))")
+		formatted := r.time.formatTime(*sinceCreatedAt)
 		args = append(args, formatted, formatted, sinceFactID)
 	}
 	if query.UntilCreatedAt != nil && !query.UntilCreatedAt.IsZero() {
-		formatted := formatTime(*query.UntilCreatedAt)
+		formatted := r.time.formatTime(*query.UntilCreatedAt)
 		untilFactID := strings.TrimSpace(query.UntilFactID)
 		if untilFactID == "" {
-			where = append(where, "created_at <= ?")
+			where = append(where, "julianday(created_at) <= julianday(?)")
 			args = append(args, formatted)
 		} else {
-			where = append(where, "(created_at < ? OR (created_at = ? AND id <= ?))")
+			where = append(where, "(julianday(created_at) < julianday(?) OR (julianday(created_at) = julianday(?) AND id <= ?))")
 			args = append(args, formatted, formatted, untilFactID)
 		}
 	}
@@ -211,7 +219,7 @@ SELECT id, persona_id, subject_entity_id, predicate, object_entity_id, object_li
        pinned, pin_reason, pin_actor, reinforcement_count, searchable, created_at, updated_at
 FROM facts
 WHERE `+strings.Join(where, "\n  AND ")+`
-ORDER BY created_at ASC, id ASC
+ORDER BY julianday(created_at) ASC, id ASC
 LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
@@ -490,7 +498,7 @@ func (r *CurationRepository) ApplyDecisions(ctx context.Context, req CurationApp
 		}
 	}()
 
-	if err = insertCurationRunTx(ctx, tx, runID, req, "running", result); err != nil {
+	if err = insertCurationRunTx(ctx, tx, runID, req, "running", result, r.time); err != nil {
 		return CurationApplyResult{}, err
 	}
 	for _, group := range req.Groups {
@@ -524,11 +532,11 @@ func (r *CurationRepository) ApplyDecisions(ctx context.Context, req CurationApp
 	if len(req.Groups) == 0 && req.NewFactCount == 0 {
 		result.Status = "skipped"
 	}
-	if err = updateCurationRunFinishedTx(ctx, tx, runID, result, r.now()); err != nil {
+	if err = updateCurationRunFinishedTx(ctx, tx, runID, result, r.now(), r.time); err != nil {
 		return CurationApplyResult{}, err
 	}
 	if req.Mode == CurationModeApply && req.UpdateCheckpoint && result.Status == "succeeded" && result.ReviewGroupCount == 0 && req.CursorToCreatedAt != nil {
-		if err = upsertCurationCheckpointTx(ctx, tx, req.PersonaID, runID, *req.CursorToCreatedAt, req.CursorToFactID, r.now()); err != nil {
+		if err = upsertCurationCheckpointTx(ctx, tx, req.PersonaID, runID, *req.CursorToCreatedAt, req.CursorToFactID, r.now(), r.time); err != nil {
 			return CurationApplyResult{}, err
 		}
 	}
@@ -662,11 +670,11 @@ func applyCurationGroupTx(ctx context.Context, tx *sql.Tx, r *CurationRepository
 		return err
 	}
 	if decision.Decision == "reinforce_existing" {
-		if err := reinforceFactTx(ctx, tx, personaID, canonicalID, 0); err != nil {
+		if err := reinforceFactTx(ctx, tx, personaID, canonicalID, 0, r.time); err != nil {
 			return err
 		}
 	} else {
-		if err := updateCanonicalFactTx(ctx, tx, personaID, canonicalID, decision, sourceIDs); err != nil {
+		if err := updateCanonicalFactTx(ctx, tx, personaID, canonicalID, decision, sourceIDs, r.time); err != nil {
 			return err
 		}
 	}
@@ -683,7 +691,7 @@ func applyCurationGroupTx(ctx context.Context, tx *sql.Tx, r *CurationRepository
 		if sourceID == canonicalID {
 			continue
 		}
-		if err := consolidateCurationSourceTx(ctx, tx, personaID, sourceID, r.now()); err != nil {
+		if err := consolidateCurationSourceTx(ctx, tx, personaID, sourceID, r.now(), r.time); err != nil {
 			return err
 		}
 		if err := deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, sourceID); err != nil {
@@ -693,7 +701,7 @@ func applyCurationGroupTx(ctx context.Context, tx *sql.Tx, r *CurationRepository
 			return err
 		}
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, canonicalID); err != nil {
+	if err := upsertFactSearchDocumentTxWithFormatter(ctx, tx, personaID, canonicalID, r.time); err != nil {
 		return err
 	}
 	if err := enqueueCurationIndexSyncTx(ctx, tx, r.newID(), personaID, string(core.NodeTypeFact), canonicalID, "upsert_node"); err != nil {
@@ -754,7 +762,7 @@ func applyCreateCanonicalFactTx(ctx context.Context, tx *sql.Tx, r *CurationRepo
 	canonical.ReinforcementCount = len(sourceIDs)
 	canonical.CreatedAt = time.Time{}
 	canonical.UpdatedAt = nil
-	if err := insertFactTx(ctx, tx, canonical); err != nil {
+	if err := insertFactTx(ctx, tx, canonical, r.time); err != nil {
 		return err
 	}
 	if err := copyAllCurationEvidenceTx(ctx, tx, r, personaID, canonicalID, sourceIDs); err != nil {
@@ -765,7 +773,7 @@ func applyCreateCanonicalFactTx(ctx context.Context, tx *sql.Tx, r *CurationRepo
 		return err
 	}
 	for _, sourceID := range sourceIDs {
-		if err := consolidateCurationSourceTx(ctx, tx, personaID, sourceID, r.now()); err != nil {
+		if err := consolidateCurationSourceTx(ctx, tx, personaID, sourceID, r.now(), r.time); err != nil {
 			return err
 		}
 		if err := deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, sourceID); err != nil {
@@ -775,7 +783,7 @@ func applyCreateCanonicalFactTx(ctx context.Context, tx *sql.Tx, r *CurationRepo
 			return err
 		}
 	}
-	if err := upsertFactSearchDocumentTx(ctx, tx, personaID, canonicalID); err != nil {
+	if err := upsertFactSearchDocumentTxWithFormatter(ctx, tx, personaID, canonicalID, r.time); err != nil {
 		return err
 	}
 	if err := enqueueCurationIndexSyncTx(ctx, tx, r.newID(), personaID, string(core.NodeTypeFact), canonicalID, "upsert_node"); err != nil {
@@ -789,7 +797,7 @@ func applyCreateCanonicalFactTx(ctx context.Context, tx *sql.Tx, r *CurationRepo
 	return nil
 }
 
-func updateCanonicalFactTx(ctx context.Context, tx *sql.Tx, personaID string, canonicalID string, decision CurationDecision, sourceIDs []string) error {
+func updateCanonicalFactTx(ctx context.Context, tx *sql.Tx, personaID string, canonicalID string, decision CurationDecision, sourceIDs []string, formatter timeFormatter) error {
 	summary := strings.TrimSpace(decision.MergedContentSummary)
 	objectLiteral := strings.TrimSpace(decision.CanonicalObjectLiteral)
 	predicate := strings.TrimSpace(decision.CanonicalPredicate)
@@ -811,9 +819,9 @@ SET content_summary = CASE WHEN ? != '' THEN ? ELSE content_summary END,
     reinforcement_count = reinforcement_count + ?,
     lifecycle_status = 'active',
     searchable = 1,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = ?
 WHERE persona_id = ? AND id = ?`,
-		append([]any{summary, summary, objectLiteral, objectLiteral, predicate, predicate, factType, factType, personaID}, appendStringsAsAny(sourceIDs, len(sourceIDs)-1, personaID, canonicalID)...)...)
+		append([]any{summary, summary, objectLiteral, objectLiteral, predicate, predicate, factType, factType, personaID}, appendStringsAsAny(sourceIDs, len(sourceIDs)-1, formatter.nowText(), personaID, canonicalID)...)...)
 	return err
 }
 
@@ -1003,7 +1011,7 @@ INSERT INTO memory_links (
 	return link.ID, true, nil
 }
 
-func consolidateCurationSourceTx(ctx context.Context, tx *sql.Tx, personaID string, sourceID string, now time.Time) error {
+func consolidateCurationSourceTx(ctx context.Context, tx *sql.Tx, personaID string, sourceID string, now time.Time, formatter timeFormatter) error {
 	result, err := tx.ExecContext(ctx, `
 UPDATE facts
 SET lifecycle_status = 'consolidated',
@@ -1012,7 +1020,7 @@ SET lifecycle_status = 'consolidated',
 WHERE persona_id = ?
   AND id = ?
   AND visibility_status = 'visible'
-  AND searchable = 1`, formatTime(now), personaID, sourceID)
+  AND searchable = 1`, formatter.formatTime(now), personaID, sourceID)
 	if err != nil {
 		return err
 	}
@@ -1026,7 +1034,7 @@ WHERE persona_id = ?
 	return nil
 }
 
-func insertCurationRunTx(ctx context.Context, tx *sql.Tx, runID string, req CurationApplyRequest, status string, result CurationApplyResult) error {
+func insertCurationRunTx(ctx context.Context, tx *sql.Tx, runID string, req CurationApplyRequest, status string, result CurationApplyResult, formatter timeFormatter) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO memory_curation_runs (
     id, persona_id, mode, trigger, status,
@@ -1035,15 +1043,15 @@ INSERT INTO memory_curation_runs (
     noop_group_count, error_count, provider_id, provider_kind, model, usage_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		runID, req.PersonaID, req.Mode, req.Trigger, status,
-		nullableTime(req.CursorFromCreatedAt), nullableTrimmed(req.CursorFromFactID),
-		nullableTime(req.CursorToCreatedAt), nullableTrimmed(req.CursorToFactID),
+		formatter.nullableTime(req.CursorFromCreatedAt), nullableTrimmed(req.CursorFromFactID),
+		formatter.nullableTime(req.CursorToCreatedAt), nullableTrimmed(req.CursorToFactID),
 		result.NewFactCount, result.GroupCount, result.LLMGroupCount, result.AppliedGroupCount,
 		result.ReviewGroupCount, result.NoopGroupCount, result.ErrorCount,
 		nullableTrimmed(req.ProviderID), nullableTrimmed(req.ProviderKind), nullableTrimmed(req.Model), nullableTrimmed(req.UsageJSON))
 	return err
 }
 
-func updateCurationRunFinishedTx(ctx context.Context, tx *sql.Tx, runID string, result CurationApplyResult, now time.Time) error {
+func updateCurationRunFinishedTx(ctx context.Context, tx *sql.Tx, runID string, result CurationApplyResult, now time.Time, formatter timeFormatter) error {
 	_, err := tx.ExecContext(ctx, `
 UPDATE memory_curation_runs
 SET status = ?,
@@ -1053,7 +1061,7 @@ SET status = ?,
     error_count = ?,
     finished_at = ?
 WHERE id = ?`,
-		result.Status, result.AppliedGroupCount, result.ReviewGroupCount, result.NoopGroupCount, result.ErrorCount, formatTime(now), runID)
+		result.Status, result.AppliedGroupCount, result.ReviewGroupCount, result.NoopGroupCount, result.ErrorCount, formatter.formatTime(now), runID)
 	return err
 }
 
@@ -1072,17 +1080,17 @@ INSERT INTO memory_curation_groups (
 		nullableTrimmed(decision.CanonicalSubjectEntityID), nullableTrimmed(decision.CanonicalPredicate),
 		nullableTrimmed(decision.CanonicalObjectLiteral), nullableTrimmed(decision.CanonicalObjectEntityID),
 		nullableTrimmed(decision.CanonicalFactType), string(reasonCodesJSON), nullableTrimmed(decision.LLMResponseHash),
-		formatTime(r.now()))
+		r.time.formatTime(r.now()))
 	if err != nil {
 		return err
 	}
 	for _, fact := range group.Facts {
-		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, fact); err != nil {
+		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, fact, r.time); err != nil {
 			return err
 		}
 	}
 	if decision.CanonicalFactID != "" {
-		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, CurationGroupFact{FactID: decision.CanonicalFactID, Role: "canonical"}); err != nil {
+		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, CurationGroupFact{FactID: decision.CanonicalFactID, Role: "canonical"}, r.time); err != nil {
 			return err
 		}
 	}
@@ -1090,14 +1098,14 @@ INSERT INTO memory_curation_groups (
 		if sourceID == decision.CanonicalFactID {
 			continue
 		}
-		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, CurationGroupFact{FactID: sourceID, Role: "source"}); err != nil {
+		if err := insertCurationGroupFactTx(ctx, tx, r.newID(), group.ID, personaID, CurationGroupFact{FactID: sourceID, Role: "source"}, r.time); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func insertCurationGroupFactTx(ctx context.Context, tx *sql.Tx, id string, groupID string, personaID string, fact CurationGroupFact) error {
+func insertCurationGroupFactTx(ctx context.Context, tx *sql.Tx, id string, groupID string, personaID string, fact CurationGroupFact, formatter timeFormatter) error {
 	if strings.TrimSpace(fact.FactID) == "" || strings.TrimSpace(fact.Role) == "" {
 		return nil
 	}
@@ -1105,11 +1113,11 @@ func insertCurationGroupFactTx(ctx context.Context, tx *sql.Tx, id string, group
 INSERT OR IGNORE INTO memory_curation_group_facts (
     id, group_id, persona_id, fact_id, role, latest_evidence_at
 ) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, groupID, personaID, fact.FactID, fact.Role, nullableTime(fact.LatestEvidenceAt))
+		id, groupID, personaID, fact.FactID, fact.Role, formatter.nullableTime(fact.LatestEvidenceAt))
 	return err
 }
 
-func upsertCurationCheckpointTx(ctx context.Context, tx *sql.Tx, personaID string, runID string, cursorCreatedAt time.Time, cursorFactID string, now time.Time) error {
+func upsertCurationCheckpointTx(ctx context.Context, tx *sql.Tx, personaID string, runID string, cursorCreatedAt time.Time, cursorFactID string, now time.Time, formatter timeFormatter) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO memory_curation_checkpoints (
     persona_id, last_successful_run_id, cursor_created_at, cursor_fact_id, updated_at
@@ -1119,7 +1127,7 @@ ON CONFLICT(persona_id) DO UPDATE SET
     cursor_created_at = excluded.cursor_created_at,
     cursor_fact_id = excluded.cursor_fact_id,
     updated_at = excluded.updated_at`,
-		personaID, runID, formatTime(cursorCreatedAt), cursorFactID, formatTime(now))
+		personaID, runID, formatter.formatTime(cursorCreatedAt), cursorFactID, formatter.formatTime(now))
 	return err
 }
 

@@ -480,6 +480,7 @@ type ConfigOverrides struct {
 type CoreOverrides struct {
 	DBPath    *string
 	PersonaID *string
+	Timezone  *string
 }
 
 type RetrievalOverrides struct {
@@ -892,6 +893,9 @@ func (c Config) Validate() error {
 	}
 	if c.Enabled && strings.TrimSpace(c.Core.DBPath) == "" {
 		return fmt.Errorf("core.db_path is required when enabled=true")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(c.Core.Timezone)); err != nil {
+		return fmt.Errorf("core.timezone must be a valid IANA timezone: %w", err)
 	}
 	if c.Retrieval.FinalMemoryCount <= 0 {
 		return fmt.Errorf("retrieval.final_memory_count must be > 0")
@@ -1364,6 +1368,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		PersonaID:     c.Core.PersonaID,
 		AutoMigrate:   c.Core.AutoMigrate,
 		EnableFTS:     c.Core.EnableFTS,
+		Timezone:      c.Core.Timezone,
 		MirrorAdapter: adapter,
 		Extraction:    c.ExtractionOptions(),
 		SemanticOps: memorycore.SemanticOpsOptions{
@@ -1536,7 +1541,7 @@ func (c Config) ExtractionOptions() memorycore.ExtractionOptions {
 		Defaults: memorycore.ExtractionDefaults{
 			Configured:               true,
 			Mode:                     extractionConfigRunMode(pipeline.Mode),
-			Timezone:                 firstNonEmptyString(c.Core.Timezone, "Asia/Singapore"),
+			Timezone:                 firstNonEmptyString(c.Core.Timezone, "Asia/Shanghai"),
 			AllowSensitiveExtraction: c.WritePolicy.Extraction.AllowSensitiveExtraction,
 			AllowInference:           c.WritePolicy.Extraction.AllowInference,
 			MaxFacts:                 c.WritePolicy.Extraction.MaxFactsPerRequest,
@@ -1687,6 +1692,9 @@ func (c *Config) ApplyOverrides(overrides ConfigOverrides) {
 		}
 		if overrides.Core.PersonaID != nil {
 			c.Core.PersonaID = *overrides.Core.PersonaID
+		}
+		if overrides.Core.Timezone != nil {
+			c.Core.Timezone = *overrides.Core.Timezone
 		}
 	}
 	if overrides.Retrieval != nil {

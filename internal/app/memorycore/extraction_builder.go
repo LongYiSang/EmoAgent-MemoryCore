@@ -42,7 +42,7 @@ func BuildRequest(ctx context.Context, db *sql.DB, opts BuildRequestOptions) (Ex
 	if now.IsZero() {
 		now = time.Now()
 	}
-	timezone := defaultString(opts.Timezone, "Asia/Singapore")
+	timezone := defaultString(opts.Timezone, "Asia/Shanghai")
 	maxFacts := opts.MaxFacts
 	if maxFacts == 0 {
 		maxFacts = 12
@@ -124,14 +124,14 @@ WHERE persona_id = ?
 		args = append(args, strings.TrimSpace(*opts.SessionID))
 	}
 	if opts.Since != nil && !opts.Since.IsZero() {
-		query += ` AND occurred_at >= ?`
+		query += ` AND julianday(occurred_at) >= julianday(?)`
 		args = append(args, formatTime(*opts.Since))
 	}
 	if opts.Until != nil && !opts.Until.IsZero() {
-		query += ` AND occurred_at <= ?`
+		query += ` AND julianday(occurred_at) <= julianday(?)`
 		args = append(args, formatTime(*opts.Until))
 	}
-	query += ` ORDER BY occurred_at ASC, ingested_at ASC LIMIT ?`
+	query += ` ORDER BY julianday(occurred_at) ASC, ingested_at ASC LIMIT ?`
 	args = append(args, limit)
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {

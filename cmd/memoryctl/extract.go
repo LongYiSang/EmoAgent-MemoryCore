@@ -26,7 +26,7 @@ func runExtractRequest(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs.IntVar(&limit, "limit", 50, "maximum episodes")
 	fs.StringVar(&sinceValue, "since", "", "RFC3339 lower occurrence bound")
 	fs.StringVar(&untilValue, "until", "", "RFC3339 upper occurrence bound")
-	fs.StringVar(&timezone, "timezone", "Asia/Singapore", "request timezone")
+	fs.StringVar(&timezone, "timezone", "Asia/Shanghai", "request timezone")
 	fs.BoolVar(&allowSensitive, "allow-sensitive-extraction", false, "allow highly sensitive extraction without review")
 	fs.BoolVar(&allowInference, "allow-inference", true, "allow inferred candidates")
 	fs.BoolVar(&manualPin, "manual-pin", false, "mark request policy as manual pin")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"strings"
-	"time"
 )
 
 const (
@@ -14,11 +13,16 @@ const (
 )
 
 type MirrorPersonaStateRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewMirrorPersonaStateRepository(db *sql.DB) *MirrorPersonaStateRepository {
-	return &MirrorPersonaStateRepository{db: db}
+	return NewMirrorPersonaStateRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewMirrorPersonaStateRepositoryWithOptions(db *sql.DB, opts StoreOptions) *MirrorPersonaStateRepository {
+	return &MirrorPersonaStateRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *MirrorPersonaStateRepository) MarkRebuilding(ctx context.Context, personaID string) error {
@@ -59,7 +63,7 @@ ON CONFLICT(persona_id) DO UPDATE SET
 		personaID,
 		state,
 		nullableMirrorPersonaStateReason(reason),
-		formatTime(time.Now().UTC()),
+		r.time.nowText(),
 	)
 	return err
 }

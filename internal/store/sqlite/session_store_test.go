@@ -2,6 +2,8 @@ package sqlite_test
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,5 +60,40 @@ func TestStoreEndsSessionAndReturnsPersistedFields(t *testing.T) {
 	}
 	if ended.Summary == nil || *ended.Summary != summary {
 		t.Fatalf("summary = %v, want %q", ended.Summary, summary)
+	}
+}
+
+func TestStoreWritesConfiguredTimezoneForSessionRows(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+
+	store := memsqlite.NewStoreWithOptions(db.SQLDB(), memsqlite.StoreOptions{Timezone: "Asia/Shanghai"})
+	if err := store.EnsurePersona(ctx, core.Persona{ID: "default", DisplayName: "Default"}); err != nil {
+		t.Fatalf("ensure persona: %v", err)
+	}
+	if err := store.EnsureSession(ctx, core.Session{
+		ID:        "session_tz",
+		PersonaID: "default",
+		Channel:   core.ChannelAPI,
+	}); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+
+	assertTextHasOffset(t, db.SQLDB(), "SELECT created_at FROM personas WHERE id = 'default'", "+08:00")
+	assertTextHasOffset(t, db.SQLDB(), "SELECT updated_at FROM personas WHERE id = 'default'", "+08:00")
+	assertTextHasOffset(t, db.SQLDB(), "SELECT started_at FROM sessions WHERE id = 'session_tz'", "+08:00")
+	assertTextHasOffset(t, db.SQLDB(), "SELECT created_at FROM sessions WHERE id = 'session_tz'", "+08:00")
+	assertTextHasOffset(t, db.SQLDB(), "SELECT updated_at FROM sessions WHERE id = 'session_tz'", "+08:00")
+}
+
+func assertTextHasOffset(t *testing.T, db *sql.DB, query string, offset string) {
+	t.Helper()
+	var value string
+	if err := db.QueryRow(query).Scan(&value); err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	if !strings.Contains(value, offset) {
+		t.Fatalf("%q = %q, want offset %s", query, value, offset)
 	}
 }

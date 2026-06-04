@@ -86,6 +86,20 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	if now == nil {
 		now = time.Now
 	}
+	timezone := strings.TrimSpace(opts.Timezone)
+	if timezone == "" {
+		timezone = "Asia/Shanghai"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: Timezone must be a valid IANA timezone: %v", ErrInvalidOptions, err)
+	}
+	baseNow := now
+	now = func() time.Time {
+		return baseNow().In(loc)
+	}
+	storeOptions := memsqlite.StoreOptions{Timezone: timezone, Now: now}
 	resilience := normalizeSidecarResilienceOptions(opts.SidecarResilience)
 	extraction := normalizeExtractionOptions(opts.Extraction)
 	sqlDB := db.SQLDB()
@@ -94,24 +108,24 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	return &service{
 		db:                db,
 		sqlDB:             sqlDB,
-		store:             memsqlite.NewStore(sqlDB),
-		episodes:          memsqlite.NewEpisodeRepository(sqlDB),
-		entities:          memsqlite.NewEntityRepository(sqlDB),
-		facts:             memsqlite.NewConsolidationRepository(sqlDB, uuid.NewString, now),
-		search:            memsqlite.NewSearchRepository(sqlDB),
+		store:             memsqlite.NewStoreWithOptions(sqlDB, storeOptions),
+		episodes:          memsqlite.NewEpisodeRepositoryWithOptions(sqlDB, storeOptions),
+		entities:          memsqlite.NewEntityRepositoryWithOptions(sqlDB, storeOptions),
+		facts:             memsqlite.NewConsolidationRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		search:            memsqlite.NewSearchRepositoryWithOptions(sqlDB, storeOptions),
 		retrieve:          retrieve,
 		queryAnalyzer:     queryPipeline,
 		queryPipeline:     queryPipeline,
-		retention:         memsqlite.NewRetentionRepository(sqlDB, uuid.NewString, now),
-		compress:          memsqlite.NewCompressionRepository(sqlDB, uuid.NewString, now),
-		curation:          memsqlite.NewCurationRepository(sqlDB, uuid.NewString, now),
-		forget:            memsqlite.NewForgetRepository(sqlDB, uuid.NewString, now),
+		retention:         memsqlite.NewRetentionRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		compress:          memsqlite.NewCompressionRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		curation:          memsqlite.NewCurationRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		forget:            memsqlite.NewForgetRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		mirrorAdapter:     opts.MirrorAdapter,
-		mirrorQueue:       memsqlite.NewMirrorQueueRepository(sqlDB),
+		mirrorQueue:       memsqlite.NewMirrorQueueRepositoryWithOptions(sqlDB, storeOptions),
 		mirrorPayload:     memsqlite.NewMirrorPayloadRepository(sqlDB),
-		mirrorIndex:       memsqlite.NewMirrorIndexRepository(sqlDB, uuid.NewString),
+		mirrorIndex:       memsqlite.NewMirrorIndexRepositoryWithOptions(sqlDB, uuid.NewString, storeOptions),
 		mirrorMap:         memsqlite.NewMirrorCandidateRepository(sqlDB),
-		mirrorState:       memsqlite.NewMirrorPersonaStateRepository(sqlDB),
+		mirrorState:       memsqlite.NewMirrorPersonaStateRepositoryWithOptions(sqlDB, storeOptions),
 		persona:           defaultString(opts.PersonaID, defaultPersonaID),
 		now:               now,
 		sidecarResilience: resilience,

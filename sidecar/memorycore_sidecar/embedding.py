@@ -9,8 +9,9 @@ import threading
 import unicodedata
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Mapping, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import EmbeddingCacheConfig, EmbeddingConfig
 
@@ -190,7 +191,7 @@ class CachedEmbeddingProvider:
         metadata = _embedding_cache_metadata(
             text, self._embedding_config, self._cache_config
         )
-        now = _utc_now()
+        now = _now(self._cache_config)
         with self._connect() as db:
             _ensure_schema(db)
             db.execute(
@@ -236,7 +237,7 @@ class CachedEmbeddingProvider:
         self._cache_config.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             _ensure_schema(db)
-            _insert_ref(db, key, ref, _utc_now())
+            _insert_ref(db, key, ref, _now(self._cache_config))
 
     def delete_node_ref(self, persona_id: str, node_type: str, node_id: str) -> None:
         if not self._cache_config.db_path.exists():
@@ -270,7 +271,7 @@ class CachedEmbeddingProvider:
         if not self._cache_config.db_path.exists():
             return
         cutoff = (
-            datetime.now(timezone.utc)
+            datetime.now(_cache_timezone(self._cache_config))
             - timedelta(days=self._cache_config.ttl_days_for_query)
         ).isoformat(timespec="seconds")
         with self._connect() as db:
@@ -413,7 +414,7 @@ def _ensure_ref_schema(db: sqlite3.Connection) -> None:
                 str(item.get("persona_id", "")),
                 str(item.get("node_type", "")),
                 str(item.get("node_id", "")),
-                str(item.get("created_at", _utc_now())),
+                str(item.get("created_at", _default_now())),
             ),
         )
     db.execute("DROP TABLE embedding_cache_refs_old")
@@ -494,8 +495,31 @@ def _sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def _now(config: EmbeddingCacheConfig) -> str:
+    return datetime.now(_cache_timezone(config)).isoformat(timespec="seconds")
+
+
+def _default_now() -> str:
+    return datetime.now(_fallback_timezone("Asia/Shanghai")).isoformat(
+        timespec="seconds"
+    )
+
+
+def _cache_timezone(config: EmbeddingCacheConfig) -> tzinfo:
+    try:
+        return ZoneInfo(config.timezone)
+    except ZoneInfoNotFoundError as exc:
+        if config.timezone == "Asia/Shanghai":
+            return _fallback_timezone(config.timezone)
+        raise ValueError(
+            "embedding_cache.timezone requires system tzdata or the Python tzdata package"
+        ) from exc
+
+
+def _fallback_timezone(name: str) -> tzinfo:
+    if name == "Asia/Shanghai":
+        return timezone(timedelta(hours=8), name)
+    raise ZoneInfoNotFoundError(name)
 
 
 def _extract_embedding(payload: Any) -> list[Any]:

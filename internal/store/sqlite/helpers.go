@@ -6,18 +6,84 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/internal/core"
 )
 
 const timeFormat = time.RFC3339Nano
+const defaultTimezone = "Asia/Shanghai"
+
+type StoreOptions struct {
+	Timezone string
+	Now      func() time.Time
+}
+
+type timeFormatter struct {
+	loc *time.Location
+	now func() time.Time
+}
+
+func newTimeFormatter(opts StoreOptions) timeFormatter {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	loc := loadTimezone(opts.Timezone)
+	return timeFormatter{loc: loc, now: now}
+}
+
+func defaultTimeFormatter() timeFormatter {
+	return newTimeFormatter(StoreOptions{})
+}
+
+func loadTimezone(name string) *time.Location {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = defaultTimezone
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.FixedZone(defaultTimezone, 8*60*60)
+	}
+	return loc
+}
+
+func (f timeFormatter) formatTime(value time.Time) string {
+	if value.IsZero() {
+		value = f.nowTime()
+	}
+	return value.In(f.location()).Format(timeFormat)
+}
+
+func (f timeFormatter) nullableTime(value *time.Time) sql.NullString {
+	if value == nil || value.IsZero() {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: f.formatTime(*value), Valid: true}
+}
+
+func (f timeFormatter) nowText() string {
+	return f.formatTime(f.nowTime())
+}
+
+func (f timeFormatter) nowTime() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
+}
+
+func (f timeFormatter) location() *time.Location {
+	if f.loc != nil {
+		return f.loc
+	}
+	return loadTimezone(defaultTimezone)
+}
 
 func formatTime(value time.Time) string {
-	if value.IsZero() {
-		value = time.Now().UTC()
-	}
-	return value.UTC().Format(timeFormat)
+	return defaultTimeFormatter().formatTime(value)
 }
 
 func parseTime(value string) time.Time {

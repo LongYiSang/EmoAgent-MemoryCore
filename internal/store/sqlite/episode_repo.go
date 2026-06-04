@@ -10,11 +10,16 @@ import (
 )
 
 type EpisodeRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 func NewEpisodeRepository(db *sql.DB) *EpisodeRepository {
-	return &EpisodeRepository{db: db}
+	return NewEpisodeRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewEpisodeRepositoryWithOptions(db *sql.DB, opts StoreOptions) *EpisodeRepository {
+	return &EpisodeRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *EpisodeRepository) Append(ctx context.Context, episode core.Episode) error {
@@ -51,7 +56,7 @@ INSERT INTO episodes (
 		string(episode.Role),
 		episode.Content,
 		episode.ContentHash,
-		formatTime(episode.OccurredAt),
+		r.time.formatTime(episode.OccurredAt),
 		string(episode.SourceType),
 		nullableString(episode.SourceRef),
 		nullableString(episode.PrevEpisodeID),

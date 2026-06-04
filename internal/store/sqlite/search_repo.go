@@ -11,7 +11,8 @@ import (
 )
 
 type SearchRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	time timeFormatter
 }
 
 type RebuildSearchDocumentsResult struct {
@@ -19,11 +20,15 @@ type RebuildSearchDocumentsResult struct {
 }
 
 func NewSearchRepository(db *sql.DB) *SearchRepository {
-	return &SearchRepository{db: db}
+	return NewSearchRepositoryWithOptions(db, StoreOptions{})
+}
+
+func NewSearchRepositoryWithOptions(db *sql.DB, opts StoreOptions) *SearchRepository {
+	return &SearchRepository{db: db, time: newTimeFormatter(opts)}
 }
 
 func (r *SearchRepository) UpsertDocument(ctx context.Context, doc core.SearchDocument) error {
-	return upsertSearchDocument(ctx, r.db, doc)
+	return upsertSearchDocumentWithFormatter(ctx, r.db, doc, r.time)
 }
 
 func (r *SearchRepository) UpsertSearchDocument(ctx context.Context, doc core.SearchDocument) error {
@@ -55,11 +60,11 @@ func (r *SearchRepository) UpsertFactDocument(ctx context.Context, personaID str
 }
 
 func (r *SearchRepository) UpsertNarrativeDocument(ctx context.Context, personaID string, narrativeID string) error {
-	return upsertNarrativeSearchDocumentTx(ctx, r.db, personaID, narrativeID)
+	return upsertNarrativeSearchDocumentTxWithFormatter(ctx, r.db, personaID, narrativeID, r.time)
 }
 
 func (r *SearchRepository) UpsertInsightDocument(ctx context.Context, personaID string, insightID string) error {
-	return upsertInsightSearchDocumentTx(ctx, r.db, personaID, insightID)
+	return upsertInsightSearchDocumentTxWithFormatter(ctx, r.db, personaID, insightID, r.time)
 }
 
 func (r *SearchRepository) RebuildSearchDocuments(ctx context.Context, personaID string) (RebuildSearchDocumentsResult, error) {
@@ -282,15 +287,20 @@ LIMIT ?`,
 }
 
 func upsertSearchDocument(ctx context.Context, runner sqlRunner, doc core.SearchDocument) error {
+	return upsertSearchDocumentWithFormatter(ctx, runner, doc, defaultTimeFormatter())
+}
+
+func upsertSearchDocumentWithFormatter(ctx context.Context, runner sqlRunner, doc core.SearchDocument, formatter timeFormatter) error {
 	doc = normalizeSearchDocument(doc)
 	if !isSearchDocumentVisibleAndSearchable(doc) {
 		return deleteSearchDocument(ctx, runner, doc.PersonaID, doc.NodeType, doc.NodeID)
 	}
+	now := formatter.nowText()
 	_, err := runner.ExecContext(ctx, `
 INSERT INTO memory_search_documents (
     id, persona_id, node_type, node_id, search_text, search_tier,
-    visibility_status, sensitivity_level, lifecycle_status, searchable
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    visibility_status, sensitivity_level, lifecycle_status, searchable, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(persona_id, node_type, node_id) DO UPDATE SET
     search_text = excluded.search_text,
     search_tier = excluded.search_tier,
@@ -298,7 +308,7 @@ ON CONFLICT(persona_id, node_type, node_id) DO UPDATE SET
     sensitivity_level = excluded.sensitivity_level,
     lifecycle_status = excluded.lifecycle_status,
     searchable = excluded.searchable,
-    updated_at = CURRENT_TIMESTAMP`,
+    updated_at = excluded.updated_at`,
 		doc.ID,
 		doc.PersonaID,
 		string(doc.NodeType),
@@ -309,6 +319,7 @@ ON CONFLICT(persona_id, node_type, node_id) DO UPDATE SET
 		string(doc.SensitivityLevel),
 		string(doc.LifecycleStatus),
 		boolInt(doc.Searchable),
+		now,
 	)
 	if err != nil {
 		return err
@@ -503,6 +514,10 @@ func normalizeSearchDocument(doc core.SearchDocument) core.SearchDocument {
 }
 
 func upsertFactSearchDocumentTx(ctx context.Context, tx *sql.Tx, personaID string, factID string) error {
+	return upsertFactSearchDocumentTxWithFormatter(ctx, tx, personaID, factID, defaultTimeFormatter())
+}
+
+func upsertFactSearchDocumentTxWithFormatter(ctx context.Context, tx *sql.Tx, personaID string, factID string, formatter timeFormatter) error {
 	doc, err := buildFactSearchDocument(ctx, tx, personaID, factID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -513,10 +528,14 @@ func upsertFactSearchDocumentTx(ctx context.Context, tx *sql.Tx, personaID strin
 	if !isSearchDocumentVisibleAndSearchable(doc) {
 		return deleteSearchDocument(ctx, tx, personaID, core.NodeTypeFact, factID)
 	}
-	return upsertSearchDocument(ctx, tx, doc)
+	return upsertSearchDocumentWithFormatter(ctx, tx, doc, formatter)
 }
 
 func upsertNarrativeSearchDocumentTx(ctx context.Context, runner sqlRunner, personaID string, narrativeID string) error {
+	return upsertNarrativeSearchDocumentTxWithFormatter(ctx, runner, personaID, narrativeID, defaultTimeFormatter())
+}
+
+func upsertNarrativeSearchDocumentTxWithFormatter(ctx context.Context, runner sqlRunner, personaID string, narrativeID string, formatter timeFormatter) error {
 	doc, err := buildNarrativeSearchDocument(ctx, runner, personaID, narrativeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -527,10 +546,14 @@ func upsertNarrativeSearchDocumentTx(ctx context.Context, runner sqlRunner, pers
 	if !isSearchDocumentVisibleAndSearchable(doc) {
 		return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeNarrative, narrativeID)
 	}
-	return upsertSearchDocument(ctx, runner, doc)
+	return upsertSearchDocumentWithFormatter(ctx, runner, doc, formatter)
 }
 
 func upsertInsightSearchDocumentTx(ctx context.Context, runner sqlRunner, personaID string, insightID string) error {
+	return upsertInsightSearchDocumentTxWithFormatter(ctx, runner, personaID, insightID, defaultTimeFormatter())
+}
+
+func upsertInsightSearchDocumentTxWithFormatter(ctx context.Context, runner sqlRunner, personaID string, insightID string, formatter timeFormatter) error {
 	doc, err := buildInsightSearchDocument(ctx, runner, personaID, insightID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -541,7 +564,7 @@ func upsertInsightSearchDocumentTx(ctx context.Context, runner sqlRunner, person
 	if !isSearchDocumentVisibleAndSearchable(doc) {
 		return deleteSearchDocument(ctx, runner, personaID, core.NodeTypeInsight, insightID)
 	}
-	return upsertSearchDocument(ctx, runner, doc)
+	return upsertSearchDocumentWithFormatter(ctx, runner, doc, formatter)
 }
 
 func buildFactSearchDocument(ctx context.Context, runner sqlRunner, personaID string, factID string) (core.SearchDocument, error) {

@@ -480,9 +480,14 @@ func requireFactValidTo(t *testing.T, db *sql.DB, factID string, want time.Time)
 	if err := db.QueryRow(`SELECT valid_to FROM facts WHERE id = ?`, factID).Scan(&got); err != nil {
 		t.Fatalf("query fact valid_to: %v", err)
 	}
-	if got != want.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("fact %s valid_to = %q, want %q", factID, got, want.UTC().Format(time.RFC3339Nano))
+	wantText := formatServiceTestTime(want)
+	if got != wantText {
+		t.Fatalf("fact %s valid_to = %q, want %q", factID, got, wantText)
 	}
+}
+
+func formatServiceTestTime(value time.Time) string {
+	return value.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format(time.RFC3339Nano)
 }
 
 func requireFactLifecycleVisibility(t *testing.T, db *sql.DB, factID string, wantLifecycle string, wantVisibility string) {

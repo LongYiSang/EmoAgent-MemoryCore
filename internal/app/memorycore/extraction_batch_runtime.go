@@ -17,7 +17,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch ExtractionBatchRequest) (Ex
 		batch.Trigger = ExtractionTriggerSessionEnd
 	}
 	if batch.Timezone == "" {
-		batch.Timezone = "Asia/Singapore"
+		batch.Timezone = "Asia/Shanghai"
 	}
 	if batch.EpisodeLimit == 0 {
 		batch.EpisodeLimit = 50

@@ -31,6 +31,9 @@ func TestRunExtractRequestValidateDryRunAndApplyFlow(t *testing.T) {
 	if req["schema_version"] != "memory_extraction_protocol.v0.1.request" {
 		t.Fatalf("request schema_version = %v", req["schema_version"])
 	}
+	if req["timezone"] != "Asia/Shanghai" {
+		t.Fatalf("request timezone = %v, want Asia/Shanghai", req["timezone"])
+	}
 
 	responseJSON := responseForRequest(t, requestJSON)
 	if err := os.WriteFile(responsePath, []byte(responseJSON), 0o644); err != nil {

@@ -89,7 +89,7 @@ func newCurationRawLogTrace(start time.Time, req RunCurationRequest, opts Curati
 	if !opts.Enabled {
 		return nil
 	}
-	return &curationRawLogTrace{StartedAt: start.UTC(), Request: req}
+	return &curationRawLogTrace{StartedAt: start, Request: req}
 }
 
 func (t *curationRawLogTrace) recordCandidateRetrievalStart(opts CurationCandidateRetrievalOptions, candidateLimit int) {
@@ -191,7 +191,7 @@ func writeCurationRawLog(dir string, result *RunCurationResult, trace *curationR
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("curation raw log directory is required")
 	}
-	finishedAt := time.Now().UTC()
+	finishedAt := time.Now().In(trace.StartedAt.Location())
 	artifact := struct {
 		SchemaVersion      string                            `json:"schema_version"`
 		Request            RunCurationRequest                `json:"request"`
@@ -257,7 +257,7 @@ func curationRawLogFilename(start time.Time, result *RunCurationResult) string {
 		status = result.Status
 	}
 	return fmt.Sprintf("%s_%s_%s.json",
-		start.UTC().Format("20060102T150405.000000000Z"),
+		start.Format("20060102T150405.000000000-0700"),
 		sanitizeRawLogFilenamePart(runID),
 		sanitizeRawLogFilenamePart(status),
 	)
