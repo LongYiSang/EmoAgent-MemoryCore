@@ -45,6 +45,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRetention(args[1:], stdout, stderr)
 	case "retention-jobs-run":
 		return runRetentionJobs(args[1:], stdout, stderr)
+	case "natural-memory-run":
+		return runNaturalMemoryRun(args[1:], stdout, stderr)
 	case "compression-apply":
 		return runCompressionApply(args[1:], stdout, stderr)
 	case "curation-run":

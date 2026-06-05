@@ -18,6 +18,7 @@ func TestEvalFixtures(t *testing.T) {
 		{Dir: "phase5", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "retrieval", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "retention", StubPolicy: FixtureStubPolicyForbid},
+		{Dir: "natural_memory", StubPolicy: FixtureStubPolicyForbid},
 		{Dir: "controlled", StubPolicy: FixtureStubPolicyRequire},
 	}
 

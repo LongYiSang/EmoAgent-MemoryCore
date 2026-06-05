@@ -14,6 +14,7 @@ type Options struct {
 	SidecarResilience SidecarResilienceOptions
 	Extraction        ExtractionOptions
 	SemanticOps       SemanticOpsOptions
+	NaturalMemory     NaturalMemoryOptions
 }
 
 type SemanticOpsOptions struct {

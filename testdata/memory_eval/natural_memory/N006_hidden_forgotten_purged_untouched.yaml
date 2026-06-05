@@ -1,0 +1,10 @@
+case_id: N006_hidden_forgotten_purged_untouched
+description: Hidden, forgotten, purged, and unsearchable nodes are skipped.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_skip_visibility
+    skipped_visibility_statuses:
+      - hidden
+      - forgotten
+      - purged

@@ -78,6 +78,7 @@ type (
 	ExtractionSourceWindow              = appcore.ExtractionSourceWindow
 	ExtractionWorkCandidate             = appcore.ExtractionWorkCandidate
 	Fact                                = appcore.Fact
+	FactType                            = appcore.FactType
 	FactApplyFailure                    = appcore.FactApplyFailure
 	FactApplyPreview                    = appcore.FactApplyPreview
 	FactApplyResult                     = appcore.FactApplyResult
@@ -153,6 +154,19 @@ type (
 	MirrorRerankResult                  = appcore.MirrorRerankResult
 	MirrorRetrievalDiagnostics          = appcore.MirrorRetrievalDiagnostics
 	NarrativeDraft                      = appcore.NarrativeDraft
+	NaturalMemoryCompressionOptions     = appcore.NaturalMemoryCompressionOptions
+	NaturalMemoryExplainItem            = appcore.NaturalMemoryExplainItem
+	NaturalMemoryLimitsOptions          = appcore.NaturalMemoryLimitsOptions
+	NaturalMemoryManualTriggerOptions   = appcore.NaturalMemoryManualTriggerOptions
+	NaturalMemoryOptions                = appcore.NaturalMemoryOptions
+	NaturalMemoryProtectionOptions      = appcore.NaturalMemoryProtectionOptions
+	NaturalMemoryRunKind                = appcore.NaturalMemoryRunKind
+	NaturalMemoryRunStatus              = appcore.NaturalMemoryRunStatus
+	NaturalMemoryScoringOptions         = appcore.NaturalMemoryScoringOptions
+	NaturalMemorySearchTierOptions      = appcore.NaturalMemorySearchTierOptions
+	NaturalMemorySleepCycleOptions      = appcore.NaturalMemorySleepCycleOptions
+	NaturalMemoryState                  = appcore.NaturalMemoryState
+	NaturalMemoryTypeDefault            = appcore.NaturalMemoryTypeDefault
 	Options                             = appcore.Options
 	OpenAICompatibleThinkingOptions     = appcore.OpenAICompatibleThinkingOptions
 	PinIntentRoute                      = appcore.PinIntentRoute
@@ -192,6 +206,9 @@ type (
 	RoutedForgetPreview                 = appcore.RoutedForgetPreview
 	RunMirrorSyncRequest                = appcore.RunMirrorSyncRequest
 	RunMirrorSyncResult                 = appcore.RunMirrorSyncResult
+	RunNaturalMemoryCycleRequest        = appcore.RunNaturalMemoryCycleRequest
+	RunNaturalMemoryCycleResult         = appcore.RunNaturalMemoryCycleResult
+	RunNaturalMemoryTickRequest         = appcore.RunNaturalMemoryTickRequest
 	RunCurationRequest                  = appcore.RunCurationRequest
 	RunCurationResult                   = appcore.RunCurationResult
 	RunExtractionRequest                = appcore.RunExtractionRequest
@@ -208,6 +225,7 @@ type (
 	RunRetentionJobsResult              = appcore.RunRetentionJobsResult
 	RunRetentionRequest                 = appcore.RunRetentionRequest
 	RunRetentionResult                  = appcore.RunRetentionResult
+	SearchTier                          = appcore.SearchTier
 	Service                             = appcore.Service
 	Session                             = appcore.Session
 	StartSessionRequest                 = appcore.StartSessionRequest
@@ -406,6 +424,10 @@ const (
 	SensitivityHighlySensitive                = appcore.SensitivityHighlySensitive
 	SensitivityNormal                         = appcore.SensitivityNormal
 	SensitivitySensitive                      = appcore.SensitivitySensitive
+	SearchTierCold                            = appcore.SearchTierCold
+	SearchTierDeepCold                        = appcore.SearchTierDeepCold
+	SearchTierHot                             = appcore.SearchTierHot
+	SearchTierWarm                            = appcore.SearchTierWarm
 	SourceTypeChat                            = appcore.SourceTypeChat
 	SourceTypeImported                        = appcore.SourceTypeImported
 	SourceTypePlugin                          = appcore.SourceTypePlugin
@@ -427,6 +449,20 @@ const (
 const (
 	MemorySuppressionReasonContextBudget             = appcore.MemorySuppressionReasonContextBudget
 	MemorySuppressionReasonMMRDuplicate              = appcore.MemorySuppressionReasonMMRDuplicate
+	NaturalMemoryAlgorithmPowerSleepV1               = appcore.NaturalMemoryAlgorithmPowerSleepV1
+	NaturalMemoryRunAPI                              = appcore.NaturalMemoryRunAPI
+	NaturalMemoryRunManual                           = appcore.NaturalMemoryRunManual
+	NaturalMemoryRunSleepCycle                       = appcore.NaturalMemoryRunSleepCycle
+	NaturalMemoryRunStatusCompleted                  = appcore.NaturalMemoryRunStatusCompleted
+	NaturalMemoryRunStatusFailed                     = appcore.NaturalMemoryRunStatusFailed
+	NaturalMemoryRunStatusRunning                    = appcore.NaturalMemoryRunStatusRunning
+	NaturalMemoryRunStatusSkipped                    = appcore.NaturalMemoryRunStatusSkipped
+	NaturalMemoryRunTest                             = appcore.NaturalMemoryRunTest
+	NaturalMemoryStateAvailable                      = appcore.NaturalMemoryStateAvailable
+	NaturalMemoryStateFaded                          = appcore.NaturalMemoryStateFaded
+	NaturalMemoryStateLatent                         = appcore.NaturalMemoryStateLatent
+	NaturalMemoryStateSalient                        = appcore.NaturalMemoryStateSalient
+	NaturalMemoryStateSleepConsolidated              = appcore.NaturalMemoryStateSleepConsolidated
 	RetrievalCorrectiveActionSemanticLight           = appcore.RetrievalCorrectiveActionSemanticLight
 	RetrievalCorrectiveActionSQLiteFallback          = appcore.RetrievalCorrectiveActionSQLiteFallback
 	RetrievalCorrectiveActionSuppressMemoryInjection = appcore.RetrievalCorrectiveActionSuppressMemoryInjection
@@ -437,8 +473,9 @@ const (
 )
 
 var (
-	ErrInvalidOptions     = appcore.ErrInvalidOptions
-	ErrInvalidRequest     = appcore.ErrInvalidRequest
-	ErrNotFound           = appcore.ErrNotFound
-	NewQueryAnalysisCache = appcore.NewQueryAnalysisCache
+	ErrInvalidOptions           = appcore.ErrInvalidOptions
+	ErrInvalidRequest           = appcore.ErrInvalidRequest
+	ErrNotFound                 = appcore.ErrNotFound
+	DefaultNaturalMemoryOptions = appcore.DefaultNaturalMemoryOptions
+	NewQueryAnalysisCache       = appcore.NewQueryAnalysisCache
 )

@@ -1,0 +1,8 @@
+case_id: N003_first_sleep_once
+description: First-sleep consolidation applies once inside the configured window.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_first_sleep_once
+    age_hours: 12
+    first_sleep_window_hours: 36

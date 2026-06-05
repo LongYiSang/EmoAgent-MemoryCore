@@ -1,0 +1,9 @@
+case_id: N001_power_law_decay
+description: Natural Memory power-law retrievability decays monotonically as time since strengthening grows.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_power_law_monotonic
+    fact_type: stable_preference
+    earlier_delta_days: 3
+    later_delta_days: 30

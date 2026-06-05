@@ -1,0 +1,8 @@
+case_id: N007_sleep_cycle_once_per_day
+description: A sleep_cycle run is completed at most once per persona local day unless forced.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_sleep_cycle_once_per_day
+    local_date: "2026-06-05"
+    local_time: "03:30"

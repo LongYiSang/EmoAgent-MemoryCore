@@ -49,6 +49,17 @@ func (s *runState) assert(ctx context.Context, assertion Assertion) error {
 		return s.assertUnsupportedPremiseNotAsserted(assertion)
 	case "ablation_improves":
 		return s.assertAblationImproves(assertion)
+	case "natural_power_law_monotonic",
+		"natural_reactivation",
+		"natural_first_sleep_once",
+		"natural_protected_memory",
+		"natural_search_document_write_scope",
+		"natural_skip_visibility",
+		"natural_sleep_cycle_once_per_day",
+		"natural_manual_quota",
+		"natural_compression_candidate",
+		"natural_lifecycle_cap":
+		return s.assertNaturalMemory(ctx, assertion)
 	case "fact_count":
 		return s.assertFactCount(ctx, assertion)
 	case "fact_column":

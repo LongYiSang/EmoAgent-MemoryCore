@@ -246,6 +246,92 @@ semantic_ops:
       thinking:
         type: disabled
 
+natural_memory:
+  enabled: true
+  algorithm_version: natural_power_sleep_v1
+  sleep_cycle:
+    enabled: true
+    local_time: "03:30"
+    timezone: ""
+    min_interval_hours: 20
+    run_missed_on_start: false
+    jitter_minutes: 0
+    night_window_start: "01:00"
+    night_window_end: "05:00"
+    warn_if_outside_night_window: true
+  manual_trigger:
+    enabled: true
+    allow_force: true
+    allow_dry_run: true
+    mark_sleep_cycle_by_default: false
+  scoring:
+    model: power_law_with_reactivation
+    default_decay_exponent: 0.6
+    reactivation_threshold: 0.55
+    reactivation_gain: 0.35
+    first_sleep_boost: 0.25
+    first_sleep_window_hours: 36
+    emotion_salience_lambda: 0.15
+    emotion_persistence_lambda: 0.15
+  fact_defaults:
+    core_identity:
+      tau_days: 0
+      alpha: 0.0
+      protected: true
+    significant_event:
+      tau_days: 180
+      alpha: 0.45
+    stable_preference:
+      tau_days: 90
+      alpha: 0.55
+    relational_state:
+      tau_days: 60
+      alpha: 0.65
+    commitment:
+      tau_days: 0
+      alpha: 0.80
+      use_valid_to: true
+    transient_context:
+      tau_days: 7
+      alpha: 0.90
+    task_relevant_context:
+      tau_days: 3
+      alpha: 1.00
+  protection:
+    protect_pinned: true
+    protect_core_identity: true
+    protect_active_commitment: true
+    protect_explicit_boundary: true
+    protected_min_tier: warm
+  search_tier:
+    enabled: true
+    write_memory_search_documents: true
+    update_only_search_tier_and_updated_at: true
+    hot_min: 0.65
+    warm_min: 0.40
+    cold_min: 0.20
+    default_faded_tier: deep_cold
+    enqueue_mirror_upsert_on_tier_change: true
+  compression:
+    enabled: true
+    emit_candidates: true
+    apply_without_llm: false
+    min_cluster_size: 3
+    max_candidates_per_run: 20
+    allowed_source_tiers:
+      - cold
+      - deep_cold
+    exclude_fact_types:
+      - core_identity
+      - commitment
+    require_min_confidence: 0.70
+    require_low_sensitivity: true
+  limits:
+    max_candidates_per_run: 5000
+    max_writes_per_run: 1000
+    batch_size: 200
+    max_explain_items: 100
+
 retention:
   jobs:
     lazy_decay: true

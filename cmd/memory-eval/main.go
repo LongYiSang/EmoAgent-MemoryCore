@@ -410,8 +410,11 @@ func durationMilliseconds(value time.Duration) int {
 }
 
 func defaultSuiteRoot(repoRoot string, suite string) string {
-	if strings.TrimSpace(suite) == "query_analysis" {
+	switch strings.TrimSpace(suite) {
+	case "query_analysis":
 		return filepath.Join(repoRoot, "testdata", "memory_eval", "query_analysis")
+	case "natural_memory":
+		return filepath.Join(repoRoot, "testdata", "memory_eval", "natural_memory")
 	}
 	return filepath.Join(repoRoot, "testdata", "memory_eval", "quality", suite)
 }

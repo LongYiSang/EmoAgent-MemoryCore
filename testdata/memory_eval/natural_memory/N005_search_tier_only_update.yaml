@@ -1,0 +1,9 @@
+case_id: N005_search_tier_only_update
+description: Natural Memory updates only memory_search_documents.search_tier and updated_at.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_search_document_write_scope
+    allowed_columns:
+      - search_tier
+      - updated_at

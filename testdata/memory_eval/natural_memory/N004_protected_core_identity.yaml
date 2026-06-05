@@ -1,0 +1,9 @@
+case_id: N004_protected_core_identity
+description: Pinned core identity memory is protected and is not naturally downgraded below the protected minimum tier.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_protected_memory
+    fact_type: core_identity
+    pinned: true
+    protected_min_tier: warm

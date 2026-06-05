@@ -1,0 +1,8 @@
+case_id: N010_lifecycle_cap_prevents_rewarming_archived
+description: Lifecycle cap prevents archived or deep-archived nodes from being rewarmed beyond their storage cap.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_lifecycle_cap
+    archived_max_tier: cold
+    deep_archived_skipped: true

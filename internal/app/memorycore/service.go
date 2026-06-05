@@ -25,6 +25,8 @@ type Service interface {
 	RebuildSearchDocuments(ctx context.Context, req RebuildSearchDocumentsRequest) (*RebuildSearchDocumentsResult, error)
 	RunRetention(ctx context.Context, req RunRetentionRequest) (*RunRetentionResult, error)
 	RunRetentionJobs(ctx context.Context, req RunRetentionJobsRequest) (*RunRetentionJobsResult, error)
+	RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemoryCycleRequest) (*RunNaturalMemoryCycleResult, error)
+	RunNaturalMemoryTick(ctx context.Context, req RunNaturalMemoryTickRequest) (*RunNaturalMemoryCycleResult, error)
 	ApplyCompression(ctx context.Context, req ApplyCompressionRequest) (*ApplyCompressionResult, error)
 	RunCuration(ctx context.Context, req RunCurationRequest) (*RunCurationResult, error)
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
@@ -49,6 +51,7 @@ type service struct {
 	queryAnalyzer     QueryAnalyzer
 	queryPipeline     queryAnalysisPipeline
 	retention         *memsqlite.RetentionRepository
+	natural           *memsqlite.NaturalMemoryRepository
 	compress          *memsqlite.CompressionRepository
 	curation          *memsqlite.CurationRepository
 	forget            *memsqlite.ForgetRepository
@@ -64,6 +67,7 @@ type service struct {
 	sidecarBreaker    *sidecarCircuitBreaker
 	extraction        ExtractionOptions
 	semanticOps       SemanticOpsOptions
+	naturalOptions    NaturalMemoryOptions
 }
 
 func Open(ctx context.Context, opts Options) (Service, error) {
@@ -105,6 +109,10 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 	sqlDB := db.SQLDB()
 	retrieve := memsqlite.NewRetrievalRepository(sqlDB, uuid.NewString, now)
 	queryPipeline := newQueryAnalysisPipeline(storeRuleQueryAnalyzer{repo: retrieve}, newSemanticQueryAnalyzerFromOptions(opts.QueryAnalysis), opts.QueryAnalysis)
+	naturalOptions := normalizeNaturalMemoryOptions(opts.NaturalMemory)
+	if strings.TrimSpace(naturalOptions.SleepCycle.Timezone) == "" {
+		naturalOptions.SleepCycle.Timezone = timezone
+	}
 	return &service{
 		db:                db,
 		sqlDB:             sqlDB,
@@ -117,6 +125,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		queryAnalyzer:     queryPipeline,
 		queryPipeline:     queryPipeline,
 		retention:         memsqlite.NewRetentionRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		natural:           memsqlite.NewNaturalMemoryRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		compress:          memsqlite.NewCompressionRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		curation:          memsqlite.NewCurationRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		forget:            memsqlite.NewForgetRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
@@ -132,6 +141,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		sidecarBreaker:    newSidecarCircuitBreaker(resilience.Breaker, now),
 		extraction:        extraction,
 		semanticOps:       normalizeSemanticOpsOptions(opts.SemanticOps),
+		naturalOptions:    naturalOptions,
 	}, nil
 }
 

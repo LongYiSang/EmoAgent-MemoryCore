@@ -27,6 +27,7 @@ type Config struct {
 	Sidecar           SidecarConfig           `yaml:"sidecar" json:"sidecar"`
 	Mirror            MirrorConfig            `yaml:"mirror" json:"mirror"`
 	SemanticOps       SemanticOpsConfig       `yaml:"semantic_ops" json:"semantic_ops"`
+	NaturalMemory     NaturalMemoryConfig     `yaml:"natural_memory" json:"natural_memory"`
 	Retention         RetentionConfig         `yaml:"retention" json:"retention"`
 	ForgettingPrivacy ForgettingPrivacyConfig `yaml:"forgetting_privacy" json:"forgetting_privacy"`
 	AgentAffect       AgentAffectConfig       `yaml:"agent_affect" json:"agent_affect"`
@@ -386,6 +387,94 @@ type MirrorConfig struct {
 	SyncLimit           int  `yaml:"sync_limit" json:"sync_limit"`
 	RebuildOnStart      bool `yaml:"rebuild_on_start" json:"rebuild_on_start"`
 	StaleLagThresholdMS int  `yaml:"stale_lag_threshold_ms" json:"stale_lag_threshold_ms"`
+}
+
+type NaturalMemoryConfig struct {
+	Enabled          bool                               `yaml:"enabled" json:"enabled"`
+	AlgorithmVersion string                             `yaml:"algorithm_version" json:"algorithm_version"`
+	SleepCycle       NaturalMemorySleepCycleConfig      `yaml:"sleep_cycle" json:"sleep_cycle"`
+	ManualTrigger    NaturalMemoryManualTriggerConfig   `yaml:"manual_trigger" json:"manual_trigger"`
+	Scoring          NaturalMemoryScoringConfig         `yaml:"scoring" json:"scoring"`
+	FactDefaults     map[string]NaturalMemoryTypeConfig `yaml:"fact_defaults" json:"fact_defaults"`
+	Protection       NaturalMemoryProtectionConfig      `yaml:"protection" json:"protection"`
+	SearchTier       NaturalMemorySearchTierConfig      `yaml:"search_tier" json:"search_tier"`
+	Compression      NaturalMemoryCompressionConfig     `yaml:"compression" json:"compression"`
+	Limits           NaturalMemoryLimitsConfig          `yaml:"limits" json:"limits"`
+}
+
+type NaturalMemorySleepCycleConfig struct {
+	Enabled                  bool   `yaml:"enabled" json:"enabled"`
+	LocalTime                string `yaml:"local_time" json:"local_time"`
+	Timezone                 string `yaml:"timezone" json:"timezone"`
+	MinIntervalHours         int    `yaml:"min_interval_hours" json:"min_interval_hours"`
+	RunMissedOnStart         bool   `yaml:"run_missed_on_start" json:"run_missed_on_start"`
+	JitterMinutes            int    `yaml:"jitter_minutes" json:"jitter_minutes"`
+	NightWindowStart         string `yaml:"night_window_start" json:"night_window_start"`
+	NightWindowEnd           string `yaml:"night_window_end" json:"night_window_end"`
+	WarnIfOutsideNightWindow bool   `yaml:"warn_if_outside_night_window" json:"warn_if_outside_night_window"`
+}
+
+type NaturalMemoryManualTriggerConfig struct {
+	Enabled                 bool `yaml:"enabled" json:"enabled"`
+	AllowForce              bool `yaml:"allow_force" json:"allow_force"`
+	AllowDryRun             bool `yaml:"allow_dry_run" json:"allow_dry_run"`
+	MarkSleepCycleByDefault bool `yaml:"mark_sleep_cycle_by_default" json:"mark_sleep_cycle_by_default"`
+}
+
+type NaturalMemoryScoringConfig struct {
+	Model                    string  `yaml:"model" json:"model"`
+	DefaultDecayExponent     float64 `yaml:"default_decay_exponent" json:"default_decay_exponent"`
+	ReactivationThreshold    float64 `yaml:"reactivation_threshold" json:"reactivation_threshold"`
+	ReactivationGain         float64 `yaml:"reactivation_gain" json:"reactivation_gain"`
+	FirstSleepBoost          float64 `yaml:"first_sleep_boost" json:"first_sleep_boost"`
+	FirstSleepWindowHours    int     `yaml:"first_sleep_window_hours" json:"first_sleep_window_hours"`
+	EmotionSalienceLambda    float64 `yaml:"emotion_salience_lambda" json:"emotion_salience_lambda"`
+	EmotionPersistenceLambda float64 `yaml:"emotion_persistence_lambda" json:"emotion_persistence_lambda"`
+}
+
+type NaturalMemoryTypeConfig struct {
+	TauDays    float64 `yaml:"tau_days" json:"tau_days"`
+	Alpha      float64 `yaml:"alpha" json:"alpha"`
+	Protected  bool    `yaml:"protected" json:"protected"`
+	UseValidTo bool    `yaml:"use_valid_to" json:"use_valid_to"`
+}
+
+type NaturalMemoryProtectionConfig struct {
+	ProtectPinned           bool   `yaml:"protect_pinned" json:"protect_pinned"`
+	ProtectCoreIdentity     bool   `yaml:"protect_core_identity" json:"protect_core_identity"`
+	ProtectActiveCommitment bool   `yaml:"protect_active_commitment" json:"protect_active_commitment"`
+	ProtectExplicitBoundary bool   `yaml:"protect_explicit_boundary" json:"protect_explicit_boundary"`
+	ProtectedMinTier        string `yaml:"protected_min_tier" json:"protected_min_tier"`
+}
+
+type NaturalMemorySearchTierConfig struct {
+	Enabled                          bool    `yaml:"enabled" json:"enabled"`
+	WriteMemorySearchDocuments       bool    `yaml:"write_memory_search_documents" json:"write_memory_search_documents"`
+	UpdateOnlySearchTierAndUpdatedAt bool    `yaml:"update_only_search_tier_and_updated_at" json:"update_only_search_tier_and_updated_at"`
+	HotMin                           float64 `yaml:"hot_min" json:"hot_min"`
+	WarmMin                          float64 `yaml:"warm_min" json:"warm_min"`
+	ColdMin                          float64 `yaml:"cold_min" json:"cold_min"`
+	DefaultFadedTier                 string  `yaml:"default_faded_tier" json:"default_faded_tier"`
+	EnqueueMirrorUpsertOnTierChange  bool    `yaml:"enqueue_mirror_upsert_on_tier_change" json:"enqueue_mirror_upsert_on_tier_change"`
+}
+
+type NaturalMemoryCompressionConfig struct {
+	Enabled               bool     `yaml:"enabled" json:"enabled"`
+	EmitCandidates        bool     `yaml:"emit_candidates" json:"emit_candidates"`
+	ApplyWithoutLLM       bool     `yaml:"apply_without_llm" json:"apply_without_llm"`
+	MinClusterSize        int      `yaml:"min_cluster_size" json:"min_cluster_size"`
+	MaxCandidatesPerRun   int      `yaml:"max_candidates_per_run" json:"max_candidates_per_run"`
+	AllowedSourceTiers    []string `yaml:"allowed_source_tiers" json:"allowed_source_tiers"`
+	ExcludeFactTypes      []string `yaml:"exclude_fact_types" json:"exclude_fact_types"`
+	RequireMinConfidence  float64  `yaml:"require_min_confidence" json:"require_min_confidence"`
+	RequireLowSensitivity bool     `yaml:"require_low_sensitivity" json:"require_low_sensitivity"`
+}
+
+type NaturalMemoryLimitsConfig struct {
+	MaxCandidatesPerRun int `yaml:"max_candidates_per_run" json:"max_candidates_per_run"`
+	MaxWritesPerRun     int `yaml:"max_writes_per_run" json:"max_writes_per_run"`
+	BatchSize           int `yaml:"batch_size" json:"batch_size"`
+	MaxExplainItems     int `yaml:"max_explain_items" json:"max_explain_items"`
 }
 
 type RetentionConfig struct {
@@ -817,6 +906,80 @@ func DefaultConfig() Config {
 				Review: CurationReviewConfig{WriteReviewDecisions: true},
 			},
 		},
+		NaturalMemory: NaturalMemoryConfig{
+			Enabled:          true,
+			AlgorithmVersion: memorycore.NaturalMemoryAlgorithmPowerSleepV1,
+			SleepCycle: NaturalMemorySleepCycleConfig{
+				Enabled:                  true,
+				LocalTime:                "03:30",
+				Timezone:                 "",
+				MinIntervalHours:         20,
+				RunMissedOnStart:         false,
+				JitterMinutes:            0,
+				NightWindowStart:         "01:00",
+				NightWindowEnd:           "05:00",
+				WarnIfOutsideNightWindow: true,
+			},
+			ManualTrigger: NaturalMemoryManualTriggerConfig{
+				Enabled:                 true,
+				AllowForce:              true,
+				AllowDryRun:             true,
+				MarkSleepCycleByDefault: false,
+			},
+			Scoring: NaturalMemoryScoringConfig{
+				Model:                    "power_law_with_reactivation",
+				DefaultDecayExponent:     0.6,
+				ReactivationThreshold:    0.55,
+				ReactivationGain:         0.35,
+				FirstSleepBoost:          0.25,
+				FirstSleepWindowHours:    36,
+				EmotionSalienceLambda:    0.15,
+				EmotionPersistenceLambda: 0.15,
+			},
+			FactDefaults: map[string]NaturalMemoryTypeConfig{
+				memorycore.FactTypeCoreIdentity:        {TauDays: 0, Alpha: 0, Protected: true},
+				memorycore.FactTypeSignificantEvent:    {TauDays: 180, Alpha: 0.45},
+				memorycore.FactTypeStablePreference:    {TauDays: 90, Alpha: 0.55},
+				memorycore.FactTypeRelationalState:     {TauDays: 60, Alpha: 0.65},
+				memorycore.FactTypeCommitment:          {TauDays: 0, Alpha: 0.80, UseValidTo: true},
+				memorycore.FactTypeTransientContext:    {TauDays: 7, Alpha: 0.90},
+				memorycore.FactTypeTaskRelevantContext: {TauDays: 3, Alpha: 1.00},
+			},
+			Protection: NaturalMemoryProtectionConfig{
+				ProtectPinned:           true,
+				ProtectCoreIdentity:     true,
+				ProtectActiveCommitment: true,
+				ProtectExplicitBoundary: true,
+				ProtectedMinTier:        string(memorycore.SearchTierWarm),
+			},
+			SearchTier: NaturalMemorySearchTierConfig{
+				Enabled:                          true,
+				WriteMemorySearchDocuments:       true,
+				UpdateOnlySearchTierAndUpdatedAt: true,
+				HotMin:                           0.65,
+				WarmMin:                          0.40,
+				ColdMin:                          0.20,
+				DefaultFadedTier:                 string(memorycore.SearchTierDeepCold),
+				EnqueueMirrorUpsertOnTierChange:  true,
+			},
+			Compression: NaturalMemoryCompressionConfig{
+				Enabled:               true,
+				EmitCandidates:        true,
+				ApplyWithoutLLM:       false,
+				MinClusterSize:        3,
+				MaxCandidatesPerRun:   20,
+				AllowedSourceTiers:    []string{string(memorycore.SearchTierCold), string(memorycore.SearchTierDeepCold)},
+				ExcludeFactTypes:      []string{memorycore.FactTypeCoreIdentity, memorycore.FactTypeCommitment},
+				RequireMinConfidence:  0.70,
+				RequireLowSensitivity: true,
+			},
+			Limits: NaturalMemoryLimitsConfig{
+				MaxCandidatesPerRun: 5000,
+				MaxWritesPerRun:     1000,
+				BatchSize:           200,
+				MaxExplainItems:     100,
+			},
+		},
 		Retention: RetentionConfig{
 			Jobs: RetentionJobsConfig{
 				LazyDecay:            true,
@@ -935,6 +1098,9 @@ func (c Config) Validate() error {
 	if err := c.validateSemanticOps(); err != nil {
 		return err
 	}
+	if err := c.validateNaturalMemory(); err != nil {
+		return err
+	}
 	if c.Retention.Jobs.MonthlyArchive && c.Retention.Thresholds.DeepArchiveAfterDays <= 0 {
 		return fmt.Errorf("retention.thresholds.deep_archive_after_days must be > 0 when retention.jobs.monthly_archive=true")
 	}
@@ -1004,6 +1170,124 @@ func (c Config) validateSemanticOps() error {
 		} else if !provider.Enabled {
 			return fmt.Errorf("semantic_ops.curation.llm.provider_id %q references a disabled provider", c.SemanticOps.Curation.LLM.ProviderID)
 		}
+	}
+	return nil
+}
+
+func (c Config) validateNaturalMemory() error {
+	cfg := c.NaturalMemory
+	if strings.TrimSpace(cfg.AlgorithmVersion) == "" {
+		return fmt.Errorf("natural_memory.algorithm_version is required")
+	}
+	if cfg.AlgorithmVersion != memorycore.NaturalMemoryAlgorithmPowerSleepV1 {
+		return fmt.Errorf("natural_memory.algorithm_version must be %q", memorycore.NaturalMemoryAlgorithmPowerSleepV1)
+	}
+	if err := validateHHMM("natural_memory.sleep_cycle.local_time", cfg.SleepCycle.LocalTime); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.SleepCycle.Timezone) != "" {
+		if _, err := time.LoadLocation(strings.TrimSpace(cfg.SleepCycle.Timezone)); err != nil {
+			return fmt.Errorf("natural_memory.sleep_cycle.timezone must be a valid IANA timezone: %w", err)
+		}
+	}
+	if cfg.SleepCycle.MinIntervalHours < 1 {
+		return fmt.Errorf("natural_memory.sleep_cycle.min_interval_hours must be >= 1")
+	}
+	if cfg.SleepCycle.JitterMinutes < 0 {
+		return fmt.Errorf("natural_memory.sleep_cycle.jitter_minutes must be >= 0")
+	}
+	if err := validateHHMM("natural_memory.sleep_cycle.night_window_start", cfg.SleepCycle.NightWindowStart); err != nil {
+		return err
+	}
+	if err := validateHHMM("natural_memory.sleep_cycle.night_window_end", cfg.SleepCycle.NightWindowEnd); err != nil {
+		return err
+	}
+	if err := validateRange("natural_memory.scoring.default_decay_exponent", cfg.Scoring.DefaultDecayExponent, 0, 1.5); err != nil {
+		return err
+	}
+	if err := validateRange("natural_memory.scoring.reactivation_threshold", cfg.Scoring.ReactivationThreshold, 0, 1.5); err != nil {
+		return err
+	}
+	if err := validateRange("natural_memory.scoring.reactivation_gain", cfg.Scoring.ReactivationGain, 0, 1.5); err != nil {
+		return err
+	}
+	if err := validateRange("natural_memory.scoring.first_sleep_boost", cfg.Scoring.FirstSleepBoost, 0, 1.5); err != nil {
+		return err
+	}
+	if cfg.Scoring.FirstSleepWindowHours <= 0 {
+		return fmt.Errorf("natural_memory.scoring.first_sleep_window_hours must be > 0")
+	}
+	if err := validateRange("natural_memory.scoring.emotion_salience_lambda", cfg.Scoring.EmotionSalienceLambda, 0, 1.5); err != nil {
+		return err
+	}
+	if err := validateRange("natural_memory.scoring.emotion_persistence_lambda", cfg.Scoring.EmotionPersistenceLambda, 0, 1.5); err != nil {
+		return err
+	}
+	for factType, defaults := range cfg.FactDefaults {
+		if !validNaturalFactType(factType) {
+			return fmt.Errorf("natural_memory.fact_defaults.%s is not a supported fact_type", factType)
+		}
+		if defaults.TauDays < 0 {
+			return fmt.Errorf("natural_memory.fact_defaults.%s.tau_days must be >= 0", factType)
+		}
+		if defaults.Alpha < 0 {
+			return fmt.Errorf("natural_memory.fact_defaults.%s.alpha must be >= 0", factType)
+		}
+	}
+	if !validNaturalSearchTier(cfg.Protection.ProtectedMinTier) {
+		return fmt.Errorf("natural_memory.protection.protected_min_tier must be one of hot|warm|cold|deep_cold")
+	}
+	if !cfg.SearchTier.UpdateOnlySearchTierAndUpdatedAt {
+		return fmt.Errorf("natural_memory.search_tier.update_only_search_tier_and_updated_at must be true")
+	}
+	if !(cfg.SearchTier.HotMin > cfg.SearchTier.WarmMin && cfg.SearchTier.WarmMin > cfg.SearchTier.ColdMin) {
+		return fmt.Errorf("natural_memory.search_tier thresholds must satisfy hot_min > warm_min > cold_min")
+	}
+	for _, item := range []struct {
+		name  string
+		value float64
+	}{
+		{"natural_memory.search_tier.hot_min", cfg.SearchTier.HotMin},
+		{"natural_memory.search_tier.warm_min", cfg.SearchTier.WarmMin},
+		{"natural_memory.search_tier.cold_min", cfg.SearchTier.ColdMin},
+	} {
+		if err := validateRange(item.name, item.value, 0, 1.5); err != nil {
+			return err
+		}
+	}
+	if !validNaturalSearchTier(cfg.SearchTier.DefaultFadedTier) {
+		return fmt.Errorf("natural_memory.search_tier.default_faded_tier must be one of hot|warm|cold|deep_cold")
+	}
+	if cfg.Compression.MinClusterSize <= 0 {
+		return fmt.Errorf("natural_memory.compression.min_cluster_size must be > 0")
+	}
+	if cfg.Compression.MaxCandidatesPerRun <= 0 {
+		return fmt.Errorf("natural_memory.compression.max_candidates_per_run must be > 0")
+	}
+	if err := validateRange("natural_memory.compression.require_min_confidence", cfg.Compression.RequireMinConfidence, 0, 1); err != nil {
+		return err
+	}
+	for _, tier := range cfg.Compression.AllowedSourceTiers {
+		if !validNaturalSearchTier(tier) {
+			return fmt.Errorf("natural_memory.compression.allowed_source_tiers contains unsupported tier %q", tier)
+		}
+	}
+	for _, factType := range cfg.Compression.ExcludeFactTypes {
+		if !validNaturalFactType(factType) {
+			return fmt.Errorf("natural_memory.compression.exclude_fact_types contains unsupported fact_type %q", factType)
+		}
+	}
+	if cfg.Limits.MaxCandidatesPerRun <= 0 {
+		return fmt.Errorf("natural_memory.limits.max_candidates_per_run must be > 0")
+	}
+	if cfg.Limits.MaxWritesPerRun <= 0 {
+		return fmt.Errorf("natural_memory.limits.max_writes_per_run must be > 0")
+	}
+	if cfg.Limits.BatchSize <= 0 {
+		return fmt.Errorf("natural_memory.limits.batch_size must be > 0")
+	}
+	if cfg.Limits.MaxExplainItems <= 0 {
+		return fmt.Errorf("natural_memory.limits.max_explain_items must be > 0")
 	}
 	return nil
 }
@@ -1186,6 +1470,51 @@ func validateUnitInterval(name string, value float64) error {
 		return fmt.Errorf("%s must be within (0, 1]", name)
 	}
 	return nil
+}
+
+func validateRange(name string, value float64, min float64, max float64) error {
+	if value < min || value > max {
+		return fmt.Errorf("%s must be within [%s, %s]", name, formatConfigFloat(min), formatConfigFloat(max))
+	}
+	return nil
+}
+
+func formatConfigFloat(value float64) string {
+	return fmt.Sprintf("%g", value)
+}
+
+func validateHHMM(name string, value string) error {
+	if _, err := time.Parse("15:04", strings.TrimSpace(value)); err != nil {
+		return fmt.Errorf("%s must be HH:mm", name)
+	}
+	return nil
+}
+
+func validNaturalFactType(value string) bool {
+	switch value {
+	case memorycore.FactTypeCoreIdentity,
+		memorycore.FactTypeSignificantEvent,
+		memorycore.FactTypeStablePreference,
+		memorycore.FactTypeRelationalState,
+		memorycore.FactTypeCommitment,
+		memorycore.FactTypeTransientContext,
+		memorycore.FactTypeTaskRelevantContext:
+		return true
+	default:
+		return false
+	}
+}
+
+func validNaturalSearchTier(value string) bool {
+	switch value {
+	case string(memorycore.SearchTierHot),
+		string(memorycore.SearchTierWarm),
+		string(memorycore.SearchTierCold),
+		string(memorycore.SearchTierDeepCold):
+		return true
+	default:
+		return false
+	}
 }
 
 func validateQueryAnalysisThresholds(thresholds QueryAnalysisThresholdsConfig) error {
@@ -1371,6 +1700,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		Timezone:      c.Core.Timezone,
 		MirrorAdapter: adapter,
 		Extraction:    c.ExtractionOptions(),
+		NaturalMemory: c.NaturalMemoryOptions(),
 		SemanticOps: memorycore.SemanticOpsOptions{
 			SemanticMirrorMetaEnabled:       c.SemanticOps.SemanticMirrorMetaEnabled,
 			SemanticSidecarAuthTokenEnabled: c.SemanticOps.SemanticSidecarAuthTokenEnabled,
@@ -1496,6 +1826,93 @@ func (c Config) CurationOptions() memorycore.SemanticCurationOptions {
 			),
 			Timeout:  time.Duration(cfg.LLM.TimeoutMS) * time.Millisecond,
 			Thinking: &memorycore.OpenAICompatibleThinkingOptions{Type: cfg.LLM.Thinking.Type},
+		},
+	}
+}
+
+func (c Config) NaturalMemoryOptions() memorycore.NaturalMemoryOptions {
+	cfg := c.NaturalMemory
+	factDefaults := make(map[memorycore.FactType]memorycore.NaturalMemoryTypeDefault, len(cfg.FactDefaults))
+	for factType, defaults := range cfg.FactDefaults {
+		factDefaults[memorycore.FactType(factType)] = memorycore.NaturalMemoryTypeDefault{
+			TauDays:    defaults.TauDays,
+			Alpha:      defaults.Alpha,
+			Protected:  defaults.Protected,
+			UseValidTo: defaults.UseValidTo,
+		}
+	}
+	allowedTiers := make([]memorycore.SearchTier, 0, len(cfg.Compression.AllowedSourceTiers))
+	for _, tier := range cfg.Compression.AllowedSourceTiers {
+		allowedTiers = append(allowedTiers, memorycore.SearchTier(tier))
+	}
+	excludedTypes := make([]memorycore.FactType, 0, len(cfg.Compression.ExcludeFactTypes))
+	for _, factType := range cfg.Compression.ExcludeFactTypes {
+		excludedTypes = append(excludedTypes, memorycore.FactType(factType))
+	}
+	return memorycore.NaturalMemoryOptions{
+		Enabled:          cfg.Enabled,
+		AlgorithmVersion: cfg.AlgorithmVersion,
+		SleepCycle: memorycore.NaturalMemorySleepCycleOptions{
+			Enabled:                  cfg.SleepCycle.Enabled,
+			LocalTime:                cfg.SleepCycle.LocalTime,
+			Timezone:                 firstNonEmptyString(cfg.SleepCycle.Timezone, c.Core.Timezone),
+			MinInterval:              time.Duration(cfg.SleepCycle.MinIntervalHours) * time.Hour,
+			RunMissedOnStart:         cfg.SleepCycle.RunMissedOnStart,
+			Jitter:                   time.Duration(cfg.SleepCycle.JitterMinutes) * time.Minute,
+			NightWindowStart:         cfg.SleepCycle.NightWindowStart,
+			NightWindowEnd:           cfg.SleepCycle.NightWindowEnd,
+			WarnIfOutsideNightWindow: cfg.SleepCycle.WarnIfOutsideNightWindow,
+		},
+		ManualTrigger: memorycore.NaturalMemoryManualTriggerOptions{
+			Enabled:                 cfg.ManualTrigger.Enabled,
+			AllowForce:              cfg.ManualTrigger.AllowForce,
+			AllowDryRun:             cfg.ManualTrigger.AllowDryRun,
+			MarkSleepCycleByDefault: cfg.ManualTrigger.MarkSleepCycleByDefault,
+		},
+		Scoring: memorycore.NaturalMemoryScoringOptions{
+			Model:                    cfg.Scoring.Model,
+			DefaultDecayExponent:     cfg.Scoring.DefaultDecayExponent,
+			ReactivationThreshold:    cfg.Scoring.ReactivationThreshold,
+			ReactivationGain:         cfg.Scoring.ReactivationGain,
+			FirstSleepBoost:          cfg.Scoring.FirstSleepBoost,
+			FirstSleepWindow:         time.Duration(cfg.Scoring.FirstSleepWindowHours) * time.Hour,
+			EmotionSalienceLambda:    cfg.Scoring.EmotionSalienceLambda,
+			EmotionPersistenceLambda: cfg.Scoring.EmotionPersistenceLambda,
+		},
+		FactDefaults: factDefaults,
+		Protection: memorycore.NaturalMemoryProtectionOptions{
+			ProtectPinned:           cfg.Protection.ProtectPinned,
+			ProtectCoreIdentity:     cfg.Protection.ProtectCoreIdentity,
+			ProtectActiveCommitment: cfg.Protection.ProtectActiveCommitment,
+			ProtectExplicitBoundary: cfg.Protection.ProtectExplicitBoundary,
+			ProtectedMinTier:        memorycore.SearchTier(cfg.Protection.ProtectedMinTier),
+		},
+		SearchTier: memorycore.NaturalMemorySearchTierOptions{
+			Enabled:                          cfg.SearchTier.Enabled,
+			WriteMemorySearchDocuments:       cfg.SearchTier.WriteMemorySearchDocuments,
+			UpdateOnlySearchTierAndUpdatedAt: cfg.SearchTier.UpdateOnlySearchTierAndUpdatedAt,
+			HotMin:                           cfg.SearchTier.HotMin,
+			WarmMin:                          cfg.SearchTier.WarmMin,
+			ColdMin:                          cfg.SearchTier.ColdMin,
+			DefaultFadedTier:                 memorycore.SearchTier(cfg.SearchTier.DefaultFadedTier),
+			EnqueueMirrorUpsertOnTierChange:  cfg.SearchTier.EnqueueMirrorUpsertOnTierChange,
+		},
+		Compression: memorycore.NaturalMemoryCompressionOptions{
+			Enabled:               cfg.Compression.Enabled,
+			EmitCandidates:        cfg.Compression.EmitCandidates,
+			ApplyWithoutLLM:       cfg.Compression.ApplyWithoutLLM,
+			MinClusterSize:        cfg.Compression.MinClusterSize,
+			MaxCandidatesPerRun:   cfg.Compression.MaxCandidatesPerRun,
+			AllowedSourceTiers:    allowedTiers,
+			ExcludeFactTypes:      excludedTypes,
+			RequireMinConfidence:  cfg.Compression.RequireMinConfidence,
+			RequireLowSensitivity: cfg.Compression.RequireLowSensitivity,
+		},
+		Limits: memorycore.NaturalMemoryLimitsOptions{
+			MaxCandidatesPerRun: cfg.Limits.MaxCandidatesPerRun,
+			MaxWritesPerRun:     cfg.Limits.MaxWritesPerRun,
+			BatchSize:           cfg.Limits.BatchSize,
+			MaxExplainItems:     cfg.Limits.MaxExplainItems,
 		},
 	}
 }

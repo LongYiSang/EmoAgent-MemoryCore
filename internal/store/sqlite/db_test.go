@@ -27,6 +27,10 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	requireTable(t, db.SQLDB(), "consolidation_apply_fingerprints")
 	requireTable(t, db.SQLDB(), "consolidation_session_fact_writes")
 	requireTable(t, db.SQLDB(), "pending_manual_forget_operations")
+	requireTable(t, db.SQLDB(), "memory_natural_states")
+	requireTable(t, db.SQLDB(), "memory_natural_events")
+	requireTable(t, db.SQLDB(), "memory_natural_runs")
+	requireTable(t, db.SQLDB(), "memory_natural_compression_candidates")
 	requireTable(t, db.SQLDB(), "semantic_mirror_meta")
 	requireTable(t, db.SQLDB(), "semantic_decision_audit")
 	requireTable(t, db.SQLDB(), "memory_curation_checkpoints")
@@ -38,8 +42,8 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	if err := db.SQLDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 12 {
-		t.Fatalf("migration count = %d, want 12", migrationCount)
+	if migrationCount != 13 {
+		t.Fatalf("migration count = %d, want 13", migrationCount)
 	}
 
 	predicates := memsqlite.NewPredicateRepository(db.SQLDB())

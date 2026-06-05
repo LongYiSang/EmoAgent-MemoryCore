@@ -1,0 +1,10 @@
+case_id: N002_reactivation_strengthens
+description: Recent access plus user reinforcement crosses the reactivation threshold and increases stability.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_reactivation
+    fact_type: stable_preference
+    access_count: 3
+    reinforcement_count: 1
+    min_reactivation_score: 0.55

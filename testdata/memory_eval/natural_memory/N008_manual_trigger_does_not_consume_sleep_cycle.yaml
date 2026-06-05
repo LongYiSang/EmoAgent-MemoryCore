@@ -1,0 +1,7 @@
+case_id: N008_manual_trigger_does_not_consume_sleep_cycle
+description: Manual runs do not consume sleep_cycle quota unless mark_sleep_cycle is true.
+module: natural_memory
+algorithm_version: natural_power_sleep_v1
+assertions:
+  - type: natural_manual_quota
+    mark_sleep_cycle_by_default: false

@@ -15,17 +15,19 @@ import (
 )
 
 type Fixture struct {
-	SchemaVersion  string                `yaml:"schema_version"`
-	Suite          string                `yaml:"suite"`
-	QualityMode    bool                  `yaml:"quality_mode"`
-	AllowStub      bool                  `yaml:"allow_stub"`
-	CaseID         string                `yaml:"case_id"`
-	Description    string                `yaml:"description"`
-	Seed           Seed                  `yaml:"seed"`
-	LiveExtraction *LiveExtractionConfig `yaml:"live_extraction"`
-	Expect         LiveExtractionExpect  `yaml:"expect"`
-	Steps          []Step                `yaml:"steps"`
-	Assertions     []Assertion           `yaml:"assertions"`
+	SchemaVersion    string                `yaml:"schema_version"`
+	Suite            string                `yaml:"suite"`
+	QualityMode      bool                  `yaml:"quality_mode"`
+	AllowStub        bool                  `yaml:"allow_stub"`
+	CaseID           string                `yaml:"case_id"`
+	Description      string                `yaml:"description"`
+	Module           string                `yaml:"module"`
+	AlgorithmVersion string                `yaml:"algorithm_version"`
+	Seed             Seed                  `yaml:"seed"`
+	LiveExtraction   *LiveExtractionConfig `yaml:"live_extraction"`
+	Expect           LiveExtractionExpect  `yaml:"expect"`
+	Steps            []Step                `yaml:"steps"`
+	Assertions       []Assertion           `yaml:"assertions"`
 }
 
 type FixtureStubPolicy string
@@ -559,6 +561,26 @@ type Assertion struct {
 	Alias                          string   `yaml:"alias"`
 	Query                          string   `yaml:"query"`
 	Args                           []string `yaml:"args"`
+	FactType                       string   `yaml:"fact_type"`
+	EarlierDeltaDays               int      `yaml:"earlier_delta_days"`
+	LaterDeltaDays                 int      `yaml:"later_delta_days"`
+	AccessCount                    int      `yaml:"access_count"`
+	ReinforcementCount             int      `yaml:"reinforcement_count"`
+	MinReactivationScore           float64  `yaml:"min_reactivation_score"`
+	AgeHours                       int      `yaml:"age_hours"`
+	FirstSleepWindowHours          int      `yaml:"first_sleep_window_hours"`
+	Pinned                         bool     `yaml:"pinned"`
+	ProtectedMinTier               string   `yaml:"protected_min_tier"`
+	AllowedColumns                 []string `yaml:"allowed_columns"`
+	SkippedVisibilityStatuses      []string `yaml:"skipped_visibility_statuses"`
+	LocalDate                      string   `yaml:"local_date"`
+	LocalTime                      string   `yaml:"local_time"`
+	MarkSleepCycleByDefault        bool     `yaml:"mark_sleep_cycle_by_default"`
+	MinClusterSize                 int      `yaml:"min_cluster_size"`
+	SourceLifecycleStatusUnchanged bool     `yaml:"source_lifecycle_status_unchanged"`
+	ArchivedMaxTier                string   `yaml:"archived_max_tier"`
+	DeepArchivedMaxTier            string   `yaml:"deep_archived_max_tier"`
+	DeepArchivedSkipped            bool     `yaml:"deep_archived_skipped"`
 }
 
 func LoadFixtureBytes(data []byte) (*Fixture, error) {
@@ -801,7 +823,17 @@ func knownAssertionType(value string) bool {
 		"rerank_status",
 		"rerank_input",
 		"unsupported_premise_not_asserted",
-		"ablation_improves":
+		"ablation_improves",
+		"natural_power_law_monotonic",
+		"natural_reactivation",
+		"natural_first_sleep_once",
+		"natural_protected_memory",
+		"natural_search_document_write_scope",
+		"natural_skip_visibility",
+		"natural_sleep_cycle_once_per_day",
+		"natural_manual_quota",
+		"natural_compression_candidate",
+		"natural_lifecycle_cap":
 		return true
 	default:
 		return false

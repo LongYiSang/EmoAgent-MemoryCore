@@ -1,6 +1,13 @@
 package memorycore
 
-import "time"
+import (
+	"time"
+
+	"github.com/longyisang/emoagent-memorycore/internal/core"
+)
+
+type FactType = core.FactType
+type SearchTier = core.SearchTier
 
 const (
 	ConsolidationTriggerManual        = "manual"
@@ -42,6 +49,11 @@ const (
 	ValidityValid       = "valid"
 	ValidityInvalidated = "invalidated"
 	ValidityUncertain   = "uncertain"
+
+	SearchTierHot      = core.SearchTierHot
+	SearchTierWarm     = core.SearchTierWarm
+	SearchTierCold     = core.SearchTierCold
+	SearchTierDeepCold = core.SearchTierDeepCold
 )
 
 type ConsolidateCandidateRequest struct {
