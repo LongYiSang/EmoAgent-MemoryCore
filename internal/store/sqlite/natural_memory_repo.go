@@ -515,6 +515,96 @@ LIMIT 1`, personaID).Scan(&completedAt)
 }
 
 func (r *NaturalMemoryRepository) PersistRun(ctx context.Context, run NaturalMemoryRunRow) error {
+	return r.insertRun(ctx, run)
+}
+
+func (r *NaturalMemoryRepository) ReserveQuotaRun(ctx context.Context, run NaturalMemoryRunRow) (bool, error) {
+	err := r.insertRun(ctx, run)
+	if err == nil {
+		return true, nil
+	}
+	if isNaturalQuotaConstraint(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (r *NaturalMemoryRepository) CompleteReservedRun(ctx context.Context, run NaturalMemoryRunRow) error {
+	result, err := r.db.ExecContext(ctx, `
+UPDATE memory_natural_runs
+SET completed_at = ?,
+    status = ?,
+    evaluated_nodes = ?,
+    scored_nodes = ?,
+    protected_nodes = ?,
+    decayed_nodes = ?,
+    reactivated_nodes = ?,
+    first_sleep_consolidated_nodes = ?,
+    search_tier_updates = ?,
+    search_documents_created = ?,
+    mirror_updates_enqueued = ?,
+    compression_candidates = ?,
+    narratives_created = ?,
+    insights_created = ?
+WHERE id = ?`,
+		r.time.nowText(),
+		run.Status,
+		run.EvaluatedNodes,
+		run.ScoredNodes,
+		run.ProtectedNodes,
+		run.DecayedNodes,
+		run.ReactivatedNodes,
+		run.FirstSleepConsolidatedNodes,
+		run.SearchTierUpdates,
+		run.SearchDocumentsCreated,
+		run.MirrorUpdatesEnqueued,
+		run.CompressionCandidates,
+		run.NarrativesCreated,
+		run.InsightsCreated,
+		run.ID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("natural memory reserved run %s not found", run.ID)
+	}
+	return nil
+}
+
+func (r *NaturalMemoryRepository) FailReservedRun(ctx context.Context, runID string, failure error) error {
+	message := ""
+	if failure != nil {
+		message = failure.Error()
+	}
+	result, err := r.db.ExecContext(ctx, `
+UPDATE memory_natural_runs
+SET completed_at = ?,
+    status = 'failed',
+    error_message = ?
+WHERE id = ?`,
+		r.time.nowText(),
+		message,
+		runID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("natural memory reserved run %s not found", runID)
+	}
+	return nil
+}
+
+func (r *NaturalMemoryRepository) insertRun(ctx context.Context, run NaturalMemoryRunRow) error {
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO memory_natural_runs (
     id, persona_id, run_kind, algorithm_version, local_date, local_time, timezone,
@@ -550,6 +640,16 @@ INSERT INTO memory_natural_runs (
 		run.InsightsCreated,
 	)
 	return err
+}
+
+func isNaturalQuotaConstraint(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "idx_memory_natural_quota_once_per_day") ||
+		strings.Contains(message, "memory_natural_runs.persona_id, memory_natural_runs.local_date") ||
+		strings.Contains(message, "memory_natural_runs.persona_id, memory_natural_runs.run_kind, memory_natural_runs.local_date")
 }
 
 func (r *NaturalMemoryRepository) ApplyNodeWrites(ctx context.Context, state NaturalMemoryStateWrite, events []NaturalMemoryEventWrite, targetTier core.SearchTier, writeSearchDocument bool, enqueueMirrorUpsert bool) (bool, bool, bool, error) {

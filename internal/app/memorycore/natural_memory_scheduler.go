@@ -77,12 +77,8 @@ func (s *service) naturalSleepCycleDue(ctx context.Context, personaID string, no
 	if !force && localNow.Before(dueAt) {
 		return false, "sleep cycle local_time not reached", nil
 	}
-	if startup && !force && !opts.SleepCycle.RunMissedOnStart {
-		if inWindow, err := naturalWithinNightWindow(localNow, opts); err != nil {
-			return false, "", err
-		} else if !inWindow && localNow.After(dueAt) {
-			return false, "sleep cycle missed on startup", nil
-		}
+	if startup && !force && !opts.SleepCycle.RunMissedOnStart && localNow.After(dueAt) {
+		return false, "sleep cycle missed on startup", nil
 	}
 	completed, err := s.natural.SleepCycleCompletedForDate(ctx, personaID, schedule.LocalDate)
 	if err != nil {

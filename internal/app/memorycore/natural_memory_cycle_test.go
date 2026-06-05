@@ -110,6 +110,80 @@ func TestNaturalSleepCycleDirectCycleRespectsDisabledSleepCycle(t *testing.T) {
 	requireTableCount(t, db, "memory_natural_runs", 0)
 }
 
+func TestNaturalSleepCycleReservesQuotaBeforeNodeWrites(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 3, 31, 0, 0, time.FixedZone("CST", 8*60*60))
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_quota_reservation", core.FactTypeTransientContext, "用户临时关注配额预留。", naturalFactOptions{})
+	if _, err := db.Exec(`
+CREATE TRIGGER inject_natural_quota_conflict
+BEFORE INSERT ON memory_natural_states
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM memory_natural_runs
+  WHERE persona_id = NEW.persona_id
+    AND local_date = '2026-06-05'
+    AND status = 'completed'
+    AND force = 0
+    AND (run_kind = 'sleep_cycle' OR mark_sleep_cycle = 1)
+)
+BEGIN
+  INSERT INTO memory_natural_runs (
+    id, persona_id, run_kind, algorithm_version, local_date, local_time, timezone,
+    dry_run, force, mark_sleep_cycle, started_at, completed_at, status
+  ) VALUES (
+    'run_injected_quota_conflict', NEW.persona_id, 'sleep_cycle', 'natural_power_sleep_v1',
+    '2026-06-05', '03:30', 'Asia/Shanghai', 0, 0, 0,
+    '2026-06-05T03:31:00+08:00', '2026-06-05T03:31:00+08:00', 'completed'
+  );
+END`); err != nil {
+		t.Fatalf("create quota trigger: %v", err)
+	}
+
+	result, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   NaturalMemoryRunSleepCycle,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("natural sleep cycle: %v", err)
+	}
+	if result.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("sleep cycle status = %s, want completed", result.Status)
+	}
+	requireNaturalRunAbsent(t, db, "run_injected_quota_conflict")
+	requireTableCount(t, db, "memory_natural_runs", 1)
+	requireNaturalStateCount(t, db, "fact_quota_reservation", 1)
+}
+
+func TestNaturalSleepCycleReservationMarkedFailedWhenNodeWriteFails(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 3, 31, 0, 0, time.FixedZone("CST", 8*60*60))
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_failed_reservation", core.FactTypeTransientContext, "用户临时关注失败预留。", naturalFactOptions{})
+	if _, err := db.Exec(`
+CREATE TRIGGER fail_natural_state_write
+BEFORE INSERT ON memory_natural_states
+BEGIN
+  SELECT RAISE(FAIL, 'state write failed');
+END`); err != nil {
+		t.Fatalf("create failing state trigger: %v", err)
+	}
+
+	_, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   NaturalMemoryRunSleepCycle,
+		Now:       now,
+	})
+	if err == nil {
+		t.Fatalf("natural sleep cycle succeeded, want node write failure")
+	}
+	requireTableCount(t, db, "memory_natural_runs", 1)
+	requireNaturalRunStatus(t, db, "failed")
+}
+
 func TestNaturalSleepCycleForceBypassesMinInterval(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 5, 3, 31, 0, 0, time.FixedZone("CST", 8*60*60))
@@ -234,6 +308,29 @@ func TestNaturalSleepCycleStartupMissedRequiresOptIn(t *testing.T) {
 	if due.Status != NaturalMemoryRunStatusCompleted {
 		t.Fatalf("startup missed tick status = %s, want completed when missed runs enabled", due.Status)
 	}
+}
+
+func TestNaturalSleepCycleStartupMissedSkipsInsideNightWindow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 4, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	opts := defaultNaturalMemoryOptions()
+	opts.SleepCycle.RunMissedOnStart = false
+	svc, db := openNaturalTestServiceWithOptions(t, ctx, now, "Asia/Shanghai", opts)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_missed_start_window", core.FactTypeTransientContext, "用户临时关注窗口内启动补跑。", naturalFactOptions{})
+
+	skipped, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now,
+		Startup:   true,
+	})
+	if err != nil {
+		t.Fatalf("startup tick: %v", err)
+	}
+	if skipped.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("startup tick status = %s, want skipped when local_time already passed", skipped.Status)
+	}
+	requireTableCount(t, db, "memory_natural_runs", 0)
 }
 
 func TestNaturalSleepCycleWarnsOutsideNightWindowWhenExplained(t *testing.T) {
@@ -924,6 +1021,36 @@ LIMIT 1`).Scan(&timezone); err != nil {
 	}
 	if timezone != want {
 		t.Fatalf("natural run timezone = %s, want %s", timezone, want)
+	}
+}
+
+func requireNaturalRunAbsent(t *testing.T, db *sql.DB, runID string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM memory_natural_runs
+WHERE id = ?`, runID).Scan(&count); err != nil {
+		t.Fatalf("count natural run: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("natural run %s exists, want absent", runID)
+	}
+}
+
+func requireNaturalRunStatus(t *testing.T, db *sql.DB, want string) {
+	t.Helper()
+	var status string
+	if err := db.QueryRow(`
+SELECT status
+FROM memory_natural_runs
+WHERE persona_id = 'default'
+ORDER BY started_at DESC
+LIMIT 1`).Scan(&status); err != nil {
+		t.Fatalf("query natural run status: %v", err)
+	}
+	if status != want {
+		t.Fatalf("natural run status = %s, want %s", status, want)
 	}
 }
 

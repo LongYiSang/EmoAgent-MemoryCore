@@ -12,7 +12,7 @@ import (
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
 )
 
-func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemoryCycleRequest) (*RunNaturalMemoryCycleResult, error) {
+func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemoryCycleRequest) (result *RunNaturalMemoryCycleResult, err error) {
 	personaID := defaultString(req.PersonaID, s.persona)
 	opts := s.naturalOptionsForRequest(req.Options)
 	now := req.Now
@@ -77,6 +77,17 @@ func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemor
 		req.Timezone = local.Timezone
 	}
 
+	runID := s.natural.NewID()
+	schedule := naturalScheduleFor(now, opts, req.LocalDate, req.LocalTime, req.Timezone)
+	result = &RunNaturalMemoryCycleResult{
+		RunID:            runID,
+		PersonaID:        personaID,
+		RunKind:          runKind,
+		AlgorithmVersion: opts.AlgorithmVersion,
+		DryRun:           req.DryRun,
+		Status:           NaturalMemoryRunStatusCompleted,
+	}
+
 	maxWrites := opts.Limits.MaxWritesPerRun
 	if maxWrites <= 0 {
 		maxWrites = opts.Limits.MaxCandidatesPerRun
@@ -85,15 +96,26 @@ func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemor
 	if err != nil {
 		return nil, err
 	}
-	runID := s.natural.NewID()
-	result := &RunNaturalMemoryCycleResult{
-		RunID:            runID,
-		PersonaID:        personaID,
-		RunKind:          runKind,
-		AlgorithmVersion: opts.AlgorithmVersion,
-		DryRun:           req.DryRun,
-		Status:           NaturalMemoryRunStatusCompleted,
-		SkippedNodes:     skipped,
+	result.SkippedNodes = skipped
+	quotaReserved := false
+	quotaCompleted := false
+	if !req.DryRun && !req.Force && naturalRunConsumesSleepQuota(runKind, req.MarkSleepCycle) {
+		var reserved bool
+		reserved, err = s.natural.ReserveQuotaRun(ctx, naturalRunRowFromResult(result, schedule, req))
+		if err != nil {
+			return nil, err
+		}
+		if !reserved {
+			return skippedNaturalResult(personaID, runKind, opts, req.DryRun, "sleep cycle already completed"), nil
+		}
+		quotaReserved = true
+		defer func() {
+			if err != nil && !quotaCompleted {
+				if failErr := s.natural.FailReservedRun(ctx, runID, err); failErr != nil {
+					err = fmt.Errorf("%w; mark natural quota reservation failed: %v", err, failErr)
+				}
+			}
+		}()
 	}
 
 	scored := make([]naturalScoredNode, 0, len(candidates))
@@ -133,7 +155,8 @@ func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemor
 		}
 		state := naturalStateWrite(runID, node, score, opts, now)
 		events := naturalEventWrites(runID, node, score)
-		tierChanged, mirrorEnqueued, documentCreated, err := s.natural.ApplyNodeWrites(
+		var tierChanged, mirrorEnqueued, documentCreated bool
+		tierChanged, mirrorEnqueued, documentCreated, err = s.natural.ApplyNodeWrites(
 			ctx,
 			state,
 			events,
@@ -161,34 +184,16 @@ func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemor
 	}
 	result.CompressionCandidates = compressionCount
 	if !req.DryRun {
-		schedule := naturalScheduleFor(now, opts, req.LocalDate, req.LocalTime, req.Timezone)
-		if err := s.natural.PersistRun(ctx, memsqlite.NaturalMemoryRunRow{
-			ID:                          runID,
-			PersonaID:                   personaID,
-			RunKind:                     string(runKind),
-			AlgorithmVersion:            opts.AlgorithmVersion,
-			LocalDate:                   schedule.LocalDate,
-			LocalTime:                   schedule.LocalTime,
-			Timezone:                    schedule.Timezone,
-			DryRun:                      req.DryRun,
-			Force:                       req.Force,
-			MarkSleepCycle:              req.MarkSleepCycle,
-			Status:                      string(NaturalMemoryRunStatusCompleted),
-			EvaluatedNodes:              result.EvaluatedNodes,
-			ScoredNodes:                 result.ScoredNodes,
-			ProtectedNodes:              result.ProtectedNodes,
-			DecayedNodes:                result.DecayedNodes,
-			ReactivatedNodes:            result.ReactivatedNodes,
-			FirstSleepConsolidatedNodes: result.FirstSleepConsolidatedNodes,
-			SearchTierUpdates:           result.SearchTierUpdates,
-			SearchDocumentsCreated:      result.SearchDocumentsCreated,
-			MirrorUpdatesEnqueued:       result.MirrorUpdatesEnqueued,
-			CompressionCandidates:       result.CompressionCandidates,
-			NarrativesCreated:           result.NarrativesCreated,
-			InsightsCreated:             result.InsightsCreated,
-		}); err != nil {
+		run := naturalRunRowFromResult(result, schedule, req)
+		if quotaReserved {
+			err = s.natural.CompleteReservedRun(ctx, run)
+		} else {
+			err = s.natural.PersistRun(ctx, run)
+		}
+		if err != nil {
 			return nil, err
 		}
+		quotaCompleted = true
 	}
 	return result, nil
 }
@@ -206,6 +211,38 @@ func (s *service) naturalOptionsForRequest(request NaturalMemoryOptions) Natural
 		opts.SleepCycle.Timezone = s.naturalOptions.SleepCycle.Timezone
 	}
 	return opts
+}
+
+func naturalRunConsumesSleepQuota(runKind NaturalMemoryRunKind, markSleepCycle bool) bool {
+	return runKind == NaturalMemoryRunSleepCycle || markSleepCycle
+}
+
+func naturalRunRowFromResult(result *RunNaturalMemoryCycleResult, schedule naturalSchedule, req RunNaturalMemoryCycleRequest) memsqlite.NaturalMemoryRunRow {
+	return memsqlite.NaturalMemoryRunRow{
+		ID:                          result.RunID,
+		PersonaID:                   result.PersonaID,
+		RunKind:                     string(result.RunKind),
+		AlgorithmVersion:            result.AlgorithmVersion,
+		LocalDate:                   schedule.LocalDate,
+		LocalTime:                   schedule.LocalTime,
+		Timezone:                    schedule.Timezone,
+		DryRun:                      result.DryRun,
+		Force:                       req.Force,
+		MarkSleepCycle:              req.MarkSleepCycle,
+		Status:                      string(result.Status),
+		EvaluatedNodes:              result.EvaluatedNodes,
+		ScoredNodes:                 result.ScoredNodes,
+		ProtectedNodes:              result.ProtectedNodes,
+		DecayedNodes:                result.DecayedNodes,
+		ReactivatedNodes:            result.ReactivatedNodes,
+		FirstSleepConsolidatedNodes: result.FirstSleepConsolidatedNodes,
+		SearchTierUpdates:           result.SearchTierUpdates,
+		SearchDocumentsCreated:      result.SearchDocumentsCreated,
+		MirrorUpdatesEnqueued:       result.MirrorUpdatesEnqueued,
+		CompressionCandidates:       result.CompressionCandidates,
+		NarrativesCreated:           result.NarrativesCreated,
+		InsightsCreated:             result.InsightsCreated,
+	}
 }
 
 func naturalNodeFromStore(row memsqlite.NaturalMemoryCandidateRow) naturalMemoryNode {
