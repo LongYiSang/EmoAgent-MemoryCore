@@ -108,7 +108,8 @@ func scoreNaturalMemoryNode(node naturalMemoryNode, opts NaturalMemoryOptions, n
 		baseTau = 1
 	}
 	prior := naturalRetentionPrior(node)
-	tau := baseTau * (1 + 0.8*clamp(node.Importance, 0, 1) + 0.4*clamp(node.Confidence, 0, 1) + 0.25*math.Log1p(float64(node.ReinforcementCount)))
+	graph := clamp(float64(node.StructuralAssociationCount)/3, 0, 1)
+	tau := baseTau * (1 + 0.8*clamp(node.Importance, 0, 1) + 0.5*graph + 0.4*clamp(node.Confidence, 0, 1) + 0.25*math.Log1p(float64(node.ReinforcementCount)))
 	tau *= 1 + opts.Scoring.EmotionSalienceLambda*clamp(node.EmotionSalienceHint, 0, 1) + opts.Scoring.EmotionPersistenceLambda*clamp(node.EmotionPersistenceHint, 0, 1)
 
 	q := naturalReactivationScore(node, now)

@@ -66,6 +66,50 @@ func TestNaturalSleepCycleOncePerLocalDay(t *testing.T) {
 	requireTableCount(t, db, "memory_natural_runs", 1)
 }
 
+func TestNaturalSleepCycleDirectCycleUsesDueCheck(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 2, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_direct_sleep", core.FactTypeTransientContext, "用户临时关注直接睡眠周期。", naturalFactOptions{})
+
+	result, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   NaturalMemoryRunSleepCycle,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("direct sleep cycle: %v", err)
+	}
+	if result.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("direct sleep cycle status = %s, want skipped before due", result.Status)
+	}
+	requireTableCount(t, db, "memory_natural_runs", 0)
+}
+
+func TestNaturalSleepCycleDirectCycleRespectsDisabledSleepCycle(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNaturalNow()
+	opts := defaultNaturalMemoryOptions()
+	opts.SleepCycle.Enabled = false
+	svc, db := openNaturalTestServiceWithOptions(t, ctx, now, "Asia/Shanghai", opts)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_direct_sleep_disabled", core.FactTypeTransientContext, "用户临时关注关闭睡眠周期。", naturalFactOptions{})
+
+	result, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   NaturalMemoryRunSleepCycle,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("direct sleep disabled: %v", err)
+	}
+	if result.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("direct sleep disabled status = %s, want skipped", result.Status)
+	}
+	requireTableCount(t, db, "memory_natural_runs", 0)
+}
+
 func TestNaturalSleepCycleForceBypassesMinInterval(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 5, 3, 31, 0, 0, time.FixedZone("CST", 8*60*60))
@@ -118,6 +162,104 @@ func TestNaturalSleepCycleUsesOpenOptionsTimezoneWhenNaturalTimezoneEmpty(t *tes
 		t.Fatalf("tick status = %s, want completed with Options timezone", result.Status)
 	}
 	requireNaturalRunTimezone(t, db, "UTC")
+}
+
+func TestNaturalSleepCycleJitterDelaysDue(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 3, 30, 30, 0, time.FixedZone("CST", 8*60*60))
+	opts := defaultNaturalMemoryOptions()
+	opts.SleepCycle.Jitter = 30 * time.Minute
+	offset := naturalDeterministicJitter("default", "2026-06-05", opts.SleepCycle.Jitter)
+	if offset <= 30*time.Second {
+		t.Fatalf("test persona jitter = %s, want above first tick offset", offset)
+	}
+	svc, db := openNaturalTestServiceWithOptions(t, ctx, now, "Asia/Shanghai", opts)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_jitter", core.FactTypeTransientContext, "用户临时关注抖动调度。", naturalFactOptions{})
+
+	skipped, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("jitter tick before due: %v", err)
+	}
+	if skipped.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("tick status = %s, want skipped before jitter due", skipped.Status)
+	}
+
+	due, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now.Add(offset),
+	})
+	if err != nil {
+		t.Fatalf("jitter tick after due: %v", err)
+	}
+	if due.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("tick status = %s, want completed after jitter due", due.Status)
+	}
+}
+
+func TestNaturalSleepCycleStartupMissedRequiresOptIn(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 6, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	opts := defaultNaturalMemoryOptions()
+	opts.SleepCycle.RunMissedOnStart = false
+	svc, db := openNaturalTestServiceWithOptions(t, ctx, now, "Asia/Shanghai", opts)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_missed_start", core.FactTypeTransientContext, "用户临时关注启动补跑。", naturalFactOptions{})
+
+	skipped, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now,
+		Startup:   true,
+	})
+	if err != nil {
+		t.Fatalf("startup tick: %v", err)
+	}
+	if skipped.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("startup tick status = %s, want skipped when missed runs disabled", skipped.Status)
+	}
+
+	opts.SleepCycle.RunMissedOnStart = true
+	due, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now,
+		Startup:   true,
+		Options:   opts,
+	})
+	if err != nil {
+		t.Fatalf("startup missed tick: %v", err)
+	}
+	if due.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("startup missed tick status = %s, want completed when missed runs enabled", due.Status)
+	}
+}
+
+func TestNaturalSleepCycleWarnsOutsideNightWindowWhenExplained(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 6, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	opts := defaultNaturalMemoryOptions()
+	opts.SleepCycle.RunMissedOnStart = true
+	svc, db := openNaturalTestServiceWithOptions(t, ctx, now, "Asia/Shanghai", opts)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_night_window", core.FactTypeTransientContext, "用户临时关注夜间窗口。", naturalFactOptions{})
+
+	result, err := svc.RunNaturalMemoryTick(ctx, RunNaturalMemoryTickRequest{
+		PersonaID: "default",
+		Now:       now,
+		Startup:   true,
+		Explain:   true,
+	})
+	if err != nil {
+		t.Fatalf("night window tick: %v", err)
+	}
+	if result.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("night window tick status = %s, want completed with warning only", result.Status)
+	}
+	if !naturalExplainHasReason(result.Explain, "outside_night_window") {
+		t.Fatalf("explain = %#v, want outside_night_window warning", result.Explain)
+	}
 }
 
 func TestNaturalManualDoesNotConsumeSleepCycleQuotaUnlessMarked(t *testing.T) {
@@ -173,6 +315,74 @@ func TestNaturalManualDoesNotConsumeSleepCycleQuotaUnlessMarked(t *testing.T) {
 	}
 }
 
+func TestNaturalMarkedManualOncePerLocalDay(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNaturalNow()
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_marked_manual", core.FactTypeTransientContext, "用户临时关注手动标记睡眠。", naturalFactOptions{})
+
+	first, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID:      "default",
+		RunKind:        NaturalMemoryRunManual,
+		Now:            now,
+		MarkSleepCycle: true,
+	})
+	if err != nil {
+		t.Fatalf("first marked manual: %v", err)
+	}
+	if first.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("first marked manual status = %s, want completed", first.Status)
+	}
+	second, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID:      "default",
+		RunKind:        NaturalMemoryRunManual,
+		Now:            now.Add(time.Hour),
+		MarkSleepCycle: true,
+	})
+	if err != nil {
+		t.Fatalf("second marked manual: %v", err)
+	}
+	if second.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("second marked manual status = %s, want skipped", second.Status)
+	}
+	requireTableCount(t, db, "memory_natural_runs", 1)
+}
+
+func TestNaturalMarkedManualRespectsSleepCycleMinInterval(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 5, 23, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_marked_manual_interval", core.FactTypeTransientContext, "用户临时关注手动睡眠间隔。", naturalFactOptions{})
+
+	first, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID:      "default",
+		RunKind:        NaturalMemoryRunManual,
+		Now:            now,
+		MarkSleepCycle: true,
+	})
+	if err != nil {
+		t.Fatalf("first marked manual: %v", err)
+	}
+	if first.Status != NaturalMemoryRunStatusCompleted {
+		t.Fatalf("first marked manual status = %s, want completed", first.Status)
+	}
+	second, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID:      "default",
+		RunKind:        NaturalMemoryRunManual,
+		Now:            now.Add(2 * time.Hour),
+		MarkSleepCycle: true,
+	})
+	if err != nil {
+		t.Fatalf("second marked manual: %v", err)
+	}
+	if second.Status != NaturalMemoryRunStatusSkipped {
+		t.Fatalf("second marked manual status = %s, want skipped by min_interval", second.Status)
+	}
+	requireTableCount(t, db, "memory_natural_runs", 1)
+}
+
 func TestNaturalSkipsHiddenForgottenPurgedNodes(t *testing.T) {
 	ctx := context.Background()
 	svc, db := openNaturalTestService(t, ctx, fixedNaturalNow())
@@ -197,6 +407,32 @@ func TestNaturalSkipsHiddenForgottenPurgedNodes(t *testing.T) {
 	requireNaturalStateCount(t, db, "fact_hidden", 0)
 	requireNaturalStateCount(t, db, "fact_forgotten", 0)
 	requireNaturalStateCount(t, db, "fact_purged", 0)
+}
+
+func TestNaturalSkipsInvalidatedFacts(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNaturalNow()
+	svc, db := openNaturalTestService(t, ctx, now)
+	defer svc.Close()
+	seedNaturalFact(t, db, "fact_valid", core.FactTypeTransientContext, "用户临时关注有效事实。", naturalFactOptions{})
+	seedNaturalFact(t, db, "fact_invalidated", core.FactTypeTransientContext, "用户临时关注已失效事实。", naturalFactOptions{
+		Validity: core.ValidityInvalidated,
+	})
+	insertNaturalAccessEvent(t, db, "access_invalidated", "fact_invalidated", "prompt_injected", now.Add(-30*time.Minute))
+
+	result, err := svc.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+		PersonaID: "default",
+		RunKind:   NaturalMemoryRunManual,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("natural run: %v", err)
+	}
+	if result.EvaluatedNodes != 1 {
+		t.Fatalf("evaluated nodes = %d, want only valid fact evaluated", result.EvaluatedNodes)
+	}
+	requireNaturalStateCount(t, db, "fact_valid", 1)
+	requireNaturalStateCount(t, db, "fact_invalidated", 0)
 }
 
 func TestNaturalCandidateLimitAppliesAfterEligibilityFilter(t *testing.T) {
@@ -485,6 +721,7 @@ func TestNaturalRunUsesRecentAccessEventsAndStructuralSignals(t *testing.T) {
 type naturalFactOptions struct {
 	Predicate  string
 	Visibility core.VisibilityStatus
+	Validity   core.ValidityStatus
 	Pinned     bool
 	Lifecycle  core.LifecycleStatus
 	SearchTier core.SearchTier
@@ -537,6 +774,10 @@ func seedNaturalFact(t *testing.T, db *sql.DB, id string, factType core.FactType
 	if visibility == "" {
 		visibility = core.VisibilityVisible
 	}
+	validity := opts.Validity
+	if validity == "" {
+		validity = core.ValidityValid
+	}
 	lifecycle := opts.Lifecycle
 	if lifecycle == "" {
 		lifecycle = core.LifecycleActive
@@ -557,9 +798,9 @@ INSERT INTO facts (
     ingested_at, extraction_confidence, extraction_confidence_score, importance,
 		sensitivity_level, validity_status, visibility_status, lifecycle_status,
 	    pinned, access_count, reinforcement_count, searchable, created_at
-	) VALUES (?, 'default', ?, ?, ?, ?, ?, 'explicit', 0.8, 0.7,
-	          'normal', 'valid', ?, ?, ?, 0, 0, 1, ?)`,
-		id, predicate, id, summary, string(factType), created, string(visibility), string(lifecycle), naturalBoolInt(opts.Pinned), created); err != nil {
+) VALUES (?, 'default', ?, ?, ?, ?, ?, 'explicit', 0.8, 0.7,
+	          'normal', ?, ?, ?, ?, 0, 0, 1, ?)`,
+		id, predicate, id, summary, string(factType), created, string(validity), string(visibility), string(lifecycle), naturalBoolInt(opts.Pinned), created); err != nil {
 		t.Fatalf("insert fact %s: %v", id, err)
 	}
 	if _, err := db.Exec(`
@@ -570,6 +811,17 @@ INSERT INTO memory_search_documents (
 		"search_"+id, id, summary, string(searchTier), string(visibility), string(lifecycle), created); err != nil {
 		t.Fatalf("insert search document %s: %v", id, err)
 	}
+}
+
+func naturalExplainHasReason(items []NaturalMemoryExplainItem, reason string) bool {
+	for _, item := range items {
+		for _, code := range item.ReasonCodes {
+			if code == reason {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func fixedNaturalNow() time.Time {

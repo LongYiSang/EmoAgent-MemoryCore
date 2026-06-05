@@ -49,8 +49,13 @@ type RunNaturalMemoryCycleRequest struct {
 type RunNaturalMemoryTickRequest struct {
 	PersonaID string
 	Now       time.Time
+	DryRun    bool
 	Force     bool
 	Explain   bool
+	Startup   bool
+	LocalDate string
+	LocalTime string
+	Timezone  string
 	Options   NaturalMemoryOptions
 }
 

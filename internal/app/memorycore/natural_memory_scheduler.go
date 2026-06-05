@@ -3,6 +3,7 @@ package memorycore
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 )
@@ -21,17 +22,18 @@ func (s *service) RunNaturalMemoryTick(ctx context.Context, req RunNaturalMemory
 		now = s.now()
 	}
 	if !opts.Enabled || !opts.SleepCycle.Enabled {
-		return skippedNaturalResult(personaID, NaturalMemoryRunSleepCycle, opts, false, "sleep cycle disabled"), nil
+		return skippedNaturalResult(personaID, NaturalMemoryRunSleepCycle, opts, req.DryRun, "sleep cycle disabled"), nil
 	}
-	schedule := naturalScheduleFor(now, opts, "", "", "")
-	if due, reason, err := s.naturalSleepCycleDue(ctx, personaID, now, opts, schedule, req.Force); err != nil {
+	schedule := naturalScheduleFor(now, opts, req.LocalDate, req.LocalTime, req.Timezone)
+	if due, reason, err := s.naturalSleepCycleDue(ctx, personaID, now, opts, schedule, req.Force, req.Startup); err != nil {
 		return nil, err
 	} else if !due {
-		return skippedNaturalResult(personaID, NaturalMemoryRunSleepCycle, opts, false, reason), nil
+		return skippedNaturalResult(personaID, NaturalMemoryRunSleepCycle, opts, req.DryRun, reason), nil
 	}
-	return s.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
+	result, err := s.RunNaturalMemoryCycle(ctx, RunNaturalMemoryCycleRequest{
 		PersonaID: personaID,
 		Now:       now,
+		DryRun:    req.DryRun,
 		Force:     req.Force,
 		Explain:   req.Explain,
 		RunKind:   NaturalMemoryRunSleepCycle,
@@ -40,10 +42,28 @@ func (s *service) RunNaturalMemoryTick(ctx context.Context, req RunNaturalMemory
 		Timezone:  schedule.Timezone,
 		Options:   opts,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if req.Explain && opts.SleepCycle.WarnIfOutsideNightWindow {
+		loc, err := naturalLocation(schedule.Timezone)
+		if err != nil {
+			return nil, err
+		}
+		if ok, err := naturalWithinNightWindow(now.In(loc), opts); err != nil {
+			return nil, err
+		} else if !ok {
+			result.Explain = append(result.Explain, NaturalMemoryExplainItem{
+				ReasonCodes:       []string{"outside_night_window"},
+				SafeReasonSummary: "sleep cycle ran outside configured night window",
+			})
+		}
+	}
+	return result, nil
 }
 
-func (s *service) naturalSleepCycleDue(ctx context.Context, personaID string, now time.Time, opts NaturalMemoryOptions, schedule naturalSchedule, force bool) (bool, string, error) {
-	hour, minute, err := parseNaturalHHMM(opts.SleepCycle.LocalTime)
+func (s *service) naturalSleepCycleDue(ctx context.Context, personaID string, now time.Time, opts NaturalMemoryOptions, schedule naturalSchedule, force bool, startup bool) (bool, string, error) {
+	hour, minute, err := parseNaturalHHMM(schedule.LocalTime)
 	if err != nil {
 		return false, "", err
 	}
@@ -53,8 +73,16 @@ func (s *service) naturalSleepCycleDue(ctx context.Context, personaID string, no
 	}
 	localNow := now.In(loc)
 	dueAt := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), hour, minute, 0, 0, loc)
+	dueAt = dueAt.Add(naturalDeterministicJitter(personaID, schedule.LocalDate, opts.SleepCycle.Jitter))
 	if !force && localNow.Before(dueAt) {
 		return false, "sleep cycle local_time not reached", nil
+	}
+	if startup && !force && !opts.SleepCycle.RunMissedOnStart {
+		if inWindow, err := naturalWithinNightWindow(localNow, opts); err != nil {
+			return false, "", err
+		} else if !inWindow && localNow.After(dueAt) {
+			return false, "sleep cycle missed on startup", nil
+		}
 	}
 	completed, err := s.natural.SleepCycleCompletedForDate(ctx, personaID, schedule.LocalDate)
 	if err != nil {
@@ -71,6 +99,40 @@ func (s *service) naturalSleepCycleDue(ctx context.Context, personaID string, no
 		return false, "sleep cycle min interval not reached", nil
 	}
 	return true, "", nil
+}
+
+func naturalDeterministicJitter(personaID string, localDate string, max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	if max < time.Minute {
+		return max
+	}
+	minutes := int(max / time.Minute)
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(strings.TrimSpace(personaID) + "|" + strings.TrimSpace(localDate)))
+	return time.Duration(1+int(hash.Sum32()%uint32(minutes))) * time.Minute
+}
+
+func naturalWithinNightWindow(localNow time.Time, opts NaturalMemoryOptions) (bool, error) {
+	startHour, startMinute, err := parseNaturalHHMM(opts.SleepCycle.NightWindowStart)
+	if err != nil {
+		return false, err
+	}
+	endHour, endMinute, err := parseNaturalHHMM(opts.SleepCycle.NightWindowEnd)
+	if err != nil {
+		return false, err
+	}
+	start := startHour*60 + startMinute
+	end := endHour*60 + endMinute
+	current := localNow.Hour()*60 + localNow.Minute()
+	if start == end {
+		return true, nil
+	}
+	if start < end {
+		return current >= start && current <= end, nil
+	}
+	return current >= start || current <= end, nil
 }
 
 func naturalScheduleFor(now time.Time, opts NaturalMemoryOptions, localDate string, localTime string, timezone string) naturalSchedule {

@@ -39,15 +39,38 @@ func (s *service) RunNaturalMemoryCycle(ctx context.Context, req RunNaturalMemor
 		if !req.MarkSleepCycle {
 			req.MarkSleepCycle = opts.ManualTrigger.MarkSleepCycleByDefault
 		}
+		if req.MarkSleepCycle && !req.Force {
+			local := naturalScheduleFor(now, opts, req.LocalDate, req.LocalTime, req.Timezone)
+			completed, err := s.natural.SleepCycleCompletedForDate(ctx, personaID, local.LocalDate)
+			if err != nil {
+				return nil, err
+			}
+			if completed {
+				return skippedNaturalResult(personaID, runKind, opts, req.DryRun, "sleep cycle already completed"), nil
+			}
+			last, ok, err := s.natural.LastCompletedSleepCycle(ctx, personaID)
+			if err != nil {
+				return nil, err
+			}
+			if ok && now.Sub(last) < opts.SleepCycle.MinInterval {
+				return skippedNaturalResult(personaID, runKind, opts, req.DryRun, "sleep cycle min interval not reached"), nil
+			}
+			req.LocalDate = local.LocalDate
+			req.LocalTime = local.LocalTime
+			req.Timezone = local.Timezone
+		}
+	}
+	if runKind == NaturalMemoryRunSleepCycle && !opts.SleepCycle.Enabled {
+		return skippedNaturalResult(personaID, runKind, opts, req.DryRun, "sleep cycle disabled"), nil
 	}
 	if runKind == NaturalMemoryRunSleepCycle && !req.Force {
 		local := naturalScheduleFor(now, opts, req.LocalDate, req.LocalTime, req.Timezone)
-		completed, err := s.natural.SleepCycleCompletedForDate(ctx, personaID, local.LocalDate)
+		due, reason, err := s.naturalSleepCycleDue(ctx, personaID, now, opts, local, req.Force, false)
 		if err != nil {
 			return nil, err
 		}
-		if completed {
-			return skippedNaturalResult(personaID, runKind, opts, req.DryRun, "sleep cycle already completed"), nil
+		if !due {
+			return skippedNaturalResult(personaID, runKind, opts, req.DryRun, reason), nil
 		}
 		req.LocalDate = local.LocalDate
 		req.LocalTime = local.LocalTime

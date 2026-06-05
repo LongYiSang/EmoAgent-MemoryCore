@@ -33,6 +33,80 @@ func TestNaturalMemoryRunCLIDryRunJSON(t *testing.T) {
 	}
 }
 
+func TestNaturalMemoryRunCLIDefaultsToManual(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	requireRunOK(t, "init-db", "--db", dbPath)
+	seedCLINaturalFact(t, dbPath, "fact_cli_default_manual")
+
+	stdout, stderr, code := runCLI(
+		"natural-memory-run",
+		"--db", dbPath,
+		"--now", "2026-06-05T03:31:00+08:00",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout)
+	}
+	if decoded["run_kind"] != "manual" {
+		t.Fatalf("run_kind = %v, want manual", decoded["run_kind"])
+	}
+}
+
+func TestNaturalMemoryRunCLISleepCycleUsesDueCheck(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	requireRunOK(t, "init-db", "--db", dbPath)
+	seedCLINaturalFact(t, dbPath, "fact_cli_sleep_due")
+
+	stdout, stderr, code := runCLI(
+		"natural-memory-run",
+		"--db", dbPath,
+		"--mode", "sleep_cycle",
+		"--now", "2026-06-05T02:00:00+08:00",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout)
+	}
+	if decoded["status"] != "skipped" || decoded["run_kind"] != "sleep_cycle" {
+		t.Fatalf("decoded = %#v, want skipped sleep_cycle", decoded)
+	}
+	requireCLINaturalTableCount(t, dbPath, "memory_natural_runs", 0)
+}
+
+func TestNaturalMemoryRunCLISleepCycleDryRunDoesNotWrite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	requireRunOK(t, "init-db", "--db", dbPath)
+	seedCLINaturalFact(t, dbPath, "fact_cli_sleep_dry_run")
+
+	stdout, stderr, code := runCLI(
+		"natural-memory-run",
+		"--db", dbPath,
+		"--mode", "sleep_cycle",
+		"--now", "2026-06-05T03:31:00+08:00",
+		"--dry-run",
+		"--format", "json",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout)
+	}
+	if decoded["dry_run"] != true || decoded["status"] != "completed" {
+		t.Fatalf("decoded = %#v, want completed dry-run", decoded)
+	}
+	requireCLINaturalTableCount(t, dbPath, "memory_natural_runs", 0)
+}
+
 func TestNaturalMemoryRunCLIMaxWritesCapsWrites(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	requireRunOK(t, "init-db", "--db", dbPath)

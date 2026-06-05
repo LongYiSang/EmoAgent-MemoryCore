@@ -221,6 +221,7 @@ LEFT JOIN memory_natural_states s
  AND s.node_id = f.id
 WHERE f.persona_id = ?
   AND f.visibility_status = 'visible'
+  AND f.validity_status IN ('valid', 'uncertain')
   AND f.searchable = 1
   AND f.lifecycle_status != 'deep_archived'
 ORDER BY f.created_at ASC, f.id ASC
@@ -426,6 +427,7 @@ WHERE l.persona_id = ?
 
 func naturalCandidateEligible(row NaturalMemoryCandidateRow) bool {
 	return row.VisibilityStatus == core.VisibilityVisible &&
+		row.ValidityStatus != core.ValidityInvalidated &&
 		row.Searchable &&
 		row.LifecycleStatus != core.LifecycleDeepArchived
 }
@@ -497,7 +499,7 @@ func (r *NaturalMemoryRepository) LastCompletedSleepCycle(ctx context.Context, p
 SELECT completed_at
 FROM memory_natural_runs
 WHERE persona_id = ?
-  AND run_kind = 'sleep_cycle'
+  AND (run_kind = 'sleep_cycle' OR mark_sleep_cycle = 1)
   AND status = 'completed'
   AND force = 0
   AND completed_at IS NOT NULL

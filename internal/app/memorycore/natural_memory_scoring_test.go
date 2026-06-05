@@ -39,6 +39,21 @@ func TestNaturalPowerLawLargerTauDecaysSlower(t *testing.T) {
 	}
 }
 
+func TestNaturalTauIncludesStructuralAssociationSignificance(t *testing.T) {
+	now := time.Date(2026, 6, 5, 3, 30, 0, 0, time.UTC)
+	base := NaturalMemoryNodeForTest(core.FactTypeTransientContext, 0.5, 0.5)
+	base.LastStrengthenedAt = naturalTimePtr(now)
+	structural := base
+	structural.StructuralAssociationCount = 3
+
+	baseScore := scoreNaturalMemoryNode(base, defaultNaturalMemoryOptions(), now)
+	structuralScore := scoreNaturalMemoryNode(structural, defaultNaturalMemoryOptions(), now)
+
+	if !(structuralScore.StabilityDays > baseScore.StabilityDays) {
+		t.Fatalf("structural tau = %f, want greater than base tau %f", structuralScore.StabilityDays, baseScore.StabilityDays)
+	}
+}
+
 func TestNaturalReactivationUsesRecentAccessPromptInjectedAndStructuralSignals(t *testing.T) {
 	now := time.Date(2026, 6, 5, 3, 30, 0, 0, time.UTC)
 	opts := defaultNaturalMemoryOptions()

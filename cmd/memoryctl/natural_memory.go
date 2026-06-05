@@ -28,7 +28,7 @@ func runNaturalMemoryRun(args []string, stdout io.Writer, stderr io.Writer) int 
 	var algorithmVersion string
 	addCommonFlags(fs, &opts, formatText)
 	addConfigFlag(fs, &opts)
-	fs.StringVar(&mode, "mode", string(memorycore.NaturalMemoryRunSleepCycle), "run mode: sleep_cycle|manual|api|test")
+	fs.StringVar(&mode, "mode", string(memorycore.NaturalMemoryRunManual), "run mode: sleep_cycle|manual|api|test")
 	fs.StringVar(&nowValue, "now", "", "RFC3339 now")
 	fs.StringVar(&timezone, "timezone", "", "IANA timezone")
 	fs.StringVar(&localDate, "local-date", "", "local date YYYY-MM-DD")
@@ -102,19 +102,35 @@ func runNaturalMemoryRun(args []string, stdout io.Writer, stderr io.Writer) int 
 	}
 	defer svc.Close()
 
-	result, err := svc.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
-		PersonaID:      opts.PersonaID,
-		Now:            parsedNow,
-		DryRun:         dryRun,
-		Force:          force,
-		Explain:        explain,
-		RunKind:        runKind,
-		LocalDate:      localDate,
-		LocalTime:      firstNonEmptyCLI(localTime, cfg.NaturalMemory.SleepCycle.LocalTime),
-		Timezone:       firstNonEmptyCLI(timezone, cfg.NaturalMemory.SleepCycle.Timezone, cfg.Core.Timezone),
-		MarkSleepCycle: markSleepCycle,
-		Options:        cfg.NaturalMemoryOptions(),
-	})
+	var result *memorycore.RunNaturalMemoryCycleResult
+	runOptions := cfg.NaturalMemoryOptions()
+	if runKind == memorycore.NaturalMemoryRunSleepCycle {
+		result, err = svc.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{
+			PersonaID: opts.PersonaID,
+			Now:       parsedNow,
+			DryRun:    dryRun,
+			Force:     force,
+			Explain:   explain,
+			LocalDate: localDate,
+			LocalTime: firstNonEmptyCLI(localTime, cfg.NaturalMemory.SleepCycle.LocalTime),
+			Timezone:  firstNonEmptyCLI(timezone, cfg.NaturalMemory.SleepCycle.Timezone, cfg.Core.Timezone),
+			Options:   runOptions,
+		})
+	} else {
+		result, err = svc.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
+			PersonaID:      opts.PersonaID,
+			Now:            parsedNow,
+			DryRun:         dryRun,
+			Force:          force,
+			Explain:        explain,
+			RunKind:        runKind,
+			LocalDate:      localDate,
+			LocalTime:      firstNonEmptyCLI(localTime, cfg.NaturalMemory.SleepCycle.LocalTime),
+			Timezone:       firstNonEmptyCLI(timezone, cfg.NaturalMemory.SleepCycle.Timezone, cfg.Core.Timezone),
+			MarkSleepCycle: markSleepCycle,
+			Options:        runOptions,
+		})
+	}
 	if err != nil {
 		return runtimeError(stderr, "natural memory run: %v", err)
 	}
