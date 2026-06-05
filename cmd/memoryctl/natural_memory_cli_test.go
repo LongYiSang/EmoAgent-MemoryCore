@@ -14,9 +14,11 @@ import (
 
 func TestNaturalMemoryRunCLIDryRunJSON(t *testing.T) {
 	configPath := filepath.Join("..", "..", "examples", "config", "memorycore.yaml")
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	stdout, stderr, code := runCLI(
 		"natural-memory-run",
 		"--config", configPath,
+		"--db", dbPath,
 		"--mode", "manual",
 		"--dry-run",
 		"--format", "json",

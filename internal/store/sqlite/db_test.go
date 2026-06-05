@@ -39,11 +39,25 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	requireTable(t, db.SQLDB(), "memory_curation_group_facts")
 
 	var migrationCount int
-	if err := db.SQLDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
-		t.Fatalf("count migrations: %v", err)
+	var migrationName string
+	var migrationChecksum string
+	var migrationDirty int
+	if err := db.SQLDB().QueryRowContext(ctx, `
+SELECT COUNT(*), MAX(name), MAX(checksum), MAX(dirty)
+FROM schema_migrations`).Scan(&migrationCount, &migrationName, &migrationChecksum, &migrationDirty); err != nil {
+		t.Fatalf("read migration ledger: %v", err)
 	}
-	if migrationCount != 14 {
-		t.Fatalf("migration count = %d, want 14", migrationCount)
+	if migrationCount != 1 {
+		t.Fatalf("migration count = %d, want 1", migrationCount)
+	}
+	if migrationName != "initial" {
+		t.Fatalf("migration name = %q, want initial", migrationName)
+	}
+	if migrationChecksum == "" {
+		t.Fatalf("migration checksum is empty")
+	}
+	if migrationDirty != 0 {
+		t.Fatalf("migration dirty = %d, want 0", migrationDirty)
 	}
 
 	predicates := memsqlite.NewPredicateRepository(db.SQLDB())

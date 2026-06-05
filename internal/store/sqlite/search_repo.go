@@ -815,6 +815,14 @@ VALUES (?, ?, ?, ?)`,
 	return err
 }
 
+func ensureSearchFTS(ctx context.Context, runner sqlRunner) error {
+	ok, err := searchFTSExists(ctx, runner)
+	if err != nil || ok {
+		return err
+	}
+	return createAndPopulateSearchFTS(ctx, runner, nil)
+}
+
 func deleteSearchFTS(ctx context.Context, runner sqlRunner, personaID string, nodeType core.NodeType, nodeID string) error {
 	if ok, err := searchFTSExists(ctx, runner); err != nil || !ok {
 		if err != nil {
@@ -857,6 +865,10 @@ func rebuildSearchFTS(ctx context.Context, runner sqlRunner, exclude *searchDocu
 			return err
 		}
 	}
+	return createAndPopulateSearchFTS(ctx, runner, exclude)
+}
+
+func createAndPopulateSearchFTS(ctx context.Context, runner sqlRunner, exclude *searchDocumentKey) error {
 	if _, err := runner.ExecContext(ctx, `
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts USING fts5(
     search_text,
