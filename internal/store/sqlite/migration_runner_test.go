@@ -62,6 +62,36 @@ CREATE TABLE changed_table (
 	}
 }
 
+func TestApplyMigrationsAcceptsEquivalentLineEndingChecksum(t *testing.T) {
+	ctx := context.Background()
+	db := openMigrationRunnerTestDB(t, ctx)
+	defer db.Close()
+
+	lfSQL := "CREATE TABLE line_ending_seed (id TEXT PRIMARY KEY);\n"
+	lfSum := sha256.Sum256([]byte(lfSQL))
+	crlfSum := sha256.Sum256([]byte(strings.ReplaceAll(lfSQL, "\n", "\r\n")))
+	migration := migrations.Migration{
+		Version:             "0001",
+		Name:                "initial",
+		Checksum:            fmt.Sprintf("%x", lfSum),
+		EquivalentChecksums: []string{fmt.Sprintf("%x", crlfSum)},
+		SQL:                 lfSQL,
+	}
+	if err := db.ensureMigrationLedger(ctx); err != nil {
+		t.Fatalf("ensure ledger: %v", err)
+	}
+	mustExecMigrationRunnerTest(t, db.SQLDB(), `
+INSERT INTO schema_migrations(version, name, checksum, applied_at, dirty, execution_ms)
+VALUES ('0001', 'initial', ?, '2026-01-01T00:00:00Z', 0, 1)`, fmt.Sprintf("%x", crlfSum))
+
+	if err := db.applyMigrations(ctx, []migrations.Migration{migration}, MigrateOptions{}); err != nil {
+		t.Fatalf("equivalent line ending checksum was rejected: %v", err)
+	}
+	if tableExistsForMigrationRunnerTest(t, db.SQLDB(), "line_ending_seed") {
+		t.Fatal("migration was re-run instead of being skipped")
+	}
+}
+
 func TestApplyMigrationsBlocksDirtyLedger(t *testing.T) {
 	ctx := context.Background()
 	db := openMigrationRunnerTestDB(t, ctx)

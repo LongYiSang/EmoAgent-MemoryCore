@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"fmt"
@@ -15,10 +16,23 @@ import (
 var FS embed.FS
 
 type Migration struct {
-	Version  string
-	Name     string
-	Checksum string
-	SQL      string
+	Version             string
+	Name                string
+	Checksum            string
+	EquivalentChecksums []string
+	SQL                 string
+}
+
+func (m Migration) MatchesChecksum(checksum string) bool {
+	if checksum == m.Checksum {
+		return true
+	}
+	for _, equivalent := range m.EquivalentChecksums {
+		if checksum == equivalent {
+			return true
+		}
+	}
+	return false
 }
 
 func All() ([]Migration, error) {
@@ -58,18 +72,55 @@ func allFromFS(fsys fs.FS) ([]Migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		sum := sha256.Sum256(body)
+		checksum, equivalents := migrationChecksums(body)
 		versions[version] = entry.Name()
 		names[name] = entry.Name()
 		migrations = append(migrations, Migration{
-			Version:  version,
-			Name:     name,
-			Checksum: fmt.Sprintf("%x", sum),
-			SQL:      string(body),
+			Version:             version,
+			Name:                name,
+			Checksum:            checksum,
+			EquivalentChecksums: equivalents,
+			SQL:                 string(body),
 		})
 	}
 
 	return migrations, nil
+}
+
+func migrationChecksums(body []byte) (string, []string) {
+	normalized := normalizeMigrationChecksumBody(body)
+	checksum := sha256Hex(normalized)
+
+	equivalents := make([]string, 0, 2)
+	for _, equivalentBody := range [][]byte{
+		body,
+		bytes.ReplaceAll(normalized, []byte("\n"), []byte("\r\n")),
+	} {
+		equivalent := sha256Hex(equivalentBody)
+		if equivalent != checksum && !containsString(equivalents, equivalent) {
+			equivalents = append(equivalents, equivalent)
+		}
+	}
+	return checksum, equivalents
+}
+
+func normalizeMigrationChecksumBody(body []byte) []byte {
+	normalized := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+}
+
+func sha256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return fmt.Sprintf("%x", sum)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func parseMigrationFileName(fileName string) (string, string, error) {

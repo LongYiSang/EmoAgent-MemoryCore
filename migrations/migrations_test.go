@@ -33,6 +33,26 @@ func TestAllFromFSParsesMetadataAndChecksum(t *testing.T) {
 	}
 }
 
+func TestAllFromFSNormalizesLineEndingsForChecksum(t *testing.T) {
+	body := "CREATE TABLE sample(id TEXT);\r\nINSERT INTO sample(id) VALUES ('x');\r\n"
+	got, err := allFromFS(fstest.MapFS{
+		"0001_initial.sql": {Data: []byte(body)},
+	})
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+
+	normalized := "CREATE TABLE sample(id TEXT);\nINSERT INTO sample(id) VALUES ('x');\n"
+	wantChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte(normalized)))
+	rawChecksum := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
+	if got[0].Checksum != wantChecksum {
+		t.Fatalf("checksum = %q, want normalized %q", got[0].Checksum, wantChecksum)
+	}
+	if !got[0].MatchesChecksum(rawChecksum) {
+		t.Fatalf("raw CRLF checksum %q was not accepted as equivalent", rawChecksum)
+	}
+}
+
 func TestAllFromFSRejectsDuplicateVersion(t *testing.T) {
 	_, err := allFromFS(fstest.MapFS{
 		"0001_initial.sql": {Data: []byte("SELECT 1;")},

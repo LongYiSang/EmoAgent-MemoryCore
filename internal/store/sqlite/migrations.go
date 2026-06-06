@@ -55,7 +55,7 @@ func (d *DB) applyMigrations(ctx context.Context, all []migrations.Migration, _ 
 			if row.Name != migration.Name {
 				return fmt.Errorf("migration %s name mismatch: applied %s, repo %s", migration.Version, row.Name, migration.Name)
 			}
-			if row.Checksum != migration.Checksum {
+			if !migration.MatchesChecksum(row.Checksum) {
 				return fmt.Errorf("migration %s checksum mismatch: applied %s, repo %s", migration.Version, row.Checksum, migration.Checksum)
 			}
 			continue
