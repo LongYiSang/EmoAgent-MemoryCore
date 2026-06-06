@@ -188,6 +188,30 @@ retrieval:
     max_source_episode_quotes: 2
     quote_by_default: false
 
+retrieval_scoring:
+  profile: retrieval_v5d_default
+  weights:
+    anchor_energy: 0.55
+    graph_energy: 0.25
+    importance: 0.20
+    recency: 0.10
+    fact_type_prior: 0.10
+    evidence_strength: 0.10
+    pinned: 0.05
+    lexical_coverage: 0.12
+    slot_boost: 1.00
+    reflection_boost: 1.00
+    completion_bonus: 1.00
+    rerank_boost: 0.08
+  penalties:
+    hub_suppression: 1.00
+    premise_restatement: 1.00
+    fatigue: 1.00
+    sensitivity: 1.00
+  caps:
+    agent_affect_affinity_max: 0.03
+    negative_mood_congruence_max: 0.00
+
 sidecar:
   enabled: false
   url: http://127.0.0.1:8765

@@ -216,8 +216,8 @@ type RetrieveStep struct {
 
 type RetrievalPolicy struct {
 	SensitivityPermission string `yaml:"sensitivity_permission"`
-	AllowHistorical       bool   `yaml:"allow_historical"`
-	AllowDeepArchive      bool   `yaml:"allow_deep_archive"`
+	AllowHistorical       *bool  `yaml:"allow_historical"`
+	AllowDeepArchive      *bool  `yaml:"allow_deep_archive"`
 	FinalMemoryCount      int    `yaml:"final_memory_count"`
 	ContextBudgetTokens   int    `yaml:"context_budget_tokens"`
 	UseFTS                *bool  `yaml:"use_fts"`

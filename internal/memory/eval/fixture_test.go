@@ -242,6 +242,65 @@ assertions:
 	}
 }
 
+func TestRetrievePolicyCanDisableGlobalHistoricalAccess(t *testing.T) {
+	fixture, err := LoadFixtureBytes([]byte(`
+case_id: RETRIEVE_POLICY_DISABLE_GLOBAL_HISTORICAL
+seed:
+  sessions:
+    - id: s1
+      channel: api
+  entities:
+    - id: user
+      canonical_name: Long
+      entity_type: user
+  episodes:
+    - id: ep1
+      session_id: s1
+      content: 用户曾经喜欢冷萃咖啡。
+      occurred_at: "2026-04-28T09:00:00+08:00"
+steps:
+  - id: archived
+    action: consolidate
+    consolidate:
+      candidate:
+        subject_entity_id: user
+        predicate: likes
+        object_literal: 冷萃咖啡
+        content_summary: 用户曾经喜欢冷萃咖啡。
+        source_episode_ids: [ep1]
+        confidence: explicit
+        importance: 1.0
+    fact_override:
+      lifecycle_status: archived
+  - id: retrieve
+    action: retrieve
+    retrieve:
+      session_id: s1
+      query_text: 冷萃咖啡
+      policy:
+        allow_historical: false
+        final_memory_count: 1
+assertions:
+  - type: forbidden_recall_zero
+    step: retrieve
+    forbidden_node_ids: [$archived.fact_id]
+`))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+
+	report := NewRunner(RunnerOptions{
+		TempDir: t.TempDir(),
+		RetrievalPolicy: memorycore.RetrievalPolicy{
+			AllowHistorical:  true,
+			FinalMemoryCount: 1,
+		},
+	}).Run(context.Background(), fixture)
+	if report.Failed() {
+		t.Fatalf("run fixture: %s", report.Error())
+	}
+}
+
 func TestPhase5FMetricAssertionFailureMessage(t *testing.T) {
 	fixture, err := LoadFixtureBytes([]byte(`
 case_id: PHASE5F_METRIC_FAILURE

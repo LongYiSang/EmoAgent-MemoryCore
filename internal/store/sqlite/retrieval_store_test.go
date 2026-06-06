@@ -319,6 +319,198 @@ WHERE id IN ('fact_a_archived', 'fact_z_active')`, fixedRetrievalNow().Format(ti
 	}
 }
 
+func TestRetrievalRepositoryScoringPolicyChangesAnchorGraphOrderingAndBreakdown(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_anchor_scoring", "用户常在下午喝咖啡。", core.LifecycleActive)
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_graph_scoring", "用户喜欢手冲咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_anchor_scoring_evidence", "fact_anchor_scoring")
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_graph_scoring_evidence", "fact_graph_scoring")
+	if _, err := db.SQLDB().ExecContext(ctx, `
+UPDATE facts
+SET created_at = ?
+WHERE id IN ('fact_anchor_scoring', 'fact_graph_scoring')`, fixedRetrievalNow().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("fix fact timestamps: %v", err)
+	}
+	search := memsqlite.NewSearchRepository(db.SQLDB())
+	for _, factID := range []string{"fact_anchor_scoring", "fact_graph_scoring"} {
+		if err := search.UpsertFactDocument(ctx, "default", factID); err != nil {
+			t.Fatalf("upsert fact document %s: %v", factID, err)
+		}
+	}
+
+	policy := memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 2,
+		MinFinalScore:    0.001,
+		Scoring:          testRetrievalScoringPolicy("graph_heavy"),
+	}
+	policy.Scoring.Weights.AnchorEnergy = 0.01
+	policy.Scoring.Weights.GraphEnergy = 1
+	policy.Scoring.Weights.Importance = 0
+	policy.Scoring.Weights.Recency = 0
+	policy.Scoring.Weights.FactTypePrior = 0
+	policy.Scoring.Weights.EvidenceStrength = 0
+	policy.Scoring.Weights.Pinned = 0
+	policy.Scoring.Weights.LexicalCoverage = 0
+	policy.Scoring.Weights.SlotBoost = 0
+	policy.Scoring.Weights.ReflectionBoost = 0
+	policy.Scoring.Weights.CompletionBonus = 0
+	policy.Scoring.Penalties.HubSuppression = 0
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared := memsqlite.PreparedRetrieval{
+		Request: memsqlite.RetrievalRequest{PersonaID: "default", Policy: policy},
+		Query: memsqlite.QueryAnalysis{
+			Raw:           "咖啡",
+			Normalized:    "咖啡",
+			Terms:         []string{"咖啡"},
+			TimeMode:      memsqlite.QueryTimeModeCurrent,
+			MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+			MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+			EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		},
+		Policy: policy,
+		Now:    fixedRetrievalNow(),
+		FusedAnchors: []memsqlite.FusedAnchor{
+			{
+				NodeID:           "fact_anchor_scoring",
+				NodeType:         core.NodeTypeFact,
+				FusedAnchorScore: 1,
+				SeedEnergy:       1,
+				SourceBreakdown: []memsqlite.AnchorSourceBreakdown{{
+					Source:   memsqlite.AnchorSourceSQLiteSparse,
+					Rank:     1,
+					RawScore: 1,
+				}},
+			},
+		},
+	}
+	graphCandidates := []memsqlite.RetrievalActivationCandidate{{
+		FactID: "fact_graph_scoring",
+		Score:  1,
+		Source: "graph_activation",
+		Rank:   1,
+	}}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, graphCandidates, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	if len(safeCandidates) < 2 || safeCandidates[0].NodeID != "fact_graph_scoring" {
+		t.Fatalf("safe candidates = %#v, scored = %#v, want graph-scored fact first and anchor candidate retained", safeCandidates, finalCandidates.Scored)
+	}
+	result, err := retrieval.CompleteFinal(ctx, finalCandidates, nil, nil)
+	if err != nil {
+		t.Fatalf("complete retrieval: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 2 || items[0].NodeID != "fact_graph_scoring" {
+		t.Fatalf("retrieval result = %#v, want graph-scored fact first", result.Blocks)
+	}
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_graph_scoring", "retrieved")
+	if got := breakdown["scorer_profile"]; got != "graph_heavy" {
+		t.Fatalf("scorer_profile = %#v, want graph_heavy", got)
+	}
+	requireBreakdownNumber(t, breakdown, "graph_energy", 1)
+}
+
+func TestRetrievalRepositoryMinFinalScoreComesFromPolicy(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_below_min_score", "用户喜欢咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_below_min_score_evidence", "fact_below_min_score")
+	if err := memsqlite.NewSearchRepository(db.SQLDB()).UpsertFactDocument(ctx, "default", "fact_below_min_score"); err != nil {
+		t.Fatalf("upsert fact document: %v", err)
+	}
+	policy := memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 1,
+		MinFinalScore:    10,
+	}
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Complete(ctx, memsqlite.PreparedRetrieval{
+		Request: memsqlite.RetrievalRequest{PersonaID: "default", Policy: policy},
+		Query: memsqlite.QueryAnalysis{
+			Raw:           "咖啡",
+			Normalized:    "咖啡",
+			Terms:         []string{"咖啡"},
+			TimeMode:      memsqlite.QueryTimeModeCurrent,
+			MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+			MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+			EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		},
+		Policy: policy,
+		Now:    fixedRetrievalNow(),
+		FusedAnchors: []memsqlite.FusedAnchor{{
+			NodeID:           "fact_below_min_score",
+			NodeType:         core.NodeTypeFact,
+			FusedAnchorScore: 1,
+			SeedEnergy:       1,
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("complete retrieval: %v", err)
+	}
+	if len(result.Blocks) != 0 {
+		t.Fatalf("retrieval blocks = %#v, want none below min final score", result.Blocks)
+	}
+}
+
+func TestRetrievalRepositoryExplicitZeroMinFinalScoreDisablesThreshold(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_low_score_allowed", "用户喜欢冷萃咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_low_score_allowed_evidence", "fact_low_score_allowed")
+	policy := memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 1,
+		MinFinalScore:    0,
+		MinFinalScoreSet: true,
+		Scoring:          testRetrievalScoringPolicy("zero_min_threshold"),
+	}
+	policy.Scoring.Weights.AnchorEnergy = 0.01
+	policy.Scoring.Weights.Importance = 0
+	policy.Scoring.Weights.Recency = 0
+	policy.Scoring.Weights.FactTypePrior = 0
+	policy.Scoring.Weights.EvidenceStrength = 0
+	policy.Scoring.Weights.LexicalCoverage = 0
+	policy.Scoring.Weights.SlotBoost = 0
+	policy.Scoring.Penalties.HubSuppression = 0
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	result, err := retrieval.Complete(ctx, memsqlite.PreparedRetrieval{
+		Request: memsqlite.RetrievalRequest{PersonaID: "default", Policy: policy},
+		Query: memsqlite.QueryAnalysis{
+			Raw:           "冷萃",
+			Normalized:    "冷萃",
+			Terms:         []string{"冷萃"},
+			TimeMode:      memsqlite.QueryTimeModeCurrent,
+			MemoryDomain:  memsqlite.MemoryDomainUserProfile,
+			MemoryAbility: memsqlite.MemoryAbilityDirectFact,
+			EvidenceNeed:  memsqlite.EvidenceNeedExactObservation,
+		},
+		Policy: policy,
+		Now:    fixedRetrievalNow(),
+		FusedAnchors: []memsqlite.FusedAnchor{{
+			NodeID:           "fact_low_score_allowed",
+			NodeType:         core.NodeTypeFact,
+			FusedAnchorScore: 1,
+			SeedEnergy:       1,
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("complete retrieval: %v", err)
+	}
+	items := flattenMemoryItems(result)
+	if len(items) != 1 || items[0].NodeID != "fact_low_score_allowed" {
+		t.Fatalf("retrieval items = %#v, want low score candidate allowed by explicit zero min_final_score", items)
+	}
+}
+
 func TestRetrievalFiltersExpiredSearchDocsBeforeCandidateLimit(t *testing.T) {
 	ctx := context.Background()
 	db := openMigratedDB(t, ctx)
@@ -1301,6 +1493,51 @@ func TestRetrievalRepositoryRerankBoostAffectsOrderingAndBreakdownBeforeLifecycl
 	if got := breakdown["rerank_debug_reason"]; got != "direct coffee match" {
 		t.Fatalf("rerank_debug_reason = %#v", got)
 	}
+}
+
+func TestRetrievalRepositoryRerankBoostUsesScoringPolicy(t *testing.T) {
+	ctx := context.Background()
+	db := openMigratedDB(t, ctx)
+	defer db.Close()
+	seedConsolidationStoreGraph(t, ctx, db.SQLDB())
+
+	insertSearchFact(t, ctx, db.SQLDB(), "fact_custom_rerank", "用户喜欢手冲咖啡。", core.LifecycleActive)
+	insertRetrievalEvidenceLink(t, ctx, db.SQLDB(), "link_custom_rerank", "fact_custom_rerank")
+
+	policy := memsqlite.RetrievalPolicy{
+		FinalMemoryCount: 1,
+		UseMirror:        true,
+		MinFinalScore:    0.001,
+		Scoring:          testRetrievalScoringPolicy("custom_rerank"),
+	}
+	policy.Scoring.Weights.RerankBoost = 0.03
+	retrieval := memsqlite.NewRetrievalRepository(db.SQLDB(), fixedRetrievalIDs(), fixedRetrievalNow)
+	prepared, err := retrieval.Prepare(ctx, memsqlite.RetrievalRequest{
+		PersonaID: "default",
+		QueryText: "mirror-only",
+		Policy:    policy,
+		Mirror: []memsqlite.RetrievalMirrorCandidate{
+			{FactID: "fact_custom_rerank", TriviumNodeID: 7411, Score: 1.0, Source: "trivium_dense", Rank: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	finalCandidates, safeCandidates, err := retrieval.BuildRerankCandidates(ctx, prepared, nil, nil)
+	if err != nil {
+		t.Fatalf("build rerank candidates: %v", err)
+	}
+	if _, err := retrieval.CompleteFinal(ctx, finalCandidates, []memsqlite.RerankResultItem{
+		{NodeID: "fact_custom_rerank", NodeType: "fact", RerankScore: 1.0},
+	}, &memsqlite.RerankDiagnostics{Status: "used", SafeCandidateCount: len(safeCandidates), ResultCount: 1}); err != nil {
+		t.Fatalf("complete final: %v", err)
+	}
+
+	breakdown := requireScoreBreakdown(t, db.SQLDB(), "fact_custom_rerank", "retrieved")
+	if got := breakdown["scorer_profile"]; got != "custom_rerank" {
+		t.Fatalf("scorer_profile = %#v, want custom_rerank", got)
+	}
+	requireBreakdownNumber(t, breakdown, "rerank_boost", 0.03)
 }
 
 func TestRetrievalRepositoryRerankCannotBypassMMRDuplicateSuppression(t *testing.T) {
@@ -3964,6 +4201,36 @@ func fixedRetrievalIDs() func() string {
 
 func fixedRetrievalNow() time.Time {
 	return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+}
+
+func testRetrievalScoringPolicy(profile string) memsqlite.RetrievalScoringPolicy {
+	return memsqlite.RetrievalScoringPolicy{
+		Profile: profile,
+		Weights: memsqlite.RetrievalScoringWeights{
+			AnchorEnergy:     0.55,
+			GraphEnergy:      0.25,
+			Importance:       0.20,
+			Recency:          0.10,
+			FactTypePrior:    0.10,
+			EvidenceStrength: 0.10,
+			Pinned:           0.05,
+			LexicalCoverage:  0.12,
+			SlotBoost:        1.00,
+			ReflectionBoost:  1.00,
+			CompletionBonus:  1.00,
+			RerankBoost:      0.08,
+		},
+		Penalties: memsqlite.RetrievalScoringPenalties{
+			HubSuppression:     1.00,
+			PremiseRestatement: 1.00,
+			Fatigue:            1.00,
+			Sensitivity:        1.00,
+		},
+		Caps: memsqlite.RetrievalScoringCaps{
+			AgentAffectAffinityMax:    0.03,
+			NegativeMoodCongruenceMax: 0,
+		},
+	}
 }
 
 func contains(value string, needle string) bool {

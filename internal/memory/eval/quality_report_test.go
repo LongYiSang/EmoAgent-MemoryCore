@@ -59,6 +59,17 @@ func TestQualityReportFullShowsQuestionExpectationAndResult(t *testing.T) {
 						},
 					},
 				},
+				ScoreBreakdowns: []RetrievalScoreBreakdownReport{
+					{
+						NodeID:        "f_target",
+						AccessType:    "retrieved",
+						ScorerProfile: "retrieval_v5d_default",
+						ScoreBreakdown: map[string]any{
+							"scorer_profile": "retrieval_v5d_default",
+							"final_score":    0.73,
+						},
+					},
+				},
 			},
 		},
 		Results: []AssertionResult{
@@ -76,6 +87,8 @@ func TestQualityReportFullShowsQuestionExpectationAndResult(t *testing.T) {
 		"结果:",
 		"PASS [selected_recall_at_k] q001 recalls target",
 		"experience_context fact:f_target current 用户晚上九点后更适合深度工作。",
+		"score_breakdowns:",
+		"fact:f_target access=retrieved scorer_profile=retrieval_v5d_default final_score=0.73",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("FormatQualityBenchmarkReport() =\n%s\nwant substring %q", out, want)

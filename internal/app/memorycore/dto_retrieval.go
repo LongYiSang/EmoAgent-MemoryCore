@@ -122,6 +122,43 @@ type RetrievalPolicy struct {
 	ContextBudgetTokens   int
 	UseFTS                bool
 	UseMirror             bool
+	MinFinalScore         float64
+	MinFinalScoreSet      bool
+	Scoring               RetrievalScoringPolicy
+}
+
+type RetrievalScoringPolicy struct {
+	Profile   string
+	Weights   RetrievalScoringWeights
+	Penalties RetrievalScoringPenalties
+	Caps      RetrievalScoringCaps
+}
+
+type RetrievalScoringWeights struct {
+	AnchorEnergy     float64
+	GraphEnergy      float64
+	Importance       float64
+	Recency          float64
+	FactTypePrior    float64
+	EvidenceStrength float64
+	Pinned           float64
+	LexicalCoverage  float64
+	SlotBoost        float64
+	ReflectionBoost  float64
+	CompletionBonus  float64
+	RerankBoost      float64
+}
+
+type RetrievalScoringPenalties struct {
+	HubSuppression     float64
+	PremiseRestatement float64
+	Fatigue            float64
+	Sensitivity        float64
+}
+
+type RetrievalScoringCaps struct {
+	AgentAffectAffinityMax    float64
+	NegativeMoodCongruenceMax float64
 }
 
 type RetrievalAffectContext struct {

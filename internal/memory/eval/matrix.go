@@ -30,6 +30,7 @@ type MatrixRunnerOptions struct {
 	EmbeddingCacheMode       string
 	ReportDir                string
 	QueryAnalysis            memorycore.QueryAnalysisOptions
+	RetrievalPolicy          memorycore.RetrievalPolicy
 	SidecarResilience        memorycore.SidecarResilienceOptions
 }
 
@@ -45,13 +46,14 @@ type MatrixReport struct {
 }
 
 type ProfileMatrixReport struct {
-	Profile        Profile              `json:"profile"`
-	Status         ProfileStatus        `json:"status"`
-	Capability     CapabilityReport     `json:"capability"`
-	Metrics        MatrixMetrics        `json:"metrics"`
-	MirrorArtifact MirrorArtifactReport `json:"mirror_artifact,omitempty"`
-	Error          string               `json:"error,omitempty"`
-	Report         Report               `json:"-"`
+	Profile         Profile                         `json:"profile"`
+	Status          ProfileStatus                   `json:"status"`
+	Capability      CapabilityReport                `json:"capability"`
+	Metrics         MatrixMetrics                   `json:"metrics"`
+	MirrorArtifact  MirrorArtifactReport            `json:"mirror_artifact,omitempty"`
+	ScoreBreakdowns []RetrievalScoreBreakdownReport `json:"score_breakdowns,omitempty"`
+	Error           string                          `json:"error,omitempty"`
+	Report          Report                          `json:"-"`
 }
 
 type MatrixMetrics struct {
@@ -221,10 +223,12 @@ func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile
 		Strict:             r.opts.Strict,
 		EmbeddingCacheMode: r.opts.EmbeddingCacheMode,
 		QueryAnalysis:      r.queryAnalysisForProfile(profile),
+		RetrievalPolicy:    r.opts.RetrievalPolicy,
 		SidecarResilience:  r.opts.SidecarResilience,
 	}).Run(ctx, fixture)
 	out.Report = runReport
 	out.MirrorArtifact = runReport.MirrorArtifact
+	out.ScoreBreakdowns = flattenReportScoreBreakdowns(runReport)
 	out.Metrics = ComputeProfileMatrixMetrics(fixture, runReport, profile)
 	if artifact != nil {
 		if out.MirrorArtifact.ManifestHash != "" {
@@ -242,6 +246,14 @@ func (r *MatrixRunner) runProfile(ctx context.Context, fixture *Fixture, profile
 	if runReport.Failed() {
 		out.Status = ProfileStatusFail
 		out.Error = appendProfileError(out.Error, runReport.Error())
+	}
+	return out
+}
+
+func flattenReportScoreBreakdowns(report Report) []RetrievalScoreBreakdownReport {
+	var out []RetrievalScoreBreakdownReport
+	for _, step := range report.Steps {
+		out = append(out, step.ScoreBreakdowns...)
 	}
 	return out
 }

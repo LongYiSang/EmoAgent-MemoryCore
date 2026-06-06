@@ -135,6 +135,18 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		return usageError(stderr, fs, err.Error())
 	}
+	policy := memorycore.RetrievalPolicy{
+		SensitivityPermission: sensitivity,
+		AllowHistorical:       allowHistorical,
+		AllowDeepArchive:      allowDeepArchive,
+		FinalMemoryCount:      finalCount,
+		ContextBudgetTokens:   budget,
+		UseFTS:                useFTS,
+		UseMirror:             useMirror,
+	}
+	if hasConfig {
+		policy = cfg.RetrievalPolicy()
+	}
 
 	ctx := context.Background()
 	openOpts := memorycore.Options{
@@ -163,15 +175,7 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 		SessionID: stringPtr(sessionID),
 		QueryText: query,
 		Now:       parsedNow,
-		Policy: memorycore.RetrievalPolicy{
-			SensitivityPermission: sensitivity,
-			AllowHistorical:       allowHistorical,
-			AllowDeepArchive:      allowDeepArchive,
-			FinalMemoryCount:      finalCount,
-			ContextBudgetTokens:   budget,
-			UseFTS:                useFTS,
-			UseMirror:             useMirror,
-		},
+		Policy:    policy,
 		Context: memorycore.RetrievalAffectContext{
 			UserMoodLabel:         userMood,
 			RelationshipMoodLabel: relationshipMood,

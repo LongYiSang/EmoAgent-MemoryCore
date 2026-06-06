@@ -48,6 +48,9 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	if _, ok := breakdown["final_score"].(float64); !ok {
 		t.Fatalf("final_score = %#v, want number", breakdown["final_score"])
 	}
+	if got := breakdown["scorer_profile"]; got != "retrieval_v5d_default" {
+		t.Fatalf("scorer_profile = %#v, want retrieval_v5d_default", got)
+	}
 	requireBreakdownObject(t, breakdown, "query_analysis")
 	observed := requireBreakdownObject(t, breakdown, "observed_confidence")
 	if _, ok := observed["overall"].(float64); !ok {

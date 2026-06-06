@@ -2697,6 +2697,35 @@ func retrievalPolicyToStore(policy RetrievalPolicy) memsqlite.RetrievalPolicy {
 		ContextBudgetTokens:   policy.ContextBudgetTokens,
 		UseFTS:                policy.UseFTS,
 		UseMirror:             policy.UseMirror,
+		MinFinalScore:         policy.MinFinalScore,
+		MinFinalScoreSet:      policy.MinFinalScoreSet,
+		Scoring: memsqlite.RetrievalScoringPolicy{
+			Profile: policy.Scoring.Profile,
+			Weights: memsqlite.RetrievalScoringWeights{
+				AnchorEnergy:     policy.Scoring.Weights.AnchorEnergy,
+				GraphEnergy:      policy.Scoring.Weights.GraphEnergy,
+				Importance:       policy.Scoring.Weights.Importance,
+				Recency:          policy.Scoring.Weights.Recency,
+				FactTypePrior:    policy.Scoring.Weights.FactTypePrior,
+				EvidenceStrength: policy.Scoring.Weights.EvidenceStrength,
+				Pinned:           policy.Scoring.Weights.Pinned,
+				LexicalCoverage:  policy.Scoring.Weights.LexicalCoverage,
+				SlotBoost:        policy.Scoring.Weights.SlotBoost,
+				ReflectionBoost:  policy.Scoring.Weights.ReflectionBoost,
+				CompletionBonus:  policy.Scoring.Weights.CompletionBonus,
+				RerankBoost:      policy.Scoring.Weights.RerankBoost,
+			},
+			Penalties: memsqlite.RetrievalScoringPenalties{
+				HubSuppression:     policy.Scoring.Penalties.HubSuppression,
+				PremiseRestatement: policy.Scoring.Penalties.PremiseRestatement,
+				Fatigue:            policy.Scoring.Penalties.Fatigue,
+				Sensitivity:        policy.Scoring.Penalties.Sensitivity,
+			},
+			Caps: memsqlite.RetrievalScoringCaps{
+				AgentAffectAffinityMax:    policy.Scoring.Caps.AgentAffectAffinityMax,
+				NegativeMoodCongruenceMax: policy.Scoring.Caps.NegativeMoodCongruenceMax,
+			},
+		},
 	}
 }
 

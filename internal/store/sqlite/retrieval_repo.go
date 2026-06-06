@@ -40,7 +40,7 @@ const (
 	defaultMMRLambda                         = 0.72
 	defaultDuplicateThreshold                = 0.88
 	defaultMinFinalScore                     = 0.20
-	rerankBoostWeight                        = 0.08
+	defaultRetrievalScoringProfile           = "retrieval_v5d_default"
 	defaultRerankTopN                        = 30
 	rawFloorRerankTopN                       = 12
 	maxRerankSafeSummaryRunes                = 512
@@ -80,6 +80,43 @@ type RetrievalPolicy struct {
 	ContextBudgetTokens   int
 	UseFTS                bool
 	UseMirror             bool
+	MinFinalScore         float64
+	MinFinalScoreSet      bool
+	Scoring               RetrievalScoringPolicy
+}
+
+type RetrievalScoringPolicy struct {
+	Profile   string
+	Weights   RetrievalScoringWeights
+	Penalties RetrievalScoringPenalties
+	Caps      RetrievalScoringCaps
+}
+
+type RetrievalScoringWeights struct {
+	AnchorEnergy     float64
+	GraphEnergy      float64
+	Importance       float64
+	Recency          float64
+	FactTypePrior    float64
+	EvidenceStrength float64
+	Pinned           float64
+	LexicalCoverage  float64
+	SlotBoost        float64
+	ReflectionBoost  float64
+	CompletionBonus  float64
+	RerankBoost      float64
+}
+
+type RetrievalScoringPenalties struct {
+	HubSuppression     float64
+	PremiseRestatement float64
+	Fatigue            float64
+	Sensitivity        float64
+}
+
+type RetrievalScoringCaps struct {
+	AgentAffectAffinityMax    float64
+	NegativeMoodCongruenceMax float64
 }
 
 type RetrievalAffectContext struct {
@@ -322,6 +359,7 @@ type scoredFact struct {
 }
 
 type retrievalScoreBreakdown struct {
+	ScorerProfile       string                           `json:"scorer_profile"`
 	ActivationScore     float64                          `json:"activation_score"`
 	FusionScore         float64                          `json:"fusion_score,omitempty"`
 	AnchorEnergy        float64                          `json:"anchor_energy"`
@@ -468,7 +506,8 @@ func (r *RetrievalRepository) BuildRerankCandidates(ctx context.Context, prepare
 	req.GraphActivationDiagnostics = graphDiagnostics
 	query := prepared.Query
 	rawRuleQuery := prepared.RawRuleQuery
-	policy := prepared.Policy
+	policy := normalizeRetrievalPolicy(prepared.Policy)
+	req.Policy = policy
 	now := prepared.Now
 	fusedAnchors := prepared.FusedAnchors
 	candidates := factCandidatesFromAnchors(fusedAnchors)
@@ -520,12 +559,12 @@ func (r *RetrievalRepository) CompleteFinalPreview(ctx context.Context, finalCan
 func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates PreparedFinalCandidates, rerankResults []RerankResultItem, rerankDiagnostics *RerankDiagnostics, logAccess bool, correctiveAction string) (MemoryContext, error) {
 	req := finalCandidates.Request
 	query := finalCandidates.Query
-	policy := finalCandidates.Policy
+	policy := normalizeRetrievalPolicy(finalCandidates.Policy)
 	fusedAnchors := finalCandidates.FusedAnchors
 	preRerankScored := append([]scoredFact(nil), finalCandidates.Scored...)
 	scored := append([]scoredFact(nil), finalCandidates.Scored...)
 	suppressions := append([]MemorySuppression(nil), finalCandidates.Suppressions...)
-	applyRerankResults(scored, rerankResults, rerankDiagnostics)
+	applyRerankResults(scored, rerankResults, rerankDiagnostics, policy.Scoring)
 
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].Score == scored[j].Score {
@@ -556,7 +595,7 @@ func (r *RetrievalRepository) completeFinal(ctx context.Context, finalCandidates
 			})
 			continue
 		}
-		if candidate.Score < defaultMinFinalScore {
+		if candidate.Score < policy.MinFinalScore {
 			continue
 		}
 		selectable = append(selectable, candidate)
@@ -866,23 +905,26 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		reflectionBoost := reflectionSummaryBoost(query, fact, searchText, candidate)
 		hubSuppression := broadHubSuppression(query, fact, candidate, completionSource, lexicalCoverage, slotCoverage)
 		premiseRestatement := premiseRestatementPenalty(query, fact, searchText)
-		baseScore := 0.55*candidate.AnchorEnergy +
-			0.25*candidate.GraphEnergy +
-			0.20*fact.Importance +
-			0.10*recency +
-			0.10*typePrior +
-			0.10*evidenceStrength +
-			0.05*pinned +
-			0.12*lexicalCoverage +
-			slotBoost +
-			reflectionBoost -
-			hubSuppression +
-			completionBonus -
-			premiseRestatement -
-			fatiguePenalty -
-			sensitivityPenalty
+		weights := policy.Scoring.Weights
+		penalties := policy.Scoring.Penalties
+		baseScore := weights.AnchorEnergy*candidate.AnchorEnergy +
+			weights.GraphEnergy*candidate.GraphEnergy +
+			weights.Importance*fact.Importance +
+			weights.Recency*recency +
+			weights.FactTypePrior*typePrior +
+			weights.EvidenceStrength*evidenceStrength +
+			weights.Pinned*pinned +
+			weights.LexicalCoverage*lexicalCoverage +
+			weights.SlotBoost*slotBoost +
+			weights.ReflectionBoost*reflectionBoost -
+			penalties.HubSuppression*hubSuppression +
+			weights.CompletionBonus*completionBonus -
+			penalties.PremiseRestatement*premiseRestatement -
+			penalties.Fatigue*fatiguePenalty -
+			penalties.Sensitivity*sensitivityPenalty
 		score := baseScore * lifecycleMultiplier
 		breakdown := retrievalScoreBreakdown{
+			ScorerProfile:       policy.Scoring.Profile,
 			ActivationScore:     candidate.AnchorEnergy,
 			FusionScore:         candidate.FusedAnchorScore,
 			AnchorEnergy:        candidate.AnchorEnergy,
@@ -1214,7 +1256,7 @@ func sourceScoresFromBreakdown(breakdown []AnchorSourceBreakdown, lexicalCoverag
 	return scores
 }
 
-func applyRerankResults(scored []scoredFact, results []RerankResultItem, diagnostics *RerankDiagnostics) {
+func applyRerankResults(scored []scoredFact, results []RerankResultItem, diagnostics *RerankDiagnostics, scoring RetrievalScoringPolicy) {
 	if diagnostics == nil || strings.TrimSpace(diagnostics.Status) == "" {
 		return
 	}
@@ -1241,7 +1283,7 @@ func applyRerankResults(scored []scoredFact, results []RerankResultItem, diagnos
 			continue
 		}
 		score := clampUnitScore(item.RerankScore)
-		boost := rerankBoostWeight * score
+		boost := scoring.Weights.RerankBoost * score
 		scored[index].Score += boost * scored[index].Breakdown.LifecycleMultiplier
 		scored[index].Breakdown.RerankScore = score
 		scored[index].Breakdown.RerankBoost = boost
@@ -1586,10 +1628,54 @@ func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 	if policy.ContextBudgetTokens <= 0 {
 		policy.ContextBudgetTokens = 1200
 	}
-	if isZeroRetrievalPolicy(policy) {
+	zeroPolicy := isZeroRetrievalPolicy(policy)
+	if policy.MinFinalScore < 0 {
+		policy.MinFinalScore = defaultMinFinalScore
+	} else if !policy.MinFinalScoreSet && policy.MinFinalScore == 0 {
+		policy.MinFinalScore = defaultMinFinalScore
+	}
+	policy.Scoring = normalizeRetrievalScoringPolicy(policy.Scoring)
+	if zeroPolicy {
 		policy.UseFTS = true
 	}
 	return policy
+}
+
+func normalizeRetrievalScoringPolicy(policy RetrievalScoringPolicy) RetrievalScoringPolicy {
+	if strings.TrimSpace(policy.Profile) != "" {
+		return policy
+	}
+	return defaultRetrievalScoringPolicy()
+}
+
+func defaultRetrievalScoringPolicy() RetrievalScoringPolicy {
+	return RetrievalScoringPolicy{
+		Profile: defaultRetrievalScoringProfile,
+		Weights: RetrievalScoringWeights{
+			AnchorEnergy:     0.55,
+			GraphEnergy:      0.25,
+			Importance:       0.20,
+			Recency:          0.10,
+			FactTypePrior:    0.10,
+			EvidenceStrength: 0.10,
+			Pinned:           0.05,
+			LexicalCoverage:  0.12,
+			SlotBoost:        1.00,
+			ReflectionBoost:  1.00,
+			CompletionBonus:  1.00,
+			RerankBoost:      0.08,
+		},
+		Penalties: RetrievalScoringPenalties{
+			HubSuppression:     1.00,
+			PremiseRestatement: 1.00,
+			Fatigue:            1.00,
+			Sensitivity:        1.00,
+		},
+		Caps: RetrievalScoringCaps{
+			AgentAffectAffinityMax:    0.03,
+			NegativeMoodCongruenceMax: 0,
+		},
+	}
 }
 
 func effectiveRetrievalPolicy(policy RetrievalPolicy, analysis QueryAnalysis) RetrievalPolicy {
@@ -1609,7 +1695,10 @@ func isZeroRetrievalPolicy(policy RetrievalPolicy) bool {
 		policy.FinalMemoryCount == 8 &&
 		policy.ContextBudgetTokens == 1200 &&
 		!policy.UseFTS &&
-		!policy.UseMirror
+		!policy.UseMirror &&
+		policy.MinFinalScore == 0 &&
+		!policy.MinFinalScoreSet &&
+		strings.TrimSpace(policy.Scoring.Profile) == ""
 }
 
 func textMatchScore(query QueryAnalysis, searchText string) float64 {

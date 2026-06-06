@@ -46,6 +46,7 @@ type options struct {
 	liveMaxTokens            int
 	liveThinking             bool
 	queryAnalysis            memorycore.QueryAnalysisOptions
+	retrievalPolicy          memorycore.RetrievalPolicy
 }
 
 func main() {
@@ -101,7 +102,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				continue
 			}
 		}
-		report := memoryeval.NewRunner(memoryeval.RunnerOptions{TempDir: opts.tempDir}).Run(ctx, fixture)
+		report := memoryeval.NewRunner(memoryeval.RunnerOptions{
+			TempDir:         opts.tempDir,
+			RetrievalPolicy: opts.retrievalPolicy,
+		}).Run(ctx, fixture)
 		cases = append(cases, memoryeval.QualityBenchmarkCase{
 			Path:    path,
 			Fixture: fixture,
@@ -185,6 +189,7 @@ func runMatrix(ctx context.Context, opts options, paths []string, stdout io.Writ
 			ReuseMirror:              opts.reuseMirror,
 			ReportDir:                reportDir,
 			QueryAnalysis:            opts.queryAnalysis,
+			RetrievalPolicy:          opts.retrievalPolicy,
 			SidecarResilience:        opts.sidecarResilience,
 		}).Run(ctx, fixture)
 		outputs = append(outputs, matrixRunOutput{Fixture: fixture, Report: report})
@@ -400,6 +405,7 @@ func applyMemoryEvalConfig(opts *options, cfg *memconfig.Config, explicit map[st
 		}
 	}
 	opts.sidecarResilience = runtimeOptions.SidecarResilience
+	opts.retrievalPolicy = cfg.RetrievalPolicy()
 	if !explicit["query-analysis-mode"] {
 		if mode := strings.TrimSpace(string(runtimeOptions.QueryAnalysis.Mode)); mode != "" {
 			*queryAnalysisMode = mode
