@@ -231,6 +231,10 @@ type (
 	StartSessionRequest                 = appcore.StartSessionRequest
 )
 
+type GetPendingManualForgetOperationRequest = appcore.GetPendingManualForgetOperationRequest
+type PendingManualForgetOperation = appcore.PendingManualForgetOperation
+type CancelPendingManualForgetOperationRequest = appcore.CancelPendingManualForgetOperationRequest
+
 type SemanticQueryEntityMentionDiagnostics = appcore.SemanticQueryEntityMentionDiagnostics
 
 const (
@@ -471,6 +475,12 @@ const (
 	RetrievalHardFailureForbiddenCandidate           = appcore.RetrievalHardFailureForbiddenCandidate
 	RetrievalHardFailureTemporalInconsistency        = appcore.RetrievalHardFailureTemporalInconsistency
 )
+
+const ManualForgetOperationStatusCancelled = appcore.ManualForgetOperationStatusCancelled
+const ManualForgetOperationStatusExecuted = appcore.ManualForgetOperationStatusExecuted
+const ManualForgetOperationStatusExpired = appcore.ManualForgetOperationStatusExpired
+const ManualForgetOperationStatusFailed = appcore.ManualForgetOperationStatusFailed
+const ManualForgetOperationStatusPendingConfirmation = appcore.ManualForgetOperationStatusPendingConfirmation
 
 var (
 	ErrInvalidOptions           = appcore.ErrInvalidOptions

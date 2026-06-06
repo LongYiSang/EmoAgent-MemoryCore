@@ -39,19 +39,15 @@ func TestMigrateAppliesSchemaAndSeedsPredicates(t *testing.T) {
 	requireTable(t, db.SQLDB(), "memory_curation_group_facts")
 
 	var migrationCount int
-	var migrationName string
 	var migrationChecksum string
 	var migrationDirty int
 	if err := db.SQLDB().QueryRowContext(ctx, `
-SELECT COUNT(*), MAX(name), MAX(checksum), MAX(dirty)
-FROM schema_migrations`).Scan(&migrationCount, &migrationName, &migrationChecksum, &migrationDirty); err != nil {
+SELECT COUNT(*), MAX(checksum), MAX(dirty)
+FROM schema_migrations`).Scan(&migrationCount, &migrationChecksum, &migrationDirty); err != nil {
 		t.Fatalf("read migration ledger: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Fatalf("migration count = %d, want 1", migrationCount)
-	}
-	if migrationName != "initial" {
-		t.Fatalf("migration name = %q, want initial", migrationName)
+	if migrationCount != 2 {
+		t.Fatalf("migration count = %d, want 2", migrationCount)
 	}
 	if migrationChecksum == "" {
 		t.Fatalf("migration checksum is empty")
@@ -59,6 +55,15 @@ FROM schema_migrations`).Scan(&migrationCount, &migrationName, &migrationChecksu
 	if migrationDirty != 0 {
 		t.Fatalf("migration dirty = %d, want 0", migrationDirty)
 	}
+	requireColumn(t, db.SQLDB(), "pending_manual_forget_operations", "preview_hash")
+	mustExec(t, db.SQLDB(), `INSERT INTO personas (id, display_name) VALUES ('default', 'Default')`)
+	mustExec(t, db.SQLDB(), `INSERT INTO pending_manual_forget_operations (
+		id, persona_id, status, requested_level, requires_confirmation,
+		candidates_json, preview_hash, created_at, updated_at, expires_at
+	) VALUES (
+		'op_expired', 'default', 'expired', 'soft_forget', 1,
+		'[]', 'hash-expired', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'
+	)`)
 
 	predicates := memsqlite.NewPredicateRepository(db.SQLDB())
 	predicate, err := predicates.Get(ctx, "lives_in")
@@ -283,6 +288,33 @@ func requireTable(t *testing.T, db *sql.DB, table string) {
 	if err != nil {
 		t.Fatalf("table %s does not exist: %v", table, err)
 	}
+}
+
+func requireColumn(t *testing.T, db *sql.DB, table string, column string) {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if name == column {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read columns for %s: %v", table, err)
+	}
+	t.Fatalf("column %s.%s does not exist", table, column)
 }
 
 func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {

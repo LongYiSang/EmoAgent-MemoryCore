@@ -32,6 +32,8 @@ type Service interface {
 	Forget(ctx context.Context, req ForgetRequest) (*ForgetResult, error)
 	PreviewForget(ctx context.Context, req ForgetPreviewRequest) (*ForgetPreviewResult, error)
 	ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (*ForgetExecuteResult, error)
+	GetPendingManualForgetOperation(ctx context.Context, req GetPendingManualForgetOperationRequest) (*PendingManualForgetOperation, error)
+	CancelPendingManualForgetOperation(ctx context.Context, req CancelPendingManualForgetOperationRequest) (*PendingManualForgetOperation, error)
 	VerifyForget(ctx context.Context, req ForgetVerifyRequest) (*ForgetVerifyResult, error)
 	RunExtraction(ctx context.Context, req RunExtractionRequest) (*ExtractionRunResult, error)
 	RunExtractionBatch(ctx context.Context, req ExtractionBatchRequest) (*ExtractionBatchResult, error)

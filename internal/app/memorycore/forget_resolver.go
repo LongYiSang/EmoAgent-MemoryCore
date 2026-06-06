@@ -18,6 +18,9 @@ func (s *service) PreviewForget(ctx context.Context, req ForgetPreviewRequest) (
 	if err != nil {
 		return nil, err
 	}
+	if err := s.recordPendingManualForgetOperation(ctx, req, result); err != nil {
+		return nil, err
+	}
 	if err := s.recordSemanticDecisionAudit(ctx, semanticDecisionAuditRecord{
 		RequestID:       result.RequestID,
 		PersonaID:       result.PersonaID,
@@ -34,8 +37,9 @@ func (s *service) PreviewForget(ctx context.Context, req ForgetPreviewRequest) (
 			"risk_flags":           append([]string(nil), result.RiskFlags...),
 		},
 		SidecarStatus:   result.SidecarStatus,
-		DiagnosticsJSON: map[string]any{"status": result.Status},
+		DiagnosticsJSON: map[string]any{"status": result.Status, "operation_id": result.OperationID},
 	}); err != nil {
+		s.failPendingManualForgetOperation(ctx, result.OperationID)
 		return nil, err
 	}
 	return result, nil
@@ -113,6 +117,9 @@ func (s *service) resolveForgetPreview(ctx context.Context, req ForgetPreviewReq
 }
 
 func (s *service) ExecuteForget(ctx context.Context, req ForgetExecuteRequest) (*ForgetExecuteResult, error) {
+	if strings.TrimSpace(req.OperationID) != "" {
+		return s.executePendingManualForgetOperation(ctx, req)
+	}
 	previewReq := req.PreviewRequest
 	if strings.TrimSpace(previewReq.ScopeMode) == "" {
 		return nil, fmt.Errorf("%w: execute requires preview request", ErrInvalidRequest)

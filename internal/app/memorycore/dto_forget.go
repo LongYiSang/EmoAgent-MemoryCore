@@ -66,6 +66,8 @@ type ForgetPreviewRequest struct {
 	EntityID            string
 	Topic               string
 	SessionID           string
+	ChatSessionID       string
+	RequestEpisodeID    string
 	Since               *time.Time
 	Until               *time.Time
 	Limit               int
@@ -83,6 +85,7 @@ type ForgetPromptItem struct {
 type ForgetPreviewResult struct {
 	PersonaID            string
 	RequestID            string
+	OperationID          string
 	PreviewHash          string
 	RequestedLevel       string
 	ScopeMode            string
@@ -103,6 +106,7 @@ type ForgetResolvedTarget struct {
 
 type ForgetExecuteRequest struct {
 	PersonaID        string
+	OperationID      string
 	Actor            string
 	ReasonCode       string
 	Level            string
@@ -115,6 +119,7 @@ type ForgetExecuteRequest struct {
 
 type ForgetExecuteResult struct {
 	PersonaID   string
+	OperationID string
 	Executed    int
 	PreviewHash string
 	Results     []ForgetResult
@@ -123,6 +128,42 @@ type ForgetExecuteResult struct {
 type ExactNodeRef struct {
 	NodeType string
 	NodeID   string
+}
+
+const (
+	ManualForgetOperationStatusPendingConfirmation = "pending_confirmation"
+	ManualForgetOperationStatusExecuted            = "executed"
+	ManualForgetOperationStatusCancelled           = "cancelled"
+	ManualForgetOperationStatusFailed              = "failed"
+	ManualForgetOperationStatusExpired             = "expired"
+)
+
+type PendingManualForgetOperation struct {
+	OperationID          string
+	PersonaID            string
+	SessionID            string
+	ChatSessionID        string
+	RequestEpisodeID     string
+	Status               string
+	RequestedLevel       string
+	ScopeMode            string
+	PreviewHash          string
+	RequiresConfirmation bool
+	Targets              []ForgetResolvedTarget
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ExpiresAt            time.Time
+}
+
+type GetPendingManualForgetOperationRequest struct {
+	PersonaID     string
+	ChatSessionID string
+}
+
+type CancelPendingManualForgetOperationRequest struct {
+	PersonaID     string
+	OperationID   string
+	ChatSessionID string
 }
 
 type ForgetVerifyRequest struct {
