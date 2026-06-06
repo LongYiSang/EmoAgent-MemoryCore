@@ -24,6 +24,7 @@ type Config struct {
 	Pipelines         PipelinesConfig         `yaml:"pipelines" json:"pipelines"`
 	WritePolicy       WritePolicyConfig       `yaml:"write_policy" json:"write_policy"`
 	Retrieval         RetrievalConfig         `yaml:"retrieval" json:"retrieval"`
+	RetrievalScoring  RetrievalScoringConfig  `yaml:"retrieval_scoring" json:"retrieval_scoring"`
 	Sidecar           SidecarConfig           `yaml:"sidecar" json:"sidecar"`
 	Mirror            MirrorConfig            `yaml:"mirror" json:"mirror"`
 	SemanticOps       SemanticOpsConfig       `yaml:"semantic_ops" json:"semantic_ops"`
@@ -275,6 +276,40 @@ type RetrievalRankingConfig struct {
 	CandidatePoolSize    int     `yaml:"candidate_pool_size" json:"candidate_pool_size"`
 	MinFinalScore        float64 `yaml:"min_final_score" json:"min_final_score"`
 	AgentAffectWeightCap float64 `yaml:"agent_affect_weight_cap" json:"agent_affect_weight_cap"`
+}
+
+type RetrievalScoringConfig struct {
+	Profile   string                          `yaml:"profile" json:"profile"`
+	Weights   RetrievalScoringWeightsConfig   `yaml:"weights" json:"weights"`
+	Penalties RetrievalScoringPenaltiesConfig `yaml:"penalties" json:"penalties"`
+	Caps      RetrievalScoringCapsConfig      `yaml:"caps" json:"caps"`
+}
+
+type RetrievalScoringWeightsConfig struct {
+	AnchorEnergy     float64 `yaml:"anchor_energy" json:"anchor_energy"`
+	GraphEnergy      float64 `yaml:"graph_energy" json:"graph_energy"`
+	Importance       float64 `yaml:"importance" json:"importance"`
+	Recency          float64 `yaml:"recency" json:"recency"`
+	FactTypePrior    float64 `yaml:"fact_type_prior" json:"fact_type_prior"`
+	EvidenceStrength float64 `yaml:"evidence_strength" json:"evidence_strength"`
+	Pinned           float64 `yaml:"pinned" json:"pinned"`
+	LexicalCoverage  float64 `yaml:"lexical_coverage" json:"lexical_coverage"`
+	SlotBoost        float64 `yaml:"slot_boost" json:"slot_boost"`
+	ReflectionBoost  float64 `yaml:"reflection_boost" json:"reflection_boost"`
+	CompletionBonus  float64 `yaml:"completion_bonus" json:"completion_bonus"`
+	RerankBoost      float64 `yaml:"rerank_boost" json:"rerank_boost"`
+}
+
+type RetrievalScoringPenaltiesConfig struct {
+	HubSuppression     float64 `yaml:"hub_suppression" json:"hub_suppression"`
+	PremiseRestatement float64 `yaml:"premise_restatement" json:"premise_restatement"`
+	Fatigue            float64 `yaml:"fatigue" json:"fatigue"`
+	Sensitivity        float64 `yaml:"sensitivity" json:"sensitivity"`
+}
+
+type RetrievalScoringCapsConfig struct {
+	AgentAffectAffinityMax    float64 `yaml:"agent_affect_affinity_max" json:"agent_affect_affinity_max"`
+	NegativeMoodCongruenceMax float64 `yaml:"negative_mood_congruence_max" json:"negative_mood_congruence_max"`
 }
 
 type RetrievalMMRConfig struct {
@@ -840,6 +875,7 @@ func DefaultConfig() Config {
 			},
 			Prompt: RetrievalPromptConfig{MaxSourceEpisodeQuotes: 2, QuoteByDefault: false},
 		},
+		RetrievalScoring: defaultRetrievalScoringConfig(),
 		Sidecar: SidecarConfig{
 			Enabled:             false,
 			URL:                 "",
@@ -1037,6 +1073,36 @@ func DefaultConfig() Config {
 	}
 }
 
+func defaultRetrievalScoringConfig() RetrievalScoringConfig {
+	return RetrievalScoringConfig{
+		Profile: "retrieval_v5d_default",
+		Weights: RetrievalScoringWeightsConfig{
+			AnchorEnergy:     0.55,
+			GraphEnergy:      0.25,
+			Importance:       0.20,
+			Recency:          0.10,
+			FactTypePrior:    0.10,
+			EvidenceStrength: 0.10,
+			Pinned:           0.05,
+			LexicalCoverage:  0.12,
+			SlotBoost:        1.00,
+			ReflectionBoost:  1.00,
+			CompletionBonus:  1.00,
+			RerankBoost:      0.08,
+		},
+		Penalties: RetrievalScoringPenaltiesConfig{
+			HubSuppression:     1.00,
+			PremiseRestatement: 1.00,
+			Fatigue:            1.00,
+			Sensitivity:        1.00,
+		},
+		Caps: RetrievalScoringCapsConfig{
+			AgentAffectAffinityMax:    0.03,
+			NegativeMoodCongruenceMax: 0,
+		},
+	}
+}
+
 func Default() Config {
 	return DefaultConfig()
 }
@@ -1066,13 +1132,19 @@ func (c Config) Validate() error {
 	if c.Retrieval.ContextBudgetTokens <= 0 {
 		return fmt.Errorf("retrieval.context_budget_tokens must be > 0")
 	}
+	if c.Retrieval.Ranking.MinFinalScore < 0 {
+		return fmt.Errorf("retrieval.ranking.min_final_score must be >= 0")
+	}
 	switch c.Retrieval.SensitivityPermission {
 	case memorycore.SensitivityNormal, memorycore.SensitivitySensitive, memorycore.SensitivityHighlySensitive:
 	default:
 		return fmt.Errorf("retrieval.sensitivity_permission must be one of normal|sensitive|highly_sensitive")
 	}
-	if c.Retrieval.Ranking.AgentAffectWeightCap > 0.03 {
-		return fmt.Errorf("retrieval.ranking.agent_affect_weight_cap must be <= 0.03")
+	if c.Retrieval.Ranking.AgentAffectWeightCap < 0 || c.Retrieval.Ranking.AgentAffectWeightCap > 0.03 {
+		return fmt.Errorf("retrieval.ranking.agent_affect_weight_cap must be within [0, 0.03]")
+	}
+	if err := c.validateRetrievalScoring(); err != nil {
+		return err
 	}
 	if c.Retrieval.MMR.Lambda < 0 || c.Retrieval.MMR.Lambda > 1 {
 		return fmt.Errorf("retrieval.mmr.lambda must be within [0, 1]")
@@ -1109,6 +1181,53 @@ func (c Config) Validate() error {
 	}
 	if err := c.validateAgentAffect(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c Config) validateRetrievalScoring() error {
+	if strings.TrimSpace(c.RetrievalScoring.Profile) == "" {
+		return fmt.Errorf("retrieval_scoring.profile is required")
+	}
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{"anchor_energy", c.RetrievalScoring.Weights.AnchorEnergy},
+		{"graph_energy", c.RetrievalScoring.Weights.GraphEnergy},
+		{"importance", c.RetrievalScoring.Weights.Importance},
+		{"recency", c.RetrievalScoring.Weights.Recency},
+		{"fact_type_prior", c.RetrievalScoring.Weights.FactTypePrior},
+		{"evidence_strength", c.RetrievalScoring.Weights.EvidenceStrength},
+		{"pinned", c.RetrievalScoring.Weights.Pinned},
+		{"lexical_coverage", c.RetrievalScoring.Weights.LexicalCoverage},
+		{"slot_boost", c.RetrievalScoring.Weights.SlotBoost},
+		{"reflection_boost", c.RetrievalScoring.Weights.ReflectionBoost},
+		{"completion_bonus", c.RetrievalScoring.Weights.CompletionBonus},
+		{"rerank_boost", c.RetrievalScoring.Weights.RerankBoost},
+	} {
+		if field.value < 0 {
+			return fmt.Errorf("retrieval_scoring.weights.%s must be >= 0", field.name)
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{"hub_suppression", c.RetrievalScoring.Penalties.HubSuppression},
+		{"premise_restatement", c.RetrievalScoring.Penalties.PremiseRestatement},
+		{"fatigue", c.RetrievalScoring.Penalties.Fatigue},
+		{"sensitivity", c.RetrievalScoring.Penalties.Sensitivity},
+	} {
+		if field.value < 0 {
+			return fmt.Errorf("retrieval_scoring.penalties.%s must be >= 0", field.name)
+		}
+	}
+	if c.RetrievalScoring.Caps.AgentAffectAffinityMax < 0 || c.RetrievalScoring.Caps.AgentAffectAffinityMax > 0.03 {
+		return fmt.Errorf("retrieval_scoring.caps.agent_affect_affinity_max must be within [0, 0.03]")
+	}
+	if c.RetrievalScoring.Caps.NegativeMoodCongruenceMax != 0 {
+		return fmt.Errorf("retrieval_scoring.caps.negative_mood_congruence_max must be 0.00")
 	}
 	return nil
 }
@@ -2041,6 +2160,45 @@ func (c Config) RetrievalPolicy() memorycore.RetrievalPolicy {
 		ContextBudgetTokens:   c.Retrieval.ContextBudgetTokens,
 		UseFTS:                c.Retrieval.UseFTS,
 		UseMirror:             c.Retrieval.UseMirror,
+		MinFinalScore:         c.Retrieval.Ranking.MinFinalScore,
+		MinFinalScoreSet:      true,
+		Scoring:               c.retrievalScoringPolicy(),
+	}
+}
+
+func (c Config) retrievalScoringPolicy() memorycore.RetrievalScoringPolicy {
+	scoring := c.RetrievalScoring
+	defaults := defaultRetrievalScoringConfig()
+	if scoring.Caps.AgentAffectAffinityMax == defaults.Caps.AgentAffectAffinityMax &&
+		c.Retrieval.Ranking.AgentAffectWeightCap != defaults.Caps.AgentAffectAffinityMax {
+		scoring.Caps.AgentAffectAffinityMax = c.Retrieval.Ranking.AgentAffectWeightCap
+	}
+	return memorycore.RetrievalScoringPolicy{
+		Profile: scoring.Profile,
+		Weights: memorycore.RetrievalScoringWeights{
+			AnchorEnergy:     scoring.Weights.AnchorEnergy,
+			GraphEnergy:      scoring.Weights.GraphEnergy,
+			Importance:       scoring.Weights.Importance,
+			Recency:          scoring.Weights.Recency,
+			FactTypePrior:    scoring.Weights.FactTypePrior,
+			EvidenceStrength: scoring.Weights.EvidenceStrength,
+			Pinned:           scoring.Weights.Pinned,
+			LexicalCoverage:  scoring.Weights.LexicalCoverage,
+			SlotBoost:        scoring.Weights.SlotBoost,
+			ReflectionBoost:  scoring.Weights.ReflectionBoost,
+			CompletionBonus:  scoring.Weights.CompletionBonus,
+			RerankBoost:      scoring.Weights.RerankBoost,
+		},
+		Penalties: memorycore.RetrievalScoringPenalties{
+			HubSuppression:     scoring.Penalties.HubSuppression,
+			PremiseRestatement: scoring.Penalties.PremiseRestatement,
+			Fatigue:            scoring.Penalties.Fatigue,
+			Sensitivity:        scoring.Penalties.Sensitivity,
+		},
+		Caps: memorycore.RetrievalScoringCaps{
+			AgentAffectAffinityMax:    scoring.Caps.AgentAffectAffinityMax,
+			NegativeMoodCongruenceMax: scoring.Caps.NegativeMoodCongruenceMax,
+		},
 	}
 }
 

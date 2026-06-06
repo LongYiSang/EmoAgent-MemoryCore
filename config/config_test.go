@@ -50,6 +50,15 @@ func TestDefaultConfigV02Contract(t *testing.T) {
 		cfg.Retrieval.Ranking.AgentAffectWeightCap != 0.03 {
 		t.Fatalf("retrieval defaults = %#v", cfg.Retrieval)
 	}
+	if cfg.RetrievalScoring.Profile != "retrieval_v5d_default" ||
+		cfg.RetrievalScoring.Weights.AnchorEnergy != 0.55 ||
+		cfg.RetrievalScoring.Weights.GraphEnergy != 0.25 ||
+		cfg.RetrievalScoring.Weights.RerankBoost != 0.08 ||
+		cfg.RetrievalScoring.Penalties.Fatigue != 1.0 ||
+		cfg.RetrievalScoring.Caps.AgentAffectAffinityMax != 0.03 ||
+		cfg.RetrievalScoring.Caps.NegativeMoodCongruenceMax != 0 {
+		t.Fatalf("retrieval scoring defaults = %#v", cfg.RetrievalScoring)
+	}
 	if cfg.AgentAffect.Enabled ||
 		!cfg.AgentAffect.StorageEnabled ||
 		cfg.AgentAffect.Retrieval.WeightCap != 0.03 ||
@@ -522,6 +531,117 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	}
 	if got := cfg.ProviderByID("emo_llm"); got == nil || got.BaseURL != "https://llm.invalid/v1" {
 		t.Fatalf("registry provider = %#v", got)
+	}
+}
+
+func TestRetrievalScoringMapsToRetrievalPolicy(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+retrieval:
+  ranking:
+    agent_affect_weight_cap: 0.02
+retrieval_scoring:
+  profile: custom_profile
+  weights:
+    anchor_energy: 0.70
+    rerank_boost: 0.04
+  penalties:
+    fatigue: 0.50
+  caps:
+    agent_affect_affinity_max: 0.01
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	policy := cfg.RetrievalPolicy()
+	if policy.Scoring.Profile != "custom_profile" ||
+		policy.Scoring.Weights.AnchorEnergy != 0.70 ||
+		policy.Scoring.Weights.RerankBoost != 0.04 ||
+		policy.Scoring.Penalties.Fatigue != 0.50 ||
+		policy.Scoring.Caps.AgentAffectAffinityMax != 0.01 {
+		t.Fatalf("policy scoring = %#v", policy.Scoring)
+	}
+}
+
+func TestRetrievalScoringLegacyAgentAffectCapAlias(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+retrieval:
+  ranking:
+    agent_affect_weight_cap: 0.02
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	policy := cfg.RetrievalPolicy()
+	if policy.Scoring.Caps.AgentAffectAffinityMax != 0.02 {
+		t.Fatalf("agent affect cap = %v, want legacy alias 0.02", policy.Scoring.Caps.AgentAffectAffinityMax)
+	}
+}
+
+func TestRetrievalPolicyPreservesExplicitZeroMinFinalScore(t *testing.T) {
+	path := writeTempFile(t, "memory.yaml", `
+retrieval:
+  ranking:
+    min_final_score: 0
+`)
+
+	cfg, err := memconfig.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML: %v", err)
+	}
+	policy := cfg.RetrievalPolicy()
+	if policy.MinFinalScore != 0 || !policy.MinFinalScoreSet {
+		t.Fatalf("retrieval policy min final score = %v set=%v, want explicit zero", policy.MinFinalScore, policy.MinFinalScoreSet)
+	}
+}
+
+func TestRetrievalScoringValidationRejectsUnsafeValues(t *testing.T) {
+	cases := map[string]string{
+		"empty_profile": `
+retrieval_scoring:
+  profile: ""
+`,
+		"negative_weight": `
+retrieval_scoring:
+  weights:
+    anchor_energy: -0.01
+`,
+		"negative_penalty": `
+retrieval_scoring:
+  penalties:
+    fatigue: -0.01
+`,
+		"agent_affect_cap_too_high": `
+retrieval_scoring:
+  caps:
+    agent_affect_affinity_max: 0.04
+`,
+		"negative_mood_cap_enabled": `
+retrieval_scoring:
+  caps:
+    negative_mood_congruence_max: 0.01
+`,
+		"legacy_agent_affect_cap_negative": `
+retrieval:
+  ranking:
+    agent_affect_weight_cap: -0.01
+`,
+		"negative_min_final_score": `
+retrieval:
+  ranking:
+    min_final_score: -0.01
+`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempFile(t, "memory.yaml", body)
+			if _, err := memconfig.LoadYAML(path); err == nil {
+				t.Fatalf("LoadYAML err = nil, want validation error")
+			}
+		})
 	}
 }
 

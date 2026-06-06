@@ -414,6 +414,30 @@ func writeQualityRetrievalResult(b *strings.Builder, step StepReport) {
 			item.summary,
 		)
 	}
+	if len(step.ScoreBreakdowns) > 0 {
+		b.WriteString("  score_breakdowns:\n")
+		for _, breakdown := range step.ScoreBreakdowns {
+			fmt.Fprintf(
+				b,
+				"    - fact:%s access=%s scorer_profile=%s final_score=%s\n",
+				breakdown.NodeID,
+				breakdown.AccessType,
+				breakdown.ScorerProfile,
+				formatScoreBreakdownNumber(breakdown.ScoreBreakdown, "final_score"),
+			)
+		}
+	}
+}
+
+func formatScoreBreakdownNumber(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key].(float64)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%g", value)
 }
 
 func writeQualityAnalysis(b *strings.Builder, analysis *memorycore.QueryAnalysis) {

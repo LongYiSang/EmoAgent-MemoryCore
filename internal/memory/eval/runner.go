@@ -27,6 +27,7 @@ type RunnerOptions struct {
 	Strict             bool
 	EmbeddingCacheMode string
 	QueryAnalysis      memorycore.QueryAnalysisOptions
+	RetrievalPolicy    memorycore.RetrievalPolicy
 	SidecarResilience  memorycore.SidecarResilienceOptions
 }
 
@@ -35,25 +36,26 @@ type Runner struct {
 }
 
 type runState struct {
-	fixture        *Fixture
-	service        *memorycore.Client
-	db             *sql.DB
-	refs           map[string]string
-	steps          map[string]stepResult
-	persona        string
-	stepID         string
-	caseID         string
-	tempRoot       string
-	dbPath         string
-	nextTriviumID  int64
-	mirror         *evalMirrorAdapter
-	profile        Profile
-	mirrorReady    bool
-	artifact       *MirrorArtifactManager
-	mirrorArtifact MirrorArtifactReport
-	mirrorAdapter  appcore.MirrorAdapter
-	semantic       *evalSemanticSidecar
-	resilience     memorycore.SidecarResilienceOptions
+	fixture         *Fixture
+	service         *memorycore.Client
+	db              *sql.DB
+	refs            map[string]string
+	steps           map[string]stepResult
+	persona         string
+	stepID          string
+	caseID          string
+	tempRoot        string
+	dbPath          string
+	nextTriviumID   int64
+	mirror          *evalMirrorAdapter
+	profile         Profile
+	mirrorReady     bool
+	artifact        *MirrorArtifactManager
+	mirrorArtifact  MirrorArtifactReport
+	mirrorAdapter   appcore.MirrorAdapter
+	semantic        *evalSemanticSidecar
+	retrievalPolicy memorycore.RetrievalPolicy
+	resilience      memorycore.SidecarResilienceOptions
 }
 
 type stepResult struct {
@@ -201,22 +203,23 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 	defer db.Close()
 
 	state := &runState{
-		fixture:       fixture,
-		service:       svc,
-		db:            db,
-		refs:          map[string]string{},
-		steps:         map[string]stepResult{},
-		persona:       defaultPersonaID,
-		caseID:        fixture.CaseID,
-		tempRoot:      tempRoot,
-		dbPath:        dbPath,
-		nextTriviumID: 1,
-		mirror:        mirror,
-		profile:       r.opts.Profile,
-		artifact:      r.opts.MirrorArtifact,
-		mirrorAdapter: adapter,
-		semantic:      semanticSidecar,
-		resilience:    r.opts.SidecarResilience,
+		fixture:         fixture,
+		service:         svc,
+		db:              db,
+		refs:            map[string]string{},
+		steps:           map[string]stepResult{},
+		persona:         defaultPersonaID,
+		caseID:          fixture.CaseID,
+		tempRoot:        tempRoot,
+		dbPath:          dbPath,
+		nextTriviumID:   1,
+		mirror:          mirror,
+		profile:         r.opts.Profile,
+		artifact:        r.opts.MirrorArtifact,
+		mirrorAdapter:   adapter,
+		semantic:        semanticSidecar,
+		retrievalPolicy: r.opts.RetrievalPolicy,
+		resilience:      r.opts.SidecarResilience,
 	}
 	if err := state.seed(ctx); err != nil {
 		report.Err = err
@@ -781,12 +784,21 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s retrieve now: %w", s.caseID, step.ID, err)
 	}
-	policy := memorycore.RetrievalPolicy{
-		SensitivityPermission: body.Policy.SensitivityPermission,
-		AllowHistorical:       body.Policy.AllowHistorical,
-		AllowDeepArchive:      body.Policy.AllowDeepArchive,
-		FinalMemoryCount:      body.Policy.FinalMemoryCount,
-		ContextBudgetTokens:   body.Policy.ContextBudgetTokens,
+	policy := s.retrievalPolicy
+	if strings.TrimSpace(body.Policy.SensitivityPermission) != "" {
+		policy.SensitivityPermission = body.Policy.SensitivityPermission
+	}
+	if body.Policy.AllowHistorical != nil {
+		policy.AllowHistorical = *body.Policy.AllowHistorical
+	}
+	if body.Policy.AllowDeepArchive != nil {
+		policy.AllowDeepArchive = *body.Policy.AllowDeepArchive
+	}
+	if body.Policy.FinalMemoryCount > 0 {
+		policy.FinalMemoryCount = body.Policy.FinalMemoryCount
+	}
+	if body.Policy.ContextBudgetTokens > 0 {
+		policy.ContextBudgetTokens = body.Policy.ContextBudgetTokens
 	}
 	if body.Policy.UseFTS != nil {
 		policy.UseFTS = *body.Policy.UseFTS
@@ -862,13 +874,14 @@ ORDER BY rowid`, afterRowID, s.persona)
 			return nil, fmt.Errorf("case %s step %s access event score breakdown scan: %w", s.caseID, s.stepID, err)
 		}
 		if strings.TrimSpace(rawBreakdown) != "" {
-			var parsed struct {
-				CompletionSource string  `json:"completion_source"`
-				ReflectionBoost  float64 `json:"reflection_boost"`
-			}
+			var parsed map[string]any
 			if err := json.Unmarshal([]byte(rawBreakdown), &parsed); err == nil {
-				item.CompletionSource = parsed.CompletionSource
-				item.ReflectionBoost = parsed.ReflectionBoost
+				item.ScoreBreakdown = parsed
+				item.ScorerProfile = stringMapValue(parsed, "scorer_profile")
+				item.CompletionSource = stringMapValue(parsed, "completion_source")
+				if value, ok := parsed["reflection_boost"].(float64); ok {
+					item.ReflectionBoost = value
+				}
 			}
 		}
 		out = append(out, item)
@@ -877,6 +890,17 @@ ORDER BY rowid`, afterRowID, s.persona)
 		return nil, fmt.Errorf("case %s step %s access event score breakdown rows: %w", s.caseID, s.stepID, err)
 	}
 	return out, nil
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key].(string)
+	if !ok {
+		return ""
+	}
+	return value
 }
 
 func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *SemanticStubSettings) (*memorycore.Client, error) {

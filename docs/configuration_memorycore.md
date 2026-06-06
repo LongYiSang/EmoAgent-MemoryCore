@@ -79,7 +79,7 @@ Usually safe to hot update in a host process:
 - LLM `params`
 - `semantic_ops.curation` enabled/mode/limits/model fields before starting a new run
 - Write-policy thresholds and max candidate counts
-- Retrieval count, budget, FTS/mirror switches, sensitivity permission, and MMR/ranking knobs
+- Retrieval count, budget, FTS/mirror switches, sensitivity permission, versioned scoring weights, and MMR/ranking knobs
 - Observability detail flags
 
 Require restart or service re-open:

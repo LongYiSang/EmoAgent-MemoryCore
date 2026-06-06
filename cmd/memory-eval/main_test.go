@@ -120,6 +120,9 @@ func TestRunMatrixWritesDetailReport(t *testing.T) {
 	if !strings.Contains(string(jsonReport), `"test_plan_version": "memory_eval_matrix.v0.2"`) {
 		t.Fatalf("json report =\n%s\nwant test_plan_version", string(jsonReport))
 	}
+	if !strings.Contains(string(jsonReport), `"scorer_profile": "retrieval_v5d_default"`) {
+		t.Fatalf("json report =\n%s\nwant scorer_profile", string(jsonReport))
+	}
 	queryAnalysisReport, err := os.ReadFile(filepath.Join(reportDir, "query_analysis.json"))
 	if err != nil {
 		t.Fatalf("read query analysis report: %v", err)
