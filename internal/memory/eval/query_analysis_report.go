@@ -1,6 +1,6 @@
 package eval
 
-import "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+import "github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 
 type QueryAnalysisReport struct {
 	TestPlanVersion string                     `json:"test_plan_version"`

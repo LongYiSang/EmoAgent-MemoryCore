@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 type ContractRepairReport struct {
@@ -210,7 +210,7 @@ func normalizeRejectedCandidates(root map[string]any, report *ContractRepairRepo
 			report.add(candidateID, "rejected_candidate", "reason_codes", "present", "reasons", "rejected_candidate_reason_codes")
 		}
 		if len(reasons) == 0 && strings.TrimSpace(stringValue(candidate["reason"])) != "" {
-			reasons = appendUnique(reasons, memorycore.ReasonModelRejected)
+			reasons = appendUnique(reasons, "model_rejected")
 		}
 		if len(reasons) > 0 {
 			candidate["reasons"] = reasons

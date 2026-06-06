@@ -88,7 +88,7 @@ func runExtractRun(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runtimeError(stderr, "%v", err)
 	}
 	defer cleanup()
-	result, err := svc.RunExtraction(ctx, memorycore.RunExtractionRequest{
+	result, err := svc.Writes().RunExtraction(ctx, memorycore.RunExtractionRequest{
 		PersonaID: flags.PersonaID,
 		SessionID: stringPtr(flags.SessionID),
 		Trigger:   flags.Trigger,
@@ -174,7 +174,7 @@ func runExtractBatch(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runtimeError(stderr, "%v", err)
 	}
 	defer cleanup()
-	result, err := svc.RunExtractionBatch(ctx, memorycore.ExtractionBatchRequest{
+	result, err := svc.Writes().RunExtractionBatch(ctx, memorycore.ExtractionBatchRequest{
 		PersonaID:                flags.PersonaID,
 		SessionIDs:               sessionIDs,
 		Trigger:                  flags.Trigger,
@@ -436,7 +436,7 @@ func applyExtractionRuntimeConfig(flags *extractionRuntimeFlags, cfg *memconfig.
 	}
 }
 
-func openExtractionService(ctx context.Context, opts commonOptions, extraction memorycore.ExtractionOptions) (memorycore.Service, func(), error) {
+func openExtractionService(ctx context.Context, opts commonOptions, extraction memorycore.ExtractionOptions) (*memorycore.Client, func(), error) {
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:      opts.DBPath,
 		PersonaID:   opts.PersonaID,

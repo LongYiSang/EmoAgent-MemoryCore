@@ -21,7 +21,7 @@ func TestServiceEnsureEntityAndAliasAreIdempotent(t *testing.T) {
 	defer svc.Close()
 
 	description := "主用户"
-	entity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	entity, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		CanonicalName: "Long",
 		EntityType:    memorycore.EntityTypeUser,
 		Description:   &description,
@@ -45,7 +45,7 @@ func TestServiceEnsureEntityAndAliasAreIdempotent(t *testing.T) {
 		t.Fatalf("entity aliases = %#v, want Longy", entity.Aliases)
 	}
 
-	same, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	same, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		CanonicalName: "Long",
 		EntityType:    memorycore.EntityTypeUser,
 	})
@@ -56,7 +56,7 @@ func TestServiceEnsureEntityAndAliasAreIdempotent(t *testing.T) {
 		t.Fatalf("same entity id = %q, want %q", same.ID, entity.ID)
 	}
 
-	firstAlias, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+	firstAlias, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 		EntityID:  entity.ID,
 		Alias:     "Long",
 		AliasType: memorycore.AliasTypeSurface,
@@ -64,7 +64,7 @@ func TestServiceEnsureEntityAndAliasAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add alias: %v", err)
 	}
-	secondAlias, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+	secondAlias, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 		EntityID:  entity.ID,
 		Alias:     "Long",
 		AliasType: memorycore.AliasTypeSurface,
@@ -88,16 +88,16 @@ func TestServiceEntityValidation(t *testing.T) {
 	}
 	defer svc.Close()
 
-	if _, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("ensure entity without canonical name err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{Alias: "Long"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{Alias: "Long"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("add alias without entity err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{EntityID: "missing", Alias: "Long"}); !errors.Is(err, memorycore.ErrNotFound) {
+	if _, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{EntityID: "missing", Alias: "Long"}); !errors.Is(err, memorycore.ErrNotFound) {
 		t.Fatalf("add alias missing entity err = %v, want ErrNotFound", err)
 	}
-	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{EntityID: "entity", Alias: ""}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{EntityID: "entity", Alias: ""}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("add alias without alias err = %v, want ErrInvalidRequest", err)
 	}
 }

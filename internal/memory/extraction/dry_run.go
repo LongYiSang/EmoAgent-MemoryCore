@@ -1,6 +1,6 @@
 package extraction
 
-import "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+import "github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 
 func DryRun(req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult) memorycore.ExtractionDryRunResult {
 	pinnedTargets := pinTargets(gate, resp)

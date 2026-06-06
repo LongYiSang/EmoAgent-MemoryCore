@@ -21,7 +21,7 @@ func TestServiceApplyCompressionWritesNarrativeInsightAndConsolidatesSources(t *
 	firstFact := consolidateLiteral(t, ctx, svc, userID, "likes", "先理解", "用户压力大时希望先被理解。", firstEpisode.ID).Fact
 	secondFact := consolidateLiteral(t, ctx, svc, userID, "likes", "不要直接建议", "用户压力大时不喜欢直接给建议。", secondEpisode.ID).Fact
 
-	result, err := svc.ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
+	result, err := svc.Ops().ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
 		SourceFactIDs: []string{firstFact.ID, secondFact.ID},
 		Narrative: &memorycore.NarrativeDraft{
 			ID:               "narrative_api",
@@ -154,7 +154,7 @@ func TestServiceApplyCompressionValidationErrors(t *testing.T) {
 				tt.mutate(t, db, secondFact.ID)
 			}
 
-			_, err := svc.ApplyCompression(ctx, tt.req(firstFact.ID, secondFact.ID))
+			_, err := svc.Ops().ApplyCompression(ctx, tt.req(firstFact.ID, secondFact.ID))
 			if !errors.Is(err, memorycore.ErrInvalidRequest) {
 				t.Fatalf("apply compression err = %v, want ErrInvalidRequest", err)
 			}

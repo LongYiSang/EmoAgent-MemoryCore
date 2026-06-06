@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func ParseRequest(r io.Reader) (memorycore.ExtractionRequest, error) {

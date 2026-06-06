@@ -12,7 +12,7 @@ It proves:
 - `extract-run --mode dry-run` does not write memory, though audit is on by default unless `--audit off` is set.
 - Phase 2C prefilter uses `memory_extraction_protocol.v0.1.prefilter` and `routing_hint` values `extract`, `forget_manager`, `pin_manager`, `skip`, or `review`.
 - `extract-batch` uses `--session-limit` plus `--episode-limit`; `--limit` is only for `extract-run`.
-- future EmoAgent integration injects a `memorycore.ExtractionLLM` adapter; MemoryCore CLI has no `--provider emoagent`.
+- future EmoAgent integration configures extraction providers through MemoryCore options/config and calls `Writes().RunExtraction`; MemoryCore CLI has no `--provider emoagent`.
 
 Run:
 

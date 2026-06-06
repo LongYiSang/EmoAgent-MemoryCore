@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const defaultPersonaID = "default"
@@ -21,7 +22,7 @@ var fixedNow = time.Date(2026, 4, 28, 12, 0, 0, 0, time.FixedZone("CST", 8*60*60
 type RunnerOptions struct {
 	TempDir            string
 	Profile            Profile
-	MirrorAdapter      memorycore.MirrorAdapter
+	MirrorAdapter      appcore.MirrorAdapter
 	MirrorArtifact     *MirrorArtifactManager
 	Strict             bool
 	EmbeddingCacheMode string
@@ -35,7 +36,7 @@ type Runner struct {
 
 type runState struct {
 	fixture        *Fixture
-	service        memorycore.Service
+	service        *memorycore.Client
 	db             *sql.DB
 	refs           map[string]string
 	steps          map[string]stepResult
@@ -50,7 +51,7 @@ type runState struct {
 	mirrorReady    bool
 	artifact       *MirrorArtifactManager
 	mirrorArtifact MirrorArtifactReport
-	mirrorAdapter  memorycore.MirrorAdapter
+	mirrorAdapter  appcore.MirrorAdapter
 	semantic       *evalSemanticSidecar
 	resilience     memorycore.SidecarResilienceOptions
 }
@@ -62,7 +63,7 @@ type stepResult struct {
 	Gate            *memorycore.ExtractionGateResult
 	QualityFlags    []string
 	ScoreBreakdowns []RetrievalScoreBreakdownReport
-	RerankRequest   *memorycore.MirrorRerankRequest
+	RerankRequest   *appcore.MirrorRerankRequest
 	Forget          *memorycore.ForgetResult
 	RetentionRun    *memorycore.RunRetentionResult
 	Compression     *memorycore.ApplyCompressionResult
@@ -169,12 +170,17 @@ func (r *Runner) Run(ctx context.Context, fixture *Fixture) Report {
 		report.Err = fmt.Errorf("profile %s requires a mirror adapter", r.opts.Profile)
 		return report
 	}
+	backend, err := mirrorBackend(adapter)
+	if err != nil {
+		report.Err = fmt.Errorf("configure mirror backend: %w", err)
+		return report
+	}
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:            dbPath,
 		PersonaID:         defaultPersonaID,
 		AutoMigrate:       true,
 		EnableFTS:         true,
-		MirrorAdapter:     adapter,
+		MirrorBackend:     backend,
 		QueryAnalysis:     r.opts.QueryAnalysis,
 		SidecarResilience: defaultEvalSidecarResilience(r.opts.SidecarResilience),
 		Now: func() time.Time {
@@ -278,7 +284,7 @@ VALUES (?, ?)`, id, displayName); err != nil {
 		if err != nil {
 			return fmt.Errorf("case %s seed session %s: %w", s.caseID, session.ID, err)
 		}
-		created, err := s.service.StartSession(ctx, memorycore.StartSessionRequest{
+		created, err := s.service.Sessions().StartSession(ctx, memorycore.StartSessionRequest{
 			ID:        session.ID,
 			PersonaID: defaultString(session.PersonaID, s.persona),
 			Channel:   session.Channel,
@@ -299,7 +305,7 @@ VALUES (?, ?)`, id, displayName); err != nil {
 				Confidence: alias.Confidence,
 			})
 		}
-		created, err := s.service.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+		created, err := s.service.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 			ID:               entity.ID,
 			PersonaID:        defaultString(entity.PersonaID, s.persona),
 			CanonicalName:    entity.CanonicalName,
@@ -319,7 +325,7 @@ VALUES (?, ?)`, id, displayName); err != nil {
 		if err != nil {
 			return fmt.Errorf("case %s seed episode %s: %w", s.caseID, episode.ID, err)
 		}
-		created, err := s.service.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+		created, err := s.service.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 			ID:               episode.ID,
 			PersonaID:        defaultString(episode.PersonaID, s.persona),
 			SessionID:        s.resolveOrLiteral(episode.SessionID),
@@ -391,7 +397,7 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		if err := s.validateProfileRetrieval(result); err != nil {
 			return err
 		}
-		var rerankRequest *memorycore.MirrorRerankRequest
+		var rerankRequest *appcore.MirrorRerankRequest
 		if s.mirror != nil && s.mirror.lastRerankRequest.PersonaID != "" {
 			captured := s.mirror.lastRerankRequest
 			rerankRequest = &captured
@@ -431,7 +437,7 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 			s.refs[fmt.Sprintf("%s.insight_id_%d", step.ID, index)] = insightID
 		}
 	case "rebuild_search":
-		result, err := s.service.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
+		result, err := s.service.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
 			PersonaID: defaultString(step.RebuildSearch.PersonaID, s.persona),
 		})
 		if err != nil {
@@ -439,7 +445,7 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		}
 		s.steps[step.ID] = stepResult{RebuildSearch: result}
 	case "mirror_rebuild":
-		result, err := s.service.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{
+		result, err := s.service.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{
 			PersonaID: defaultString(step.MirrorRebuild.PersonaID, s.persona),
 		})
 		if err != nil {
@@ -447,7 +453,7 @@ func (s *runState) runStep(ctx context.Context, step Step) error {
 		}
 		s.steps[step.ID] = stepResult{MirrorRebuild: result}
 	case "mirror_sync":
-		result, err := s.service.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
+		result, err := s.service.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
 			PersonaID: defaultString(step.MirrorSync.PersonaID, s.persona),
 			Limit:     step.MirrorSync.Limit,
 		})
@@ -516,7 +522,7 @@ func (s *runState) runConsolidate(ctx context.Context, step Step) (*memorycore.C
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s consolidate valid_to: %w", s.caseID, step.ID, err)
 	}
-	result, err := s.service.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := s.service.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
 		SessionID: sessionID,
 		Trigger:   body.Trigger,
@@ -806,7 +812,7 @@ func (s *runState) runRetrieve(ctx context.Context, step Step) (*memorycore.Memo
 	if closeService != nil {
 		defer closeService()
 	}
-	result, err := service.Retrieve(ctx, memorycore.RetrievalRequest{
+	result, err := service.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID: defaultString(body.PersonaID, s.persona),
 		SessionID: sessionID,
 		QueryText: body.QueryText,
@@ -873,17 +879,21 @@ ORDER BY rowid`, afterRowID, s.persona)
 	return out, nil
 }
 
-func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *SemanticStubSettings) (memorycore.Service, error) {
+func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *SemanticStubSettings) (*memorycore.Client, error) {
 	if s.semantic == nil {
 		return nil, fmt.Errorf("case %s step %s semantic_query_analysis_stub requires eval semantic sidecar", s.caseID, s.stepID)
 	}
 	s.semantic.setStub(stub)
+	backend, err := mirrorBackend(s.mirrorAdapter)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s configure semantic retrieve mirror backend: %w", s.caseID, s.stepID, err)
+	}
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:        s.dbPath,
 		PersonaID:     defaultPersonaID,
 		AutoMigrate:   true,
 		EnableFTS:     true,
-		MirrorAdapter: s.mirrorAdapter,
+		MirrorBackend: backend,
 		QueryAnalysis: memorycore.QueryAnalysisOptions{
 			Provider:   memorycore.QueryAnalysisProviderSidecar,
 			Mode:       memorycore.QueryAnalysisModeSemanticAlways,
@@ -900,6 +910,10 @@ func (s *runState) openSemanticRetrieveService(ctx context.Context, stub *Semant
 	return svc, nil
 }
 
+func mirrorBackend(adapter appcore.MirrorAdapter) (memorycore.MirrorBackend, error) {
+	return memorycore.NewMirrorBackendFromAdapter(adapter)
+}
+
 func (s *runState) prepareProfileMirror(ctx context.Context) error {
 	if !s.profile.UsesMirror() || s.mirrorReady {
 		return nil
@@ -913,7 +927,7 @@ func (s *runState) prepareProfileMirror(ctx context.Context) error {
 		s.mirrorReady = true
 		return nil
 	}
-	result, err := s.service.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: s.persona})
+	result, err := s.service.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: s.persona})
 	if err != nil {
 		return fmt.Errorf("case %s profile %s rebuild mirror: %w", s.caseID, s.profile, err)
 	}
@@ -1009,21 +1023,40 @@ func (s *runState) runForget(ctx context.Context, step Step) (*memorycore.Forget
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.service.Forget(ctx, memorycore.ForgetRequest{
-		PersonaID:  defaultString(body.PersonaID, s.persona),
-		Actor:      body.Actor,
-		ReasonCode: body.ReasonCode,
-		Level:      body.Level,
-		Target: memorycore.ForgetTarget{
-			ScopeMode: body.Target.ScopeMode,
-			NodeType:  body.Target.NodeType,
-			NodeID:    nodeID,
-		},
+	personaID := defaultString(body.PersonaID, s.persona)
+	previewReq := memorycore.ForgetPreviewRequest{
+		PersonaID:      personaID,
+		Actor:          body.Actor,
+		RequestedLevel: body.Level,
+		ScopeMode:      body.Target.ScopeMode,
+		NodeType:       body.Target.NodeType,
+		NodeID:         nodeID,
+	}
+	preview, err := s.service.Forget().PreviewForget(ctx, previewReq)
+	if err != nil {
+		return nil, fmt.Errorf("case %s step %s forget preview: %w", s.caseID, step.ID, err)
+	}
+	confirmedTargets := make([]memorycore.ExactNodeRef, 0, len(preview.Targets))
+	for _, target := range preview.Targets {
+		confirmedTargets = append(confirmedTargets, memorycore.ExactNodeRef{NodeType: target.NodeType, NodeID: target.NodeID})
+	}
+	executed, err := s.service.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		PersonaID:        personaID,
+		Actor:            body.Actor,
+		ReasonCode:       body.ReasonCode,
+		Level:            body.Level,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: confirmedTargets,
+		Confirmed:        true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s forget: %w", s.caseID, step.ID, err)
 	}
-	return result, nil
+	if len(executed.Results) == 0 {
+		return &memorycore.ForgetResult{}, nil
+	}
+	return &executed.Results[0], nil
 }
 
 func (s *runState) runRetention(ctx context.Context, step Step) (*memorycore.RunRetentionResult, error) {
@@ -1032,7 +1065,7 @@ func (s *runState) runRetention(ctx context.Context, step Step) (*memorycore.Run
 	if err != nil {
 		return nil, fmt.Errorf("case %s step %s retention_run now: %w", s.caseID, step.ID, err)
 	}
-	result, err := s.service.RunRetention(ctx, memorycore.RunRetentionRequest{
+	result, err := s.service.Ops().RunRetention(ctx, memorycore.RunRetentionRequest{
 		PersonaID:            defaultString(body.PersonaID, s.persona),
 		Now:                  now,
 		DryRun:               body.DryRun,
@@ -1095,7 +1128,7 @@ func (s *runState) runCompressionApply(ctx context.Context, step Step) (*memoryc
 			SensitivityLevel: insight.SensitivityLevel,
 		})
 	}
-	result, err := s.service.ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
+	result, err := s.service.Ops().ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
 		PersonaID:     defaultString(body.PersonaID, s.persona),
 		SourceFactIDs: sourceIDs,
 		Narrative:     narrative,
@@ -1225,7 +1258,7 @@ func (s *runState) addMirrorCandidate(ctx context.Context, candidate MirrorCandi
 			return fmt.Errorf("case %s step %s mirror candidate map: %w", s.caseID, s.stepID, err)
 		}
 	}
-	s.mirror.candidates = append(s.mirror.candidates, memorycore.MirrorCandidate{
+	s.mirror.candidates = append(s.mirror.candidates, appcore.MirrorCandidate{
 		TriviumNodeID: triviumNodeID,
 		Score:         score,
 		Source:        source,
@@ -1293,7 +1326,7 @@ func (s *runState) applyRerankStub(ctx context.Context, step Step) error {
 		if score == 0 {
 			score = 0.8
 		}
-		s.mirror.rerankItems = append(s.mirror.rerankItems, memorycore.MirrorRerankItem{
+		s.mirror.rerankItems = append(s.mirror.rerankItems, appcore.MirrorRerankItem{
 			NodeID:      nodeID,
 			NodeType:    nodeType,
 			RerankScore: score,
@@ -1303,17 +1336,17 @@ func (s *runState) applyRerankStub(ctx context.Context, step Step) error {
 	return nil
 }
 
-func (s *runState) graphActivationCandidate(ctx context.Context, candidate GraphCandidateStub) (memorycore.MirrorActivationCandidate, error) {
+func (s *runState) graphActivationCandidate(ctx context.Context, candidate GraphCandidateStub) (appcore.MirrorActivationCandidate, error) {
 	nodeType := defaultString(candidate.NodeType, "fact")
 	triviumNodeID := candidate.TriviumNodeID
 	if triviumNodeID == 0 {
 		nodeID, err := s.resolveString(candidate.NodeID)
 		if err != nil {
-			return memorycore.MirrorActivationCandidate{}, err
+			return appcore.MirrorActivationCandidate{}, err
 		}
 		triviumID, err := s.lookupTriviumNodeID(ctx, nodeID, nodeType)
 		if err != nil {
-			return memorycore.MirrorActivationCandidate{}, fmt.Errorf("case %s step %s graph candidate map: %w", s.caseID, s.stepID, err)
+			return appcore.MirrorActivationCandidate{}, fmt.Errorf("case %s step %s graph candidate map: %w", s.caseID, s.stepID, err)
 		}
 		triviumNodeID = triviumID
 	}
@@ -1324,9 +1357,9 @@ func (s *runState) graphActivationCandidate(ctx context.Context, candidate Graph
 	source := defaultString(candidate.Source, "graph_activation")
 	paths, err := s.graphActivationPaths(ctx, candidate)
 	if err != nil {
-		return memorycore.MirrorActivationCandidate{}, err
+		return appcore.MirrorActivationCandidate{}, err
 	}
-	return memorycore.MirrorActivationCandidate{
+	return appcore.MirrorActivationCandidate{
 		TriviumNodeID: triviumNodeID,
 		Score:         score,
 		Source:        source,
@@ -1335,7 +1368,7 @@ func (s *runState) graphActivationCandidate(ctx context.Context, candidate Graph
 	}, nil
 }
 
-func (s *runState) graphActivationPaths(ctx context.Context, candidate GraphCandidateStub) ([]memorycore.MirrorActivationPath, error) {
+func (s *runState) graphActivationPaths(ctx context.Context, candidate GraphCandidateStub) ([]appcore.MirrorActivationPath, error) {
 	if len(candidate.PathNodeIDs) == 0 && len(candidate.PathTriviumNodeIDs) == 0 && len(candidate.PathLinkTypes) == 0 {
 		return nil, nil
 	}
@@ -1352,7 +1385,7 @@ func (s *runState) graphActivationPaths(ctx context.Context, candidate GraphCand
 		}
 		ids = append(ids, triviumID)
 	}
-	return []memorycore.MirrorActivationPath{{
+	return []appcore.MirrorActivationPath{{
 		TriviumNodeIDs: ids,
 		LinkTypes:      append([]string(nil), candidate.PathLinkTypes...),
 	}}, nil

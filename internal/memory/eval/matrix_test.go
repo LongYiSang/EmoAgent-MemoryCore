@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestLoadFixtureMetadataAndQualityStubPolicy(t *testing.T) {
@@ -1866,7 +1867,7 @@ type deterministicMirrorAdapter struct {
 	caseID                     string
 	upserts                    int
 	configureCalls             int
-	lastEvalConfig             memorycore.MirrorEvalConfigRequest
+	lastEvalConfig             appcore.MirrorEvalConfigRequest
 	triviumDir                 string
 	evalEmbedding              map[string]string
 	evalRerankAvailable        bool
@@ -1887,20 +1888,20 @@ func newAdvancedMirrorAdapter() *advancedMirrorAdapter {
 	return adapter
 }
 
-func (a *advancedMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (a *advancedMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	a.upserts++
 	if err := writeDeterministicTriviumFile(a.triviumDir, payload); err != nil {
-		return memorycore.MirrorNodeUpsertResult{}, err
+		return appcore.MirrorNodeUpsertResult{}, err
 	}
-	return memorycore.MirrorNodeUpsertResult{
+	return appcore.MirrorNodeUpsertResult{
 		MirrorNodeID: stableTriviumNodeID(payload.PersonaID, payload.NodeType, payload.SQLiteNodeID),
 	}, nil
 }
 
-func (a *advancedMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *advancedMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	a.findCalls++
-	return &memorycore.MirrorCandidateResult{
-		Candidates: []memorycore.MirrorCandidate{{
+	return &appcore.MirrorCandidateResult{
+		Candidates: []appcore.MirrorCandidate{{
 			TriviumNodeID: stableTriviumNodeID(defaultPersonaID, "fact", "f1"),
 			Score:         0.95,
 			Source:        "trivium_vector",
@@ -1909,15 +1910,15 @@ func (a *advancedMirrorAdapter) FindCandidates(ctx context.Context, req memoryco
 	}, nil
 }
 
-func (a *advancedMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+func (a *advancedMirrorAdapter) ActivateGraph(ctx context.Context, req appcore.MirrorActivationRequest) (*appcore.MirrorActivationResult, error) {
 	a.activationCalls++
-	return &memorycore.MirrorActivationResult{
-		Candidates: []memorycore.MirrorActivationCandidate{{
+	return &appcore.MirrorActivationResult{
+		Candidates: []appcore.MirrorActivationCandidate{{
 			TriviumNodeID: stableTriviumNodeID(defaultPersonaID, "fact", "f1"),
 			Score:         0.9,
 			Source:        "graph_activation",
 			Rank:          1,
-			Paths: []memorycore.MirrorActivationPath{{
+			Paths: []appcore.MirrorActivationPath{{
 				TriviumNodeIDs: []int64{stableTriviumNodeID(defaultPersonaID, "fact", "f1")},
 				LinkTypes:      []string{"SELF"},
 			}},
@@ -1925,10 +1926,10 @@ func (a *advancedMirrorAdapter) ActivateGraph(ctx context.Context, req memorycor
 	}, nil
 }
 
-func (a *advancedMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a *advancedMirrorAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	a.rerankCalls++
-	return &memorycore.MirrorRerankResult{
-		Items: []memorycore.MirrorRerankItem{{
+	return &appcore.MirrorRerankResult{
+		Items: []appcore.MirrorRerankItem{{
 			NodeID:      "f1",
 			NodeType:    "fact",
 			RerankScore: 0.9,
@@ -1941,17 +1942,17 @@ func newDeterministicMirrorAdapter(caseID string) *deterministicMirrorAdapter {
 	return &deterministicMirrorAdapter{caseID: caseID}
 }
 
-func (a *deterministicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (a *deterministicMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	a.upserts++
 	if err := writeDeterministicTriviumFile(a.triviumDir, payload); err != nil {
-		return memorycore.MirrorNodeUpsertResult{}, err
+		return appcore.MirrorNodeUpsertResult{}, err
 	}
-	return memorycore.MirrorNodeUpsertResult{
+	return appcore.MirrorNodeUpsertResult{
 		MirrorNodeID: stableTriviumNodeID(payload.PersonaID, payload.NodeType, payload.SQLiteNodeID),
 	}, nil
 }
 
-func writeDeterministicTriviumFile(triviumDir string, payload memorycore.MirrorNodePayload) error {
+func writeDeterministicTriviumFile(triviumDir string, payload appcore.MirrorNodePayload) error {
 	if triviumDir == "" {
 		return nil
 	}
@@ -1962,10 +1963,10 @@ func writeDeterministicTriviumFile(triviumDir string, payload memorycore.MirrorN
 	return os.WriteFile(filepath.Join(triviumDir, name+".tdb"), []byte("trivium"), 0o644)
 }
 
-func (a *deterministicMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *deterministicMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	a.findCalls++
-	return &memorycore.MirrorCandidateResult{
-		Candidates: []memorycore.MirrorCandidate{{
+	return &appcore.MirrorCandidateResult{
+		Candidates: []appcore.MirrorCandidate{{
 			TriviumNodeID: stableTriviumNodeID(defaultPersonaID, "fact", "f1"),
 			Score:         0.95,
 			Source:        "trivium_vector",
@@ -1993,7 +1994,7 @@ func (a *deterministicMirrorAdapter) ClearNamespace(ctx context.Context, persona
 	return nil
 }
 
-func (a *deterministicMirrorAdapter) ConfigureEval(ctx context.Context, req memorycore.MirrorEvalConfigRequest) (*memorycore.MirrorEvalConfigResult, error) {
+func (a *deterministicMirrorAdapter) ConfigureEval(ctx context.Context, req appcore.MirrorEvalConfigRequest) (*appcore.MirrorEvalConfigResult, error) {
 	a.configureCalls++
 	a.lastEvalConfig = req
 	a.triviumDir = req.TriviumDir
@@ -2001,7 +2002,7 @@ func (a *deterministicMirrorAdapter) ConfigureEval(ctx context.Context, req memo
 	if a.reportZeroStatsUntilUpsert && a.upserts == 0 {
 		nodeCount = 0
 	}
-	return &memorycore.MirrorEvalConfigResult{
+	return &appcore.MirrorEvalConfigResult{
 		TriviumDir:              req.TriviumDir,
 		EmbeddingCacheMode:      req.EmbeddingCacheMode,
 		EmbeddingCacheDBPath:    req.EmbeddingCacheDBPath,
@@ -2046,23 +2047,23 @@ func newQualityMirrorAdapter() *qualityMirrorAdapter {
 	return &qualityMirrorAdapter{nextID: 100}
 }
 
-func (a *qualityMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (a *qualityMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	a.nextID++
 	if payload.NodeType == "fact" {
 		a.nodeIDs = append(a.nodeIDs, a.nextID)
 	}
-	return memorycore.MirrorNodeUpsertResult{MirrorNodeID: a.nextID}, nil
+	return appcore.MirrorNodeUpsertResult{MirrorNodeID: a.nextID}, nil
 }
 
-func (a *qualityMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (a *qualityMirrorAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return nil
 }
 
-func (a *qualityMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (a *qualityMirrorAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return nil
 }
 
-func (a *qualityMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (a *qualityMirrorAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return nil
 }
 
@@ -2071,7 +2072,7 @@ func (a *qualityMirrorAdapter) ClearNamespace(ctx context.Context, personaID str
 	return nil
 }
 
-func (a *qualityMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *qualityMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	a.findCalls++
 	if a.findDelay > 0 {
 		select {
@@ -2084,10 +2085,10 @@ func (a *qualityMirrorAdapter) FindCandidates(ctx context.Context, req memorycor
 		return nil, a.findErr
 	}
 	if len(a.nodeIDs) == 0 {
-		return &memorycore.MirrorCandidateResult{}, nil
+		return &appcore.MirrorCandidateResult{}, nil
 	}
-	return &memorycore.MirrorCandidateResult{
-		Candidates: []memorycore.MirrorCandidate{{
+	return &appcore.MirrorCandidateResult{
+		Candidates: []appcore.MirrorCandidate{{
 			TriviumNodeID: a.nodeIDs[0],
 			Score:         0.95,
 			Source:        "trivium_vector",

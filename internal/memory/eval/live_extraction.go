@@ -11,9 +11,8 @@ import (
 	"strings"
 	"time"
 
-	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore/extractionruntime"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 type LiveExtractionRunnerOptions struct {
@@ -141,7 +140,7 @@ func (r *LiveExtractionRunner) Run(ctx context.Context, path string, fixture *Fi
 	live := fixture.LiveExtraction
 	caseReport.Provider = firstLiveString(r.opts.Provider, live.Provider, "openai-compatible")
 	caseReport.Model = firstLiveString(r.opts.Model, live.Model, "")
-	runMode := firstLiveString(live.Mode, string(appcore.ExtractionRunModeDryRun))
+	runMode := firstLiveString(live.Mode, string(memorycore.ExtractionRunModeDryRun))
 	caseReport.RunMode = runMode
 
 	tempRoot, cleanup, err := r.tempRoot()
@@ -158,13 +157,24 @@ func (r *LiveExtractionRunner) Run(ctx context.Context, path string, fixture *Fi
 	removeSQLiteFiles(dbPath)
 	caseReport.DBPath = dbPath
 
-	svc, err := appcore.Open(ctx, appcore.Options{
+	providerOpts, err := r.extractionProviderOptions(caseReport.Provider, fixture)
+	if err != nil {
+		caseReport.Error = err.Error()
+		return caseReport
+	}
+	rawLog := memorycore.ExtractionRawLogOptions{Enabled: true, Directory: r.rawLogDir(fixture)}
+	beforeRawLogs := snapshotJSONFiles(rawLog.Directory)
+	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:      dbPath,
 		PersonaID:   defaultPersonaID,
 		AutoMigrate: true,
 		EnableFTS:   true,
 		Now: func() time.Time {
 			return fixedNow
+		},
+		Extraction: memorycore.ExtractionOptions{
+			Enabled:  true,
+			Provider: providerOpts,
 		},
 	})
 	if err != nil {
@@ -201,57 +211,39 @@ func (r *LiveExtractionRunner) Run(ctx context.Context, path string, fixture *Fi
 		caseReport.Error = err.Error()
 		return caseReport
 	}
-	llm, err := r.buildLLM(caseReport.Provider, fixture)
-	if err != nil {
-		caseReport.Error = err.Error()
-		return caseReport
-	}
-	capture := &capturingExtractionLLM{inner: llm, responses: map[string]appcore.ExtractionLLMResponse{}}
-	rawLog := appcore.ExtractionRawLogOptions{Enabled: live.RawLog, Directory: r.rawLogDir(fixture)}
-	beforeRawLogs := map[string]struct{}{}
-	if rawLog.Enabled {
-		beforeRawLogs = snapshotJSONFiles(rawLog.Directory)
-	}
-	runtime := extractionruntime.NewRunner(extractionruntime.RunnerOptions{
-		DB:         db,
-		Service:    svc,
-		LLM:        capture,
-		AuditStore: extractionruntime.NewSQLiteAuditStore(db),
-		Now: func() time.Time {
-			return fixedNow
+
+	repairEnabled := liveRepairEnabled(live)
+	audit := firstLiveString(live.Audit, memorycore.ExtractionAuditOn)
+	resultPtr, runErr := svc.Writes().RunExtraction(ctx, memorycore.RunExtractionRequest{
+		Request: &request,
+		Mode:    memorycore.ExtractionRunMode(runMode),
+		Policy: memorycore.ExtractionPolicyOverride{
+			RequireCleanGate: boolPtr(live.RequireCleanGate),
 		},
-	})
-	result, runErr := runtime.Run(ctx, appcore.ExtractionRunRequest{
-		Request:          request,
-		Mode:             appcore.ExtractionRunMode(runMode),
-		ProviderID:       caseReport.Provider,
-		ProviderKind:     caseReport.Provider,
-		Model:            caseReport.Model,
-		Temperature:      live.Temperature,
-		MaxTokens:        firstLiveInt(live.MaxTokens, r.opts.MaxTokens, 4096),
-		Timeout:          r.timeout(live),
-		UsePreFilter:     live.UsePreFilter,
-		RepairEnabled:    liveRepairEnabled(live),
-		RequireCleanGate: live.RequireCleanGate,
-		Audit:            firstLiveString(live.Audit, appcore.ExtractionAuditOn),
-		Force:            live.Force,
-		RawLog:           rawLog,
-		Window: appcore.ExtractionRunWindow{
-			EpisodeIDs: requestEpisodeIDs(request),
-			Limit:      live.Limit,
+		Runtime: memorycore.ExtractionRuntimeOverride{
+			UsePreFilter:  boolPtr(live.UsePreFilter),
+			RepairEnabled: boolPtr(repairEnabled),
+			Audit:         &audit,
 		},
+		Force:  live.Force,
+		RawLog: &rawLog,
 	})
+	result := memorycore.ExtractionRunResult{}
+	if resultPtr != nil {
+		result = *resultPtr
+	}
 	caseReport.RunStatus = string(result.Status)
 	caseReport.AcceptedCount = result.AcceptedCount
 	caseReport.ReviewCount = result.ReviewCount
 	caseReport.RejectedCount = result.RejectedCount
 	caseReport.SanitizedError = result.SanitizedErrorCode
 	caseReport.SanitizedMessage = result.SanitizedErrorMessage
-	if rawLog.Enabled {
-		caseReport.RawLogPaths = diffJSONFiles(beforeRawLogs, snapshotJSONFiles(rawLog.Directory))
+	rawLogPaths := diffJSONFiles(beforeRawLogs, snapshotJSONFiles(rawLog.Directory))
+	if live.RawLog {
+		caseReport.RawLogPaths = rawLogPaths
 	}
 
-	responseText := capture.finalExtractionText(result.Repaired)
+	responseText := extractionResponseTextFromRawLogs(rawLogPaths, result.Repaired)
 	if strings.TrimSpace(responseText) != "" {
 		resp, parseErr := extraction.ParseResponse(strings.NewReader(responseText))
 		if parseErr != nil {
@@ -260,6 +252,8 @@ func (r *LiveExtractionRunner) Run(ctx context.Context, path string, fixture *Fi
 			caseReport.Facts = liveExtractionFacts(resp, *result.GateResult)
 			caseReport.Checks = evaluateLiveExtractionExpect(fixture.Expect, result, caseReport.Facts, responseText)
 		}
+	} else if result.GateResult != nil {
+		caseReport.Checks = evaluateLiveGateExpect(fixture.Expect.Gate, result)
 	}
 	if result.GateResult == nil && caseReport.Error == "" {
 		caseReport.Checks = append(caseReport.Checks, failedLiveCheck("run.gate", "gate_result present", "missing"))
@@ -267,9 +261,9 @@ func (r *LiveExtractionRunner) Run(ctx context.Context, path string, fixture *Fi
 	if runErr != nil {
 		caseReport.Error = runErr.Error()
 	}
-	if result.Status == appcore.ExtractionRunStatusFailed ||
-		result.Status == appcore.ExtractionRunStatusBlocked ||
-		result.Status == appcore.ExtractionRunStatusSkipped {
+	if result.Status == memorycore.ExtractionRunStatusFailed ||
+		result.Status == memorycore.ExtractionRunStatusBlocked ||
+		result.Status == memorycore.ExtractionRunStatusSkipped {
 		caseReport.Checks = append(caseReport.Checks, failedLiveCheck("run.status", "dry_run/validated/applied", string(result.Status)))
 	}
 	if caseReport.Error == "" && liveChecksPassed(caseReport.Checks) {
@@ -292,13 +286,13 @@ func (r *LiveExtractionRunner) tempRoot() (string, func(), error) {
 	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
-func (r *LiveExtractionRunner) buildRequest(ctx context.Context, db *sql.DB, state *runState, fixture *Fixture) (appcore.ExtractionRequest, error) {
+func (r *LiveExtractionRunner) buildRequest(ctx context.Context, db *sql.DB, state *runState, fixture *Fixture) (memorycore.ExtractionRequest, error) {
 	live := fixture.LiveExtraction
 	var sessionID *string
 	if strings.TrimSpace(live.SessionID) != "" {
 		value, err := state.resolveString(live.SessionID)
 		if err != nil {
-			return appcore.ExtractionRequest{}, err
+			return memorycore.ExtractionRequest{}, err
 		}
 		sessionID = &value
 	}
@@ -306,15 +300,15 @@ func (r *LiveExtractionRunner) buildRequest(ctx context.Context, db *sql.DB, sta
 	for _, episodeID := range live.EpisodeIDs {
 		value, err := state.resolveString(episodeID)
 		if err != nil {
-			return appcore.ExtractionRequest{}, err
+			return memorycore.ExtractionRequest{}, err
 		}
 		episodeIDs = append(episodeIDs, value)
 	}
-	req, err := extractionruntime.BuildRequest(ctx, db, extractionruntime.BuildRequestOptions{
+	req, err := extraction.BuildRequest(ctx, db, extraction.BuildRequestOptions{
 		PersonaID:                firstLiveString(live.PersonaID, defaultPersonaID),
 		SessionID:                sessionID,
 		EpisodeIDs:               episodeIDs,
-		Trigger:                  firstLiveString(live.Trigger, appcore.ExtractionTriggerSessionEnd),
+		Trigger:                  firstLiveString(live.Trigger, memorycore.ExtractionTriggerSessionEnd),
 		Limit:                    live.Limit,
 		Timezone:                 firstLiveString(live.Timezone, "Asia/Shanghai"),
 		AllowSensitiveExtraction: live.AllowSensitiveExtraction,
@@ -326,40 +320,52 @@ func (r *LiveExtractionRunner) buildRequest(ctx context.Context, db *sql.DB, sta
 		Now:                      fixedNow,
 	})
 	if err != nil {
-		return appcore.ExtractionRequest{}, fmt.Errorf("build extraction request: %w", err)
+		return memorycore.ExtractionRequest{}, fmt.Errorf("build extraction request: %w", err)
 	}
 	req.RequestID = firstLiveString(live.RequestID, fixture.CaseID)
 	return req, nil
 }
 
-func (r *LiveExtractionRunner) buildLLM(provider string, fixture *Fixture) (appcore.ExtractionLLM, error) {
+func (r *LiveExtractionRunner) extractionProviderOptions(provider string, fixture *Fixture) (memorycore.ExtractionProviderOptions, error) {
 	live := fixture.LiveExtraction
+	maxTokens := firstLiveInt(live.MaxTokens, r.opts.MaxTokens, 4096)
 	switch provider {
 	case "mock":
-		return extractionruntime.NewDeterministicMockLLM(), nil
+		return memorycore.ExtractionProviderOptions{
+			Kind:        memorycore.ExtractionProviderMock,
+			ID:          memorycore.ExtractionProviderMock,
+			Model:       firstLiveString(r.opts.Model, live.Model, "mock"),
+			Temperature: live.Temperature,
+			MaxTokens:   maxTokens,
+			Timeout:     r.timeout(live),
+		}, nil
 	case "openai-compatible":
 		apiKeyEnv := firstLiveString(r.opts.APIKeyEnv, live.APIKeyEnv, "MEMORYCORE_LLM_API_KEY")
 		if strings.TrimSpace(os.Getenv(apiKeyEnv)) == "" {
-			return nil, fmt.Errorf("api key env %s is not set", apiKeyEnv)
+			return memorycore.ExtractionProviderOptions{}, fmt.Errorf("api key env %s is not set", apiKeyEnv)
 		}
 		baseURL := firstLiveString(r.opts.BaseURL, live.BaseURL, "")
 		if strings.TrimSpace(baseURL) == "" {
-			return nil, fmt.Errorf("base_url is required for openai-compatible live extraction")
+			return memorycore.ExtractionProviderOptions{}, fmt.Errorf("base_url is required for openai-compatible live extraction")
 		}
 		model := firstLiveString(r.opts.Model, live.Model, "")
 		if strings.TrimSpace(model) == "" {
-			return nil, fmt.Errorf("model is required for openai-compatible live extraction")
+			return memorycore.ExtractionProviderOptions{}, fmt.Errorf("model is required for openai-compatible live extraction")
 		}
-		return extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
-			BaseURL:   baseURL,
-			APIKeyEnv: apiKeyEnv,
-			Model:     model,
-			Timeout:   r.timeout(live),
-			MaxTokens: firstLiveInt(live.MaxTokens, r.opts.MaxTokens, 4096),
-			Thinking:  &extractionruntime.OpenAICompatibleThinkingOptions{Type: liveExtractionThinkingType(r.opts.Thinking)},
-		}), nil
+		return memorycore.ExtractionProviderOptions{
+			Kind:           memorycore.ExtractionProviderOpenAICompatible,
+			ID:             memorycore.ExtractionProviderOpenAICompatible,
+			BaseURL:        baseURL,
+			APIKeyEnv:      apiKeyEnv,
+			Model:          model,
+			Temperature:    live.Temperature,
+			MaxTokens:      maxTokens,
+			Timeout:        r.timeout(live),
+			ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+			Thinking:       &memorycore.OpenAICompatibleThinkingOptions{Type: liveExtractionThinkingType(r.opts.Thinking)},
+		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported live extraction provider %q", provider)
+		return memorycore.ExtractionProviderOptions{}, fmt.Errorf("unsupported live extraction provider %q", provider)
 	}
 }
 
@@ -397,31 +403,63 @@ func (r *LiveExtractionRunner) timeout(live *LiveExtractionConfig) time.Duration
 	return 60 * time.Second
 }
 
-type capturingExtractionLLM struct {
-	inner     appcore.ExtractionLLM
-	responses map[string]appcore.ExtractionLLMResponse
+func boolPtr(value bool) *bool {
+	return &value
 }
 
-func (c *capturingExtractionLLM) CompleteJSON(ctx context.Context, req appcore.ExtractionLLMRequest) (appcore.ExtractionLLMResponse, error) {
-	resp, err := c.inner.CompleteJSON(ctx, req)
-	c.responses[req.Purpose] = resp
-	return resp, err
-}
-
-func (c *capturingExtractionLLM) finalExtractionText(repaired bool) string {
-	if repaired {
-		if resp, ok := c.responses[appcore.ExtractionLLMPurposeRepair]; ok && strings.TrimSpace(resp.Text) != "" {
-			return resp.Text
+func extractionResponseTextFromRawLogs(paths []string, repaired bool) string {
+	for _, path := range paths {
+		text := extractionResponseTextFromRawLog(path, repaired)
+		if strings.TrimSpace(text) != "" {
+			return text
 		}
-	}
-	if resp, ok := c.responses[appcore.ExtractionLLMPurposeExtraction]; ok {
-		return resp.Text
 	}
 	return ""
 }
 
-func liveExtractionFacts(resp appcore.ExtractionResponse, gate appcore.ExtractionGateResult) []LiveExtractionFactReport {
-	decisions := map[string]appcore.CandidateGateDecision{}
+func extractionResponseTextFromRawLog(path string, repaired bool) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var artifact struct {
+		LLM struct {
+			Extraction *rawLogLLMCall `json:"extraction,omitempty"`
+			Repair     *rawLogLLMCall `json:"repair,omitempty"`
+		} `json:"llm"`
+	}
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return ""
+	}
+	if repaired {
+		if text := rawLogResponseText(artifact.LLM.Repair); text != "" {
+			return text
+		}
+	}
+	return rawLogResponseText(artifact.LLM.Extraction)
+}
+
+type rawLogLLMCall struct {
+	Response *rawLogLLMResponse `json:"response,omitempty"`
+}
+
+type rawLogLLMResponse struct {
+	Text        string `json:"text,omitempty"`
+	ContentText string `json:"content_text,omitempty"`
+}
+
+func rawLogResponseText(call *rawLogLLMCall) string {
+	if call == nil || call.Response == nil {
+		return ""
+	}
+	if strings.TrimSpace(call.Response.Text) != "" {
+		return call.Response.Text
+	}
+	return call.Response.ContentText
+}
+
+func liveExtractionFacts(resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult) []LiveExtractionFactReport {
+	decisions := map[string]memorycore.CandidateGateDecision{}
 	for _, item := range gate.FactDecisions {
 		decisions[item.CandidateID] = item
 	}
@@ -442,7 +480,7 @@ func liveExtractionFacts(resp appcore.ExtractionResponse, gate appcore.Extractio
 	return out
 }
 
-func evaluateLiveExtractionExpect(expect LiveExtractionExpect, result appcore.ExtractionRunResult, facts []LiveExtractionFactReport, rawResponse string) []LiveExtractionCheckResult {
+func evaluateLiveExtractionExpect(expect LiveExtractionExpect, result memorycore.ExtractionRunResult, facts []LiveExtractionFactReport, rawResponse string) []LiveExtractionCheckResult {
 	checks := []LiveExtractionCheckResult{}
 	checks = append(checks, evaluateLiveGateExpect(expect.Gate, result)...)
 	for index, expected := range expect.AcceptedFacts {
@@ -472,7 +510,7 @@ func evaluateLiveExtractionExpect(expect LiveExtractionExpect, result appcore.Ex
 	return checks
 }
 
-func evaluateLiveGateExpect(expect LiveExtractionGateExpect, result appcore.ExtractionRunResult) []LiveExtractionCheckResult {
+func evaluateLiveGateExpect(expect LiveExtractionGateExpect, result memorycore.ExtractionRunResult) []LiveExtractionCheckResult {
 	checks := []LiveExtractionCheckResult{}
 	if expect.MinAcceptedFacts > 0 {
 		checks = append(checks, liveCountAtLeast("gate.min_accepted_facts", expect.MinAcceptedFacts, result.AcceptedCount))
@@ -652,7 +690,7 @@ func liveRepairEnabled(live *LiveExtractionConfig) bool {
 	return *live.Repair
 }
 
-func requestEpisodeIDs(req appcore.ExtractionRequest) []string {
+func requestEpisodeIDs(req memorycore.ExtractionRequest) []string {
 	out := make([]string, 0, len(req.Episodes))
 	for _, episode := range req.Episodes {
 		out = append(out, episode.EpisodeID)

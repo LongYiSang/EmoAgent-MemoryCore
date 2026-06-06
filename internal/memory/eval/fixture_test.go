@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestLoadFixtureBytesValidatesRequiredCaseID(t *testing.T) {

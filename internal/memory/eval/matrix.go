@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const matrixTestPlanVersion = "memory_eval_matrix.v0.2"
@@ -20,7 +21,7 @@ const matrixTestPlanVersion = "memory_eval_matrix.v0.2"
 type MatrixRunnerOptions struct {
 	TempDir                  string
 	Profiles                 []Profile
-	MirrorAdapter            memorycore.MirrorAdapter
+	MirrorAdapter            appcore.MirrorAdapter
 	SidecarURL               string
 	Strict                   bool
 	AllowSkipMissingProvider bool
@@ -327,7 +328,7 @@ func positiveDurationEnv(name string, unit time.Duration) time.Duration {
 	return time.Duration(parsed) * unit
 }
 
-func shouldUseMirrorArtifact(root string, adapter memorycore.MirrorAdapter) bool {
+func shouldUseMirrorArtifact(root string, adapter appcore.MirrorAdapter) bool {
 	if strings.TrimSpace(root) != "" {
 		return true
 	}
@@ -341,7 +342,7 @@ func shouldUseMirrorArtifact(root string, adapter memorycore.MirrorAdapter) bool
 	case rerankNoGraphAdapter:
 		return typed.configurator != nil
 	}
-	_, ok := adapter.(memorycore.MirrorEvalConfigurator)
+	_, ok := adapter.(appcore.MirrorEvalConfigurator)
 	return ok
 }
 
@@ -356,13 +357,13 @@ func (r *MatrixRunner) embeddingCacheDBPath(tempDir string) string {
 	return ""
 }
 
-func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture *Fixture) (CapabilityReport, memorycore.MirrorAdapter) {
+func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture *Fixture) (CapabilityReport, appcore.MirrorAdapter) {
 	req := profile.Requirements()
 	adapter := r.opts.MirrorAdapter
 	if adapter == nil && strings.TrimSpace(r.opts.SidecarURL) != "" {
-		adapter = memorycore.NewSidecarMirrorAdapter(r.opts.SidecarURL)
+		adapter = appcore.NewSidecarMirrorAdapter(r.opts.SidecarURL)
 	}
-	var configuredEval *memorycore.MirrorEvalConfigResult
+	var configuredEval *appcore.MirrorEvalConfigResult
 	cacheMode := NormalizeEmbeddingCacheMode(r.opts.EmbeddingCacheMode)
 	report := CapabilityReport{
 		Profile:                    profile,
@@ -388,7 +389,7 @@ func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture 
 		if adapter == nil {
 			return missingCapability(report, "sidecar profile requires --sidecar-url or MirrorAdapter"), nil
 		}
-		if health, ok := adapter.(memorycore.MirrorHealthChecker); ok && health != nil {
+		if health, ok := adapter.(appcore.MirrorHealthChecker); ok && health != nil {
 			if err := health.Health(ctx); err != nil {
 				report.SidecarAvailable = false
 				return missingCapability(report, fmt.Sprintf("sidecar health preflight failed: %v", err)), nil
@@ -400,15 +401,15 @@ func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture 
 		if adapter == nil {
 			return missingCapability(report, "mirror profile requires --sidecar-url or MirrorAdapter"), nil
 		}
-		if _, ok := adapter.(memorycore.MirrorNamespaceAdapter); !ok {
+		if _, ok := adapter.(appcore.MirrorNamespaceAdapter); !ok {
 			return missingCapability(report, "mirror profile requires ClearNamespace support"), nil
 		}
-		if _, ok := adapter.(memorycore.MirrorCandidateAdapter); !ok {
+		if _, ok := adapter.(appcore.MirrorCandidateAdapter); !ok {
 			return missingCapability(report, "mirror profile requires candidate support"), nil
 		}
 	}
 	if req.RequiresEmbedding || req.RequiresMirror {
-		if configurator, ok := adapter.(memorycore.MirrorEvalConfigurator); ok && configurator != nil {
+		if configurator, ok := adapter.(appcore.MirrorEvalConfigurator); ok && configurator != nil {
 			configured, err := configurator.ConfigureEval(ctx, r.preflightEvalConfig(profile, fixture))
 			if err != nil {
 				report.EmbeddingProviderAvailable = false
@@ -428,13 +429,13 @@ func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture 
 		}
 	}
 	if req.RequiresGraphActivation {
-		if _, ok := adapter.(memorycore.MirrorActivationAdapter); !ok {
+		if _, ok := adapter.(appcore.MirrorActivationAdapter); !ok {
 			return missingCapability(report, "graph profile requires activation support"), nil
 		}
 		report.GraphActivationAvailable = true
 	}
 	if req.RequiresRerankProvider {
-		if _, ok := adapter.(memorycore.MirrorRerankAdapter); !ok {
+		if _, ok := adapter.(appcore.MirrorRerankAdapter); !ok {
 			return missingCapability(report, "rerank profile requires rerank support"), nil
 		}
 		if rerankCapabilityReported(configuredEval) {
@@ -453,7 +454,7 @@ func (r *MatrixRunner) capability(ctx context.Context, profile Profile, fixture 
 	return report, profileAdapter(profile, adapter)
 }
 
-func rerankCapabilityReported(configured *memorycore.MirrorEvalConfigResult) bool {
+func rerankCapabilityReported(configured *appcore.MirrorEvalConfigResult) bool {
 	if configured == nil {
 		return false
 	}
@@ -462,7 +463,7 @@ func rerankCapabilityReported(configured *memorycore.MirrorEvalConfigResult) boo
 		strings.TrimSpace(configured.RerankCapabilityReason) != ""
 }
 
-func rerankCapabilityMissingReason(configured *memorycore.MirrorEvalConfigResult) string {
+func rerankCapabilityMissingReason(configured *appcore.MirrorEvalConfigResult) string {
 	if configured == nil {
 		return "rerank provider requested but eval capability was not reported"
 	}
@@ -481,7 +482,7 @@ func rerankCapabilityMissingReason(configured *memorycore.MirrorEvalConfigResult
 	}
 }
 
-func (r *MatrixRunner) preflightEvalConfig(profile Profile, fixture *Fixture) memorycore.MirrorEvalConfigRequest {
+func (r *MatrixRunner) preflightEvalConfig(profile Profile, fixture *Fixture) appcore.MirrorEvalConfigRequest {
 	tempDir := r.opts.TempDir
 	if strings.TrimSpace(tempDir) != "" {
 		tempDir = filepath.Join(tempDir, sanitizeFileName(string(profile)))
@@ -492,7 +493,7 @@ func (r *MatrixRunner) preflightEvalConfig(profile Profile, fixture *Fixture) me
 	} else if strings.TrimSpace(tempDir) != "" {
 		triviumDir = filepath.Join(tempDir, "_preflight", "trivium")
 	}
-	return memorycore.MirrorEvalConfigRequest{
+	return appcore.MirrorEvalConfigRequest{
 		TriviumDir:               triviumDir,
 		EmbeddingCacheMode:       NormalizeEmbeddingCacheMode(r.opts.EmbeddingCacheMode),
 		EmbeddingCacheDBPath:     r.embeddingCacheDBPath(tempDir),
@@ -1427,15 +1428,15 @@ func latestManifestHash(root string, fixture *Fixture, identity MirrorArtifactId
 	return hashFile(path)
 }
 
-func profileAdapter(profile Profile, adapter memorycore.MirrorAdapter) memorycore.MirrorAdapter {
+func profileAdapter(profile Profile, adapter appcore.MirrorAdapter) appcore.MirrorAdapter {
 	if adapter == nil {
 		return nil
 	}
-	namespace, _ := adapter.(memorycore.MirrorNamespaceAdapter)
-	candidates, _ := adapter.(memorycore.MirrorCandidateAdapter)
-	activation, _ := adapter.(memorycore.MirrorActivationAdapter)
-	rerank, _ := adapter.(memorycore.MirrorRerankAdapter)
-	configurator, _ := adapter.(memorycore.MirrorEvalConfigurator)
+	namespace, _ := adapter.(appcore.MirrorNamespaceAdapter)
+	candidates, _ := adapter.(appcore.MirrorCandidateAdapter)
+	activation, _ := adapter.(appcore.MirrorActivationAdapter)
+	rerank, _ := adapter.(appcore.MirrorRerankAdapter)
+	configurator, _ := adapter.(appcore.MirrorEvalConfigurator)
 	switch profile {
 	case ProfileMirrorRealDense,
 		ProfileRuleOnlyRaw,
@@ -1464,31 +1465,31 @@ func profileAdapter(profile Profile, adapter memorycore.MirrorAdapter) memorycor
 }
 
 type denseOnlyAdapter struct {
-	base         memorycore.MirrorAdapter
-	namespace    memorycore.MirrorNamespaceAdapter
-	candidates   memorycore.MirrorCandidateAdapter
-	configurator memorycore.MirrorEvalConfigurator
+	base         appcore.MirrorAdapter
+	namespace    appcore.MirrorNamespaceAdapter
+	candidates   appcore.MirrorCandidateAdapter
+	configurator appcore.MirrorEvalConfigurator
 }
 
-func (a denseOnlyAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (a denseOnlyAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	return a.base.UpsertNode(ctx, payload)
 }
-func (a denseOnlyAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (a denseOnlyAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return a.base.DeleteNode(ctx, ref)
 }
-func (a denseOnlyAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (a denseOnlyAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return a.base.UpsertEdge(ctx, payload)
 }
-func (a denseOnlyAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (a denseOnlyAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return a.base.DeleteEdge(ctx, ref)
 }
 func (a denseOnlyAdapter) ClearNamespace(ctx context.Context, personaID string) error {
 	return a.namespace.ClearNamespace(ctx, personaID)
 }
-func (a denseOnlyAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a denseOnlyAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	return a.candidates.FindCandidates(ctx, req)
 }
-func (a denseOnlyAdapter) ConfigureEval(ctx context.Context, req memorycore.MirrorEvalConfigRequest) (*memorycore.MirrorEvalConfigResult, error) {
+func (a denseOnlyAdapter) ConfigureEval(ctx context.Context, req appcore.MirrorEvalConfigRequest) (*appcore.MirrorEvalConfigResult, error) {
 	if a.configurator == nil {
 		return nil, nil
 	}
@@ -1497,27 +1498,27 @@ func (a denseOnlyAdapter) ConfigureEval(ctx context.Context, req memorycore.Mirr
 
 type graphOnlyAdapter struct {
 	denseOnlyAdapter
-	activation memorycore.MirrorActivationAdapter
+	activation appcore.MirrorActivationAdapter
 }
 
-func (a graphOnlyAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+func (a graphOnlyAdapter) ActivateGraph(ctx context.Context, req appcore.MirrorActivationRequest) (*appcore.MirrorActivationResult, error) {
 	return a.activation.ActivateGraph(ctx, req)
 }
 
 type graphRerankAdapter struct {
 	graphOnlyAdapter
-	rerank memorycore.MirrorRerankAdapter
+	rerank appcore.MirrorRerankAdapter
 }
 
-func (a graphRerankAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a graphRerankAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	return a.rerank.Rerank(ctx, req)
 }
 
 type rerankNoGraphAdapter struct {
 	denseOnlyAdapter
-	rerank memorycore.MirrorRerankAdapter
+	rerank appcore.MirrorRerankAdapter
 }
 
-func (a rerankNoGraphAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a rerankNoGraphAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	return a.rerank.Rerank(ctx, req)
 }

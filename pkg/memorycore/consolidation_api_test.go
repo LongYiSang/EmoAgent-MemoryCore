@@ -20,7 +20,7 @@ func TestServiceConsolidateSupersedesSinglePredicates(t *testing.T) {
 	firstEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我住在上海。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我现在住在杭州。", time.Date(2026, 5, 11, 9, 0, 0, 0, time.UTC))
 
-	first, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	first, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "lives_in",
@@ -38,7 +38,7 @@ func TestServiceConsolidateSupersedesSinglePredicates(t *testing.T) {
 		t.Fatalf("first result = %#v, want inserted fact", first)
 	}
 
-	second, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	second, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "lives_in",
@@ -79,7 +79,7 @@ func TestServiceConsolidatePrefersNameSupersedesLiteral(t *testing.T) {
 	longName := "Long"
 	yiName := "Yi"
 
-	first, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	first, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "prefers_name",
@@ -93,7 +93,7 @@ func TestServiceConsolidatePrefersNameSupersedesLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consolidate first name: %v", err)
 	}
-	second, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	second, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "prefers_name",
@@ -190,7 +190,7 @@ func TestServiceConsolidateLLMCheckNeedsReviewWithoutFact(t *testing.T) {
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我现在感觉可以信任 Agent。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	feeling := "信任"
-	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "feels_about_agent",
@@ -228,7 +228,7 @@ func TestServiceConsolidateExpireByTimeUsesCandidateValidFromForDefaultTTL(t *te
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我最近忙上线准备。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	busyWith := "上线准备"
 	validFrom := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
-	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "is_busy_with",
@@ -272,7 +272,7 @@ func TestServiceConsolidateMergeNonExactInsertsBaseline(t *testing.T) {
 	secondBoundary := "不要在周末讨论工作"
 
 	first := consolidateLiteral(t, ctx, svc, userID, "has_boundary", firstBoundary, "用户不希望晚上十点后被提醒工作。", firstEpisode.ID)
-	second, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	second, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "has_boundary",
@@ -310,7 +310,7 @@ func TestServiceConsolidateRejectsUnsafeCandidates(t *testing.T) {
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	visibleEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	hidden := false
-	hiddenEpisode, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	hiddenEpisode, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID:        sessionID,
 		Content:          "隐藏来源。",
 		VisibilityStatus: memorycore.VisibilityHidden,
@@ -349,7 +349,7 @@ func TestServiceConsolidateRejectsUnsafeCandidates(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := svc.ConsolidateCandidate(ctx, tc.request)
+			result, err := svc.Writes().ConsolidateCandidate(ctx, tc.request)
 			if err != nil {
 				t.Fatalf("consolidate rejected candidate: %v", err)
 			}
@@ -364,7 +364,7 @@ func TestServiceConsolidateRejectsUnsafeCandidates(t *testing.T) {
 	requireFactCount(t, db, "likes", 0)
 }
 
-func openConsolidationService(t *testing.T, ctx context.Context) (memorycore.Service, string) {
+func openConsolidationService(t *testing.T, ctx context.Context) (*memorycore.Client, string) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
@@ -381,39 +381,39 @@ func openConsolidationService(t *testing.T, ctx context.Context) (memorycore.Ser
 	return svc, dbPath
 }
 
-func seedConsolidationSubjectAndPlaces(t *testing.T, ctx context.Context, svc memorycore.Service) (string, string, string, string) {
+func seedConsolidationSubjectAndPlaces(t *testing.T, ctx context.Context, svc *memorycore.Client) (string, string, string, string) {
 	t.Helper()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	shanghai, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "上海", EntityType: memorycore.EntityTypePlace})
+	shanghai, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "上海", EntityType: memorycore.EntityTypePlace})
 	if err != nil {
 		t.Fatalf("ensure shanghai: %v", err)
 	}
-	hangzhou, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "杭州", EntityType: memorycore.EntityTypePlace})
+	hangzhou, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "杭州", EntityType: memorycore.EntityTypePlace})
 	if err != nil {
 		t.Fatalf("ensure hangzhou: %v", err)
 	}
 	return sessionID, userID, shanghai.ID, hangzhou.ID
 }
 
-func seedConsolidationSubject(t *testing.T, ctx context.Context, svc memorycore.Service) (string, string) {
+func seedConsolidationSubject(t *testing.T, ctx context.Context, svc *memorycore.Client) (string, string) {
 	t.Helper()
 
-	session, err := svc.StartSession(ctx, memorycore.StartSessionRequest{})
+	session, err := svc.Sessions().StartSession(ctx, memorycore.StartSessionRequest{})
 	if err != nil {
 		t.Fatalf("start session: %v", err)
 	}
-	user, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "Long", EntityType: memorycore.EntityTypeUser})
+	user, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{CanonicalName: "Long", EntityType: memorycore.EntityTypeUser})
 	if err != nil {
 		t.Fatalf("ensure user: %v", err)
 	}
 	return session.ID, user.ID
 }
 
-func appendConsolidationEpisode(t *testing.T, ctx context.Context, svc memorycore.Service, sessionID string, content string, occurredAt time.Time) *memorycore.Episode {
+func appendConsolidationEpisode(t *testing.T, ctx context.Context, svc *memorycore.Client, sessionID string, content string, occurredAt time.Time) *memorycore.Episode {
 	t.Helper()
 
-	episode, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	episode, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID:  sessionID,
 		Content:    content,
 		OccurredAt: occurredAt,
@@ -424,10 +424,10 @@ func appendConsolidationEpisode(t *testing.T, ctx context.Context, svc memorycor
 	return episode
 }
 
-func consolidateLiteral(t *testing.T, ctx context.Context, svc memorycore.Service, subjectID string, predicate string, object string, summary string, sourceEpisodeID string) *memorycore.ConsolidationResult {
+func consolidateLiteral(t *testing.T, ctx context.Context, svc *memorycore.Client, subjectID string, predicate string, object string, summary string, sourceEpisodeID string) *memorycore.ConsolidationResult {
 	t.Helper()
 
-	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  subjectID,
 			Predicate:        predicate,

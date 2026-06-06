@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
@@ -25,7 +26,7 @@ func TestServiceRetrieveFindsConsolidatedFactByKeywordAndLogsAccess(t *testing.T
 	coffee := "咖啡"
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", coffee, "用户喜欢咖啡。", episode.ID).Fact
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 	})
@@ -68,7 +69,7 @@ func TestServiceRetrieveOmitsPipelineTraceByDefault(t *testing.T) {
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 	})
@@ -89,7 +90,7 @@ func TestServiceRetrievePipelineSummaryTrace(t *testing.T) {
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID:        &sessionID,
 		QueryText:        "咖啡",
 		DiagnosticsLevel: "pipeline_summary",
@@ -124,7 +125,7 @@ func TestServiceRetrieveRejectsUnknownDiagnosticsLevel(t *testing.T) {
 	svc, _ := openConsolidationService(t, ctx)
 	defer svc.Close()
 
-	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	_, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText:        "咖啡",
 		DiagnosticsLevel: "full",
 	})
@@ -195,7 +196,7 @@ func TestServiceRetrieveChineseCounterexampleExpansionWorksWithQueryAnalysisDisa
 	defer db.Close()
 	updateFactColumn(t, db, fact.ID, "importance", 0.1)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "我是不是完全不会做饭，从来没下厨房？",
 		Policy: memorycore.RetrievalPolicy{
@@ -230,7 +231,7 @@ func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(
 	updateFactColumn(t, db, fact.ID, "validity_status", memorycore.ValidityInvalidated)
 	updateFactColumn(t, db, fact.ID, "lifecycle_status", "archived")
 
-	historical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	historical, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "Long 以前 旧项目",
 	})
 	if err != nil {
@@ -257,7 +258,7 @@ func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(
 	}
 
 	updateFactColumn(t, db, fact.ID, "lifecycle_status", "deep_archived")
-	deepDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	deepDefault, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "Long 以前 旧项目",
 	})
 	if err != nil {
@@ -265,7 +266,7 @@ func TestServiceRetrieveReturnsQueryAnalysisAndAppliesHistoricalEffectivePolicy(
 	}
 	requireNoMemoryItem(t, deepDefault, fact.ID)
 
-	deepAllowed, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	deepAllowed, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "Long 以前 旧项目",
 		Policy: memorycore.RetrievalPolicy{
 			AllowDeepArchive: true,
@@ -291,7 +292,7 @@ func TestServiceRetrievePreservesPhase5EContextFields(t *testing.T) {
 	defer db.Close()
 	insertPublicFactLink(t, db, "link_public_effect_cause", effect.ID, "CAUSED_BY", cause.ID)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "为什么 焦虑 上班",
 		Policy: memorycore.RetrievalPolicy{
@@ -355,7 +356,7 @@ func TestServiceRetrieveQueryAnalysisKeepsSensitivityGateAndReportsEntityMention
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+	if _, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 		EntityID:  userID,
 		Alias:     "LongYi",
 		AliasType: memorycore.AliasTypeNickname,
@@ -371,7 +372,7 @@ func TestServiceRetrieveQueryAnalysisKeepsSensitivityGateAndReportsEntityMention
 	updateFactColumn(t, db, fact.ID, "lifecycle_status", "archived")
 	updateFactColumn(t, db, fact.ID, "sensitivity_level", memorycore.SensitivitySensitive)
 
-	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	normalPermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "debug: LongYi 上次部署为什么失败的证据和银行卡4111",
 	})
@@ -406,7 +407,7 @@ func TestServiceRetrieveQueryAnalysisKeepsSensitivityGateAndReportsEntityMention
 		t.Fatalf("entity_mentions = %#v, want alias mention for %s", analysis.EntityMentions, userID)
 	}
 
-	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	sensitivePermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "LongYi 以前的银行卡4111",
 		Policy: memorycore.RetrievalPolicy{
@@ -425,7 +426,7 @@ func TestServiceRetrieveQueryAnalysisDoesNotLeakSensitiveEntityMentions(t *testi
 	defer svc.Close()
 
 	_, userID := seedConsolidationSubject(t, ctx, svc)
-	if _, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+	if _, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 		EntityID:  userID,
 		Alias:     "LongYi",
 		AliasType: memorycore.AliasTypeNickname,
@@ -437,7 +438,7 @@ func TestServiceRetrieveQueryAnalysisDoesNotLeakSensitiveEntityMentions(t *testi
 	defer db.Close()
 	updateEntityColumn(t, db, userID, "sensitivity_level", memorycore.SensitivitySensitive)
 
-	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	normalPermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "LongYi",
 	})
 	if err != nil {
@@ -450,7 +451,7 @@ func TestServiceRetrieveQueryAnalysisDoesNotLeakSensitiveEntityMentions(t *testi
 		t.Fatalf("entity_mentions = %#v, want no sensitive entity mention at normal permission", normalPermission.QueryAnalysis.EntityMentions)
 	}
 
-	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	sensitivePermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "LongYi",
 		Policy: memorycore.RetrievalPolicy{
 			SensitivityPermission: memorycore.SensitivitySensitive,
@@ -473,7 +474,7 @@ func TestServiceRetrieveAuthorityFiltersLinkedSensitiveEntities(t *testing.T) {
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	secretEntity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	secretEntity, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		CanonicalName:    "SecretProject",
 		EntityType:       memorycore.EntityTypeConcept,
 		SensitivityLevel: memorycore.SensitivitySensitive,
@@ -482,7 +483,7 @@ func TestServiceRetrieveAuthorityFiltersLinkedSensitiveEntities(t *testing.T) {
 		t.Fatalf("ensure secret entity: %v", err)
 	}
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我参与过 SecretProject。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
-	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "likes",
@@ -501,7 +502,7 @@ func TestServiceRetrieveAuthorityFiltersLinkedSensitiveEntities(t *testing.T) {
 		t.Fatalf("result fact is nil: %#v", result)
 	}
 
-	normalPermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	normalPermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "SecretProject",
 	})
 	if err != nil {
@@ -509,7 +510,7 @@ func TestServiceRetrieveAuthorityFiltersLinkedSensitiveEntities(t *testing.T) {
 	}
 	requireNoMemoryItem(t, normalPermission, result.Fact.ID)
 
-	sensitivePermission, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	sensitivePermission, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "SecretProject",
 		Policy: memorycore.RetrievalPolicy{
 			SensitivityPermission: memorycore.SensitivitySensitive,
@@ -539,7 +540,7 @@ func TestServiceRetrieveAppliesAuthorityFilters(t *testing.T) {
 	updateFactColumn(t, db, forgotten.ID, "visibility_status", memorycore.VisibilityForgotten)
 	updateFactColumn(t, db, unsearchable.ID, "searchable", 0)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "用户喜欢",
 	})
@@ -563,7 +564,7 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "以后叫我 Yi。", time.Date(2026, 5, 11, 9, 0, 0, 0, time.UTC))
 	longName := "Long"
 	yiName := "Yi"
-	oldName, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	oldName, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "prefers_name",
@@ -575,7 +576,7 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consolidate old name: %v", err)
 	}
-	newName, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	newName, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "prefers_name",
@@ -588,13 +589,13 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 		t.Fatalf("consolidate new name: %v", err)
 	}
 
-	currentOnly, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "Long"})
+	currentOnly, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "Long"})
 	if err != nil {
 		t.Fatalf("retrieve current only: %v", err)
 	}
 	requireNoMemoryItem(t, currentOnly, oldName.Fact.ID)
 
-	historical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	historical, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "Long",
 		Policy: memorycore.RetrievalPolicy{
@@ -610,13 +611,13 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 	defer db.Close()
 	updateFactColumn(t, db, newName.Fact.ID, "lifecycle_status", "archived")
 
-	archivedDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "Yi"})
+	archivedDefault, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "Yi"})
 	if err != nil {
 		t.Fatalf("retrieve archived default: %v", err)
 	}
 	requireNoMemoryItem(t, archivedDefault, newName.Fact.ID)
 
-	archivedHistorical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	archivedHistorical, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "Yi",
 		Policy: memorycore.RetrievalPolicy{
 			AllowHistorical: true,
@@ -629,13 +630,13 @@ func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 
 	updateFactColumn(t, db, newName.Fact.ID, "lifecycle_status", "deep_archived")
 
-	deepDefault, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "Yi"})
+	deepDefault, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "Yi"})
 	if err != nil {
 		t.Fatalf("retrieve deep default: %v", err)
 	}
 	requireNoMemoryItem(t, deepDefault, newName.Fact.ID)
 
-	deepAllowed, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	deepAllowed, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "Yi",
 		Policy: memorycore.RetrievalPolicy{
 			AllowDeepArchive: true,
@@ -656,7 +657,7 @@ func TestServiceRetrieveSensitivityPermission(t *testing.T) {
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "不要在晚上十点后提醒我工作。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	boundary := consolidateLiteral(t, ctx, svc, userID, "has_boundary", "晚上十点后不要提醒我工作", "用户不希望晚上十点后被提醒工作。", episode.ID).Fact
 
-	normal, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	normal, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "晚上十点",
 	})
@@ -665,7 +666,7 @@ func TestServiceRetrieveSensitivityPermission(t *testing.T) {
 	}
 	requireNoMemoryItem(t, normal, boundary.ID)
 
-	sensitive, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	sensitive, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "晚上十点",
 		Policy: memorycore.RetrievalPolicy{
@@ -687,13 +688,13 @@ func TestServiceRetrieveFatigueSuppressionAfterRepeatedPromptInjection(t *testin
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	first, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	first, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("first retrieve: %v", err)
 	}
 	requireMemoryItem(t, first, fact.ID, "用户喜欢咖啡。", "")
 
-	second, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	second, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("second retrieve: %v", err)
 	}
@@ -702,13 +703,13 @@ func TestServiceRetrieveFatigueSuppressionAfterRepeatedPromptInjection(t *testin
 		t.Fatalf("second suppression = %#v, want none after one prior prompt injection", second.DoNotMention)
 	}
 
-	third, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	third, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("third retrieve: %v", err)
 	}
 	requireMemoryItem(t, third, fact.ID, "用户喜欢咖啡。", "")
 
-	fourth, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	fourth, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("fourth retrieve: %v", err)
 	}
@@ -742,9 +743,9 @@ func TestServiceRetrieveUseMirrorAddsValidatedCandidate(t *testing.T) {
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "fake_sparse"}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "fake_sparse"}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "espresso-only",
 		Policy: memorycore.RetrievalPolicy{
@@ -777,9 +778,9 @@ func TestServiceRetrieveLowAuthorityConfidenceFallsBackToSQLiteOnce(t *testing.T
 	defer db.Close()
 	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
 	insertMirrorMapForFact(t, db, hidden.ID, 7011, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7011, Score: 0.99, Source: "trivium_dense", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7011, Score: 0.99, Source: "trivium_dense", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -836,9 +837,9 @@ func TestServiceRetrieveSemanticFallbackStillAllowsSQLiteCorrectiveFallback(t *t
 	defer db.Close()
 	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
 	insertMirrorMapForFact(t, db, hidden.ID, 7012, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7012, Score: 0.99, Source: "trivium_dense", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7012, Score: 0.99, Source: "trivium_dense", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -884,7 +885,7 @@ func TestServiceRetrieveCorrectiveSemanticFailureFallsBackToSQLite(t *testing.T)
 	defer db.Close()
 	updateFactColumn(t, db, fact.ID, "importance", 1.0)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "为什么最近抗拒早会",
 		Policy: memorycore.RetrievalPolicy{
@@ -971,9 +972,9 @@ func TestServiceRetrieveRunsSemanticAnalysisBeforeMirrorAndPassesMergedAnalysis(
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7251, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7251, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7251, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "where did repo source come from",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -985,11 +986,11 @@ func TestServiceRetrieveRunsSemanticAnalysisBeforeMirrorAndPassesMergedAnalysis(
 	if adapter.calls != 2 {
 		t.Fatalf("mirror calls = %d, want 2 dual-lane calls", adapter.calls)
 	}
-	if adapter.candidateRequests[0].Query.Source != memorycore.QueryAnalysisSourceRuleOnly {
+	if adapter.candidateRequests[0].Query.Source != appcore.QueryAnalysisSourceRuleOnly {
 		t.Fatalf("raw lane query source = %q, want rule_only", adapter.candidateRequests[0].Query.Source)
 	}
 	semanticRequest := adapter.candidateRequests[1]
-	if semanticRequest.Query.Source != memorycore.QueryAnalysisSourceMerged {
+	if semanticRequest.Query.Source != appcore.QueryAnalysisSourceMerged {
 		t.Fatalf("semantic lane query source = %q, want merged: %#v", semanticRequest.Query.Source, semanticRequest.Query)
 	}
 	if len(semanticRequest.Query.QueryRewrites) != 1 || semanticRequest.Query.QueryRewrites[0].Text != "semantic rewrite target" {
@@ -1051,9 +1052,9 @@ func TestRetrievalAPIDoesNotSendDroppedEnglishRewriteToMirrorCandidates(t *testi
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7254, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7254, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7254, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "我喜欢Laufey这件事是从哪里知道的？",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1103,9 +1104,9 @@ func TestServiceRetrieveSemanticFailureStillCallsMirrorWithRuleFallbackAnalysis(
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7252, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7252, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7252, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1117,7 +1118,7 @@ func TestServiceRetrieveSemanticFailureStillCallsMirrorWithRuleFallbackAnalysis(
 	if adapter.calls != 1 {
 		t.Fatalf("mirror calls = %d, want 1", adapter.calls)
 	}
-	if adapter.lastCandidateRequest.Query.Source != memorycore.QueryAnalysisSourceRuleOnly {
+	if adapter.lastCandidateRequest.Query.Source != appcore.QueryAnalysisSourceRuleOnly {
 		t.Fatalf("raw lane query source = %q, want rule_only", adapter.lastCandidateRequest.Query.Source)
 	}
 	if adapter.lastCandidateRequest.Query.Raw != "咖啡" || len(adapter.lastCandidateRequest.Query.QueryRewrites) != 0 || len(adapter.lastCandidateRequest.Query.SemanticAnchors) != 0 {
@@ -1169,10 +1170,10 @@ func TestServiceRetrieveDoesNotWaitFullSemanticTimeoutAfterRawMirror(t *testing.
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7255, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7255, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7255, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 
 	started := time.Now()
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1245,10 +1246,10 @@ func TestServiceRetrieveRerankInputExcludesSemanticRewritesAndAnchors(t *testing
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7253, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7253, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
-	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.8}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7253, Score: 0.88, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.rerankItems = []appcore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.8}}
 
-	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	_, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1279,9 +1280,9 @@ func TestServiceRetrieveDirectFactSkipsRerankWhenRawExactMarginHigh(t *testing.T
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 9251, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 9251, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 9251, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true, UseFTS: true},
@@ -1340,10 +1341,10 @@ func TestServiceRetrievePremiseAndProvenanceQueriesStillCallRerank(t *testing.T)
 			db := openSQLDB(t, dbPath)
 			defer db.Close()
 			insertMirrorMapForFact(t, db, fact.ID, tt.mirrorID, "indexed")
-			adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: tt.mirrorID, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
-			adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.9, DebugReason: "intent requires rerank"}}
+			adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: tt.mirrorID, Score: 0.99, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+			adapter.rerankItems = []appcore.MirrorRerankItem{{NodeID: fact.ID, NodeType: "fact", RerankScore: 0.9, DebugReason: "intent requires rerank"}}
 
-			contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 				SessionID: &sessionID,
 				QueryText: tt.query,
 				Policy:    memorycore.RetrievalPolicy{UseMirror: true, UseFTS: true},
@@ -1374,7 +1375,7 @@ func TestServiceRetrieveForgetDeleteDoesNotInjectOperationTargetCandidateAsConte
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7254, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{
+	adapter.candidates = []appcore.MirrorCandidate{{
 		TriviumNodeID:  7254,
 		Score:          0.96,
 		Source:         "semantic_rewrite_dense",
@@ -1382,9 +1383,9 @@ func TestServiceRetrieveForgetDeleteDoesNotInjectOperationTargetCandidateAsConte
 		Rank:           1,
 		HitCount:       1,
 	}}
-	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{{TriviumNodeID: 7254, Score: 0.9, Source: "graph_activation", Rank: 1}}
+	adapter.activationCandidates = []appcore.MirrorActivationCandidate{{TriviumNodeID: 7254, Score: 0.9, Source: "graph_activation", Rank: 1}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "删除薄荷茶这条记忆",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1417,7 +1418,7 @@ func TestServiceRetrieveForgetDeleteDoesNotInjectRawDenseMirrorCandidateAsContex
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7255, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{
+	adapter.candidates = []appcore.MirrorCandidate{{
 		TriviumNodeID:  7255,
 		Score:          0.97,
 		Source:         "raw_dense",
@@ -1426,7 +1427,7 @@ func TestServiceRetrieveForgetDeleteDoesNotInjectRawDenseMirrorCandidateAsContex
 		HitCount:       1,
 	}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "删除茉莉花茶这条记忆",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1464,12 +1465,12 @@ func TestServiceRetrieveExposesAnchorFusionDiagnosticsWithStableMirrorRank(t *te
 	defer db.Close()
 	insertMirrorMapForFact(t, db, first.ID, 7201, "indexed")
 	insertMirrorMapForFact(t, db, second.ID, 7202, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{
+	adapter.candidates = []appcore.MirrorCandidate{
 		{TriviumNodeID: 7201, Score: 0.10, Source: "trivium_dense"},
 		{TriviumNodeID: 7202, Score: 0.99, Source: "trivium_dense"},
 	}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "mirror-only",
 		Policy: memorycore.RetrievalPolicy{
@@ -1506,9 +1507,9 @@ func TestServiceRetrieveUseMirrorFiltersPurgedCandidate(t *testing.T) {
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
 	updateFactColumn(t, db, fact.ID, "visibility_status", memorycore.VisibilityPurged)
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "stale"}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "stale"}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "espresso-only",
 		Policy: memorycore.RetrievalPolicy{
@@ -1546,7 +1547,7 @@ func TestServiceRetrieveUseMirrorRedactsAuthorityDroppedSensitiveLinkedEntityCan
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
-	secretEntity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	secretEntity, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		CanonicalName:    "SecretProject",
 		EntityType:       memorycore.EntityTypeConcept,
 		SensitivityLevel: memorycore.SensitivitySensitive,
@@ -1555,7 +1556,7 @@ func TestServiceRetrieveUseMirrorRedactsAuthorityDroppedSensitiveLinkedEntityCan
 		t.Fatalf("ensure secret entity: %v", err)
 	}
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我参与过 SecretProject。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
-	result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "likes",
@@ -1576,9 +1577,9 @@ func TestServiceRetrieveUseMirrorRedactsAuthorityDroppedSensitiveLinkedEntityCan
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, result.Fact.ID, 7101, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7101, Score: 0.91, Source: "sensitive_link"}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7101, Score: 0.91, Source: "sensitive_link"}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "mirror-only",
 		Policy: memorycore.RetrievalPolicy{
@@ -1609,7 +1610,7 @@ func TestServiceRetrieveUseMirrorFallsBackWhenAdapterFails(t *testing.T) {
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -1634,11 +1635,11 @@ func TestServiceRetrieveUseMirrorFallsBackWhenMirrorDegraded(t *testing.T) {
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	insertMirrorMapForFact(t, db, fact.ID, 7001, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "degraded"}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7001, Score: 0.88, Source: "degraded"}}
 
 	for _, reason := range []string{"provider_budget_exhausted", "sidecar_provider_timeout"} {
 		adapter.fallbackReason = reason
-		contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 			SessionID: &sessionID,
 			QueryText: "espresso-only",
 			Policy: memorycore.RetrievalPolicy{
@@ -1670,21 +1671,21 @@ func TestServiceRetrieveGraphActivationAddsAuthorityValidatedCandidate(t *testin
 	updateFactColumn(t, db, related.ID, "importance", 1.0)
 	insertMirrorMapForFact(t, db, seed.ID, 8101, "indexed")
 	insertMirrorMapForFact(t, db, related.ID, 8102, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 8101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
-	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 8101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.activationCandidates = []appcore.MirrorActivationCandidate{
 		{
 			TriviumNodeID: 8102,
 			Score:         0.77,
 			Source:        "graph_activation",
 			Rank:          1,
-			Paths: []memorycore.MirrorActivationPath{
+			Paths: []appcore.MirrorActivationPath{
 				{TriviumNodeIDs: []int64{8101, 8102}, LinkTypes: []string{"CAUSED_BY"}},
 			},
 		},
 	}
-	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: related.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "graph candidate relevant"}}
+	adapter.rerankItems = []appcore.MirrorRerankItem{{NodeID: related.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "graph candidate relevant"}}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -1728,7 +1729,7 @@ func TestServiceRetrieveGraphActivationUsesConfiguredBudgetParams(t *testing.T) 
 	defer db.Close()
 	insertMirrorMapForFact(t, db, seed.ID, 8401, "indexed")
 
-	_, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	_, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
@@ -1755,7 +1756,7 @@ func TestServiceRetrieveGraphActivationFallsBackWhenAdapterFails(t *testing.T) {
 	defer db.Close()
 	insertMirrorMapForFact(t, db, seed.ID, 8201, "indexed")
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -1786,11 +1787,11 @@ func TestServiceRetrieveGraphActivationRedactsAuthorityDroppedCandidate(t *testi
 	insertMirrorMapForFact(t, db, seed.ID, 8301, "indexed")
 	insertMirrorMapForFact(t, db, hidden.ID, 8302, "indexed")
 	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityPurged)
-	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+	adapter.activationCandidates = []appcore.MirrorActivationCandidate{
 		{TriviumNodeID: 8302, Score: 0.91, Source: "graph_activation", Rank: 1},
 	}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -1824,11 +1825,11 @@ func TestServiceRetrieveRerankReceivesOnlySafeSummaries(t *testing.T) {
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	updateFactColumn(t, db, hidden.ID, "visibility_status", memorycore.VisibilityHidden)
-	adapter.rerankItems = []memorycore.MirrorRerankItem{
+	adapter.rerankItems = []appcore.MirrorRerankItem{
 		{NodeID: visible.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "safe summary match"},
 	}
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡是什么时候告诉我的\n" + strings.Repeat("x", 220) + " RAW_PROMPT_SUFFIX",
 		Policy: memorycore.RetrievalPolicy{
@@ -1879,7 +1880,7 @@ func TestServiceRetrieveRerankFallsBackWhenAdapterFails(t *testing.T) {
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡是什么时候告诉我的",
 		Policy: memorycore.RetrievalPolicy{
@@ -1912,9 +1913,9 @@ func TestServiceRetrieveUseMirrorFallsBackWhenPersonaMirrorStateNotReady(t *test
 			defer db.Close()
 			insertMirrorMapForFact(t, db, tea.ID, 7002, "indexed")
 			setMirrorPersonaState(t, db, "default", state)
-			adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 7002, Score: 0.99, Source: "mirror_only"}}
+			adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 7002, Score: 0.99, Source: "mirror_only"}}
 
-			contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+			contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 				SessionID: &sessionID,
 				QueryText: "咖啡",
 				Policy: memorycore.RetrievalPolicy{
@@ -1942,7 +1943,7 @@ func TestServiceRetrieveMirrorDiagnosticsDisabledByConfig(t *testing.T) {
 	svc, _ := openRetrievalMirrorService(t, ctx, adapter)
 	defer svc.Close()
 
-	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "coffee"})
+	result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{QueryText: "coffee"})
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
@@ -1959,7 +1960,7 @@ func TestServiceRetrieveMirrorDiagnosticsAdapterMissing(t *testing.T) {
 	svc, _ := openRetrievalMirrorService(t, ctx, nil)
 	defer svc.Close()
 
-	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "coffee",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 	})
@@ -1978,7 +1979,7 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
 		defer svc.Close()
 
-		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 			QueryText: "coffee",
 			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 		})
@@ -1996,7 +1997,7 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
 		defer svc.Close()
 
-		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 			QueryText: "coffee",
 			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 		})
@@ -2014,7 +2015,7 @@ func TestServiceRetrieveMirrorDiagnosticsSidecarErrorAndDegradedAndNoCandidates(
 		svc, _ := openRetrievalMirrorService(t, ctx, adapter)
 		defer svc.Close()
 
-		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 			QueryText: "coffee",
 			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 		})
@@ -2039,7 +2040,7 @@ func TestServiceRetrieveMarksStageTimeoutWithoutTopLevelError(t *testing.T) {
 	})
 	defer svc.Close()
 
-	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		QueryText: "coffee",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 	})
@@ -2066,7 +2067,7 @@ func TestServiceRetrieveParentCancellationIsNotSidecarTimeout(t *testing.T) {
 	})
 	defer svc.Close()
 
-	_, err := svc.Retrieve(parent, memorycore.RetrievalRequest{
+	_, err := svc.Retrieval().Retrieve(parent, memorycore.RetrievalRequest{
 		QueryText: "coffee",
 		Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 	})
@@ -2085,7 +2086,7 @@ func TestServiceRetrieveBreakerDisabledDoesNotOpen(t *testing.T) {
 	defer svc.Close()
 
 	for i := 0; i < 2; i++ {
-		result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+		result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 			QueryText: "coffee",
 			Policy:    memorycore.RetrievalPolicy{UseMirror: true},
 		})
@@ -2116,14 +2117,14 @@ func TestServiceRetrieveGraphActivationBudgetDegradedKeepsPartialCandidates(t *t
 	updateFactColumn(t, db, partial.ID, "importance", 1.0)
 	insertMirrorMapForFact(t, db, seed.ID, 9101, "indexed")
 	insertMirrorMapForFact(t, db, partial.ID, 9102, "indexed")
-	adapter.candidates = []memorycore.MirrorCandidate{{TriviumNodeID: 9101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
+	adapter.candidates = []appcore.MirrorCandidate{{TriviumNodeID: 9101, Score: 0.9, Source: "raw_dense", PrimaryPurpose: "raw_query", Rank: 1}}
 	adapter.activationFallbackReason = "activation_budget_exceeded"
-	adapter.activationCandidates = []memorycore.MirrorActivationCandidate{
+	adapter.activationCandidates = []appcore.MirrorActivationCandidate{
 		{TriviumNodeID: 9102, Score: 0.77, Source: "graph_activation", Rank: 1},
 	}
-	adapter.rerankItems = []memorycore.MirrorRerankItem{{NodeID: partial.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "partial graph candidate relevant"}}
+	adapter.rerankItems = []appcore.MirrorRerankItem{{NodeID: partial.ID, NodeType: "fact", RerankScore: 1.0, DebugReason: "partial graph candidate relevant"}}
 
-	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "咖啡",
 		Policy: memorycore.RetrievalPolicy{
@@ -2141,9 +2142,9 @@ func TestServiceRetrieveGraphActivationBudgetDegradedKeepsPartialCandidates(t *t
 }
 
 type retrievalMirrorAdapter struct {
-	candidates               []memorycore.MirrorCandidate
-	activationCandidates     []memorycore.MirrorActivationCandidate
-	rerankItems              []memorycore.MirrorRerankItem
+	candidates               []appcore.MirrorCandidate
+	activationCandidates     []appcore.MirrorActivationCandidate
+	rerankItems              []appcore.MirrorRerankItem
 	err                      error
 	fallbackReason           string
 	activationErr            error
@@ -2156,84 +2157,84 @@ type retrievalMirrorAdapter struct {
 	calls                    int
 	activationCalls          int
 	rerankCalls              int
-	lastCandidateRequest     memorycore.MirrorCandidateRequest
-	candidateRequests        []memorycore.MirrorCandidateRequest
-	lastActivationRequest    memorycore.MirrorActivationRequest
-	lastRerankRequest        memorycore.MirrorRerankRequest
+	lastCandidateRequest     appcore.MirrorCandidateRequest
+	candidateRequests        []appcore.MirrorCandidateRequest
+	lastActivationRequest    appcore.MirrorActivationRequest
+	lastRerankRequest        appcore.MirrorRerankRequest
 }
 
-func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *retrievalMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	a.calls++
 	a.lastCandidateRequest = req
 	a.candidateRequests = append(a.candidateRequests, req)
 	if a.err != nil {
 		return nil, a.err
 	}
-	return &memorycore.MirrorCandidateResult{Candidates: append([]memorycore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded, FallbackReason: a.fallbackReason}, nil
+	return &appcore.MirrorCandidateResult{Candidates: append([]appcore.MirrorCandidate(nil), a.candidates...), Degraded: a.degraded, FallbackReason: a.fallbackReason}, nil
 }
 
-func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+func (a *retrievalMirrorAdapter) ActivateGraph(ctx context.Context, req appcore.MirrorActivationRequest) (*appcore.MirrorActivationResult, error) {
 	a.activationCalls++
 	a.lastActivationRequest = req
 	if a.activationErr != nil {
 		return nil, a.activationErr
 	}
-	return &memorycore.MirrorActivationResult{
-		Candidates:     append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
+	return &appcore.MirrorActivationResult{
+		Candidates:     append([]appcore.MirrorActivationCandidate(nil), a.activationCandidates...),
 		Degraded:       a.activationDegraded,
 		FallbackReason: a.activationFallbackReason,
 	}, nil
 }
 
-func (a *retrievalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a *retrievalMirrorAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	a.rerankCalls++
 	a.lastRerankRequest = req
 	if a.rerankErr != nil {
 		return nil, a.rerankErr
 	}
-	return &memorycore.MirrorRerankResult{
-		Items:          append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
+	return &appcore.MirrorRerankResult{
+		Items:          append([]appcore.MirrorRerankItem(nil), a.rerankItems...),
 		Degraded:       a.rerankDegraded,
 		FallbackReason: a.rerankFallbackReason,
 	}, nil
 }
 
-func (a *retrievalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
-	return memorycore.MirrorNodeUpsertResult{}, nil
+func (a *retrievalMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
+	return appcore.MirrorNodeUpsertResult{}, nil
 }
 
-func (a *retrievalMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (a *retrievalMirrorAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return nil
 }
 
-func (a *retrievalMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (a *retrievalMirrorAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return nil
 }
 
-func (a *retrievalMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (a *retrievalMirrorAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return nil
 }
 
-func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter) (memorycore.Service, string) {
+func openRetrievalMirrorService(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter) (*memorycore.Client, string) {
 	t.Helper()
 	return openRetrievalMirrorServiceWithOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{})
 }
 
-func openRetrievalMirrorServiceWithOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions) (memorycore.Service, string) {
+func openRetrievalMirrorServiceWithOptions(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions) (*memorycore.Client, string) {
 	return openRetrievalMirrorServiceWithAllOptions(t, ctx, adapter, resilience, memorycore.QueryAnalysisOptions{})
 }
 
-func openRetrievalMirrorServiceWithQueryAnalysisOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, queryAnalysis memorycore.QueryAnalysisOptions) (memorycore.Service, string) {
+func openRetrievalMirrorServiceWithQueryAnalysisOptions(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter, queryAnalysis memorycore.QueryAnalysisOptions) (*memorycore.Client, string) {
 	return openRetrievalMirrorServiceWithAllOptions(t, ctx, adapter, memorycore.SidecarResilienceOptions{}, queryAnalysis)
 }
 
-func openRetrievalMirrorServiceWithAllOptions(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions, queryAnalysis memorycore.QueryAnalysisOptions) (memorycore.Service, string) {
+func openRetrievalMirrorServiceWithAllOptions(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter, resilience memorycore.SidecarResilienceOptions, queryAnalysis memorycore.QueryAnalysisOptions) (*memorycore.Client, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:            dbPath,
 		AutoMigrate:       true,
-		MirrorAdapter:     adapter,
+		MirrorBackend:     mirrorBackendForTest(t, adapter),
 		QueryAnalysis:     queryAnalysis,
 		SidecarResilience: resilience,
 		Now: func() time.Time {
@@ -2253,19 +2254,19 @@ type blockingRetrievalMirrorAdapter struct {
 	rerankCalls     int
 }
 
-func (a *blockingRetrievalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *blockingRetrievalMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	a.mirrorCalls++
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (a *blockingRetrievalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+func (a *blockingRetrievalMirrorAdapter) ActivateGraph(ctx context.Context, req appcore.MirrorActivationRequest) (*appcore.MirrorActivationResult, error) {
 	a.activationCalls++
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (a *blockingRetrievalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a *blockingRetrievalMirrorAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	a.rerankCalls++
 	<-ctx.Done()
 	return nil, ctx.Err()

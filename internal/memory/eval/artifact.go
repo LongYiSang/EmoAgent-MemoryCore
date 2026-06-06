@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const defaultSearchableTextVersion = "memorycore_searchable_text_v1"
@@ -227,7 +228,7 @@ func (m *MirrorArtifactManager) Ensure(ctx context.Context, state *runState) (Mi
 	}
 
 rebuild:
-	result, err := state.service.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: state.persona})
+	result, err := state.service.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: state.persona})
 	if err != nil {
 		return MirrorArtifactReport{}, err
 	}
@@ -284,12 +285,12 @@ rebuild:
 }
 
 func (m *MirrorArtifactManager) configureEvalSidecar(ctx context.Context, state *runState, triviumDir string, cacheDBPath string) (mirrorArtifactEvalState, error) {
-	configurator, ok := state.mirrorAdapter.(memorycore.MirrorEvalConfigurator)
+	configurator, ok := state.mirrorAdapter.(appcore.MirrorEvalConfigurator)
 	if !ok || configurator == nil {
 		return mirrorArtifactEvalState{}, nil
 	}
 	mode := NormalizeEmbeddingCacheMode(m.EmbeddingCacheMode)
-	result, err := configurator.ConfigureEval(ctx, memorycore.MirrorEvalConfigRequest{
+	result, err := configurator.ConfigureEval(ctx, appcore.MirrorEvalConfigRequest{
 		TriviumDir:               triviumDir,
 		EmbeddingCacheMode:       mode,
 		EmbeddingCacheDBPath:     cacheDBPath,

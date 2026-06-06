@@ -105,7 +105,7 @@ func runNaturalMemoryRun(args []string, stdout io.Writer, stderr io.Writer) int 
 	var result *memorycore.RunNaturalMemoryCycleResult
 	runOptions := cfg.NaturalMemoryOptions()
 	if runKind == memorycore.NaturalMemoryRunSleepCycle {
-		result, err = svc.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{
+		result, err = svc.Ops().RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{
 			PersonaID: opts.PersonaID,
 			Now:       parsedNow,
 			DryRun:    dryRun,
@@ -117,7 +117,7 @@ func runNaturalMemoryRun(args []string, stdout io.Writer, stderr io.Writer) int 
 			Options:   runOptions,
 		})
 	} else {
-		result, err = svc.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
+		result, err = svc.Ops().RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
 			PersonaID:      opts.PersonaID,
 			Now:            parsedNow,
 			DryRun:         dryRun,

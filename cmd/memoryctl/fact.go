@@ -155,7 +155,7 @@ func runConsolidateFact(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.ConsolidateCandidate(ctx, req)
+	result, err := svc.Writes().ConsolidateCandidate(ctx, req)
 	if err != nil {
 		return runtimeError(stderr, "consolidate fact: %v", err)
 	}

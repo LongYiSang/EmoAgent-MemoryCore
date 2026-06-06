@@ -24,7 +24,7 @@ func TestServiceRunRetentionJobsDefaultsToDailyTTLExpiry(t *testing.T) {
 	retentionNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	setServiceFactValidTo(t, db, fact.ID, retentionNow.Add(-time.Hour))
 
-	result, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{Now: retentionNow})
+	result, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{Now: retentionNow})
 	if err != nil {
 		t.Fatalf("run retention jobs: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestServiceRunRetentionJobsDailyAndMonthlyCombineCounts(t *testing.T) {
 	setServiceFactValidTo(t, db, expiring.ID, retentionNow.Add(-time.Hour))
 	setServiceFactArchivedAt(t, db, oldArchived.ID, retentionNow.AddDate(0, 0, -181))
 
-	result, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+	result, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 		Now:                  retentionNow,
 		Jobs:                 []memorycore.RetentionJobName{memorycore.RetentionJobDailyTTLExpiry, memorycore.RetentionJobMonthlyDeepArchive},
 		DeepArchiveAfterDays: 180,
@@ -77,7 +77,7 @@ func TestServiceRunRetentionJobsRejectsMonthlyWithoutPositiveDeepArchiveDaysBefo
 	defer db.Close()
 	setServiceFactArchivedAt(t, db, fact.ID, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
-	_, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+	_, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 		Now:  time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 		Jobs: []memorycore.RetentionJobName{memorycore.RetentionJobMonthlyDeepArchive},
 	})
@@ -101,7 +101,7 @@ func TestServiceRunRetentionJobsRejectsUnknownJobBeforeMutating(t *testing.T) {
 	retentionNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	setServiceFactValidTo(t, db, fact.ID, retentionNow.Add(-time.Hour))
 
-	_, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+	_, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 		Now:  retentionNow,
 		Jobs: []memorycore.RetentionJobName{"weekly_unknown"},
 	})
@@ -128,7 +128,7 @@ func TestServiceRunRetentionJobsDryRunAcrossSelectedJobsDoesNotMutate(t *testing
 	setServiceFactValidTo(t, db, expiring.ID, retentionNow.Add(-time.Hour))
 	setServiceFactArchivedAt(t, db, oldArchived.ID, retentionNow.AddDate(0, 0, -181))
 
-	result, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+	result, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 		Now:                  retentionNow,
 		DryRun:               true,
 		Jobs:                 []memorycore.RetentionJobName{memorycore.RetentionJobDailyTTLExpiry, memorycore.RetentionJobMonthlyDeepArchive},

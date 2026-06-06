@@ -13,8 +13,9 @@ import (
 	"time"
 
 	memconfig "github.com/longyisang/emoagent-memorycore/config"
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	memoryeval "github.com/longyisang/emoagent-memorycore/internal/memory/eval"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 type options struct {
@@ -30,7 +31,7 @@ type options struct {
 	strictCapabilities       bool
 	allowSkipMissingProvider bool
 	sidecarURL               string
-	mirrorAdapter            memorycore.MirrorAdapter
+	mirrorAdapter            appcore.MirrorAdapter
 	sidecarResilience        memorycore.SidecarResilienceOptions
 	mirrorArtifactDir        string
 	embeddingCacheMode       string
@@ -389,7 +390,15 @@ func applyMemoryEvalConfig(opts *options, cfg *memconfig.Config, explicit map[st
 	if !explicit["sidecar-url"] && cfg.Sidecar.Enabled {
 		opts.sidecarURL = strings.TrimSpace(runtimeOptions.QueryAnalysis.SidecarURL)
 	}
-	opts.mirrorAdapter = runtimeOptions.MirrorAdapter
+	opts.mirrorAdapter = nil
+	if cfg.Sidecar.Enabled {
+		switch cfg.Sidecar.Adapter {
+		case "fake":
+			opts.mirrorAdapter = appcore.NewFakeMirrorAdapter()
+		case "trivium":
+			opts.mirrorAdapter = appcore.NewSidecarMirrorAdapter(cfg.Sidecar.URL)
+		}
+	}
 	opts.sidecarResilience = runtimeOptions.SidecarResilience
 	if !explicit["query-analysis-mode"] {
 		if mode := strings.TrimSpace(string(runtimeOptions.QueryAnalysis.Mode)); mode != "" {

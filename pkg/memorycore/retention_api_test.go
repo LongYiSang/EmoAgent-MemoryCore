@@ -23,7 +23,7 @@ func TestServiceRunRetentionExpiresFactAndKeepsHistoricalRetrieval(t *testing.T)
 	retentionNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	setServiceFactValidTo(t, db, fact.ID, retentionNow.Add(-time.Hour))
 
-	result, err := svc.RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow})
+	result, err := svc.Ops().RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow})
 	if err != nil {
 		t.Fatalf("run retention: %v", err)
 	}
@@ -31,13 +31,13 @@ func TestServiceRunRetentionExpiresFactAndKeepsHistoricalRetrieval(t *testing.T)
 		t.Fatalf("retention result = %#v", result)
 	}
 
-	currentOnly, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "上线准备"})
+	currentOnly, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "上线准备"})
 	if err != nil {
 		t.Fatalf("retrieve current only: %v", err)
 	}
 	requireNoMemoryItem(t, currentOnly, fact.ID)
 
-	historical, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	historical, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "上线准备",
 		Policy: memorycore.RetrievalPolicy{
@@ -64,7 +64,7 @@ func TestServiceRunRetentionDryRunReportsCountsWithoutChangingRetrieval(t *testi
 	retentionNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	setServiceFactValidTo(t, db, fact.ID, retentionNow.Add(-time.Hour))
 
-	result, err := svc.RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow, DryRun: true})
+	result, err := svc.Ops().RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow, DryRun: true})
 	if err != nil {
 		t.Fatalf("dry-run retention: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestServiceRunRetentionDryRunReportsCountsWithoutChangingRetrieval(t *testi
 		t.Fatalf("dry-run result = %#v", result)
 	}
 
-	current, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	current, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("retrieve after dry-run: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestServiceRunRetentionDeepArchivesFactAndKeepsDeepArchiveRetrievalGated(t 
 	retentionNow := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	setServiceFactArchivedAt(t, db, fact.ID, retentionNow.AddDate(0, 0, -181))
 
-	result, err := svc.RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow, DeepArchiveAfterDays: 180})
+	result, err := svc.Ops().RunRetention(ctx, memorycore.RunRetentionRequest{Now: retentionNow, DeepArchiveAfterDays: 180})
 	if err != nil {
 		t.Fatalf("run deep archive retention: %v", err)
 	}
@@ -101,13 +101,13 @@ func TestServiceRunRetentionDeepArchivesFactAndKeepsDeepArchiveRetrievalGated(t 
 		t.Fatalf("deep archive result = %#v", result)
 	}
 
-	current, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "旧项目"})
+	current, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "旧项目"})
 	if err != nil {
 		t.Fatalf("retrieve current only: %v", err)
 	}
 	requireNoMemoryItem(t, current, fact.ID)
 
-	deepArchive, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	deepArchive, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "旧项目",
 		Policy: memorycore.RetrievalPolicy{

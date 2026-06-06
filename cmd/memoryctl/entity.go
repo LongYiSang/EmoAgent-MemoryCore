@@ -60,7 +60,7 @@ func runEnsureEntity(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	entity, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	entity, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		ID:               id,
 		PersonaID:        opts.PersonaID,
 		CanonicalName:    name,
@@ -118,7 +118,7 @@ func runAddAlias(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	created, err := svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
+	created, err := svc.Writes().AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 		ID:              id,
 		PersonaID:       opts.PersonaID,
 		EntityID:        entityID,

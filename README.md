@@ -139,7 +139,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - [x] Phase 1.5 Core Runtime：Public API facade、deterministic consolidation、SQLite retrieval MVP、forget baseline、eval fixtures、search/privacy hardening。
 - [x] Phase 2A Operational CLI：start/end session、append-episode、ensure-entity/add-alias、consolidate-fact、retrieve、forget、rebuild-search、list-facts、get-node、smoke demo。
 - [x] Phase 2B Extraction Adapter + Dry-run Pipeline：extract-request / validate / dry-run / apply，strict JSON protocol，Go gate，accepted facts 通过 ConsolidateCandidate 写入；不接真实 LLM。
-- [x] Phase 2C 真实抽取运行时：public `ExtractionLLM` 注入接口、mock / OpenAI-compatible standalone provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit；runtime implemented, hardening follow-up applied。
+- [x] Phase 2C 真实抽取运行时：通过 `memorycore.Options.Extraction` / `Writes().RunExtraction` 配置 provider 与执行抽取，支持 mock / OpenAI-compatible provider、prefilter、one-shot repair、extract-run / extract-batch、sanitized extraction_runs audit；runtime implemented, hardening follow-up applied。
 - [x] Phase 3A Privacy / Purge MVP：exact fact / episode purge、search/FTS cleanup、safe deletion audit、purged-only evidence retrieval block。
 - [x] Phase 3B Retention Lifecycle MVP：manual `RunRetention` / `memoryctl retention-run`、`valid_to` expiry、invalidated + archived state transition、search tier sync、historical retrieval gate。
 - [x] Phase 3C Retention 后续：SQLite-only deep archive transition、retention job runner、compression storage contract、narrative / insight provenance integration。
@@ -251,7 +251,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	svc, err := memorycore.Open(ctx, memorycore.Options{
+	client, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:      filepath.Join("data", "memory.db"),
 		AutoMigrate: true,
 		EnableFTS:   true,
@@ -259,13 +259,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer svc.Close()
+	defer client.Close()
 
-	session, err := svc.StartSession(ctx, memorycore.StartSessionRequest{})
+	session, err := client.Sessions().StartSession(ctx, memorycore.StartSessionRequest{})
 	if err != nil {
 		panic(err)
 	}
-	_, err = svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	_, err = client.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID: session.ID,
 		Content:   "我喜欢咖啡。",
 	})
@@ -318,7 +318,7 @@ EmoAgent-MemoryCore/
 │   └── store/
 │       └── sqlite/            # SQLite 驱动、迁移、仓储层
 ├── pkg/
-│   └── memorycore/            # 外部项目使用的 public API facade（alias / forwarding）
+│   └── memorycore/            # 外部项目使用的 Client / capability public API
 ├── migrations/                # 嵌入式 SQL 迁移文件
 │   └── 0001_foundation.sql ... 0012_memory_delta_curation.sql
 ├── scripts/                   # 质量评测脚本：quick / matrix

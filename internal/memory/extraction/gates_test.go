@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/memory/extraction"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestValidateExtractionHardRulesAndRouting(t *testing.T) {
@@ -538,7 +538,7 @@ func TestApplyAcceptedFactsObjectEntityNeedsReviewDoesNotBecomeApplyFailure(t *t
 		t.Fatalf("open service: %v", err)
 	}
 	defer svc.Close()
-	if _, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	if _, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		ID:            "ent_hidden_place",
 		CanonicalName: "Hidden Place",
 		EntityType:    memorycore.EntityTypePlace,
@@ -646,23 +646,23 @@ func seedExtractionDB(t *testing.T) (string, func()) {
 	if err != nil {
 		t.Fatalf("open service: %v", err)
 	}
-	session, err := svc.StartSession(ctx, memorycore.StartSessionRequest{ID: "session_seed", Channel: "cli"})
+	session, err := svc.Sessions().StartSession(ctx, memorycore.StartSessionRequest{ID: "session_seed", Channel: "cli"})
 	if err != nil {
 		t.Fatalf("start session: %v", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_seed", SessionID: session.ID, Content: "我不喜欢早上八点开会。"}); err != nil {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_seed", SessionID: session.ID, Content: "我不喜欢早上八点开会。"}); err != nil {
 		t.Fatalf("append visible: %v", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_hidden", SessionID: session.ID, Content: "hidden", VisibilityStatus: memorycore.VisibilityHidden}); err != nil {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_hidden", SessionID: session.ID, Content: "hidden", VisibilityStatus: memorycore.VisibilityHidden}); err != nil {
 		t.Fatalf("append hidden: %v", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_redacted", SessionID: session.ID, Content: "redacted", VisibilityStatus: memorycore.VisibilityRedacted}); err != nil {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_redacted", SessionID: session.ID, Content: "redacted", VisibilityStatus: memorycore.VisibilityRedacted}); err != nil {
 		t.Fatalf("append redacted: %v", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_unsearchable", SessionID: session.ID, Content: "unsearchable", Searchable: boolPtr(false)}); err != nil {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{ID: "ep_unsearchable", SessionID: session.ID, Content: "unsearchable", Searchable: boolPtr(false)}); err != nil {
 		t.Fatalf("append unsearchable: %v", err)
 	}
-	if _, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{ID: "ent_user", CanonicalName: "User", EntityType: memorycore.EntityTypeUser}); err != nil {
+	if _, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{ID: "ent_user", CanonicalName: "User", EntityType: memorycore.EntityTypeUser}); err != nil {
 		t.Fatalf("ensure user entity: %v", err)
 	}
 	if err := svc.Close(); err != nil {

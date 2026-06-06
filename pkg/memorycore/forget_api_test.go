@@ -11,6 +11,48 @@ import (
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
+func forgetExactNode(t *testing.T, ctx context.Context, svc *memorycore.Client, req memorycore.ForgetRequest) (*memorycore.ForgetResult, error) {
+	t.Helper()
+
+	previewReq := memorycore.ForgetPreviewRequest{
+		PersonaID:      req.PersonaID,
+		Actor:          req.Actor,
+		RequestedLevel: req.Level,
+		ScopeMode:      req.Target.ScopeMode,
+		NodeType:       req.Target.NodeType,
+		NodeID:         req.Target.NodeID,
+	}
+	preview, err := svc.Forget().PreviewForget(ctx, previewReq)
+	if err != nil {
+		return nil, err
+	}
+
+	confirmedTargets := make([]memorycore.ExactNodeRef, 0, len(preview.Targets))
+	for _, target := range preview.Targets {
+		confirmedTargets = append(confirmedTargets, memorycore.ExactNodeRef{
+			NodeType: target.NodeType,
+			NodeID:   target.NodeID,
+		})
+	}
+	executed, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		PersonaID:        req.PersonaID,
+		Actor:            req.Actor,
+		ReasonCode:       req.ReasonCode,
+		Level:            req.Level,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: confirmedTargets,
+		Confirmed:        true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(executed.Results) == 0 {
+		return &memorycore.ForgetResult{}, nil
+	}
+	return &executed.Results[0], nil
+}
+
 func TestServiceForgetPurgeFactIsNotRetrievableOrRebuiltAndScrubsSemanticContent(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)
@@ -20,7 +62,7 @@ func TestServiceForgetPurgeFactIsNotRetrievableOrRebuiltAndScrubsSemanticContent
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我银行卡里有4111号。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "银行卡秘密", "用户提到银行卡卡号4111。", episode.ID).Fact
 
-	result, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	result, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelPurge,
@@ -34,16 +76,16 @@ func TestServiceForgetPurgeFactIsNotRetrievableOrRebuiltAndScrubsSemanticContent
 		t.Fatalf("purge fact: %v", err)
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "4111"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "4111"})
 	if err != nil {
 		t.Fatalf("retrieve purged fact: %v", err)
 	}
 	requireNoMemoryItem(t, retrieved, fact.ID)
 
-	if _, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{}); err != nil {
+	if _, err := svc.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{}); err != nil {
 		t.Fatalf("rebuild search: %v", err)
 	}
-	retrievedAfterRebuild, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "4111"})
+	retrievedAfterRebuild, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "4111"})
 	if err != nil {
 		t.Fatalf("retrieve after rebuild: %v", err)
 	}
@@ -129,7 +171,7 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 		ScopeMode:      memorycore.ForgetScopeEntity,
 		EntityID:       userID,
 	}
-	preview, err := svc.PreviewForget(ctx, previewReq)
+	preview, err := svc.Forget().PreviewForget(ctx, previewReq)
 	if err != nil {
 		t.Fatalf("preview entity forget: %v", err)
 	}
@@ -137,7 +179,7 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 		t.Fatalf("entity preview = %#v, want one confirmed fact target %s", preview, fact.ID)
 	}
 
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	if _, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:          memorycore.ForgetLevelHard,
 		PreviewRequest: previewReq,
 		Preview:        *preview,
@@ -145,7 +187,7 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 		t.Fatalf("execute entity forget without confirmation error = %v, want ErrInvalidRequest", err)
 	}
 
-	executed, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	executed, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelHard,
 		PreviewRequest:   previewReq,
 		PreviewHash:      preview.PreviewHash,
@@ -159,7 +201,7 @@ func TestServiceForgetResolverPreviewsAndVerifiesEntityScope(t *testing.T) {
 		t.Fatalf("executed = %d, want 1", executed.Executed)
 	}
 
-	verified, err := svc.VerifyForget(ctx, memorycore.ForgetVerifyRequest{Targets: preview.Targets})
+	verified, err := svc.Forget().VerifyForget(ctx, memorycore.ForgetVerifyRequest{Targets: preview.Targets})
 	if err != nil {
 		t.Fatalf("verify entity forget: %v", err)
 	}
@@ -187,7 +229,7 @@ func TestServiceForgetResolverRecentPromptItemAndEpisodeWindow(t *testing.T) {
 			Summary:  fact.ContentSummary,
 		}},
 	}
-	promptPreview, err := svc.PreviewForget(ctx, promptReq)
+	promptPreview, err := svc.Forget().PreviewForget(ctx, promptReq)
 	if err != nil {
 		t.Fatalf("preview recent prompt item: %v", err)
 	}
@@ -200,7 +242,7 @@ func TestServiceForgetResolverRecentPromptItemAndEpisodeWindow(t *testing.T) {
 		SessionID: sessionID,
 		Limit:     1,
 	}
-	windowPreview, err := svc.PreviewForget(ctx, windowReq)
+	windowPreview, err := svc.Forget().PreviewForget(ctx, windowReq)
 	if err != nil {
 		t.Fatalf("preview recent episode window: %v", err)
 	}
@@ -224,7 +266,7 @@ func TestServiceForgetResolverBroadTopicPreviewIsSafeAndRequiresExactSelection(t
 		Topic:          "4111",
 		Limit:          5,
 	}
-	preview, err := svc.PreviewForget(ctx, previewReq)
+	preview, err := svc.Forget().PreviewForget(ctx, previewReq)
 	if err != nil {
 		t.Fatalf("preview broad topic: %v", err)
 	}
@@ -234,7 +276,7 @@ func TestServiceForgetResolverBroadTopicPreviewIsSafeAndRequiresExactSelection(t
 	if strings.Contains(preview.Targets[0].Summary, "4111") || strings.Contains(preview.Targets[0].SafeSummary, "4111") {
 		t.Fatalf("broad topic preview leaked raw semantic text: %#v", preview.Targets[0])
 	}
-	executed, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	executed, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelHard,
 		PreviewRequest:   previewReq,
 		PreviewHash:      preview.PreviewHash,
@@ -265,13 +307,13 @@ func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 		NodeType:       memorycore.ForgetNodeFact,
 		NodeID:         coffee.ID,
 	}
-	preview, err := svc.PreviewForget(ctx, req)
+	preview, err := svc.Forget().PreviewForget(ctx, req)
 	if err != nil {
 		t.Fatalf("preview exact forget: %v", err)
 	}
 	forged := *preview
 	forged.Targets = []memorycore.ForgetResolvedTarget{{NodeType: memorycore.ForgetNodeFact, NodeID: tea.ID}}
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	if _, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelHard,
 		PreviewRequest:   req,
 		PreviewHash:      forged.PreviewHash,
@@ -281,7 +323,7 @@ func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 		t.Fatalf("execute forged preview error = %v, want ErrInvalidRequest", err)
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "茶"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "茶"})
 	if err != nil {
 		t.Fatalf("retrieve tea after forged execute: %v", err)
 	}
@@ -304,7 +346,7 @@ func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(
 		ScopeMode:      memorycore.ForgetScopeEntity,
 		EntityID:       userID,
 	}
-	preview, err := svc.PreviewForget(ctx, previewReq)
+	preview, err := svc.Forget().PreviewForget(ctx, previewReq)
 	if err != nil {
 		t.Fatalf("preview entity forget: %v", err)
 	}
@@ -312,7 +354,7 @@ func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(
 		t.Fatal("preview hash is empty")
 	}
 
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	if _, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelSoft,
 		PreviewRequest:   previewReq,
 		PreviewHash:      preview.PreviewHash,
@@ -321,7 +363,7 @@ func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(
 	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("execute without exact targets err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	if _, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelHard,
 		PreviewRequest:   previewReq,
 		PreviewHash:      preview.PreviewHash,
@@ -331,7 +373,7 @@ func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(
 		t.Fatalf("execute level mismatch err = %v, want preview_level_mismatch", err)
 	}
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSoft,
@@ -344,7 +386,7 @@ func TestServiceForgetExecuteRejectsChangedPreviewHashAndRequiresExactSelection(
 		t.Fatalf("pre-change soft forget tea: %v", err)
 	}
 
-	if _, err := svc.ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	if _, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
 		Level:            memorycore.ForgetLevelSoft,
 		PreviewRequest:   previewReq,
 		PreviewHash:      preview.PreviewHash,
@@ -384,7 +426,7 @@ func TestServiceForgetSoftForgetsFactFromRetrievalButKeepsSummary(t *testing.T) 
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	result, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	result, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSoft,
@@ -401,20 +443,20 @@ func TestServiceForgetSoftForgetsFactFromRetrievalButKeepsSummary(t *testing.T) 
 		t.Fatal("deletion event id is empty")
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("retrieve after soft forget: %v", err)
 	}
 	requireNoMemoryItem(t, retrieved, fact.ID)
 
-	rebuild, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{})
+	rebuild, err := svc.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{})
 	if err != nil {
 		t.Fatalf("rebuild search after soft forget: %v", err)
 	}
 	if rebuild.Upserted != 0 {
 		t.Fatalf("rebuild upserted = %d, want 0", rebuild.Upserted)
 	}
-	retrievedAfterRebuild, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
+	retrievedAfterRebuild, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "咖啡"})
 	if err != nil {
 		t.Fatalf("retrieve after soft forget rebuild: %v", err)
 	}
@@ -440,7 +482,7 @@ func TestServiceForgetHardForgetsPinnedFactAndClearsSemanticContent(t *testing.T
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我住在杭州。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	object := "杭州"
-	inserted, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+	inserted, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 		Candidate: memorycore.ManualFactCandidate{
 			SubjectEntityID:  userID,
 			Predicate:        "likes",
@@ -460,7 +502,7 @@ func TestServiceForgetHardForgetsPinnedFactAndClearsSemanticContent(t *testing.T
 		t.Fatal("inserted fact is nil")
 	}
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelHard,
@@ -473,7 +515,7 @@ func TestServiceForgetHardForgetsPinnedFactAndClearsSemanticContent(t *testing.T
 		t.Fatalf("hard forget: %v", err)
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "杭州"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "杭州"})
 	if err != nil {
 		t.Fatalf("retrieve after hard forget: %v", err)
 	}
@@ -504,7 +546,7 @@ func TestServiceForgetSourceRedactEpisodeRemovesOnlyEvidenceFromRetrieval(t *tes
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢乌龙茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "乌龙茶", "用户喜欢乌龙茶。", episode.ID).Fact
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSourceRedact,
@@ -517,7 +559,7 @@ func TestServiceForgetSourceRedactEpisodeRemovesOnlyEvidenceFromRetrieval(t *tes
 		t.Fatalf("source redact: %v", err)
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "乌龙茶"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "乌龙茶"})
 	if err != nil {
 		t.Fatalf("retrieve after source redact: %v", err)
 	}
@@ -559,7 +601,7 @@ func TestServiceForgetPurgeEpisodeRemovesOnlyEvidenceFromRetrieval(t *testing.T)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "secret: card 4111", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "oolong tea", "user likes oolong tea", episode.ID).Fact
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelPurge,
@@ -572,7 +614,7 @@ func TestServiceForgetPurgeEpisodeRemovesOnlyEvidenceFromRetrieval(t *testing.T)
 		t.Fatalf("purge episode: %v", err)
 	}
 
-	retrieved, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "oolong tea"})
+	retrieved, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "oolong tea"})
 	if err != nil {
 		t.Fatalf("retrieve after purge episode: %v", err)
 	}
@@ -590,10 +632,10 @@ func TestServiceForgetPurgeEpisodeRemovesOnlyEvidenceFromRetrieval(t *testing.T)
 	}
 	requireSearchDocumentCount(t, db, fact.ID, 0)
 
-	if _, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{}); err != nil {
+	if _, err := svc.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{}); err != nil {
 		t.Fatalf("rebuild search after purge episode: %v", err)
 	}
-	retrievedAfterRebuild, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "oolong tea"})
+	retrievedAfterRebuild, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{SessionID: &sessionID, QueryText: "oolong tea"})
 	if err != nil {
 		t.Fatalf("retrieve after purge episode rebuild: %v", err)
 	}
@@ -629,7 +671,7 @@ func TestServiceForgetValidationAndNotFound(t *testing.T) {
 	defer svc.Close()
 
 	_, userID := seedConsolidationSubject(t, ctx, svc)
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSourceRedact,
@@ -638,11 +680,11 @@ func TestServiceForgetValidationAndNotFound(t *testing.T) {
 			NodeType:  memorycore.ForgetNodeFact,
 			NodeID:    userID,
 		},
-	}); !errors.Is(err, memorycore.ErrInvalidRequest) {
-		t.Fatalf("source_redact fact err = %v, want ErrInvalidRequest", err)
+	}); !errors.Is(err, memorycore.ErrNotFound) {
+		t.Fatalf("source_redact missing fact err = %v, want ErrNotFound", err)
 	}
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSoft,
@@ -661,7 +703,7 @@ func TestServiceForgetPurgeValidationAndNotFound(t *testing.T) {
 	svc, _ := openConsolidationService(t, ctx)
 	defer svc.Close()
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      "purge",
@@ -674,7 +716,7 @@ func TestServiceForgetPurgeValidationAndNotFound(t *testing.T) {
 		t.Fatalf("purge fact err = %v, want ErrNotFound", err)
 	}
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      "purge",
@@ -687,7 +729,7 @@ func TestServiceForgetPurgeValidationAndNotFound(t *testing.T) {
 		t.Fatalf("purge episode err = %v, want ErrNotFound", err)
 	}
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      "purge",

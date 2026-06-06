@@ -41,7 +41,7 @@ func runStartSession(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	session, err := svc.StartSession(ctx, memorycore.StartSessionRequest{
+	session, err := svc.Sessions().StartSession(ctx, memorycore.StartSessionRequest{
 		ID:        id,
 		PersonaID: opts.PersonaID,
 		Channel:   channel,
@@ -91,7 +91,7 @@ func runEndSession(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	session, err := svc.EndSession(ctx, memorycore.EndSessionRequest{
+	session, err := svc.Sessions().EndSession(ctx, memorycore.EndSessionRequest{
 		PersonaID: opts.PersonaID,
 		SessionID: sessionID,
 		EndedAt:   ended,

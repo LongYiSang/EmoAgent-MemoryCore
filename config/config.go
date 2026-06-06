@@ -663,7 +663,7 @@ type ConfigOpenOptions struct {
 }
 
 type ConfiguredService struct {
-	memorycore.Service
+	*memorycore.Client
 	Config          Config
 	RetrievalPolicy memorycore.RetrievalPolicy
 	RetentionJobs   []memorycore.RetentionJobName
@@ -1679,7 +1679,7 @@ func (c Config) ValidateRuntime(opts RuntimeValidationOptions) error {
 }
 
 func (c Config) ToOptions() (memorycore.Options, error) {
-	adapter, err := c.NewMirrorAdapter()
+	backend, err := c.NewMirrorBackend()
 	if err != nil {
 		return memorycore.Options{}, err
 	}
@@ -1698,7 +1698,7 @@ func (c Config) ToOptions() (memorycore.Options, error) {
 		AutoMigrate:   c.Core.AutoMigrate,
 		EnableFTS:     c.Core.EnableFTS,
 		Timezone:      c.Core.Timezone,
-		MirrorAdapter: adapter,
+		MirrorBackend: backend,
 		Extraction:    c.ExtractionOptions(),
 		NaturalMemory: c.NaturalMemoryOptions(),
 		SemanticOps: memorycore.SemanticOpsOptions{
@@ -2055,18 +2055,18 @@ func (c Config) RetentionJobs() []memorycore.RetentionJobName {
 	return jobs
 }
 
-func (c Config) NewMirrorAdapter() (memorycore.MirrorAdapter, error) {
+func (c Config) NewMirrorBackend() (memorycore.MirrorBackend, error) {
 	if !c.Sidecar.Enabled {
 		return nil, nil
 	}
 	switch c.Sidecar.Adapter {
 	case "fake":
-		return memorycore.NewFakeMirrorAdapter(), nil
+		return memorycore.NewFakeMirrorBackend(), nil
 	case "trivium":
 		if err := memorycore.ValidateSidecarLoopbackURL(c.Sidecar.URL); err != nil {
 			return nil, fmt.Errorf("sidecar.url must be a loopback HTTP URL: %w", err)
 		}
-		return memorycore.NewSidecarMirrorAdapter(c.Sidecar.URL), nil
+		return memorycore.NewSidecarMirrorBackend(c.Sidecar.URL), nil
 	default:
 		return nil, fmt.Errorf("sidecar.adapter must be one of fake|trivium")
 	}
@@ -2293,7 +2293,7 @@ func Open(ctx context.Context, opts ConfigOpenOptions) (*ConfiguredService, erro
 		return nil, err
 	}
 	return &ConfiguredService{
-		Service:         svc,
+		Client:          svc,
 		Config:          cfg,
 		RetrievalPolicy: runtime.RetrievalPolicy,
 		RetentionJobs:   runtime.RetentionJobs,

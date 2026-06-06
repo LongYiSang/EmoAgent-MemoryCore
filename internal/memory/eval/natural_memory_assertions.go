@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/core"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func (s *runState) assertNaturalMemory(ctx context.Context, assertion Assertion) error {
@@ -157,7 +157,7 @@ func (s *runState) assertNaturalProtectedMemory(ctx context.Context, assertion A
 	nodeID := s.naturalEvalNodeID("protected")
 	opts := memorycore.DefaultNaturalMemoryOptions()
 	if assertion.ProtectedMinTier != "" {
-		opts.Protection.ProtectedMinTier = core.SearchTier(assertion.ProtectedMinTier)
+		opts.Protection.ProtectedMinTier = memorycore.SearchTier(assertion.ProtectedMinTier)
 	}
 	if err := s.seedNaturalEvalFact(nodeID, naturalEvalFactType(assertion.FactType, core.FactTypeCoreIdentity), naturalEvalFactOptions{
 		Predicate:  "natural_protected",
@@ -181,7 +181,7 @@ func (s *runState) assertNaturalProtectedMemory(ctx context.Context, assertion A
 	if err != nil {
 		return err
 	}
-	if naturalEvalTierRank(tier) > naturalEvalTierRank(opts.Protection.ProtectedMinTier) {
+	if naturalEvalTierRank(tier) > naturalEvalTierRank(core.SearchTier(opts.Protection.ProtectedMinTier)) {
 		return AssertionFailure{CaseID: s.caseID, Assertion: assertion.Type, Expected: "tier no colder than " + string(opts.Protection.ProtectedMinTier), Actual: "tier=" + string(tier)}
 	}
 	return nil
@@ -263,11 +263,11 @@ func (s *runState) assertNaturalSleepCycleOncePerDay(ctx context.Context, assert
 	if err := s.seedNaturalEvalFact(s.naturalEvalNodeID("sleep"), core.FactTypeTransientContext, naturalEvalFactOptions{Predicate: "natural_sleep", CreatedAt: now.AddDate(0, 0, -30)}); err != nil {
 		return err
 	}
-	first, err := s.service.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now})
+	first, err := s.service.Ops().RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now})
 	if err != nil {
 		return err
 	}
-	second, err := s.service.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now.Add(time.Hour)})
+	second, err := s.service.Ops().RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now.Add(time.Hour)})
 	if err != nil {
 		return err
 	}
@@ -288,16 +288,16 @@ func (s *runState) assertNaturalManualQuota(ctx context.Context, assertion Asser
 	if err != nil {
 		return err
 	}
-	sleep, err := s.service.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now, Options: opts})
+	sleep, err := s.service.Ops().RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: now, Options: opts})
 	if err != nil {
 		return err
 	}
 	nextDay := now.AddDate(0, 0, 1)
-	marked, err := s.service.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{PersonaID: defaultPersonaID, RunKind: memorycore.NaturalMemoryRunManual, Now: nextDay, MarkSleepCycle: true, Options: opts})
+	marked, err := s.service.Ops().RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{PersonaID: defaultPersonaID, RunKind: memorycore.NaturalMemoryRunManual, Now: nextDay, MarkSleepCycle: true, Options: opts})
 	if err != nil {
 		return err
 	}
-	skipped, err := s.service.RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: nextDay.Add(time.Hour), Options: opts})
+	skipped, err := s.service.Ops().RunNaturalMemoryTick(ctx, memorycore.RunNaturalMemoryTickRequest{PersonaID: defaultPersonaID, Now: nextDay.Add(time.Hour), Options: opts})
 	if err != nil {
 		return err
 	}
@@ -561,7 +561,7 @@ VALUES (?, ?, 'fact', ?, ?, ?)`,
 }
 
 func (s *runState) runNaturalEvalCycle(ctx context.Context, now time.Time, runKind memorycore.NaturalMemoryRunKind, markSleepCycle bool, opts memorycore.NaturalMemoryOptions) (*memorycore.RunNaturalMemoryCycleResult, error) {
-	result, err := s.service.RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
+	result, err := s.service.Ops().RunNaturalMemoryCycle(ctx, memorycore.RunNaturalMemoryCycleRequest{
 		PersonaID:      defaultPersonaID,
 		RunKind:        runKind,
 		Now:            now,

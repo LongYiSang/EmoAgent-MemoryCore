@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestQualityReportFullShowsQuestionExpectationAndResult(t *testing.T) {

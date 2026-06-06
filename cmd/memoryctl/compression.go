@@ -95,7 +95,7 @@ func runCompressionApply(args []string, stdout io.Writer, stderr io.Writer) int 
 	}
 	defer svc.Close()
 
-	result, err := svc.ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
+	result, err := svc.Ops().ApplyCompression(ctx, memorycore.ApplyCompressionRequest{
 		PersonaID:     compressionPersonaID(input.PersonaID, opts.PersonaID),
 		SourceFactIDs: input.SourceFactIDs,
 		Narrative:     narrative,

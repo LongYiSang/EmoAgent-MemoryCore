@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	memsqlite "github.com/longyisang/emoagent-memorycore/internal/store/sqlite"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 func TestResolverReusesNamedPetAliasOnlyInHasPetContext(t *testing.T) {
@@ -23,7 +23,7 @@ func TestResolverReusesNamedPetAliasOnlyInHasPetContext(t *testing.T) {
 	}
 	defer db.Close()
 
-	existing, err := svc.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	existing, err := svc.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		ID:            "ent_xiaoju",
 		PersonaID:     "default",
 		CanonicalName: "小橘",

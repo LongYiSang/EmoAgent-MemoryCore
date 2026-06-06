@@ -65,7 +65,7 @@ func runAppendEpisode(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	episode, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	episode, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		ID:               id,
 		PersonaID:        opts.PersonaID,
 		SessionID:        sessionID,

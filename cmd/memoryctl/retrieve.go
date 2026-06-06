@@ -144,13 +144,13 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 		EnableFTS:   opts.EnableFTS,
 	}
 	if hasConfig && cfg.Sidecar.Enabled && !explicit["sidecar-url"] {
-		adapter, err := cfg.NewMirrorAdapter()
+		backend, err := cfg.NewMirrorBackend()
 		if err != nil {
 			return usageError(stderr, fs, err.Error())
 		}
-		openOpts.MirrorAdapter = adapter
+		openOpts.MirrorBackend = backend
 	} else if useMirror && sidecarURL != "" {
-		openOpts.MirrorAdapter = memorycore.NewSidecarMirrorAdapter(sidecarURL)
+		openOpts.MirrorBackend = memorycore.NewSidecarMirrorBackend(sidecarURL)
 	}
 	svc, err := memorycore.Open(ctx, openOpts)
 	if err != nil {
@@ -158,7 +158,7 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	result, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		PersonaID: opts.PersonaID,
 		SessionID: stringPtr(sessionID),
 		QueryText: query,
@@ -232,7 +232,7 @@ func runRebuildSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{PersonaID: opts.PersonaID})
+	result, err := svc.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{PersonaID: opts.PersonaID})
 	if err != nil {
 		return runtimeError(stderr, "rebuild search: %v", err)
 	}

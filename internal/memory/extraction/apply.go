@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/internal/memory/entityresolver"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
-func ApplyAcceptedFacts(ctx context.Context, svc memorycore.Service, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult) memorycore.ExtractionApplyResult {
+func ApplyAcceptedFacts(ctx context.Context, svc *memorycore.Client, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, gate memorycore.ExtractionGateResult) memorycore.ExtractionApplyResult {
 	result := memorycore.ExtractionApplyResult{
 		RequestID: req.RequestID,
 		PersonaID: req.PersonaID,
@@ -46,7 +46,7 @@ func ApplyAcceptedFacts(ctx context.Context, svc memorycore.Service, db *sql.DB,
 			result.Failures = append(result.Failures, memorycore.FactApplyFailure{CandidateID: fact.CandidateID, Reason: err.Error()})
 			continue
 		}
-		consolidated, err := svc.ConsolidateCandidate(ctx, reqCandidate)
+		consolidated, err := svc.Writes().ConsolidateCandidate(ctx, reqCandidate)
 		if err != nil {
 			result.Failures = append(result.Failures, memorycore.FactApplyFailure{CandidateID: fact.CandidateID, Reason: err.Error()})
 			continue
@@ -126,7 +126,7 @@ func entityNeedsReviewError(role string, result entityresolver.Result, err error
 	}
 }
 
-func factToConsolidationCandidate(ctx context.Context, svc memorycore.Service, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, fact memorycore.ExtractedFactCandidate, pinnedTargets map[string]struct{}) (memorycore.ConsolidateCandidateRequest, error) {
+func factToConsolidationCandidate(ctx context.Context, svc *memorycore.Client, db *sql.DB, req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse, fact memorycore.ExtractedFactCandidate, pinnedTargets map[string]struct{}) (memorycore.ConsolidateCandidateRequest, error) {
 	resolver := entityresolver.Resolver{Service: svc, DB: db}
 	objectKind := predicateObjectKind(req.PredicateSchemas, fact.Predicate)
 	subject, err := resolver.Resolve(ctx, entityresolver.Input{

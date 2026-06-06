@@ -82,9 +82,9 @@ func runMirrorSync(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 
-	adapter := memorycore.NewFakeMirrorAdapter()
+	backend := memorycore.NewFakeMirrorBackend()
 	if sidecarURL != "" {
-		adapter = memorycore.NewSidecarMirrorAdapter(sidecarURL)
+		backend = memorycore.NewSidecarMirrorBackend(sidecarURL)
 	}
 
 	ctx := context.Background()
@@ -93,14 +93,14 @@ func runMirrorSync(args []string, stdout io.Writer, stderr io.Writer) int {
 		PersonaID:     opts.PersonaID,
 		AutoMigrate:   opts.AutoMigrate,
 		EnableFTS:     opts.EnableFTS,
-		MirrorAdapter: adapter,
+		MirrorBackend: backend,
 	})
 	if err != nil {
 		return runtimeError(stderr, "open memorycore: %v", err)
 	}
 	defer svc.Close()
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{
 		PersonaID: opts.PersonaID,
 		Limit:     limit,
 	})
@@ -170,9 +170,9 @@ func runMirrorRebuild(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 
-	adapter := memorycore.NewSidecarMirrorAdapter(sidecarURL)
+	backend := memorycore.NewSidecarMirrorBackend(sidecarURL)
 	if useFakeMirrorConfig {
-		adapter = memorycore.NewFakeMirrorAdapter()
+		backend = memorycore.NewFakeMirrorBackend()
 	}
 
 	ctx := context.Background()
@@ -181,14 +181,14 @@ func runMirrorRebuild(args []string, stdout io.Writer, stderr io.Writer) int {
 		PersonaID:     opts.PersonaID,
 		AutoMigrate:   opts.AutoMigrate,
 		EnableFTS:     opts.EnableFTS,
-		MirrorAdapter: adapter,
+		MirrorBackend: backend,
 	})
 	if err != nil {
 		return runtimeError(stderr, "open memorycore: %v", err)
 	}
 	defer svc.Close()
 
-	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: opts.PersonaID})
+	result, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: opts.PersonaID})
 	if err != nil {
 		return runtimeError(stderr, "mirror rebuild: %v", err)
 	}

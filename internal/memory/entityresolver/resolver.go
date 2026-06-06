@@ -10,11 +10,11 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 type Resolver struct {
-	Service memorycore.Service
+	Service *memorycore.Client
 	DB      *sql.DB
 }
 
@@ -102,7 +102,7 @@ func (r Resolver) Resolve(ctx context.Context, in Input) (Result, error) {
 	if strings.TrimSpace(entityType) == "" {
 		entityType = memorycore.EntityTypeConcept
 	}
-	entity, err := r.Service.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	entity, err := r.Service.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		ID:               "ent_" + uuid.NewString(),
 		PersonaID:        in.PersonaID,
 		CanonicalName:    candidate.CanonicalName,
@@ -131,7 +131,7 @@ func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, er
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	entity, err := r.Service.EnsureEntity(ctx, memorycore.EnsureEntityRequest{
+	entity, err := r.Service.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
 		ID:            "ent_user",
 		PersonaID:     personaID,
 		CanonicalName: "User",

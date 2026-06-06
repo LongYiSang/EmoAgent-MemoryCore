@@ -80,7 +80,7 @@ func validateFormat(format string, allowed ...string) error {
 	return fmt.Errorf("--format %s is not supported for this command", format)
 }
 
-func openService(ctx context.Context, opts commonOptions) (memorycore.Service, error) {
+func openService(ctx context.Context, opts commonOptions) (*memorycore.Client, error) {
 	return memorycore.Open(ctx, memorycore.Options{
 		DBPath:      opts.DBPath,
 		PersonaID:   opts.PersonaID,

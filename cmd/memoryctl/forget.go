@@ -39,7 +39,7 @@ func runForget(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	result, err := executeExactForget(ctx, svc, memorycore.ForgetRequest{
 		PersonaID:  opts.PersonaID,
 		Actor:      actor,
 		ReasonCode: reason,
@@ -68,6 +68,42 @@ func runForget(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "links_scrubbed=%d\n", result.LinksScrubbed)
 		return 0
 	}
+}
+
+func executeExactForget(ctx context.Context, svc *memorycore.Client, req memorycore.ForgetRequest) (*memorycore.ForgetResult, error) {
+	previewReq := memorycore.ForgetPreviewRequest{
+		PersonaID:      req.PersonaID,
+		Actor:          req.Actor,
+		RequestedLevel: req.Level,
+		ScopeMode:      req.Target.ScopeMode,
+		NodeType:       req.Target.NodeType,
+		NodeID:         req.Target.NodeID,
+	}
+	preview, err := svc.Forget().PreviewForget(ctx, previewReq)
+	if err != nil {
+		return nil, err
+	}
+	confirmedTargets := make([]memorycore.ExactNodeRef, 0, len(preview.Targets))
+	for _, target := range preview.Targets {
+		confirmedTargets = append(confirmedTargets, memorycore.ExactNodeRef{NodeType: target.NodeType, NodeID: target.NodeID})
+	}
+	executed, err := svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+		PersonaID:        req.PersonaID,
+		Actor:            req.Actor,
+		ReasonCode:       req.ReasonCode,
+		Level:            req.Level,
+		PreviewRequest:   previewReq,
+		PreviewHash:      preview.PreviewHash,
+		ConfirmedTargets: confirmedTargets,
+		Confirmed:        true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(executed.Results) == 0 {
+		return &memorycore.ForgetResult{}, nil
+	}
+	return &executed.Results[0], nil
 }
 
 func validateForgetFlags(level string, nodeType string, nodeID string, scope string, actor string, reason string) error {

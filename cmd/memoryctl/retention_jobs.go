@@ -78,7 +78,7 @@ func runRetentionJobs(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+	result, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 		PersonaID:            opts.PersonaID,
 		Now:                  parsedNow,
 		DryRun:               dryRun,

@@ -74,7 +74,7 @@ func runCurationRun(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer svc.Close()
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		PersonaID:              flags.PersonaID,
 		Mode:                   flags.Mode,
 		Trigger:                flags.Trigger,
@@ -334,7 +334,7 @@ func applyCurationRunConfig(flags *curationRunFlags, cfg *memconfig.Config, expl
 	}
 }
 
-func openCurationService(ctx context.Context, opts commonOptions, flags *curationRunFlags, cfg memconfig.Config, hasConfig bool) (memorycore.Service, error) {
+func openCurationService(ctx context.Context, opts commonOptions, flags *curationRunFlags, cfg memconfig.Config, hasConfig bool) (*memorycore.Client, error) {
 	if hasConfig {
 		openOpts, err := cfg.ToOptions()
 		if err != nil {

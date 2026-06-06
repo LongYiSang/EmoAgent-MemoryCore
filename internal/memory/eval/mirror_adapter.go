@@ -4,23 +4,23 @@ import (
 	"context"
 	"errors"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 )
 
 type evalMirrorAdapter struct {
 	unavailable              bool
-	candidates               []memorycore.MirrorCandidate
+	candidates               []appcore.MirrorCandidate
 	activationUnavailable    bool
 	activationDegraded       bool
 	activationFallbackReason string
-	activationCandidates     []memorycore.MirrorActivationCandidate
+	activationCandidates     []appcore.MirrorActivationCandidate
 	activationCalls          int
 	rerankUnavailable        bool
 	rerankDegraded           bool
 	rerankFallbackReason     string
-	rerankItems              []memorycore.MirrorRerankItem
+	rerankItems              []appcore.MirrorRerankItem
 	rerankCalls              int
-	lastRerankRequest        memorycore.MirrorRerankRequest
+	lastRerankRequest        appcore.MirrorRerankRequest
 	nextID                   int64
 	fusionMode               string
 }
@@ -36,32 +36,32 @@ func (a *evalMirrorAdapter) resetForStep() {
 	a.rerankDegraded = false
 	a.rerankFallbackReason = ""
 	a.rerankItems = nil
-	a.lastRerankRequest = memorycore.MirrorRerankRequest{}
+	a.lastRerankRequest = appcore.MirrorRerankRequest{}
 }
 
-func (a *evalMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (a *evalMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	if a.unavailable {
-		return memorycore.MirrorNodeUpsertResult{}, errors.New("sidecar unavailable")
+		return appcore.MirrorNodeUpsertResult{}, errors.New("sidecar unavailable")
 	}
 	a.nextID++
-	return memorycore.MirrorNodeUpsertResult{MirrorNodeID: a.nextID}, nil
+	return appcore.MirrorNodeUpsertResult{MirrorNodeID: a.nextID}, nil
 }
 
-func (a *evalMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (a *evalMirrorAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	if a.unavailable {
 		return errors.New("sidecar unavailable")
 	}
 	return nil
 }
 
-func (a *evalMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (a *evalMirrorAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	if a.unavailable {
 		return errors.New("sidecar unavailable")
 	}
 	return nil
 }
 
-func (a *evalMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (a *evalMirrorAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	if a.unavailable {
 		return errors.New("sidecar unavailable")
 	}
@@ -75,7 +75,7 @@ func (a *evalMirrorAdapter) ClearNamespace(ctx context.Context, personaID string
 	return nil
 }
 
-func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.MirrorCandidateRequest) (*memorycore.MirrorCandidateResult, error) {
+func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req appcore.MirrorCandidateRequest) (*appcore.MirrorCandidateResult, error) {
 	if a.unavailable {
 		return nil, errors.New("sidecar unavailable")
 	}
@@ -88,13 +88,13 @@ func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.M
 		rawQueryCount = 1
 	}
 	queryCount += rewriteCount + anchorCount
-	candidates := append([]memorycore.MirrorCandidate(nil), a.candidates...)
+	candidates := append([]appcore.MirrorCandidate(nil), a.candidates...)
 	if a.fusionMode == "max_only" && (rewriteCount > 0 || anchorCount > 0) {
 		candidates = maxOnlyMirrorCandidates(candidates)
 	}
-	return &memorycore.MirrorCandidateResult{
+	return &appcore.MirrorCandidateResult{
 		Candidates: candidates,
-		Diagnostics: memorycore.MirrorCandidateSidecarDiagnostics{
+		Diagnostics: appcore.MirrorCandidateSidecarDiagnostics{
 			QueryCount:           queryCount,
 			RawQueryCount:        rawQueryCount,
 			RewriteQueryCount:    rewriteCount,
@@ -105,8 +105,8 @@ func (a *evalMirrorAdapter) FindCandidates(ctx context.Context, req memorycore.M
 	}, nil
 }
 
-func maxOnlyMirrorCandidates(candidates []memorycore.MirrorCandidate) []memorycore.MirrorCandidate {
-	filtered := make([]memorycore.MirrorCandidate, 0, len(candidates))
+func maxOnlyMirrorCandidates(candidates []appcore.MirrorCandidate) []appcore.MirrorCandidate {
+	filtered := make([]appcore.MirrorCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		switch candidate.Source {
 		case "raw", "eval_raw":
@@ -116,20 +116,20 @@ func maxOnlyMirrorCandidates(candidates []memorycore.MirrorCandidate) []memoryco
 	return filtered
 }
 
-func evalMirrorPerQueryDiagnostics(req memorycore.MirrorCandidateRequest) []memorycore.MirrorCandidatePerQueryDiagnostic {
-	var out []memorycore.MirrorCandidatePerQueryDiagnostic
+func evalMirrorPerQueryDiagnostics(req appcore.MirrorCandidateRequest) []appcore.MirrorCandidatePerQueryDiagnostic {
+	var out []appcore.MirrorCandidatePerQueryDiagnostic
 	if req.QueryText != "" || req.Query.Raw != "" {
-		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{Source: "raw", Count: 1})
+		out = append(out, appcore.MirrorCandidatePerQueryDiagnostic{Source: "raw", Count: 1})
 	}
 	for _, rewrite := range req.Query.QueryRewrites {
-		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{
+		out = append(out, appcore.MirrorCandidatePerQueryDiagnostic{
 			Source:  "rewrite",
 			Purpose: rewrite.Purpose,
 			Count:   1,
 		})
 	}
 	for _, anchor := range req.Query.SemanticAnchors {
-		out = append(out, memorycore.MirrorCandidatePerQueryDiagnostic{
+		out = append(out, appcore.MirrorCandidatePerQueryDiagnostic{
 			Source:  "semantic_anchor",
 			Purpose: anchor.AnchorType,
 			Count:   1,
@@ -138,26 +138,26 @@ func evalMirrorPerQueryDiagnostics(req memorycore.MirrorCandidateRequest) []memo
 	return out
 }
 
-func (a *evalMirrorAdapter) ActivateGraph(ctx context.Context, req memorycore.MirrorActivationRequest) (*memorycore.MirrorActivationResult, error) {
+func (a *evalMirrorAdapter) ActivateGraph(ctx context.Context, req appcore.MirrorActivationRequest) (*appcore.MirrorActivationResult, error) {
 	a.activationCalls++
 	if a.activationUnavailable {
 		return nil, errors.New("activation sidecar unavailable")
 	}
-	return &memorycore.MirrorActivationResult{
-		Candidates:     append([]memorycore.MirrorActivationCandidate(nil), a.activationCandidates...),
+	return &appcore.MirrorActivationResult{
+		Candidates:     append([]appcore.MirrorActivationCandidate(nil), a.activationCandidates...),
 		Degraded:       a.activationDegraded,
 		FallbackReason: a.activationFallbackReason,
 	}, nil
 }
 
-func (a *evalMirrorAdapter) Rerank(ctx context.Context, req memorycore.MirrorRerankRequest) (*memorycore.MirrorRerankResult, error) {
+func (a *evalMirrorAdapter) Rerank(ctx context.Context, req appcore.MirrorRerankRequest) (*appcore.MirrorRerankResult, error) {
 	a.rerankCalls++
 	a.lastRerankRequest = req
 	if a.rerankUnavailable {
 		return nil, errors.New("rerank sidecar unavailable")
 	}
-	return &memorycore.MirrorRerankResult{
-		Items:          append([]memorycore.MirrorRerankItem(nil), a.rerankItems...),
+	return &appcore.MirrorRerankResult{
+		Items:          append([]appcore.MirrorRerankItem(nil), a.rerankItems...),
 		Degraded:       a.rerankDegraded,
 		FallbackReason: a.rerankFallbackReason,
 	}, nil

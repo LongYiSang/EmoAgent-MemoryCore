@@ -9,20 +9,21 @@ import (
 	"testing"
 	"time"
 
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 	_ "modernc.org/sqlite"
 )
 
 func TestServiceRunMirrorSyncProcessesQueuedFactAndEdges(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 10})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 10})
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
@@ -38,14 +39,14 @@ func TestServiceRunMirrorSyncProcessesQueuedFactAndEdges(t *testing.T) {
 
 func TestServiceRunMirrorSyncSkipsFactAfterSourceRedactedOnlyEvidence(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢乌龙茶。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "乌龙茶", "用户喜欢乌龙茶。", episode.ID).Fact
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSourceRedact,
@@ -62,7 +63,7 @@ func TestServiceRunMirrorSyncSkipsFactAfterSourceRedactedOnlyEvidence(t *testing
 	defer db.Close()
 	prioritizeMirrorQueueRow(t, db, "fact", fact.ID, "upsert_node")
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestServiceRunMirrorSyncSkipsFactAfterSourceRedactedOnlyEvidence(t *testing
 
 func TestServiceForgetSourceRedactEnqueuesMirrorDeleteForIndexedFactWithOnlyEvidence(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
@@ -84,12 +85,12 @@ func TestServiceForgetSourceRedactEnqueuesMirrorDeleteForIndexedFactWithOnlyEvid
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	prioritizeMirrorQueueRow(t, db, "fact", fact.ID, "upsert_node")
-	if _, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); err != nil {
+	if _, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); err != nil {
 		t.Fatalf("index fact: %v", err)
 	}
 	requireMirrorIndexForFact(t, db, fact.ID, "indexed")
 
-	if _, err := svc.Forget(ctx, memorycore.ForgetRequest{
+	if _, err := forgetExactNode(t, ctx, svc, memorycore.ForgetRequest{
 		Actor:      memorycore.ForgetActorUser,
 		ReasonCode: memorycore.ForgetReasonUserRequested,
 		Level:      memorycore.ForgetLevelSourceRedact,
@@ -104,7 +105,7 @@ func TestServiceForgetSourceRedactEnqueuesMirrorDeleteForIndexedFactWithOnlyEvid
 	requireMirrorQueueCountForNode(t, db, "fact", fact.ID, "delete_node", 1)
 
 	prioritizeMirrorQueueRow(t, db, "fact", fact.ID, "delete_node")
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("delete unsafe mirrored fact: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestServiceRunMirrorSyncFailsRowWithoutUpdatingIndexMap(t *testing.T) {
 	defer db.Close()
 	prioritizeMirrorQueueRow(t, db, "fact", fact.ID, "upsert_node")
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
@@ -154,7 +155,7 @@ WHERE node_type = 'fact' AND node_id = ? AND operation = 'upsert_node'`, fact.ID
 
 func TestServiceRunMirrorSyncDeleteNodeMarksMapDeletedIdempotently(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
@@ -164,13 +165,13 @@ func TestServiceRunMirrorSyncDeleteNodeMarksMapDeletedIdempotently(t *testing.T)
 	defer db.Close()
 	prioritizeMirrorQueueRow(t, db, "fact", fact.ID, "upsert_node")
 
-	if _, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); err != nil {
+	if _, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); err != nil {
 		t.Fatalf("index fact: %v", err)
 	}
 	requireMirrorIndexForFact(t, db, fact.ID, "indexed")
 	enqueueMirrorDeleteForFact(t, db, fact.ID, "delete_fact_once")
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("delete mirrored fact: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestServiceRunMirrorSyncDeleteNodeMarksMapDeletedIdempotently(t *testing.T)
 	requireMirrorIndexForFactStatusOnly(t, db, fact.ID, "deleted")
 
 	enqueueMirrorDeleteForFact(t, db, "missing_mapped_fact", "delete_fact_twice")
-	result, err = svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err = svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("delete absent mapped fact: %v", err)
 	}
@@ -191,14 +192,14 @@ func TestServiceRunMirrorSyncDeleteNodeMarksMapDeletedIdempotently(t *testing.T)
 
 func TestServiceRunMirrorSyncFailsThinDeleteEdgeQueueRow(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 	enqueueThinDeleteEdge(t, db, "delete_edge_thin_01", "link_missing_payload")
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
@@ -224,7 +225,7 @@ WHERE id = 'delete_edge_thin_01'`).Scan(&status, &attempts, &errorMessage); err 
 
 func TestServiceRunMirrorSyncFailsUnsupportedLegacyRebuildPersonaRow(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	db := openSQLDB(t, dbPath)
@@ -235,7 +236,7 @@ VALUES ('legacy_rebuild_persona_01', 'default', 'persona', 'default', 'rebuild_p
 		t.Fatalf("insert legacy rebuild_persona row: %v", err)
 	}
 
-	result, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
+	result, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("run mirror sync: %v", err)
 	}
@@ -247,7 +248,7 @@ VALUES ('legacy_rebuild_persona_01', 'default', 'persona', 'default', 'rebuild_p
 
 func TestServiceRunMirrorSyncBlocksWhenPersonaMirrorStateNotReady(t *testing.T) {
 	ctx := context.Background()
-	svc, dbPath := openMirrorService(t, ctx, memorycore.NewFakeMirrorAdapter())
+	svc, dbPath := openMirrorService(t, ctx, appcore.NewFakeMirrorAdapter())
 	defer svc.Close()
 
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
@@ -258,7 +259,7 @@ func TestServiceRunMirrorSyncBlocksWhenPersonaMirrorStateNotReady(t *testing.T) 
 	defer db.Close()
 	setMirrorPersonaStateForMirrorTest(t, db, "default", "rebuilding")
 
-	_, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 10})
+	_, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 10})
 	if !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("run mirror sync err = %v, want ErrInvalidRequest", err)
 	}
@@ -270,7 +271,7 @@ func TestServiceRunMirrorSyncRequiresExplicitAdapter(t *testing.T) {
 	svc, _ := openMirrorService(t, ctx, nil)
 	defer svc.Close()
 
-	if _, err := svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); !errors.Is(err, memorycore.ErrInvalidOptions) {
+	if _, err := svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{Limit: 1}); !errors.Is(err, memorycore.ErrInvalidOptions) {
 		t.Fatalf("RunMirrorSync err = %v, want ErrInvalidOptions", err)
 	}
 }
@@ -287,7 +288,7 @@ func TestServiceRebuildMirrorClearsNamespaceAndReindexesEligibleNodes(t *testing
 	db := openSQLDB(t, dbPath)
 	defer db.Close()
 
-	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	result, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
 	if err != nil {
 		t.Fatalf("rebuild mirror: %v", err)
 	}
@@ -301,7 +302,7 @@ func TestServiceRebuildMirrorClearsNamespaceAndReindexesEligibleNodes(t *testing
 	requireMirrorIndexForFact(t, db, fact.ID, "indexed")
 
 	updateFactColumn(t, db, fact.ID, "visibility_status", memorycore.VisibilityPurged)
-	result, err = svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	result, err = svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
 	if err != nil {
 		t.Fatalf("rebuild after purge: %v", err)
 	}
@@ -320,12 +321,12 @@ func TestServiceRebuildMirrorRecordsFailedExistingNode(t *testing.T) {
 	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
 	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
 	fact := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
-	if _, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err != nil {
+	if _, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err != nil {
 		t.Fatalf("initial rebuild: %v", err)
 	}
 
 	adapter.failNodeID = fact.ID
-	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	result, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
 	if err != nil {
 		t.Fatalf("failing rebuild: %v", err)
 	}
@@ -345,11 +346,11 @@ func TestServiceRebuildMirrorMarksPersonaDegradedWhenClearFails(t *testing.T) {
 	svc, dbPath := openMirrorService(t, ctx, adapter)
 	defer svc.Close()
 
-	if _, err := svc.StartSession(ctx, memorycore.StartSessionRequest{}); err != nil {
+	if _, err := svc.Sessions().StartSession(ctx, memorycore.StartSessionRequest{}); err != nil {
 		t.Fatalf("start session: %v", err)
 	}
 
-	if _, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err == nil {
+	if _, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{}); err == nil {
 		t.Fatalf("rebuild err = nil, want clear namespace failure")
 	}
 
@@ -385,7 +386,7 @@ VALUES
 		t.Fatalf("insert processing queue rows: %v", err)
 	}
 
-	_, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	_, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
 	if err == nil {
 		t.Fatal("rebuild err = nil, want refusal when active processing rows remain")
 	}
@@ -425,7 +426,7 @@ VALUES
 		t.Fatalf("insert pending/failed queue rows: %v", err)
 	}
 
-	result, err := svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
+	result, err := svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{})
 	if err != nil {
 		t.Fatalf("rebuild mirror: %v", err)
 	}
@@ -451,14 +452,14 @@ WHERE node_type = ? AND node_id = ? AND operation = ?`, nodeType, nodeID, operat
 	}
 }
 
-func openMirrorService(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter) (memorycore.Service, string) {
+func openMirrorService(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter) (*memorycore.Client, string) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	svc, err := memorycore.Open(ctx, memorycore.Options{
 		DBPath:        dbPath,
 		AutoMigrate:   true,
-		MirrorAdapter: adapter,
+		MirrorBackend: mirrorBackendForTest(t, adapter),
 		Now: func() time.Time {
 			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 		},
@@ -486,39 +487,39 @@ func (f *rebuildPublicMirrorAdapter) ClearNamespace(ctx context.Context, persona
 	return f.clearErr
 }
 
-func (f *rebuildPublicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
+func (f *rebuildPublicMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
 	if payload.SQLiteNodeID == f.failNodeID {
-		return memorycore.MirrorNodeUpsertResult{}, errors.New("sidecar unavailable")
+		return appcore.MirrorNodeUpsertResult{}, errors.New("sidecar unavailable")
 	}
 	f.nextOffset++
-	return memorycore.MirrorNodeUpsertResult{MirrorNodeID: f.nodeMirrorID + f.nextOffset}, nil
+	return appcore.MirrorNodeUpsertResult{MirrorNodeID: f.nodeMirrorID + f.nextOffset}, nil
 }
 
-func (f *rebuildPublicMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (f *rebuildPublicMirrorAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return nil
 }
 
-func (f *rebuildPublicMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (f *rebuildPublicMirrorAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return nil
 }
 
-func (f *rebuildPublicMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (f *rebuildPublicMirrorAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return nil
 }
 
-func (f failingPublicMirrorAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
-	return memorycore.MirrorNodeUpsertResult{}, f.err
+func (f failingPublicMirrorAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
+	return appcore.MirrorNodeUpsertResult{}, f.err
 }
 
-func (f failingPublicMirrorAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (f failingPublicMirrorAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return f.err
 }
 
-func (f failingPublicMirrorAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (f failingPublicMirrorAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return f.err
 }
 
-func (f failingPublicMirrorAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (f failingPublicMirrorAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return f.err
 }
 

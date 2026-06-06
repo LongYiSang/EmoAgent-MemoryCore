@@ -2,7 +2,7 @@
 
 本文档描述当前代码实际支持的外部接入面，目标读者是 EmoAgent 主仓库的接入层。MemoryCore 当前是一个 Go module + SQLite 权威库 + 可选 Python sidecar，而不是独立 HTTP 服务。
 
-当前代码基准：2026-05-24。
+当前代码基准：2026-06-06。
 
 ## 接入结论
 
@@ -12,17 +12,17 @@
 import "github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 ```
 
-公共入口是 `memorycore.Open(ctx, memorycore.Options)`。不要 import `internal/...`。Sidecar 只用于可选检索增强，不是权威记忆源，也不是主仓库写入事实的入口。
+公共入口是 `memorycore.Open(ctx, memorycore.Options)`，返回 `*memorycore.Client`。不要 import `internal/...`。Sidecar 只用于可选检索增强，不是权威记忆源，也不是主仓库写入事实的入口。
 
 最小运行链路：
 
-1. 启动时打开 `memorycore.Service`。
-2. 对话开始时调用 `StartSession`。
-3. 每轮对话用 `AppendEpisode` 追加用户/助手事件。
-4. 需要注入长期记忆前调用 `Retrieve`，把返回的 `MemoryContext` 转成主仓库 prompt 片段。
-5. 会话结束时调用 `EndSession`。
-6. 需要把 episode 固化为可检索长期事实时，调用 `ConsolidateCandidate` 或使用 `pkg/memorycore/extractionruntime`。
-7. 用户要求删除/遗忘时调用 `Forget`。
+1. 启动时打开 `*memorycore.Client`。
+2. 对话开始时调用 `client.Sessions().StartSession`。
+3. 每轮对话用 `client.Sessions().AppendEpisode` 追加用户/助手事件。
+4. 需要注入长期记忆前调用 `client.Retrieval().Retrieve`，把返回的 `MemoryContext` 转成主仓库 prompt 片段。
+5. 会话结束时调用 `client.Sessions().EndSession`。
+6. 需要把 episode 固化为可检索长期事实时，调用 `client.Writes().ConsolidateCandidate` 或 `client.Writes().RunExtraction`。
+7. 用户要求删除/遗忘时统一走 `client.Forget().PreviewForget` / `ExecuteForget` / `VerifyForget`。
 
 ## 模块依赖
 
@@ -80,7 +80,7 @@ func OpenMemory(ctx context.Context, configPath string) (*memconfig.ConfiguredSe
 }
 ```
 
-`ConfiguredService` 内嵌 `memorycore.Service`，并额外返回：
+`ConfiguredService` 内嵌 `*memorycore.Client`，并额外返回：
 
 - `Config`：生效后的配置。
 - `RetrievalPolicy`：每次 `Retrieve` 可直接使用的默认检索策略。
@@ -115,8 +115,8 @@ import (
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
-func RunTurn(ctx context.Context, svc memorycore.Service, sessionID string, userText string) (string, error) {
-	mc, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+func RunTurn(ctx context.Context, client *memorycore.Client, sessionID string, userText string) (string, error) {
+	mc, err := client.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: userText,
 		Policy: memorycore.RetrievalPolicy{
@@ -134,15 +134,15 @@ func RunTurn(ctx context.Context, svc memorycore.Service, sessionID string, user
 	return FormatMemoryContext(mc), nil
 }
 
-func StartConversation(ctx context.Context, svc memorycore.Service) (*memorycore.Session, error) {
-	return svc.StartSession(ctx, memorycore.StartSessionRequest{
+func StartConversation(ctx context.Context, client *memorycore.Client) (*memorycore.Session, error) {
+	return client.Sessions().StartSession(ctx, memorycore.StartSessionRequest{
 		Channel:   memorycore.ChannelAPI,
 		StartedAt: time.Now(),
 	})
 }
 
-func AppendChatTurn(ctx context.Context, svc memorycore.Service, sessionID string, userText string, assistantText string) error {
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+func AppendChatTurn(ctx context.Context, client *memorycore.Client, sessionID string, userText string, assistantText string) error {
+	if _, err := client.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID:  sessionID,
 		Role:       memorycore.RoleUser,
 		Content:    userText,
@@ -155,7 +155,7 @@ func AppendChatTurn(ctx context.Context, svc memorycore.Service, sessionID strin
 	if assistantText == "" {
 		return nil
 	}
-	_, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	_, err := client.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID:  sessionID,
 		Role:       memorycore.RoleAssistant,
 		Content:    assistantText,
@@ -165,8 +165,8 @@ func AppendChatTurn(ctx context.Context, svc memorycore.Service, sessionID strin
 	return err
 }
 
-func EndConversation(ctx context.Context, svc memorycore.Service, sessionID string, summary string) error {
-	_, err := svc.EndSession(ctx, memorycore.EndSessionRequest{
+func EndConversation(ctx context.Context, client *memorycore.Client, sessionID string, summary string) error {
+	_, err := client.Sessions().EndSession(ctx, memorycore.EndSessionRequest{
 		SessionID: sessionID,
 		Summary:   &summary,
 		EndedAt:   time.Now(),
@@ -247,7 +247,7 @@ _, err = svc.AddEntityAlias(ctx, memorycore.AddEntityAliasRequest{
 
 ```go
 object := "手冲咖啡"
-result, err := svc.ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
+result, err := svc.Writes().ConsolidateCandidate(ctx, memorycore.ConsolidateCandidateRequest{
 	SessionID: &sessionID,
 	Trigger:   memorycore.ConsolidationTriggerManual,
 	Candidate: memorycore.ManualFactCandidate{
@@ -280,18 +280,7 @@ _ = result
 
 ## 抽取运行时
 
-如果主仓库想从 episode 窗口自动抽取事实，使用 public 子包：
-
-```go
-import "github.com/longyisang/emoagent-memorycore/pkg/memorycore/extractionruntime"
-```
-
-`extractionruntime.Runner` 需要宿主提供：
-
-- `*sql.DB`：访问同一个 MemoryCore SQLite 数据库。
-- `memorycore.Service`：用于把 accepted facts 写入整合入口。
-- `memorycore.ExtractionLLM`：宿主自己的 LLM client，或使用内置 OpenAI-compatible client。
-- `AuditStore`：通常使用 `extractionruntime.NewSQLiteAuditStore(sqlDB)`。
+如果主仓库想从 episode 窗口自动抽取事实，推荐使用 `client.Writes().RunExtraction`。provider 可通过 `memorycore.Options.Extraction.Provider` 或配置文件预先设置，也可以在单次请求中用 `Provider` override。
 
 示例：
 
@@ -300,64 +289,47 @@ package memoryhost
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
-	"github.com/longyisang/emoagent-memorycore/pkg/memorycore/extractionruntime"
-	_ "modernc.org/sqlite"
 )
 
-func ExtractSession(ctx context.Context, dbPath string, svc memorycore.Service, sessionID string) error {
-	sqlDB, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return err
-	}
-	defer sqlDB.Close()
-	sqlDB.SetMaxOpenConns(1)
+func ExtractSession(ctx context.Context, client *memorycore.Client, sessionID string) error {
+	allowInference := true
+	maxFacts := 12
+	maxLinks := 20
+	repairEnabled := true
+	audit := memorycore.ExtractionAuditOn
+	maxTokens := 4096
 
-	req, err := extractionruntime.BuildRequest(ctx, sqlDB, extractionruntime.BuildRequestOptions{
-		PersonaID:      "default",
-		SessionID:      &sessionID,
-		Trigger:        memorycore.ExtractionTriggerSessionEnd,
-		Limit:          50,
-		Timezone:       "Asia/Shanghai",
-		AllowInference: true,
-		MaxFacts:       12,
-		MaxLinks:       20,
-		Now:            time.Now(),
-	})
-	if err != nil {
-		return err
-	}
-
-	llm := extractionruntime.NewOpenAICompatibleLLM(extractionruntime.OpenAICompatibleOptions{
-		BaseURL:   "https://api.example.com/compatible-mode",
-		APIKeyEnv: "MEMORYCORE_LLM_API_KEY",
-		Model:     "memory-extractor",
-		Timeout:   60 * time.Second,
-		MaxTokens: 4096,
-	})
-
-	runner := extractionruntime.NewRunner(extractionruntime.RunnerOptions{
-		DB:         sqlDB,
-		Service:    svc,
-		LLM:        llm,
-		AuditStore: extractionruntime.NewSQLiteAuditStore(sqlDB),
-	})
-
-	result, err := runner.Run(ctx, memorycore.ExtractionRunRequest{
-		Request:       req,
-		Mode:          memorycore.ExtractionRunModeApply,
-		ProviderID:    "default_llm",
-		ProviderKind:  "openai-compatible",
-		Model:         "memory-extractor",
-		Temperature:   0,
-		MaxTokens:     4096,
-		Timeout:       60 * time.Second,
-		RepairEnabled: true,
-		Audit:         memorycore.ExtractionAuditOn,
+	result, err := client.Writes().RunExtraction(ctx, memorycore.RunExtractionRequest{
+		SessionID: &sessionID,
+		Trigger:   memorycore.ExtractionTriggerSessionEnd,
+		Build: &memorycore.ExtractionBuildSelector{
+			SessionID: &sessionID,
+			Limit:     50,
+		},
+		Mode: memorycore.ExtractionRunModeApply,
+		Policy: memorycore.ExtractionPolicyOverride{
+			AllowInference: &allowInference,
+			MaxFacts:       &maxFacts,
+			MaxLinks:       &maxLinks,
+		},
+		Runtime: memorycore.ExtractionRuntimeOverride{
+			RepairEnabled: &repairEnabled,
+			Audit:         &audit,
+		},
+		Provider: memorycore.ExtractionProviderOverride{
+			Kind:           memorycore.ExtractionProviderOpenAICompatible,
+			ID:             "default_llm",
+			BaseURL:        "https://api.example.com/compatible-mode",
+			APIKeyEnv:      "MEMORYCORE_LLM_API_KEY",
+			Model:          "memory-extractor",
+			Timeout:        60 * time.Second,
+			MaxTokens:      &maxTokens,
+			ResponseFormat: memorycore.ExtractionResponseFormatJSONSchema,
+		},
 	})
 	if err != nil {
 		return err
@@ -373,6 +345,8 @@ func ExtractSession(ctx context.Context, dbPath string, svc memorycore.Service, 
 }
 ```
 
+抽取 request 构造、LLM provider、audit 和 apply 都统一走 `Writes().RunExtraction` / `RunExtractionBatch`；宿主不需要直接持有 MemoryCore SQLite handle 或调用 public extraction runtime 子包。
+
 如果接入初期不想在主仓库内跑抽取，可以先用 CLI 的 `extract-run` / `extract-batch` 做离线验证。
 
 ## 检索接口
@@ -380,7 +354,7 @@ func ExtractSession(ctx context.Context, dbPath string, svc memorycore.Service, 
 调用：
 
 ```go
-mc, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+mc, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 	SessionID: &sessionID,
 	QueryText: "用户最近为什么抗拒早会？",
 	Policy: memorycore.RetrievalPolicy{
@@ -425,18 +399,31 @@ mc, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
 
 ## 删除和遗忘
 
-用户主动要求遗忘时，主仓库应调用 `Forget`，不要只在主仓库侧屏蔽文本。
+用户主动要求遗忘时，主仓库应调用 `ForgetAPI` 的 preview / execute / verify 流程，不要只在主仓库侧屏蔽文本。
 
 ```go
-_, err := svc.Forget(ctx, memorycore.ForgetRequest{
-	Actor:      memorycore.ForgetActorUser,
-	ReasonCode: memorycore.ForgetReasonUserRequested,
-	Level:      memorycore.ForgetLevelSoft,
-	Target: memorycore.ForgetTarget{
-		ScopeMode: memorycore.ForgetScopeExactNode,
-		NodeType:  memorycore.ForgetNodeFact,
-		NodeID:    factID,
-	},
+previewReq := memorycore.ForgetPreviewRequest{
+	Actor:          memorycore.ForgetActorUser,
+	RequestedLevel: memorycore.ForgetLevelSoft,
+	ScopeMode:      memorycore.ForgetScopeExactNode,
+	NodeType:       memorycore.ForgetNodeFact,
+	NodeID:         factID,
+}
+preview, err := svc.Forget().PreviewForget(ctx, previewReq)
+if err != nil {
+	return err
+}
+_, err = svc.Forget().ExecuteForget(ctx, memorycore.ForgetExecuteRequest{
+	Actor:          memorycore.ForgetActorUser,
+	ReasonCode:     memorycore.ForgetReasonUserRequested,
+	Level:          memorycore.ForgetLevelSoft,
+	PreviewRequest: previewReq,
+	PreviewHash:    preview.PreviewHash,
+	ConfirmedTargets: []memorycore.ExactNodeRef{{
+		NodeType: memorycore.ForgetNodeFact,
+		NodeID:   factID,
+	}},
+	Confirmed: true,
 })
 ```
 
@@ -460,7 +447,7 @@ _, err := svc.Forget(ctx, memorycore.ForgetRequest{
 ### SQLite search 重建
 
 ```go
-_, err := svc.RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
+_, err := svc.Ops().RebuildSearchDocuments(ctx, memorycore.RebuildSearchDocumentsRequest{
 	PersonaID: "default",
 })
 ```
@@ -474,7 +461,7 @@ go run ./cmd/memoryctl rebuild-search --db ./data/memory.db --format json --pret
 ### Retention
 
 ```go
-_, err := svc.RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
+_, err := svc.Ops().RunRetentionJobs(ctx, memorycore.RunRetentionJobsRequest{
 	PersonaID: "default",
 	Jobs: []memorycore.RetentionJobName{
 		memorycore.RetentionJobDailyTTLExpiry,
@@ -499,15 +486,15 @@ svc, err := memorycore.Open(ctx, memorycore.Options{
 	DBPath:        "./data/memory.db",
 	AutoMigrate:   true,
 	EnableFTS:     true,
-	MirrorAdapter: memorycore.NewSidecarMirrorAdapter("http://127.0.0.1:8765"),
+	MirrorBackend: memorycore.NewSidecarMirrorBackend("http://127.0.0.1:8765"),
 })
 ```
 
 重建和增量同步：
 
 ```go
-_, err = svc.RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: "default"})
-_, err = svc.RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{PersonaID: "default", Limit: 100})
+_, err = svc.Ops().RebuildMirror(ctx, memorycore.RebuildMirrorRequest{PersonaID: "default"})
+_, err = svc.Ops().RunMirrorSync(ctx, memorycore.RunMirrorSyncRequest{PersonaID: "default", Limit: 100})
 ```
 
 CLI：
@@ -687,7 +674,7 @@ svc, err := memorycore.Open(ctx, memorycore.Options{
 	DBPath:        "./data/memory.db",
 	AutoMigrate:   true,
 	EnableFTS:     true,
-	MirrorAdapter: memorycore.NewSidecarMirrorAdapter("http://127.0.0.1:8765"),
+	MirrorBackend: memorycore.NewSidecarMirrorBackend("http://127.0.0.1:8765"),
 	QueryAnalysis: memorycore.QueryAnalysisOptions{
 		Provider:   memorycore.QueryAnalysisProviderSidecar,
 		Mode:       memorycore.QueryAnalysisModeAdaptiveSafe,
@@ -738,7 +725,7 @@ go run ./cmd/memoryctl extract-run --db ./data/memory.db --session <session-id> 
 
 ## 接入检查清单
 
-- [ ] 主仓库只依赖 `pkg/memorycore` 和可选 `pkg/memorycore/extractionruntime`。
+- [ ] 主仓库只依赖 `pkg/memorycore`，抽取执行统一走 `client.Writes().RunExtraction` / `RunExtractionBatch`。
 - [ ] 启动时能打开 SQLite，`AutoMigrate=true` 或运维已跑过 `init-db`。
 - [ ] 每个对话有 `StartSession` / `EndSession`。
 - [ ] 每轮原始对话写入 `AppendEpisode`。

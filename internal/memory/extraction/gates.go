@@ -1,9 +1,11 @@
 package extraction
 
 import (
+	"encoding/json"
 	"strings"
 
-	"github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
+	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
 const (
@@ -17,7 +19,19 @@ const (
 )
 
 func ValidateExtraction(req memorycore.ExtractionRequest, resp memorycore.ExtractionResponse) memorycore.ExtractionGateResult {
-	return memorycore.ValidateExtraction(req, resp)
+	appReq := convertExtractionGateValue[appcore.ExtractionRequest](req)
+	appResp := convertExtractionGateValue[appcore.ExtractionResponse](resp)
+	return convertExtractionGateValue[memorycore.ExtractionGateResult](appcore.ValidateExtraction(appReq, appResp))
+}
+
+func convertExtractionGateValue[T any](value any) T {
+	var out T
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
 }
 
 type gateContext struct {

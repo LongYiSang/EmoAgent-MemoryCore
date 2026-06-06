@@ -33,7 +33,7 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 	defer svc.Close()
 
 	title := "API session"
-	session, err := svc.StartSession(ctx, memorycore.StartSessionRequest{
+	session, err := svc.Sessions().StartSession(ctx, memorycore.StartSessionRequest{
 		Title: &title,
 	})
 	if err != nil {
@@ -52,7 +52,7 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 		t.Fatalf("session started_at = %s, want %s", session.StartedAt, now)
 	}
 
-	first, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	first, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID: session.ID,
 		Content:   "请记住，我不喜欢早上 8 点的会议。",
 	})
@@ -81,7 +81,7 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 		t.Fatalf("first prev/next = %v/%v, want nil/nil", first.PrevEpisodeID, first.NextEpisodeID)
 	}
 
-	second, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	second, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID:  session.ID,
 		Role:       memorycore.RoleAssistant,
 		Content:    "我记住了。",
@@ -95,7 +95,7 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 	}
 	requireEpisodeNextID(t, dbPath, first.ID, second.ID)
 
-	third, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
+	third, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{
 		SessionID: session.ID,
 		Content:   "第三条消息。",
 	})
@@ -109,7 +109,7 @@ func TestServiceStartSessionAndAppendEpisode(t *testing.T) {
 
 	endedAt := now.Add(time.Hour)
 	summary := "用户表达了会议偏好。"
-	ended, err := svc.EndSession(ctx, memorycore.EndSessionRequest{
+	ended, err := svc.Sessions().EndSession(ctx, memorycore.EndSessionRequest{
 		SessionID: session.ID,
 		EndedAt:   endedAt,
 		Summary:   &summary,
@@ -140,19 +140,19 @@ func TestServiceValidation(t *testing.T) {
 	}
 	defer svc.Close()
 
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{Content: "missing session"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{Content: "missing session"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("append without session err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{SessionID: "s1"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{SessionID: "s1"}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("append without content err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.AppendEpisode(ctx, memorycore.AppendEpisodeRequest{SessionID: "missing", Content: "hello"}); !errors.Is(err, memorycore.ErrNotFound) {
+	if _, err := svc.Sessions().AppendEpisode(ctx, memorycore.AppendEpisodeRequest{SessionID: "missing", Content: "hello"}); !errors.Is(err, memorycore.ErrNotFound) {
 		t.Fatalf("append missing session err = %v, want ErrNotFound", err)
 	}
-	if _, err := svc.EndSession(ctx, memorycore.EndSessionRequest{}); !errors.Is(err, memorycore.ErrInvalidRequest) {
+	if _, err := svc.Sessions().EndSession(ctx, memorycore.EndSessionRequest{}); !errors.Is(err, memorycore.ErrInvalidRequest) {
 		t.Fatalf("end without session err = %v, want ErrInvalidRequest", err)
 	}
-	if _, err := svc.EndSession(ctx, memorycore.EndSessionRequest{SessionID: "missing"}); !errors.Is(err, memorycore.ErrNotFound) {
+	if _, err := svc.Sessions().EndSession(ctx, memorycore.EndSessionRequest{SessionID: "missing"}); !errors.Is(err, memorycore.ErrNotFound) {
 		t.Fatalf("end missing session err = %v, want ErrNotFound", err)
 	}
 }

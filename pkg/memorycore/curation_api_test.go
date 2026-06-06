@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	appcore "github.com/longyisang/emoagent-memorycore/internal/app/memorycore"
 	"github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 )
 
@@ -27,7 +28,7 @@ func TestServiceRunCurationApplyMergesOverlappingPreferences(t *testing.T) {
 	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID).Fact
 	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID).Fact
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
 		Trigger:                "test",
 		ProviderKind:           memorycore.ExtractionProviderMock,
@@ -67,7 +68,7 @@ func TestServiceRunCurationApplyMergesOverlappingPreferences(t *testing.T) {
 	requireCurationAPIQueue(t, db, "fact", sourceID, "delete_node")
 	requireCurationAPICheckpoint(t, db, "default", result.RunID)
 
-	contextResult, err := svc.Retrieve(ctx, memorycore.RetrievalRequest{
+	contextResult, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		SessionID: &sessionID,
 		QueryText: "科幻小说",
 		Policy: memorycore.RetrievalPolicy{
@@ -98,7 +99,7 @@ func TestServiceRunCurationDoesNotMergeUnrelatedSamePredicateSources(t *testing.
 	jazz := consolidateLiteral(t, ctx, svc, userID, "likes", "爵士乐", "用户喜欢听爵士乐。", jazzEpisode.ID).Fact
 	hiking := consolidateLiteral(t, ctx, svc, userID, "likes", "周末徒步旅行", "用户喜欢周末徒步旅行。", hikingEpisode.ID).Fact
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
 		Trigger:                "test",
 		ProviderKind:           memorycore.ExtractionProviderMock,
@@ -237,7 +238,7 @@ func TestServiceRunCurationAddsCanonicalSourceFactIDBeforeApply(t *testing.T) {
 	canonicalFactID = canonical.ID
 	sourceFactID = source.ID
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
 		Trigger:                "test",
 		MinAutoApplyConfidence: 0.88,
@@ -273,7 +274,7 @@ func TestServiceRunCurationDoesNotAutoMergeComplementFacts(t *testing.T) {
 	likeFact := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", likeEpisode.ID).Fact
 	dislikeFact := consolidateLiteral(t, ctx, svc, userID, "dislikes", "科幻小说剧透", "用户讨厌科幻小说剧透。", dislikeEpisode.ID).Fact
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
 		Trigger:                "test",
 		ProviderKind:           memorycore.ExtractionProviderMock,
@@ -297,7 +298,7 @@ func TestServiceRunCurationDoesNotAutoMergeComplementFacts(t *testing.T) {
 func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 	ctx := context.Background()
 	rawDir := t.TempDir()
-	adapter := &curationMirrorTestAdapter{results: map[string]*memorycore.MirrorDedupSearchResult{}}
+	adapter := &curationMirrorTestAdapter{results: map[string]*appcore.MirrorDedupSearchResult{}}
 	svc, dbPath := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
 		Mode:                "mirror_only",
 		MirrorMinSimilarity: 0.70,
@@ -309,9 +310,9 @@ func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我周末喜欢读科幻小说。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
 	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", firstEpisode.ID).Fact
 	second := consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", secondEpisode.ID).Fact
-	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
+	adapter.results[first.ID] = &appcore.MirrorDedupSearchResult{
 		Status: "ok",
-		Candidates: []memorycore.MirrorDedupSearchCandidate{{
+		Candidates: []appcore.MirrorDedupSearchCandidate{{
 			NodeType:    "fact",
 			NodeID:      second.ID,
 			Similarity:  0.88,
@@ -321,7 +322,7 @@ func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 		}},
 	}
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
 		Trigger:      "test",
 		ProviderKind: memorycore.ExtractionProviderMock,
@@ -368,7 +369,7 @@ func TestServiceRunCurationMirrorCandidateFormsGroup(t *testing.T) {
 func TestServiceRunCurationMirrorCandidateAuthorityDrop(t *testing.T) {
 	ctx := context.Background()
 	rawDir := t.TempDir()
-	adapter := &curationMirrorTestAdapter{results: map[string]*memorycore.MirrorDedupSearchResult{}}
+	adapter := &curationMirrorTestAdapter{results: map[string]*appcore.MirrorDedupSearchResult{}}
 	svc, _ := openCurationServiceWithMirror(t, ctx, adapter, memorycore.CurationCandidateRetrievalOptions{
 		Mode:                "mirror_only",
 		MirrorMinSimilarity: 0.70,
@@ -380,16 +381,16 @@ func TestServiceRunCurationMirrorCandidateAuthorityDrop(t *testing.T) {
 	secondEpisode := appendConsolidationEpisode(t, ctx, svc, sessionID, "我不喜欢科幻小说剧透。", time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC))
 	first := consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", firstEpisode.ID).Fact
 	second := consolidateLiteral(t, ctx, svc, userID, "dislikes", "科幻小说剧透", "用户不喜欢科幻小说剧透。", secondEpisode.ID).Fact
-	adapter.results[first.ID] = &memorycore.MirrorDedupSearchResult{
+	adapter.results[first.ID] = &appcore.MirrorDedupSearchResult{
 		Status: "ok",
-		Candidates: []memorycore.MirrorDedupSearchCandidate{{
+		Candidates: []appcore.MirrorDedupSearchCandidate{{
 			NodeType:   "fact",
 			NodeID:     second.ID,
 			Similarity: 0.91,
 		}},
 	}
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
 		Trigger:      "test",
 		ProviderKind: memorycore.ExtractionProviderMock,
@@ -425,7 +426,7 @@ func TestServiceRunCurationMirrorFirstFallsBackToSQL(t *testing.T) {
 	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
 	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
 		Trigger:      "test",
 		ProviderKind: memorycore.ExtractionProviderMock,
@@ -455,7 +456,7 @@ func TestServiceRunCurationMirrorOnlyDoesNotFallbackToSQL(t *testing.T) {
 	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
 	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:         "dry_run",
 		Trigger:      "test",
 		ProviderKind: memorycore.ExtractionProviderMock,
@@ -475,7 +476,7 @@ func TestServiceRunCurationRejectsInvalidCandidateRetrievalOverride(t *testing.T
 	svc, _ := openCurationService(t, ctx)
 	defer svc.Close()
 
-	_, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	_, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
 		Trigger: "test",
 		Force:   true,
@@ -488,7 +489,7 @@ func TestServiceRunCurationRejectsInvalidCandidateRetrievalOverride(t *testing.T
 		t.Fatalf("error = %v, want ErrInvalidRequest", err)
 	}
 
-	_, err = svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	_, err = svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
 		Trigger: "test",
 		Force:   true,
@@ -524,7 +525,7 @@ func TestServiceRunCurationRejectsJSONSchemaResponseFormat(t *testing.T) {
 	}
 	defer svc.Close()
 
-	_, err = svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	_, err = svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
 		Trigger: "test",
 		Force:   true,
@@ -554,7 +555,7 @@ func TestServiceRunCurationPinnedSourceRequiresReview(t *testing.T) {
 		t.Fatalf("pin source fact: %v", err)
 	}
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:                   "apply",
 		Trigger:                "test",
 		ProviderKind:           memorycore.ExtractionProviderMock,
@@ -619,7 +620,7 @@ func TestServiceRunCurationRawLogRecordsSchemaDriftProviderResponse(t *testing.T
 	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
 	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
 		Trigger: "test",
 		Force:   true,
@@ -706,7 +707,7 @@ func TestServiceRunCurationRawLogRecordsProviderErrorResponse(t *testing.T) {
 	consolidateLiteral(t, ctx, svc, userID, "likes", "科幻小说", "用户喜欢科幻小说。", oldEpisode.ID)
 	consolidateLiteral(t, ctx, svc, userID, "likes", "周末读科幻小说", "用户周末喜欢读科幻小说。", newEpisode.ID)
 
-	result, err := svc.RunCuration(ctx, memorycore.RunCurationRequest{
+	result, err := svc.Ops().RunCuration(ctx, memorycore.RunCurationRequest{
 		Mode:    "dry_run",
 		Trigger: "test",
 		Force:   true,
@@ -743,7 +744,7 @@ func TestServiceRunCurationRawLogRecordsProviderErrorResponse(t *testing.T) {
 	}
 }
 
-func openCurationService(t *testing.T, ctx context.Context) (memorycore.Service, string) {
+func openCurationService(t *testing.T, ctx context.Context) (*memorycore.Client, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	svc, err := memorycore.Open(ctx, memorycore.Options{
@@ -760,7 +761,7 @@ func openCurationService(t *testing.T, ctx context.Context) (memorycore.Service,
 	return svc, dbPath
 }
 
-func openCurationServiceWithMirror(t *testing.T, ctx context.Context, adapter memorycore.MirrorAdapter, retrieval memorycore.CurationCandidateRetrievalOptions, rawDir string) (memorycore.Service, string) {
+func openCurationServiceWithMirror(t *testing.T, ctx context.Context, adapter appcore.MirrorAdapter, retrieval memorycore.CurationCandidateRetrievalOptions, rawDir string) (*memorycore.Client, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	curation := memorycore.SemanticCurationOptions{
@@ -779,7 +780,7 @@ func openCurationServiceWithMirror(t *testing.T, ctx context.Context, adapter me
 		DBPath:        dbPath,
 		AutoMigrate:   true,
 		EnableFTS:     true,
-		MirrorAdapter: adapter,
+		MirrorBackend: mirrorBackendForTest(t, adapter),
 		Now: func() time.Time {
 			return time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 		},
@@ -793,27 +794,27 @@ func openCurationServiceWithMirror(t *testing.T, ctx context.Context, adapter me
 
 type curationMirrorTestAdapter struct {
 	dedupCalls int
-	results    map[string]*memorycore.MirrorDedupSearchResult
+	results    map[string]*appcore.MirrorDedupSearchResult
 	err        error
 }
 
-func (a *curationMirrorTestAdapter) UpsertNode(ctx context.Context, payload memorycore.MirrorNodePayload) (memorycore.MirrorNodeUpsertResult, error) {
-	return memorycore.MirrorNodeUpsertResult{}, nil
+func (a *curationMirrorTestAdapter) UpsertNode(ctx context.Context, payload appcore.MirrorNodePayload) (appcore.MirrorNodeUpsertResult, error) {
+	return appcore.MirrorNodeUpsertResult{}, nil
 }
 
-func (a *curationMirrorTestAdapter) DeleteNode(ctx context.Context, ref memorycore.MirrorNodeRef) error {
+func (a *curationMirrorTestAdapter) DeleteNode(ctx context.Context, ref appcore.MirrorNodeRef) error {
 	return nil
 }
 
-func (a *curationMirrorTestAdapter) UpsertEdge(ctx context.Context, payload memorycore.MirrorEdgePayload) error {
+func (a *curationMirrorTestAdapter) UpsertEdge(ctx context.Context, payload appcore.MirrorEdgePayload) error {
 	return nil
 }
 
-func (a *curationMirrorTestAdapter) DeleteEdge(ctx context.Context, ref memorycore.MirrorEdgeRef) error {
+func (a *curationMirrorTestAdapter) DeleteEdge(ctx context.Context, ref appcore.MirrorEdgeRef) error {
 	return nil
 }
 
-func (a *curationMirrorTestAdapter) DedupSearch(ctx context.Context, req memorycore.MirrorDedupSearchRequest) (*memorycore.MirrorDedupSearchResult, error) {
+func (a *curationMirrorTestAdapter) DedupSearch(ctx context.Context, req appcore.MirrorDedupSearchRequest) (*appcore.MirrorDedupSearchResult, error) {
 	a.dedupCalls++
 	if a.err != nil {
 		return nil, a.err
@@ -823,7 +824,7 @@ func (a *curationMirrorTestAdapter) DedupSearch(ctx context.Context, req memoryc
 			return result, nil
 		}
 	}
-	return &memorycore.MirrorDedupSearchResult{Status: "ok"}, nil
+	return &appcore.MirrorDedupSearchResult{Status: "ok"}, nil
 }
 
 func requireMemoryItemAbsent(t *testing.T, contextResult *memorycore.MemoryContext, nodeID string) {
