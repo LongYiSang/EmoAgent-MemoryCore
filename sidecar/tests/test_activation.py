@@ -1,5 +1,9 @@
+import re
+from pathlib import Path
+
 import pytest
 
+import memorycore_sidecar.activation as activation
 from memorycore_sidecar.activation import (
     ActivationEdge,
     activate_graph,
@@ -127,3 +131,23 @@ def test_activate_graph_with_diagnostics_stops_at_edge_budget():
     assert run.fallback_reason == "activation_budget_exceeded"
     assert run.edge_scanned_count == 1
     assert run.candidates
+
+
+def test_activation_link_type_strategy_matches_sqlite_migration():
+    sqlite_types = _sqlite_allowed_link_types()
+    sidecar_types = set(activation.LINK_TYPE_MULTIPLIERS)
+
+    assert sidecar_types == sqlite_types
+
+
+def _sqlite_allowed_link_types() -> set[str]:
+    migration_path = Path(__file__).resolve().parents[2] / "migrations" / "0001_initial.sql"
+    migration_sql = migration_path.read_text(encoding="utf-8")
+    match = re.search(
+        r"link_type\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*link_type\s+IN\s*\((.*?)\)\s*\)",
+        migration_sql,
+        re.DOTALL,
+    )
+    assert match is not None
+
+    return set(re.findall(r"'([A-Z_]+)'", match.group(1)))

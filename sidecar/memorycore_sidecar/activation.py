@@ -25,6 +25,24 @@ class ActivationRun:
 NeighborProvider = Callable[[int], Iterable[ActivationEdge]]
 DegreeProvider = Callable[[int], int]
 
+LINK_TYPE_MULTIPLIERS = {
+    "EVIDENCED_BY": 0.20,
+    "DERIVED_FROM": 0.35,
+    "SUPERSEDES": 0.9,
+    "CONTRADICTS": 0.5,
+    "CAUSED_BY": 1.0,
+    "CONTRIBUTED_TO": 0.8,
+    "TRIGGERED_BY": 0.5,
+    "EXPLAINS": 0.85,
+    "ABOUT_ENTITY": 0.8,
+    "CO_OCCURS_WITH": 0.45,
+    "TEMPORAL_PREV": 0.5,
+    "TEMPORAL_NEXT": 0.5,
+    "SUPPORTS": 0.85,
+    "INHIBITS": 0.5,
+    "REDACTED_BY": 0.5,
+}
+
 
 def activate_graph(
     seeds: list[dict[str, Any]],
@@ -155,17 +173,7 @@ def _edge_weight(edge: ActivationEdge, include_provenance_edges: bool) -> float:
     link_type = edge.link_type.strip().upper()
     if link_type == "EVIDENCED_BY" and not include_provenance_edges:
         return 0.0
-    multiplier = {
-        "CAUSED_BY": 1.0,
-        "SUPERSEDES": 0.9,
-        "SUPPORTS": 0.85,
-        "ABOUT_ENTITY": 0.8,
-        "CONTRIBUTED_TO": 0.8,
-        "EXPLAINS": 0.85,
-        "CO_OCCURS_WITH": 0.45,
-        "DERIVED_FROM": 0.35,
-        "EVIDENCED_BY": 0.20,
-    }.get(link_type, 0.5)
+    multiplier = LINK_TYPE_MULTIPLIERS.get(link_type, 0.5)
     weight = _non_negative_float(edge.weight, 0.0)
     return weight * multiplier
 

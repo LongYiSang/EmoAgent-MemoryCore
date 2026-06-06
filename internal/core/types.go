@@ -141,11 +141,42 @@ const (
 type LinkType string
 
 const (
-	LinkTypeEvidencedBy LinkType = "EVIDENCED_BY"
-	LinkTypeDerivedFrom LinkType = "DERIVED_FROM"
-	LinkTypeSupersedes  LinkType = "SUPERSEDES"
-	LinkTypeAboutEntity LinkType = "ABOUT_ENTITY"
+	LinkTypeEvidencedBy   LinkType = "EVIDENCED_BY"
+	LinkTypeDerivedFrom   LinkType = "DERIVED_FROM"
+	LinkTypeSupersedes    LinkType = "SUPERSEDES"
+	LinkTypeContradicts   LinkType = "CONTRADICTS"
+	LinkTypeCausedBy      LinkType = "CAUSED_BY"
+	LinkTypeContributedTo LinkType = "CONTRIBUTED_TO"
+	LinkTypeTriggeredBy   LinkType = "TRIGGERED_BY"
+	LinkTypeExplains      LinkType = "EXPLAINS"
+	LinkTypeAboutEntity   LinkType = "ABOUT_ENTITY"
+	LinkTypeCoOccursWith  LinkType = "CO_OCCURS_WITH"
+	LinkTypeTemporalPrev  LinkType = "TEMPORAL_PREV"
+	LinkTypeTemporalNext  LinkType = "TEMPORAL_NEXT"
+	LinkTypeSupports      LinkType = "SUPPORTS"
+	LinkTypeInhibits      LinkType = "INHIBITS"
+	LinkTypeRedactedBy    LinkType = "REDACTED_BY"
 )
+
+func AllowedLinkTypes() []LinkType {
+	return []LinkType{
+		LinkTypeEvidencedBy,
+		LinkTypeDerivedFrom,
+		LinkTypeSupersedes,
+		LinkTypeContradicts,
+		LinkTypeCausedBy,
+		LinkTypeContributedTo,
+		LinkTypeTriggeredBy,
+		LinkTypeExplains,
+		LinkTypeAboutEntity,
+		LinkTypeCoOccursWith,
+		LinkTypeTemporalPrev,
+		LinkTypeTemporalNext,
+		LinkTypeSupports,
+		LinkTypeInhibits,
+		LinkTypeRedactedBy,
+	}
+}
 
 type LinkDirection string
 
