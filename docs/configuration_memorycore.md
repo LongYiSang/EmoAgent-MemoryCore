@@ -91,6 +91,10 @@ Require restart or service re-open:
 - Provider registry changes when the host keeps long-lived provider clients
 - Retention or mirror startup jobs
 
+## Agent Affect And Mood Boundary
+
+`agent_affect.*`, `retrieval.ranking.agent_affect_weight_cap`, and `retrieval_scoring.caps.*mood*` are v0.1 compatibility guards for host-owned behavior. MemoryCore validates that these legacy or host-provided hints cannot write user facts, bypass sensitivity, bypass forget/purge, or increase negative retention. MemoryCore v0.1 does not provide an Agent Affect service, Mood service, or User Mood / Relationship Affect write loop; EmoAgent or another embedding host owns those runtime loops.
+
 ## Non-Configurable Safety Invariants
 
 These cannot be disabled by config:

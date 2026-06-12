@@ -39,8 +39,8 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
                           ▲
 ┌──────────────────────────────────────────────────────┐
 │                   第一层：事件层 (Episode)             │
-│  不可变原始事件流 — ground truth 锚点                  │
-│  永不删除、永不修改                                   │
+│  默认 append-only 原始事件流 — ground truth 锚点        │
+│  隐私删除场景允许 redacted placeholder / tombstone      │
 │  聊天消息、用户行为、系统事件                          │
 └──────────────────────────────────────────────────────┘
 ```
@@ -51,7 +51,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 
 ```
 对话
-  → Episode 同步写入（不可变）
+  → Episode 同步写入（默认 append-only）
   → 触发检测（会话结束 / 空闲 / 手动标记）
   → 预过滤（可选 LLM gate，默认可关闭）
   → 抽取运行时（mock / OpenAI-compatible provider；validate / dry-run / apply）
@@ -85,6 +85,38 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 - Reranker 默认 `provider=none`，DashScope provider 需要显式配置环境变量；缺 key、超时、HTTP 错误或 malformed response 时不阻断检索，只是不提供 rerank boost。
 - 真实 mirror 质量、夜间大规模延迟评估仍属于可选增强；SQLite-only deterministic eval 是当前基线。
 - 写入侧抽取、Retention、Compression、Delta Curation 是独立写入/治理链路，不属于 Phase 5 读取增强本身。
+
+## v0.1 阶段性能力边界
+
+该矩阵对应 `memorycore.About().Capabilities` 的 host-facing capability key。
+
+| Capability | v0.1 Status | Owner | Notes |
+|---|---|---|---|
+| SQLite authority store | supported | MemoryCore | Source of truth. |
+| Session / Episode | supported | MemoryCore | Episode 默认 append-only。 |
+| Entity / Alias | supported | MemoryCore | 基础规范化。 |
+| Fact consolidation | supported | MemoryCore | deterministic + predicate schema。 |
+| Extraction runtime | supported | MemoryCore | mock / OpenAI-compatible provider。 |
+| Retrieval v5 | supported | MemoryCore | SQLite authority + optional sidecar candidates。 |
+| Exact fact/episode forget | supported | MemoryCore | soft/hard/source_redact/purge MVP。 |
+| Broad forget preview | experimental | MemoryCore | 只做预览/解析，不执行 broad cascade。 |
+| Entity cascade purge | not_supported | Future | 不做实体级级联清除。 |
+| Retention jobs | supported | MemoryCore | manual/ops path。 |
+| Natural memory cycle | experimental | MemoryCore | 保守使用。 |
+| Compression storage contract | experimental | MemoryCore | 仅存储候选/契约，不承诺自动闭环。 |
+| Curation | experimental | MemoryCore | Delta curation runner。 |
+| Mirror sync / rebuild | optional | MemoryCore + sidecar | SQLite remains authoritative。 |
+| Sidecar retrieval candidates | optional | Sidecar | 可降级候选信号。 |
+| Sidecar graph activation | optional | Sidecar | 可降级 activation signal。 |
+| Sidecar rerank | optional | Sidecar | 可降级 rerank signal。 |
+| Config loader | supported | MemoryCore | YAML config loader / validation。 |
+| Agent Affect | host_owned | EmoAgent | MemoryCore 不实现。 |
+| User Mood / Relationship Affect | host_owned | EmoAgent | MemoryCore 不实现写入闭环。 |
+| Review queue for llm_check | not_supported | Future | 当前 needs_review 不自动处理。 |
+| Auto scheduler / daemon | host_owned | EmoAgent | MemoryCore 是嵌入库。 |
+| HTTP service | not_supported | N/A | 不是独立 HTTP 服务。 |
+
+主题/语义级 forget cascade 仍不在 v0.1 执行范围内；v0.1 只暴露 broad forget preview。
 
 ### 系统拓扑
 
@@ -127,7 +159,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
 | `soft_forget` | "别再老提这件事了" | 检索隐藏，内容保留 |
 | `hard_forget` | "忘掉这个偏好" | 清空语义内容，保留最小锚点 |
 | `source_redact` | "这段对话原文不要保留" | 隐私例外：Episode 锚点 / tombstone 保留，原文可占位脱敏；仅有脱敏证据的派生事实可保留，但普通检索不返回 |
-| `purge` | "彻底删除此事" | 全链路级联清理：事实 + 来源 + 派生 + 镜像 + 搜索 |
+| `purge` | "彻底删除此事" | 精确 fact/episode MVP：清理目标、搜索与镜像痕迹；广义 topic/entity/semantic cascade 尚未支持 |
 
 ---
 
@@ -153,7 +185,7 @@ MemoryCore 采用**三层时序知识图谱（TKG-Lite）**，层次清晰、职
   - [x] Phase 5F Eval / Regression Baseline：已扩展 fixture / eval，覆盖 forbidden recall = 0、selected_recall@8、context_precision、MMR 去重、graph activation fallback、selected chain correctness、premise check 与 deterministic ablation；SQLite-only deterministic eval 已可作为基线，真实 mirror 质量、夜间大规模延迟评估保留为后续增强。
   - [x] Phase 5G-A Optional Safe Sidecar Reranker MVP：已落地协议、安全接入、fake / deterministic reranker 与 eval；reranker 仅接收 SQLite authority filter 后的 safe summary，不接收未授权候选或 episode 原文，只返回 `rerank_score` / `debug_reason` / fallback 信息。Go 仍负责 final score、MMR、fatigue、lifecycle、context budget 与最终 Prompt 注入；5G-A 不需要真实 API key，真实 provider 接入留作后续阶段。
   - [x] Phase 5G-B DashScope qwen3-vl-rerank Provider：可选接入真实 DashScope rerank provider，默认不启用且不要求 API key；API key 仅通过环境变量注入，CI 仍使用 fake / mocked deterministic tests。真实 smoke 需手动设置 `MEMORYCORE_RERANK_SMOKE=1` 与 `DASHSCOPE_API_KEY`；provider 失败、超时、未配置或 degraded 时完全 fallback，且只发送 SQLite authority filter 后的 safe summary。
-- [x] v0.2 Config / Operational Surfaces：`config/` 包、`examples/config/memorycore.yaml`、`validate-config` / `config-docs`，覆盖 providers、pipelines、retrieval、sidecar、mirror、semantic_ops、retention、forgetting_privacy、agent_affect、eval。
+- [x] v0.2 Config / Operational Surfaces：`config/` 包、`examples/config/memorycore.yaml`、`validate-config` / `config-docs`，覆盖 providers、pipelines、retrieval、sidecar、mirror、semantic_ops、retention、forgetting_privacy、agent_affect compatibility guards、eval。
 - [x] Delta Memory Curation：`semantic_ops.curation` 配置、`memoryctl curation-run`、checkpoint/run/group audit tables、mirror-first / sqlite fallback candidate retrieval，默认关闭且默认 dry-run。
 - [x] Quality / Debug 工具：retrieval profile matrix、live extraction quality eval、raw-log / report output、dev-only `debug-cleanup`。
 
@@ -191,6 +223,10 @@ go run ./cmd/memoryctl config-docs --format markdown
 Go YAML 的 QueryAnalysis 配置位于 `pipelines.query_analysis.*`：默认 `runtime_mode: rule_only`，即只使用 Go 规则分析。启用 semantic / sidecar 路径时，MemoryCore 会在 mirror candidate retrieval 之前调用 `/retrieval/query-analysis`，把通过 Go 验证、合并和 policy clamp 的 `QueryAnalysis` 传给 `/retrieval/candidates` v0.2。API key 只通过环境变量读取；semantic timeout、budget exhausted、degraded 或非法响应都会回退到 rule-only，不阻断 retrieval。
 
 Python sidecar 的 TOML 配置是另一个配置面，例如 `[query_analysis] provider = "none"`、`[rerank] provider = "none"`。sidecar TOML 控制 sidecar 进程自己的 provider；Go YAML / host options 控制 Go 侧是否调用该阶段。
+
+### Timezone 默认值
+
+直接使用 `memorycore.Options{}` 时，`Timezone` 为空会默认使用 `Asia/Shanghai`。生产或跨时区部署必须显式设置 IANA timezone，例如 `Asia/Shanghai`、`Asia/Singapore`、`America/Los_Angeles`。Timezone 会影响 `occurred_at`、`valid_from` / `valid_to`、retention job、本地日期和睡眠周期等时间语义。
 
 QueryAnalysis 的灰度运行模式包括 `legacy_only`、`shadow_adaptive`、`adaptive`、`adaptive_safe`、`adaptive_full`、`semantic_always`、`semantic_on_low_confidence`、`semantic_rewrite_only`。Adaptive 路由阈值使用 `pipelines.query_analysis.thresholds.*`，调用上限使用 `pipelines.query_analysis.budget.*`，并用 `pipelines.query_analysis.diagnostics.*` 控制 score breakdown / reason codes 的输出采样。
 
@@ -347,7 +383,7 @@ EmoAgent-MemoryCore/
 
 ### Episode 是证据，不是事实
 
-Episode 是对话中不可变的、仅追加的原始事件记录，是所有上层推理的 ground truth 锚点。Episode 永远不被删除；`source_redact` 是隐私例外：Episode 锚点与 tombstone 保留，原文内容可以替换为占位脱敏内容。只依赖已脱敏证据的派生事实可以保留用于审计 / 后续治理，但普通检索不得返回。
+Episode 默认作为 append-only 原始事件流保存，是所有上层推理的 ground truth 锚点；普通业务流程不修改原文。但在 `source_redact` / `purge` 等用户隐私删除场景下，MemoryCore 会将原文替换为 redacted placeholder，并写入 tombstone 保留非敏感审计锚点。只依赖已脱敏证据的派生事实可以保留用于审计 / 后续治理，但普通检索不得返回。
 
 ### Fact 是节点，不是边
 
@@ -398,7 +434,7 @@ SQLite 持有所有事实、状态、策略、删除审计、双时间线和图�
 | `记忆检索-激活/semantic_query_analyzer_architecture.md` | QueryAnalysis-before-mirror、sidecar semantic analyzer、candidates v0.2 |
 | `记忆删除(用户要求)/memory_forgetting_privacy.md` | 用户主动遗忘、级联删除、隐私保障 |
 | `记忆删除(自然淡化)/memory_retention_lifecycle.md` | 自然衰减、TTL、生命周期状态转换 |
-| `记忆-情绪预留接口/memory_emotion_coupling.md` | 情绪 ↔ 记忆耦合、mood-safe 检索 |
+| `记忆-情绪预留接口/memory_emotion_coupling.md` | 历史设计参考；v0.1 中 Agent Affect / Mood 写入闭环由 EmoAgent host-owned |
 | `性能测评/memory_eval.md` | 早期测评设计参考；实际运行入口以 `cmd/memory-eval`、`scripts/` 和 `testdata/memory_eval/quality/*/README.md` 为准 |
 
 ---
@@ -408,12 +444,12 @@ SQLite 持有所有事实、状态、策略、删除审计、双时间线和图�
 以下架构约束在所有开发阶段均不可破坏：
 
 1. **SQLite 是 authoritative memory store。** TriviumDB 是可重建的 retrieval mirror / activation index foundation；任何检索镜像都不是权威事实来源。
-2. **Episode 是证据，不是事实。** 不可变锚点。
+2. **Episode 是证据，不是事实。** 默认 append-only；隐私删除场景允许 redaction / tombstone。
 3. **Fact 是节点，不是边。** 图边（`memory_links`）是独立一层。
 4. **每条 Fact 必须有 Provenance。** 通过 `EVIDENCED_BY` 链追溯到 Episode。
 5. **三层状态不可合并。** 真实性、可见性、生命周期相互独立。
 6. **遗忘优先于检索。** Hidden/forgotten/purged 内容绝不可泄漏到 Prompt 中。
-7. **Agent Affect 不是用户记忆。** Agent 自身情绪不能写成用户事实。
+7. **Agent Affect 不是用户记忆。** v0.1 中由 EmoAgent host-owned，不能写成 MemoryCore 用户事实。
 8. **Work 不能直接写长期记忆。** 仅接受经审批的 memory candidates。
 
 ---

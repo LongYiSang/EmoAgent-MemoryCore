@@ -2,7 +2,7 @@
 
 本文档描述当前代码实际支持的外部接入面，目标读者是 EmoAgent 主仓库的接入层。MemoryCore 当前是一个 Go module + SQLite 权威库 + 可选 Python sidecar，而不是独立 HTTP 服务。
 
-当前代码基准：2026-06-06。
+当前代码基准：2026-06-13。
 
 ## 接入结论
 
@@ -26,7 +26,13 @@ import "github.com/longyisang/emoagent-memorycore/pkg/memorycore"
 
 ## 模块依赖
 
-如果 EmoAgent 和 MemoryCore 是相邻本地仓库，主仓库 `go.mod` 可临时使用本地 replace：
+生产发布应引用 MemoryCore tag：
+
+```go
+require github.com/longyisang/emoagent-memorycore v0.1.0-alpha.1
+```
+
+如果 EmoAgent 和 MemoryCore 是相邻本地仓库，主仓库 `go.mod` 可临时使用本地 replace 做开发验证：
 
 ```go
 require github.com/longyisang/emoagent-memorycore v0.0.0
@@ -34,7 +40,7 @@ require github.com/longyisang/emoagent-memorycore v0.0.0
 replace github.com/longyisang/emoagent-memorycore => ../EmoAgent-MemoryCore
 ```
 
-生产发布时再改成真实 tag 或固定 commit。
+生产提交和发布配置不应保留本地 `replace`。
 
 ## 初始化方式
 
@@ -100,6 +106,34 @@ DefaultConfig()
 ```
 
 注意：`RetrievalPolicy` 不在 `memorycore.Options` 中，必须在每次 `Retrieve` 请求里传入。
+
+## Capability 与 Observability
+
+启动时可以用 `About()` 检查当前 MemoryCore tag 暴露的能力边界：
+
+```go
+info := memorycore.About()
+if info.Version != "v0.1.0-alpha.1" {
+	return fmt.Errorf("unexpected MemoryCore version: %s", info.Version)
+}
+if info.Capabilities["agent_affect"].Status != memorycore.CapabilityHostOwned {
+	return fmt.Errorf("unexpected Agent Affect ownership")
+}
+```
+
+MemoryCore v0.1 还提供不含原文/敏感内容的运行状态快照：
+
+```go
+snapshot, err := client.Ops().GetObservabilitySnapshot(ctx, memorycore.ObservabilitySnapshotRequest{
+	PersonaID: "default",
+})
+if err != nil {
+	return err
+}
+if snapshot.Status == "degraded" {
+	log.Printf("memorycore observability warnings=%v", snapshot.Warnings)
+}
+```
 
 ## 对话生命周期示例
 
@@ -365,12 +399,14 @@ mc, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
 		UseFTS:                true,
 		UseMirror:             false,
 	},
-	Context: memorycore.RetrievalAffectContext{
-		UserMoodLabel:         "tired",
-		RelationshipMoodLabel: "stable",
-	},
+Context: memorycore.RetrievalAffectContext{
+	UserMoodLabel:         "tired",
+	RelationshipMoodLabel: "stable",
+},
 })
 ```
+
+`RetrievalAffectContext` 是兼容输入：User Mood / Relationship Affect 的评估、存储和写入闭环由 EmoAgent 主仓库负责。MemoryCore v0.1 不提供 Mood service，也不会把这些状态写入 facts / narratives / insights。
 
 返回 `MemoryContext`：
 
@@ -720,6 +756,7 @@ go run ./cmd/memoryctl extract-run --db ./data/memory.db --session <session-id> 
 - 不要假设 `AppendEpisode` 后马上能被长期检索命中；需要抽取/整合事实。
 - 不要把 raw provider response、prompt、chain-of-thought 或 conversation window 暴露给用户。
 - 不要把明文 API key 放入 YAML/TOML。
+- 不要从 MemoryCore 期待 Agent Affect / Mood 写入闭环；这些运行时能力由 EmoAgent host-owned。
 - 不要开启 `retention.auto_delete`；当前配置校验会拒绝。
 - 不要让 Work 直接写长期记忆；Work 只能产出候选，最终由 Emotion/主仓库审批后写入。
 
@@ -730,6 +767,8 @@ go run ./cmd/memoryctl extract-run --db ./data/memory.db --session <session-id> 
 - [ ] 每个对话有 `StartSession` / `EndSession`。
 - [ ] 每轮原始对话写入 `AppendEpisode`。
 - [ ] prompt 注入前调用 `Retrieve`，并只使用 `MemoryContext.Blocks` 转成可见上下文。
+- [ ] 生产 `go.mod` 使用 `v0.1.0-alpha.1` 或更新 tag，不保留本地 `replace`。
+- [ ] Agent Affect / Mood 写入闭环保留在 EmoAgent 主仓库，MemoryCore 只消费兼容 hint 和暴露 host_owned capability。
 - [ ] 用户遗忘请求调用 `Forget`。
 - [ ] 自动抽取链路先用 `dry-run` 验证，再切 `apply`。
 - [ ] Sidecar 未启动时主链路仍可 SQLite-only 工作。

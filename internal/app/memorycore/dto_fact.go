@@ -10,7 +10,8 @@ type FactType = core.FactType
 type SearchTier = core.SearchTier
 
 const (
-	ConsolidationTriggerManual        = "manual"
+	ConsolidationTriggerManual = "manual"
+	// Deprecated: Agent Affect is host-owned in MemoryCore v0.1; this trigger remains for compatibility.
 	ConsolidationTriggerAgentAffect   = "agent_affect"
 	ConsolidationTriggerWorkCandidate = "work_candidate"
 

@@ -549,6 +549,8 @@ type ForgettingCleanupConfig struct {
 	VerifyAfterDelete           bool `yaml:"verify_after_delete" json:"verify_after_delete"`
 }
 
+// Deprecated: Agent Affect is owned by the EmoAgent host in MemoryCore v0.1.
+// These fields remain as compatibility guards for older config files.
 type AgentAffectConfig struct {
 	Enabled         bool                       `yaml:"enabled" json:"enabled"`
 	StorageEnabled  bool                       `yaml:"storage_enabled" json:"storage_enabled"`

@@ -57,6 +57,7 @@ type OpsAPI interface {
 	RunCuration(context.Context, RunCurationRequest) (*RunCurationResult, error)
 	RunMirrorSync(context.Context, RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
 	RebuildMirror(context.Context, RebuildMirrorRequest) (*RebuildMirrorResult, error)
+	GetObservabilitySnapshot(context.Context, ObservabilitySnapshotRequest) (*ObservabilitySnapshot, error)
 }
 
 func Open(ctx context.Context, opts Options) (*Client, error) {
@@ -327,6 +328,15 @@ func (o opsClient) RebuildMirror(ctx context.Context, req RebuildMirrorRequest) 
 	}
 	result, err := o.client.service.RebuildMirror(ctx, appReq)
 	return convertPtr[RebuildMirrorResult](result, err)
+}
+
+func (o opsClient) GetObservabilitySnapshot(ctx context.Context, req ObservabilitySnapshotRequest) (*ObservabilitySnapshot, error) {
+	appReq, err := convertValue[appcore.ObservabilitySnapshotRequest](req)
+	if err != nil {
+		return nil, err
+	}
+	result, err := o.client.service.GetObservabilitySnapshot(ctx, appReq)
+	return convertPtr[ObservabilitySnapshot](result, err)
 }
 
 func toAppOptions(opts Options) (appcore.Options, error) {

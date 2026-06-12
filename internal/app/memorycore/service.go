@@ -39,6 +39,7 @@ type Service interface {
 	RunExtractionBatch(ctx context.Context, req ExtractionBatchRequest) (*ExtractionBatchResult, error)
 	RunMirrorSync(ctx context.Context, req RunMirrorSyncRequest) (*RunMirrorSyncResult, error)
 	RebuildMirror(ctx context.Context, req RebuildMirrorRequest) (*RebuildMirrorResult, error)
+	GetObservabilitySnapshot(ctx context.Context, req ObservabilitySnapshotRequest) (*ObservabilitySnapshot, error)
 }
 
 type service struct {
@@ -57,6 +58,7 @@ type service struct {
 	compress          *memsqlite.CompressionRepository
 	curation          *memsqlite.CurationRepository
 	forget            *memsqlite.ForgetRepository
+	observability     *memsqlite.ObservabilityRepository
 	mirrorAdapter     MirrorAdapter
 	mirrorQueue       *memsqlite.MirrorQueueRepository
 	mirrorPayload     *memsqlite.MirrorPayloadRepository
@@ -131,6 +133,7 @@ func Open(ctx context.Context, opts Options) (Service, error) {
 		compress:          memsqlite.NewCompressionRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		curation:          memsqlite.NewCurationRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
 		forget:            memsqlite.NewForgetRepositoryWithOptions(sqlDB, uuid.NewString, now, storeOptions),
+		observability:     memsqlite.NewObservabilityRepositoryWithOptions(sqlDB, storeOptions),
 		mirrorAdapter:     opts.MirrorAdapter,
 		mirrorQueue:       memsqlite.NewMirrorQueueRepositoryWithOptions(sqlDB, storeOptions),
 		mirrorPayload:     memsqlite.NewMirrorPayloadRepository(sqlDB),

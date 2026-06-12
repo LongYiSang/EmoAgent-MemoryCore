@@ -382,6 +382,8 @@ forgetting_privacy:
     recompute_derived: true
     verify_after_delete: true
 
+# Deprecated compatibility guard. Agent Affect is owned by the EmoAgent host in v0.1;
+# MemoryCore keeps these fields only to validate safe legacy config values.
 agent_affect:
   enabled: false
   storage_enabled: true

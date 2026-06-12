@@ -6,7 +6,8 @@ type FactType string
 type SearchTier string
 
 const (
-	ConsolidationTriggerManual        = "manual"
+	ConsolidationTriggerManual = "manual"
+	// Deprecated: Agent Affect is host-owned in MemoryCore v0.1; this trigger remains for compatibility.
 	ConsolidationTriggerAgentAffect   = "agent_affect"
 	ConsolidationTriggerWorkCandidate = "work_candidate"
 

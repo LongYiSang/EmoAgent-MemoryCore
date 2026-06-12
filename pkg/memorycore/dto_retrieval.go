@@ -157,6 +157,8 @@ type RetrievalScoringCaps struct {
 	NegativeMoodCongruenceMax float64
 }
 
+// Deprecated: mood and relationship affect are owned by the EmoAgent host in v0.1.
+// MemoryCore treats this as an optional compatibility hint only.
 type RetrievalAffectContext struct {
 	UserMoodLabel         string
 	RelationshipMoodLabel string
