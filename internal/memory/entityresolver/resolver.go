@@ -132,7 +132,7 @@ func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, er
 		return "", err
 	}
 	entity, err := r.Service.Writes().EnsureEntity(ctx, memorycore.EnsureEntityRequest{
-		ID:            "ent_user",
+		ID:            personaScopedUserEntityID(personaID),
 		PersonaID:     personaID,
 		CanonicalName: "User",
 		EntityType:    memorycore.EntityTypeUser,
@@ -141,6 +141,10 @@ func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, er
 		return "", err
 	}
 	return entity.ID, nil
+}
+
+func personaScopedUserEntityID(personaID string) string {
+	return "ent_user_" + strings.TrimSpace(personaID)
 }
 
 func findCandidate(candidates []memorycore.ExtractedEntityCandidate, candidateID string) (memorycore.ExtractedEntityCandidate, bool) {

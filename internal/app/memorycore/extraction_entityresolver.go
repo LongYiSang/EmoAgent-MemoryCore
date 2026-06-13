@@ -131,7 +131,7 @@ func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, er
 		return "", err
 	}
 	entity, err := r.Service.EnsureEntity(ctx, EnsureEntityRequest{
-		ID:            "ent_user",
+		ID:            personaScopedUserEntityID(personaID),
 		PersonaID:     personaID,
 		CanonicalName: "User",
 		EntityType:    EntityTypeUser,
@@ -140,6 +140,10 @@ func (r Resolver) resolveUser(ctx context.Context, personaID string) (string, er
 		return "", err
 	}
 	return entity.ID, nil
+}
+
+func personaScopedUserEntityID(personaID string) string {
+	return "ent_user_" + strings.TrimSpace(personaID)
 }
 
 func findCandidate(candidates []ExtractedEntityCandidate, candidateID string) (ExtractedEntityCandidate, bool) {

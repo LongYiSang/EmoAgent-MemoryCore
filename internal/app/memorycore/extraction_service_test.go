@@ -2,6 +2,7 @@ package memorycore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -89,6 +90,67 @@ func TestRunExtractionFacadeMinimalOptionsUseSafeDefaults(t *testing.T) {
 	if got := extractionFactCount(t, svc); got != 1 {
 		t.Fatalf("apply fact count = %d, want 1", got)
 	}
+}
+
+func TestRunExtractionApplyCreatesPersonaScopedUserEntity(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, mockExtractionOptions())
+	defer svc.Close()
+	coreSvc := svc.(*service)
+
+	if _, err := svc.EnsureEntity(ctx, EnsureEntityRequest{
+		ID:            "ent_user",
+		PersonaID:     "default",
+		CanonicalName: "User",
+		EntityType:    EntityTypeUser,
+	}); err != nil {
+		t.Fatalf("ensure default user entity: %v", err)
+	}
+
+	cases := []struct {
+		personaID string
+		sessionID string
+		episodeID string
+		wantUser  string
+	}{
+		{personaID: "persona_alpha", sessionID: "session_alpha", episodeID: "episode_alpha", wantUser: "ent_user_persona_alpha"},
+		{personaID: "persona-B_02", sessionID: "session_beta", episodeID: "episode_beta", wantUser: "ent_user_persona-B_02"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.personaID, func(t *testing.T) {
+			if _, err := svc.StartSession(ctx, StartSessionRequest{ID: tc.sessionID, PersonaID: tc.personaID}); err != nil {
+				t.Fatalf("start session: %v", err)
+			}
+			if _, err := svc.AppendEpisode(ctx, AppendEpisodeRequest{
+				ID:        tc.episodeID,
+				PersonaID: tc.personaID,
+				SessionID: tc.sessionID,
+				Role:      RoleUser,
+				Content:   "我喜欢手冲咖啡。",
+			}); err != nil {
+				t.Fatalf("append episode: %v", err)
+			}
+
+			result, err := svc.RunExtraction(ctx, RunExtractionRequest{
+				PersonaID: tc.personaID,
+				SessionID: stringPtrValue(tc.sessionID),
+				Mode:      ExtractionRunModeApply,
+				Force:     true,
+			})
+			if err != nil {
+				t.Fatalf("RunExtraction: %v", err)
+			}
+			if result.Status != ExtractionRunStatusApplied || result.AppliedCount != 1 || result.FailureCount != 0 {
+				t.Fatalf("result status/applied/failures = %q/%d/%d, apply=%#v", result.Status, result.AppliedCount, result.FailureCount, result.ApplyResult)
+			}
+			assertFactSubject(t, coreSvc.sqlDB, tc.personaID, tc.wantUser)
+			assertMemorycoreEntityOwner(t, coreSvc.sqlDB, tc.wantUser, tc.personaID)
+		})
+	}
+
+	assertMemorycoreEntityOwner(t, coreSvc.sqlDB, "ent_user", "default")
+	assertNoFactSubject(t, coreSvc.sqlDB, "persona_alpha", "ent_user")
+	assertNoFactSubject(t, coreSvc.sqlDB, "persona-B_02", "ent_user")
 }
 
 func TestRunExtractionSemanticDedupShadowRecordsDiagnosticsWithoutChangingApply(t *testing.T) {
@@ -1047,6 +1109,52 @@ func extractionFactCount(t *testing.T, svc Service) int {
 		t.Fatalf("count facts: %v", err)
 	}
 	return count
+}
+
+func assertFactSubject(t *testing.T, db queryRower, personaID string, subjectEntityID string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM facts
+WHERE persona_id = ? AND subject_entity_id = ?`, personaID, subjectEntityID).Scan(&count); err != nil {
+		t.Fatalf("count facts for %s/%s: %v", personaID, subjectEntityID, err)
+	}
+	if count != 1 {
+		t.Fatalf("facts for %s/%s = %d, want 1", personaID, subjectEntityID, count)
+	}
+}
+
+func assertNoFactSubject(t *testing.T, db queryRower, personaID string, subjectEntityID string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`
+SELECT COUNT(*)
+FROM facts
+WHERE persona_id = ? AND subject_entity_id = ?`, personaID, subjectEntityID).Scan(&count); err != nil {
+		t.Fatalf("count facts for %s/%s: %v", personaID, subjectEntityID, err)
+	}
+	if count != 0 {
+		t.Fatalf("facts for %s/%s = %d, want 0", personaID, subjectEntityID, count)
+	}
+}
+
+func assertMemorycoreEntityOwner(t *testing.T, db queryRower, entityID string, personaID string) {
+	t.Helper()
+	var got string
+	if err := db.QueryRow(`
+SELECT persona_id
+FROM entities
+WHERE id = ?`, entityID).Scan(&got); err != nil {
+		t.Fatalf("query entity %s: %v", entityID, err)
+	}
+	if got != personaID {
+		t.Fatalf("entity %s persona_id = %q, want %q", entityID, got, personaID)
+	}
+}
+
+type queryRower interface {
+	QueryRow(string, ...any) *sql.Row
 }
 
 func requireExtractionServiceError(t *testing.T, err error, code string) {
