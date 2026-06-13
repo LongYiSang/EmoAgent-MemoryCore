@@ -186,6 +186,11 @@ func normalizeCorrectionHints(root map[string]any, report *ContractRepairReport)
 
 func normalizeRejectedCandidates(root map[string]any, report *ContractRepairReport) {
 	rejected, _ := root["rejected_candidates"].([]any)
+	if len(rejected) > 3 {
+		root["rejected_candidates"] = rejected[:3]
+		report.add("", "rejected_candidate", "rejected_candidates", fmt.Sprintf("%d", len(rejected)), "3", "rejected_candidate_limit")
+		rejected = rejected[:3]
+	}
 	for _, item := range rejected {
 		candidate, ok := item.(map[string]any)
 		if !ok {

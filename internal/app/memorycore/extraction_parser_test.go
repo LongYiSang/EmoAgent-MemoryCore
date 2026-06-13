@@ -1,6 +1,7 @@
 package memorycore
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,44 @@ func TestParseResponseRepairsRejectedCandidateModelShape(t *testing.T) {
 	}
 	if !report.Applied {
 		t.Fatalf("repair report was not marked applied")
+	}
+}
+
+func TestParseResponseLimitsRejectedCandidates(t *testing.T) {
+	body := strings.Replace(validExtractionResponseJSONForParserTest(), `"rejected_candidates":[]`, `"rejected_candidates":[
+		{"candidate_id":"r1","reason_code":"hypothetical_scenario","reason":"用户表达的是假设性计划，并非当前事实。","source_episode_ids":["ep_1"]},
+		{"candidate_id":"r2","kind":"fact","reasons":["assistant_speculation_not_user_fact"]},
+		{"candidate_id":"r3","kind":"fact","reasons":["work_log_noise"]},
+		{"candidate_id":"r4","kind":"fact","reasons":["no_durable_value"]},
+		{"candidate_id":"r5","kind":"fact","reasons":["tool_noise"]}
+	]`, 1)
+
+	resp, report, err := ParseResponseWithRepairReport(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponseWithRepairReport: %v", err)
+	}
+	if len(resp.RejectedCandidates) != 3 {
+		t.Fatalf("rejected candidates = %#v, want first three only", resp.RejectedCandidates)
+	}
+	if resp.RejectedCandidates[0].CandidateID != "r1" || resp.RejectedCandidates[0].Kind != "candidate" {
+		t.Fatalf("first rejected candidate = %#v, want normalized candidate r1", resp.RejectedCandidates[0])
+	}
+	if len(resp.RejectedCandidates[0].Reasons) != 1 || resp.RejectedCandidates[0].Reasons[0] != "hypothetical_scenario" {
+		t.Fatalf("first rejected reasons = %#v, want hypothetical_scenario", resp.RejectedCandidates[0].Reasons)
+	}
+	if resp.RejectedCandidates[2].CandidateID != "r3" {
+		t.Fatalf("third rejected candidate = %#v, want r3", resp.RejectedCandidates[2])
+	}
+	requireRepairReason(t, report, "rejected_candidate_limit")
+}
+
+func TestParseResponseAcceptsEmptyRejectedCandidates(t *testing.T) {
+	resp, _, err := ParseResponseWithRepairReport(strings.NewReader(validExtractionResponseJSONForParserTest()))
+	if err != nil {
+		t.Fatalf("ParseResponseWithRepairReport: %v", err)
+	}
+	if len(resp.Facts) != 0 || len(resp.RejectedCandidates) != 0 {
+		t.Fatalf("facts/rejected = %d/%d, want empty no-memory response", len(resp.Facts), len(resp.RejectedCandidates))
 	}
 }
 
@@ -115,6 +154,45 @@ func TestRepairDeveloperPromptIncludesDeletionIntentContract(t *testing.T) {
 	}
 }
 
+func TestExtractionPromptsConstrainRejectedCandidateBudget(t *testing.T) {
+	admissionPrompt := extractionAdmissionPromptContract()
+	for _, want := range []string{
+		"Set rejected_candidates to [] by default",
+		"Do not enumerate skipped prefilter episodes",
+		"assistant speculation",
+		"work/tool noise",
+		"no_durable_value",
+		"at most 3 items",
+		"gate_summary.rejected_count counts only emitted rejected_candidates",
+	} {
+		if !strings.Contains(admissionPrompt, want) {
+			t.Fatalf("admission prompt missing %q: %s", want, admissionPrompt)
+		}
+	}
+
+	repairPrompt := repairDeveloperPrompt(errors.New("unexpected EOF"))
+	for _, want := range []string{
+		"If parser error is unexpected EOF",
+		"collapse rejected_candidates to []",
+		"at most 3 compact items",
+		"Do not reconstruct a full rejected list",
+	} {
+		if !strings.Contains(repairPrompt, want) {
+			t.Fatalf("repair prompt missing %q: %s", want, repairPrompt)
+		}
+	}
+}
+
+func requireRepairReason(t *testing.T, report ContractRepairReport, want string) {
+	t.Helper()
+	for _, change := range report.Changes {
+		if change.Reason == want {
+			return
+		}
+	}
+	t.Fatalf("repair changes = %#v, want reason %q", report.Changes, want)
+}
+
 func validExtractionResponseJSONForParserTest() string {
-	return `{"schema_version":"memory_extraction_protocol.v0.1","request_id":"req_test","persona_id":"default","session_id":"session_seed","trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":0,"needs_review_count":0,"rejected_count":1,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"通过"}}`
+	return `{"schema_version":"memory_extraction_protocol.v0.1","request_id":"req_test","persona_id":"default","session_id":"session_seed","trigger":"session_end","source_window":{"episode_ids":["ep_1"],"started_at":null,"ended_at":null},"entities":[],"facts":[],"links":[],"affect_events":[],"deletion_intents":[],"pin_intents":[],"correction_hints":[],"rejected_candidates":[],"quality_flags":[],"gate_summary":{"accepted_fact_count":0,"needs_review_count":0,"rejected_count":0,"has_deletion_intent":false,"has_pin_intent":false,"requires_human_review":false,"notes":"没有明确、用户拥有、可长期记忆的事实。"}}`
 }
