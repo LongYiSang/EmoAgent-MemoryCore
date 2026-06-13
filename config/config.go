@@ -625,9 +625,10 @@ type PipelineOverrides struct {
 }
 
 type LLMPipelineOverrides struct {
-	ProviderID *string
-	Model      *string
-	Thinking   *ThinkingConfig
+	ProviderID      *string
+	Model           *string
+	MaxOutputTokens *int
+	Thinking        *ThinkingConfig
 }
 
 type SemanticOpsOverrides struct {
@@ -641,6 +642,7 @@ type CurationOverrides struct {
 type CurationLLMOverrides struct {
 	ProviderID *string
 	Model      *string
+	MaxTokens  *int
 	Thinking   *ThinkingConfig
 }
 
@@ -2352,6 +2354,9 @@ func applyLLMPipelineOverrides(pipeline *LLMPipelineConfig, overrides LLMPipelin
 	if overrides.Model != nil {
 		pipeline.Model = *overrides.Model
 	}
+	if overrides.MaxOutputTokens != nil {
+		pipeline.Params.MaxOutputTokens = *overrides.MaxOutputTokens
+	}
 	if overrides.Thinking != nil {
 		pipeline.Thinking = *overrides.Thinking
 	}
@@ -2363,6 +2368,9 @@ func applyCurationLLMOverrides(llm *CurationLLMConfig, overrides CurationLLMOver
 	}
 	if overrides.Model != nil {
 		llm.Model = *overrides.Model
+	}
+	if overrides.MaxTokens != nil {
+		llm.MaxTokens = *overrides.MaxTokens
 	}
 	if overrides.Thinking != nil {
 		llm.Thinking = *overrides.Thinking

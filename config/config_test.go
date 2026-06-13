@@ -439,8 +439,13 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	prefilterModel := "prefilter-model"
 	repairModel := "repair-model"
 	queryModel := "query-model"
+	prefilterMaxTokens := 1201
+	extractionMaxTokens := 1202
+	repairMaxTokens := 1203
+	queryMaxTokens := 1204
 	curationProviderID := "emo_llm"
 	curationModel := "curation-model"
+	curationMaxTokens := 1205
 	thinkingEnabled := memconfig.ThinkingConfig{Type: "enabled"}
 	retention := memconfig.DefaultConfig().Retention
 	retention.Thresholds.DeepArchiveAfterDays = 77
@@ -458,17 +463,21 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 		},
 		Pipelines: &memconfig.PipelineOverrides{
 			Prefilter: &memconfig.LLMPipelineOverrides{
-				Model: &prefilterModel,
+				Model:           &prefilterModel,
+				MaxOutputTokens: &prefilterMaxTokens,
 			},
 			Extraction: &memconfig.LLMPipelineOverrides{
-				Model:    &llmModel,
-				Thinking: &thinkingEnabled,
+				Model:           &llmModel,
+				MaxOutputTokens: &extractionMaxTokens,
+				Thinking:        &thinkingEnabled,
 			},
 			ExtractionRepair: &memconfig.LLMPipelineOverrides{
-				Model: &repairModel,
+				Model:           &repairModel,
+				MaxOutputTokens: &repairMaxTokens,
 			},
 			QueryAnalysis: &memconfig.LLMPipelineOverrides{
-				Model: &queryModel,
+				Model:           &queryModel,
+				MaxOutputTokens: &queryMaxTokens,
 			},
 		},
 		SemanticOps: &memconfig.SemanticOpsOverrides{
@@ -476,6 +485,7 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 				LLM: &memconfig.CurationLLMOverrides{
 					ProviderID: &curationProviderID,
 					Model:      &curationModel,
+					MaxTokens:  &curationMaxTokens,
 					Thinking:   &thinkingEnabled,
 				},
 			},
@@ -505,17 +515,32 @@ func TestApplyOverridesAndProviderRegistry(t *testing.T) {
 	if cfg.Pipelines.Extraction.Thinking.Type != "enabled" {
 		t.Fatalf("extraction thinking = %#v", cfg.Pipelines.Extraction.Thinking)
 	}
+	if cfg.Pipelines.Extraction.Params.MaxOutputTokens != 1202 {
+		t.Fatalf("extraction max output tokens = %d, want 1202", cfg.Pipelines.Extraction.Params.MaxOutputTokens)
+	}
 	if cfg.Pipelines.Prefilter.Model != "prefilter-model" {
 		t.Fatalf("prefilter model = %q", cfg.Pipelines.Prefilter.Model)
+	}
+	if cfg.Pipelines.Prefilter.Params.MaxOutputTokens != 1201 {
+		t.Fatalf("prefilter max output tokens = %d, want 1201", cfg.Pipelines.Prefilter.Params.MaxOutputTokens)
 	}
 	if cfg.Pipelines.ExtractionRepair.Model != "repair-model" {
 		t.Fatalf("extraction repair model = %q", cfg.Pipelines.ExtractionRepair.Model)
 	}
+	if cfg.Pipelines.ExtractionRepair.Params.MaxOutputTokens != 1203 {
+		t.Fatalf("extraction repair max output tokens = %d, want 1203", cfg.Pipelines.ExtractionRepair.Params.MaxOutputTokens)
+	}
 	if cfg.Pipelines.QueryAnalysis.Model != "query-model" {
 		t.Fatalf("query analysis model = %q", cfg.Pipelines.QueryAnalysis.Model)
 	}
+	if cfg.Pipelines.QueryAnalysis.Params.MaxOutputTokens != 1204 {
+		t.Fatalf("query analysis max output tokens = %d, want 1204", cfg.Pipelines.QueryAnalysis.Params.MaxOutputTokens)
+	}
 	if cfg.SemanticOps.Curation.LLM.ProviderID != "emo_llm" || cfg.SemanticOps.Curation.LLM.Model != "curation-model" {
 		t.Fatalf("curation llm = %#v", cfg.SemanticOps.Curation.LLM)
+	}
+	if cfg.SemanticOps.Curation.LLM.MaxTokens != 1205 {
+		t.Fatalf("curation max tokens = %d, want 1205", cfg.SemanticOps.Curation.LLM.MaxTokens)
 	}
 	if cfg.SemanticOps.Curation.LLM.Thinking.Type != "enabled" {
 		t.Fatalf("curation thinking = %#v", cfg.SemanticOps.Curation.LLM.Thinking)
