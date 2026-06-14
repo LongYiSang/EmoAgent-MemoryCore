@@ -21,6 +21,7 @@ ttl_days_for_query = 14
 store_raw_text = false
 
 [rerank]
+# Supported providers: none, dashscope-vl, siliconflow-rerank.
 provider = "none"
 endpoint_url = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 api_key_env = "DASHSCOPE_API_KEY"
@@ -29,6 +30,10 @@ timeout_seconds = 30
 top_n = 30
 instruct = "Retrieve semantically relevant safe memory summaries for the user's query."
 # return_documents is fixed false by provider code for safety.
+# For SiliconFlow, use a full endpoint URL such as:
+# endpoint_url = "https://api.siliconflow.cn/v1/rerank"
+# api_key_env = "SILICONFLOW_API_KEY"
+# model = "BAAI/bge-reranker-v2-m3"
 
 [query_analysis]
 provider = "none"

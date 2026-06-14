@@ -9,6 +9,7 @@ from memorycore_sidecar.config import RerankConfig
 from memorycore_sidecar.rerank import (
     DashScopeVLRerankProvider,
     DisabledRerankProvider,
+    SiliconFlowRerankProvider,
     build_rerank_provider,
 )
 
@@ -251,6 +252,115 @@ def test_dashscope_vl_provider_malformed_score_returns_safe_fallback(monkeypatch
         "degraded": True,
         "fallback_reason": "malformed_response",
     }
+
+
+def test_siliconflow_provider_posts_safe_summaries_and_maps_top_level_results(
+    monkeypatch,
+):
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request: Any, timeout: int) -> _Response:
+        captured["timeout"] = timeout
+        captured["path"] = urlparse(request.full_url).path
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _Response(
+            {
+                "results": [
+                    {
+                        "index": 1,
+                        "relevance_score": 0.88,
+                        "document": {"text": "provider leaked text"},
+                    },
+                    {"index": 0, "relevance_score": "0.2"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("memorycore_sidecar.rerank.urllib.request.urlopen", fake_urlopen)
+    provider = SiliconFlowRerankProvider(
+        _rerank_config(
+            provider="siliconflow-rerank",
+            endpoint_url="https://api.siliconflow.cn/v1/rerank",
+            api_key_env="SILICONFLOW_API_KEY",
+            model="BAAI/bge-reranker-v2-m3",
+            top_n=5,
+            instruct="Focus on durable safe memories.",
+        ),
+        env={"SILICONFLOW_API_KEY": "test-secret"},
+    )
+
+    result = provider.rerank(
+        "用户要找咖啡偏好",
+        [
+            _candidate("node-a", "fact", "safe summary A", raw_text="do not send A"),
+            _candidate("node-b", "episode", "safe summary B", raw_text="do not send B"),
+        ],
+    )
+
+    assert result == {
+        "results": [
+            {
+                "node_id": "node-b",
+                "node_type": "episode",
+                "rerank_score": 0.88,
+                "debug_reason": "siliconflow_rerank index=1",
+            },
+            {
+                "node_id": "node-a",
+                "node_type": "fact",
+                "rerank_score": 0.2,
+                "debug_reason": "siliconflow_rerank index=0",
+            },
+        ],
+        "degraded": False,
+    }
+    assert captured["timeout"] == 30
+    assert captured["path"] == "/v1/rerank"
+    assert captured["headers"]["authorization"] == "Bearer test-secret"
+    assert captured["headers"]["content-type"] == "application/json"
+    assert captured["body"] == {
+        "model": "BAAI/bge-reranker-v2-m3",
+        "query": "用户要找咖啡偏好",
+        "documents": ["safe summary A", "safe summary B"],
+        "top_n": 2,
+        "return_documents": False,
+        "instruction": "Focus on durable safe memories.",
+    }
+    assert "raw_text" not in json.dumps(captured["body"])
+    assert "do not send" not in json.dumps(captured["body"])
+    assert "provider leaked text" not in json.dumps(result)
+
+
+def test_siliconflow_provider_http_error_returns_safe_fallback(monkeypatch):
+    def fake_urlopen(request: Any, timeout: int) -> _Response:
+        raise urllib.error.HTTPError(request.full_url, 502, "bad gateway", {}, None)
+
+    monkeypatch.setattr("memorycore_sidecar.rerank.urllib.request.urlopen", fake_urlopen)
+    provider = SiliconFlowRerankProvider(
+        _rerank_config(
+            provider="siliconflow-rerank",
+            api_key_env="SILICONFLOW_API_KEY",
+        ),
+        env={"SILICONFLOW_API_KEY": "test-secret"},
+    )
+
+    result = provider.rerank("secret query", [_candidate("node-a", "fact", "safe summary")])
+
+    assert result == {
+        "results": [],
+        "degraded": True,
+        "fallback_reason": "http_error",
+    }
+    assert "test-secret" not in json.dumps(result)
+    assert "secret query" not in json.dumps(result)
+    assert "safe summary" not in json.dumps(result)
+
+
+def test_build_rerank_provider_returns_siliconflow_provider():
+    provider = build_rerank_provider(_rerank_config(provider="siliconflow-rerank"))
+
+    assert isinstance(provider, SiliconFlowRerankProvider)
 
 
 def test_build_rerank_provider_returns_disabled_provider_for_none():

@@ -51,7 +51,7 @@ _SIDECAR_PROJECT_DIR = Path(__file__).resolve().parents[1]
 _VALID_DTYPES = {"f32", "f16", "u64"}
 _VALID_SYNC_MODES = {"full", "normal", "off"}
 _VALID_EMBEDDING_CACHE_MODES = {"off", "read_write", "read_only", "refresh"}
-_VALID_RERANK_PROVIDERS = {"none", "dashscope-vl"}
+_VALID_RERANK_PROVIDERS = {"none", "dashscope-vl", "siliconflow-rerank"}
 _VALID_QUERY_ANALYSIS_PROVIDERS = {"none", "openai-compatible"}
 _LOOPBACK_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -582,7 +582,20 @@ def _validate(config: SidecarConfig) -> None:
             "embedding_cache.mode must be one of off, read_write, read_only, refresh"
         )
     if config.rerank.provider not in _VALID_RERANK_PROVIDERS:
-        raise ValueError("rerank.provider must be one of none, dashscope-vl")
+        raise ValueError(
+            "rerank.provider must be one of none, dashscope-vl, siliconflow-rerank"
+        )
+    if config.rerank.provider == "siliconflow-rerank":
+        if config.rerank.endpoint_url == DEFAULT_RERANK_ENDPOINT_URL:
+            raise ValueError(
+                "rerank.endpoint_url must be configured for siliconflow-rerank"
+            )
+        if config.rerank.api_key_env == DEFAULT_RERANK_API_KEY_ENV:
+            raise ValueError(
+                "rerank.api_key_env must be configured for siliconflow-rerank"
+            )
+        if config.rerank.model == DEFAULT_RERANK_MODEL:
+            raise ValueError("rerank.model must be configured for siliconflow-rerank")
     _validate_https_or_loopback_http_url(
         "rerank.endpoint_url", config.rerank.endpoint_url
     )

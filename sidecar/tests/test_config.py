@@ -219,6 +219,73 @@ def test_load_config_does_not_support_rerank_return_documents_override(tmp_path)
     assert not hasattr(config.rerank, "return_documents")
 
 
+def test_load_config_accepts_siliconflow_rerank_provider(tmp_path):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(
+        "[rerank]\n"
+        "provider = 'siliconflow-rerank'\n"
+        "endpoint_url = 'https://api.siliconflow.cn/v1/rerank'\n"
+        "api_key_env = 'SILICONFLOW_API_KEY'\n"
+        "model = 'BAAI/bge-reranker-v2-m3'\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env={})
+
+    assert config.rerank.provider == "siliconflow-rerank"
+    assert config.rerank.endpoint_url == "https://api.siliconflow.cn/v1/rerank"
+    assert config.rerank.api_key_env == "SILICONFLOW_API_KEY"
+    assert config.rerank.model == "BAAI/bge-reranker-v2-m3"
+
+
+def test_load_config_rejects_siliconflow_rerank_with_dashscope_default_endpoint(
+    tmp_path,
+):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(
+        "[rerank]\n"
+        "provider = 'siliconflow-rerank'\n"
+        "api_key_env = 'SILICONFLOW_API_KEY'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="rerank.endpoint_url must be configured for siliconflow-rerank",
+    ):
+        load_config(config_path, env={})
+
+
+@pytest.mark.parametrize(
+    ("toml", "message"),
+    [
+        (
+            "[rerank]\n"
+            "provider = 'siliconflow-rerank'\n"
+            "endpoint_url = 'https://api.siliconflow.cn/v1/rerank'\n",
+            "rerank.api_key_env must be configured for siliconflow-rerank",
+        ),
+        (
+            "[rerank]\n"
+            "provider = 'siliconflow-rerank'\n"
+            "endpoint_url = 'https://api.siliconflow.cn/v1/rerank'\n"
+            "api_key_env = 'SILICONFLOW_API_KEY'\n",
+            "rerank.model must be configured for siliconflow-rerank",
+        ),
+    ],
+)
+def test_load_config_rejects_siliconflow_rerank_with_dashscope_defaults(
+    tmp_path,
+    toml,
+    message,
+):
+    config_path = tmp_path / "sidecar.toml"
+    config_path.write_text(toml, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_config(config_path, env={})
+
+
 @pytest.mark.parametrize(
     "base_url",
     [

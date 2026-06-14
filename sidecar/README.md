@@ -102,11 +102,24 @@ Rerank defaults to disabled:
 provider = "none"
 ```
 
-Use `provider = "dashscope-vl"` only when you explicitly want the optional
-DashScope `qwen3-vl-rerank` provider. The API key is still read from the env var
-named by `api_key_env`; missing key, timeout, HTTP error, malformed response, or
-degraded provider status returns a fallback result instead of blocking Go
-retrieval.
+Supported providers are `none`, `dashscope-vl`, and `siliconflow-rerank`. Use a
+live provider only when you explicitly want optional provider rerank. The API key
+is still read from the env var named by `api_key_env`; missing key, timeout, HTTP
+error, malformed response, or degraded provider status returns a fallback result
+instead of blocking Go retrieval.
+
+SiliconFlow uses a full rerank endpoint URL:
+
+```toml
+[rerank]
+provider = "siliconflow-rerank"
+endpoint_url = "https://api.siliconflow.cn/v1/rerank"
+api_key_env = "SILICONFLOW_API_KEY"
+model = "BAAI/bge-reranker-v2-m3"
+timeout_seconds = 30
+top_n = 30
+instruct = "Retrieve semantically relevant safe memory summaries for the user's query."
+```
 
 Rerank receives only SQLite-authorized safe summaries and a bounded query
 surface. It does not receive semantic rewrite text, semantic anchor text, raw
