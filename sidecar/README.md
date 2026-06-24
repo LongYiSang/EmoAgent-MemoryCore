@@ -27,15 +27,31 @@ neighbors, returning safe partial degraded results instead of spinning.
 
 ## Setup
 
-Use Python 3.12 with uv from this directory:
+Use CPython 3.12 with uv from this directory:
 
 ```powershell
 cd sidecar
-uv python pin 3.12
-uv sync
+uv lock --check
+uv sync --locked
 ```
 
-`pyproject.toml` pins the runtime dependency to `triviumdb==0.7.1`.
+`pyproject.toml` requires Python `>=3.12,<3.13` and pins the runtime
+dependency to `triviumdb==0.7.1`.
+
+For an EmoAgent-managed production sidecar environment, use the same locked
+project without development dependencies:
+
+```powershell
+uv lock --check
+uv sync --locked --no-dev
+.\.venv\Scripts\python.exe -I -P -m memorycore_sidecar.server --help
+```
+
+EmoAgent-managed startup uses the prepared environment Python directly:
+
+```powershell
+<env>\Scripts\python.exe -I -P -u -m memorycore_sidecar.server
+```
 
 ## Config
 

@@ -1,6 +1,6 @@
 version = 1
 revision = 3
-requires-python = ">=3.11, <3.13"
+requires-python = "==3.12.*"
 
 [[package]]
 name = "colorama"
@@ -23,7 +23,7 @@ wheels = [
 [[package]]
 name = "memorycore-sidecar"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "triviumdb" },
 ]
