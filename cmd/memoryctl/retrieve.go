@@ -155,6 +155,13 @@ func runRetrieve(args []string, stdout io.Writer, stderr io.Writer) int {
 		AutoMigrate: opts.AutoMigrate,
 		EnableFTS:   opts.EnableFTS,
 	}
+	if hasConfig {
+		configuredOptions, err := cfg.ToOptions()
+		if err != nil {
+			return usageError(stderr, fs, err.Error())
+		}
+		openOpts.SidecarResilience = configuredOptions.SidecarResilience
+	}
 	if hasConfig && cfg.Sidecar.Enabled && !explicit["sidecar-url"] {
 		backend, err := cfg.NewMirrorBackend()
 		if err != nil {

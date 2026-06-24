@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunRetrieveUsesConfigEvenWhenDisabled(t *testing.T) {
@@ -150,6 +151,49 @@ sidecar:
 	requireContains(t, stdout, "mirror_status=adapter_missing")
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
+func TestRunRetrieveConfigAppliesSidecarTimeouts(t *testing.T) {
+	dbPath := seedCLIConsolidationDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/retrieval/candidates" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(120 * time.Millisecond)
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode candidate request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": "memory_mirror_candidates.v0.2",
+			"request_id":     request["request_id"],
+			"candidates":     []map[string]any{},
+			"degraded":       false,
+		})
+	}))
+	defer server.Close()
+	configPath := writeCLIConfigFile(t, "memory.yaml", `
+enabled: true
+core:
+  db_path: `+yamlSingleQuote(dbPath)+`
+retrieval:
+  use_mirror: true
+sidecar:
+  enabled: true
+  url: `+yamlSingleQuote(server.URL)+`
+  adapter: trivium
+  total_timeout_ms: 1000
+  mirror_timeout_ms: 500
+  activation_timeout_ms: 500
+  rerank_timeout_ms: 500
+`)
+
+	out := requireRunOK(t, "retrieve", "--config", configPath, "--query", "espresso")
+	requireContains(t, out, "mirror_status=")
+	if strings.Contains(out, "mirror_status=sidecar_timeout") {
+		t.Fatalf("retrieve ignored configured mirror timeout:\n%s", out)
 	}
 }
 
