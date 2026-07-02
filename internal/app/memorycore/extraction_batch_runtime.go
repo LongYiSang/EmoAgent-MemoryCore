@@ -57,6 +57,7 @@ func (r *Runner) RunBatch(ctx context.Context, batch ExtractionBatchRequest) (Ex
 			ManualForget:             batch.ManualForget,
 			MaxFacts:                 batch.MaxFacts,
 			MaxLinks:                 batch.MaxLinks,
+			DisallowedPredicates:     batch.DisallowedPredicates,
 		})
 		if err != nil {
 			result.FailedCount++

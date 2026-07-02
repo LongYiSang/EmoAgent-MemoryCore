@@ -2697,6 +2697,7 @@ func retrievalPolicyToStore(policy RetrievalPolicy) memsqlite.RetrievalPolicy {
 		ContextBudgetTokens:   policy.ContextBudgetTokens,
 		UseFTS:                policy.UseFTS,
 		UseMirror:             policy.UseMirror,
+		ExcludedPredicates:    append([]string(nil), policy.ExcludedPredicates...),
 		MinFinalScore:         policy.MinFinalScore,
 		MinFinalScoreSet:      policy.MinFinalScoreSet,
 		Scoring: memsqlite.RetrievalScoringPolicy{

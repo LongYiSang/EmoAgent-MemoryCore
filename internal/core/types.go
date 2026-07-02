@@ -205,7 +205,8 @@ const (
 )
 
 const (
-	MemorySuppressionReasonFatigue       = "fatigue"
-	MemorySuppressionReasonMMRDuplicate  = "mmr_duplicate"
-	MemorySuppressionReasonContextBudget = "context_budget"
+	MemorySuppressionReasonFatigue           = "fatigue"
+	MemorySuppressionReasonMMRDuplicate      = "mmr_duplicate"
+	MemorySuppressionReasonContextBudget     = "context_budget"
+	MemorySuppressionReasonExcludedPredicate = "excluded_predicate"
 )

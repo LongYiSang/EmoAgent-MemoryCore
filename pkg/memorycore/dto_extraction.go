@@ -78,12 +78,13 @@ type ExtractionPredicateSchema struct {
 }
 
 type ExtractionPolicy struct {
-	AllowSensitiveExtraction bool `json:"allow_sensitive_extraction"`
-	AllowInference           bool `json:"allow_inference"`
-	ManualPin                bool `json:"manual_pin"`
-	ManualForget             bool `json:"manual_forget"`
-	MaxFacts                 int  `json:"max_facts"`
-	MaxLinks                 int  `json:"max_links"`
+	AllowSensitiveExtraction bool     `json:"allow_sensitive_extraction"`
+	AllowInference           bool     `json:"allow_inference"`
+	ManualPin                bool     `json:"manual_pin"`
+	ManualForget             bool     `json:"manual_forget"`
+	MaxFacts                 int      `json:"max_facts"`
+	MaxLinks                 int      `json:"max_links"`
+	DisallowedPredicates     []string `json:"disallowed_predicates,omitempty"`
 }
 
 type ExtractionResponse struct {

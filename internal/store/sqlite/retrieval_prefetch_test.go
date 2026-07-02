@@ -25,6 +25,23 @@ func TestRetrievalPrefetchHelpers(t *testing.T) {
 	}
 }
 
+func TestAuthorityAllowsFromPrefetchRejectsExcludedPredicate(t *testing.T) {
+	fact := core.Fact{
+		ID:               "fact_name",
+		Predicate:        "prefers_name",
+		VisibilityStatus: core.VisibilityVisible,
+		Searchable:       true,
+		SensitivityLevel: core.SensitivityNormal,
+	}
+	policy := RetrievalPolicy{
+		SensitivityPermission: string(core.SensitivityNormal),
+		ExcludedPredicates:    []string{"prefers_name"},
+	}
+	if authorityAllowsFromPrefetch(fact, policy, scoringPrefetch{}) {
+		t.Fatalf("authorityAllowsFromPrefetch allowed excluded predicate")
+	}
+}
+
 func TestScoringPrefetchAuthorityEvidenceAndFatigue(t *testing.T) {
 	ctx := context.Background()
 	db := openPrefetchTestDB(t, ctx)

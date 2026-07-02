@@ -9,6 +9,7 @@ const (
 	ForgetScopeEntity              = "entity_scope"
 	ForgetScopeBroadTopic          = "broad_topic"
 	ForgetScopeSemanticQuery       = "semantic_query"
+	ForgetScopePredicate           = "predicate"
 
 	ForgetNodeFact    = "fact"
 	ForgetNodeEpisode = "episode"
@@ -64,6 +65,7 @@ type ForgetPreviewRequest struct {
 	NodeType            string
 	NodeID              string
 	EntityID            string
+	Predicate           string
 	Topic               string
 	SessionID           string
 	ChatSessionID       string
@@ -98,10 +100,11 @@ type ForgetPreviewResult struct {
 }
 
 type ForgetResolvedTarget struct {
-	NodeType    string
-	NodeID      string
-	Summary     string
-	SafeSummary string
+	NodeType      string
+	NodeID        string
+	Summary       string
+	SafeSummary   string
+	ObjectLiteral string
 }
 
 type ForgetExecuteRequest struct {

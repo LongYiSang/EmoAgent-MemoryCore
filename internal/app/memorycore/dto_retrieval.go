@@ -25,9 +25,10 @@ const (
 	MemoryHistoricalStatusHistorical = "historical"
 	MemoryHistoricalStatusSuperseded = "superseded"
 
-	MemorySuppressionReasonFatigue       = core.MemorySuppressionReasonFatigue
-	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
-	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonFatigue           = core.MemorySuppressionReasonFatigue
+	MemorySuppressionReasonMMRDuplicate      = core.MemorySuppressionReasonMMRDuplicate
+	MemorySuppressionReasonContextBudget     = core.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonExcludedPredicate = core.MemorySuppressionReasonExcludedPredicate
 
 	RetrievalCorrectiveActionSemanticLight           = "semantic_light"
 	RetrievalCorrectiveActionSQLiteFallback          = "sqlite_fallback"
@@ -122,6 +123,7 @@ type RetrievalPolicy struct {
 	ContextBudgetTokens   int
 	UseFTS                bool
 	UseMirror             bool
+	ExcludedPredicates    []string
 	MinFinalScore         float64
 	MinFinalScoreSet      bool
 	Scoring               RetrievalScoringPolicy

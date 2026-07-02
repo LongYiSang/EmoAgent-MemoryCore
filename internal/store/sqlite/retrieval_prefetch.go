@@ -326,6 +326,9 @@ func authorityAllowsFromPrefetch(fact core.Fact, policy RetrievalPolicy, pf scor
 	if fact.VisibilityStatus != core.VisibilityVisible || !fact.Searchable {
 		return false
 	}
+	if policyExcludesPredicate(policy, fact.Predicate) {
+		return false
+	}
 	if fact.ValidityStatus == core.ValidityInvalidated && !policy.AllowHistorical {
 		return false
 	}

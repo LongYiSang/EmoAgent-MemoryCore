@@ -132,6 +132,9 @@ func applyExtractionPolicyOverride(opts ExtractionDefaults, override ExtractionP
 	if override.MaxLinks != nil {
 		opts.MaxLinks = *override.MaxLinks
 	}
+	if len(override.DisallowedPredicates) > 0 {
+		opts.DisallowedPredicates = uniqueStrings(override.DisallowedPredicates)
+	}
 	if override.RequireCleanGate != nil {
 		opts.RequireCleanGate = *override.RequireCleanGate
 	}

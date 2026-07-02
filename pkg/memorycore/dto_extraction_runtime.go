@@ -141,6 +141,7 @@ type ExtractionBatchRequest struct {
 	ManualForget             bool                    `json:"manual_forget,omitempty"`
 	MaxFacts                 int                     `json:"max_facts,omitempty"`
 	MaxLinks                 int                     `json:"max_links,omitempty"`
+	DisallowedPredicates     []string                `json:"disallowed_predicates,omitempty"`
 	Since                    *time.Time              `json:"since,omitempty"`
 	Until                    *time.Time              `json:"until,omitempty"`
 	UsePreFilter             bool                    `json:"use_prefilter,omitempty"`

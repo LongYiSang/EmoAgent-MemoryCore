@@ -557,6 +557,37 @@ func TestServiceRetrieveAppliesAuthorityFilters(t *testing.T) {
 	requireNoMemoryItem(t, contextResult, unsearchable.ID)
 }
 
+func TestServiceRetrieveExcludedPredicatesFiltersLegacyNameFacts(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "以后叫我 Long。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	nameFact := consolidateLiteral(t, ctx, svc, userID, "prefers_name", "Long", "用户偏好被称呼为 Long。", episode.ID).Fact
+
+	withoutExclusion, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "Long",
+	})
+	if err != nil {
+		t.Fatalf("retrieve without exclusion: %v", err)
+	}
+	requireMemoryItem(t, withoutExclusion, nameFact.ID, "用户偏好被称呼为 Long。", "")
+
+	withExclusion, err := svc.Retrieval().Retrieve(ctx, memorycore.RetrievalRequest{
+		SessionID: &sessionID,
+		QueryText: "Long",
+		Policy: memorycore.RetrievalPolicy{
+			ExcludedPredicates: []string{"prefers_name"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("retrieve with exclusion: %v", err)
+	}
+	requireNoMemoryItem(t, withExclusion, nameFact.ID)
+}
+
 func TestServiceRetrieveHistoricalAndDeepArchivePolicy(t *testing.T) {
 	ctx := context.Background()
 	svc, dbPath := openConsolidationService(t, ctx)

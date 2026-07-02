@@ -33,9 +33,10 @@ const (
 	MemoryHistoricalStatusHistorical = "historical"
 	MemoryHistoricalStatusSuperseded = "superseded"
 
-	MemorySuppressionReasonFatigue       = core.MemorySuppressionReasonFatigue
-	MemorySuppressionReasonMMRDuplicate  = core.MemorySuppressionReasonMMRDuplicate
-	MemorySuppressionReasonContextBudget = core.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonFatigue           = core.MemorySuppressionReasonFatigue
+	MemorySuppressionReasonMMRDuplicate      = core.MemorySuppressionReasonMMRDuplicate
+	MemorySuppressionReasonContextBudget     = core.MemorySuppressionReasonContextBudget
+	MemorySuppressionReasonExcludedPredicate = core.MemorySuppressionReasonExcludedPredicate
 
 	defaultMMRLambda                         = 0.72
 	defaultDuplicateThreshold                = 0.88
@@ -80,6 +81,7 @@ type RetrievalPolicy struct {
 	ContextBudgetTokens   int
 	UseFTS                bool
 	UseMirror             bool
+	ExcludedPredicates    []string
 	MinFinalScore         float64
 	MinFinalScoreSet      bool
 	Scoring               RetrievalScoringPolicy
@@ -843,6 +845,54 @@ func (r *RetrievalRepository) scoreCandidates(ctx context.Context, req Retrieval
 		if !ok {
 			continue
 		}
+		if policyExcludesPredicate(policy, fact.Predicate) {
+			suppressions = appendSuppression(suppressions, MemorySuppression{
+				NodeType: string(core.NodeTypeFact),
+				NodeID:   fact.ID,
+				Reason:   MemorySuppressionReasonExcludedPredicate,
+			})
+			if req.MirrorDiagnostics != nil {
+				if idx, ok := mirrorCandidateIndexByFact[fact.ID]; ok {
+					if req.MirrorDiagnostics.Candidates[idx].DropReason == "" {
+						req.MirrorDiagnostics.Candidates[idx].DropReason = MemorySuppressionReasonExcludedPredicate
+						req.MirrorDiagnostics.DroppedCandidateCount++
+					}
+				} else if mirror, ok := mirrorByFact[fact.ID]; ok {
+					req.MirrorDiagnostics.Candidates = append(req.MirrorDiagnostics.Candidates, MirrorCandidateDiagnostic{
+						TriviumNodeID:  mirror.TriviumNodeID,
+						SQLiteFactID:   fact.ID,
+						Score:          mirror.Score,
+						Source:         mirror.Source,
+						PrimaryPurpose: mirror.PrimaryPurpose,
+						Rank:           mirror.Rank,
+						HitCount:       mirror.HitCount,
+						DropReason:     MemorySuppressionReasonExcludedPredicate,
+					})
+					req.MirrorDiagnostics.DroppedCandidateCount++
+				}
+			}
+			if req.GraphActivationDiagnostics != nil {
+				if idx, ok := graphCandidateIndexByFact[fact.ID]; ok {
+					if req.GraphActivationDiagnostics.Candidates[idx].DropReason == "" {
+						req.GraphActivationDiagnostics.Candidates[idx].DropReason = MemorySuppressionReasonExcludedPredicate
+						req.GraphActivationDiagnostics.DroppedCandidateCount++
+					}
+				} else if activation, ok := graphByFact[fact.ID]; ok {
+					req.GraphActivationDiagnostics.Candidates = append(req.GraphActivationDiagnostics.Candidates, GraphActivationCandidateDiagnostic{
+						TriviumNodeID: activation.TriviumNodeID,
+						SQLiteNodeID:  fact.ID,
+						NodeType:      string(core.NodeTypeFact),
+						Score:         activation.Score,
+						Source:        activation.Source,
+						Rank:          activation.Rank,
+						Paths:         cloneGraphActivationPaths(activation.Paths),
+						DropReason:    MemorySuppressionReasonExcludedPredicate,
+					})
+					req.GraphActivationDiagnostics.DroppedCandidateCount++
+				}
+			}
+			continue
+		}
 		if !authorityAllowsFromPrefetch(fact, policy, pf) {
 			if req.MirrorDiagnostics != nil {
 				if idx, ok := mirrorCandidateIndexByFact[fact.ID]; ok {
@@ -1330,6 +1380,9 @@ func (r *RetrievalRepository) authorityAllows(ctx context.Context, fact core.Fac
 	if fact.VisibilityStatus != core.VisibilityVisible || !fact.Searchable {
 		return false, nil
 	}
+	if policyExcludesPredicate(policy, fact.Predicate) {
+		return false, nil
+	}
 	if fact.ValidityStatus == core.ValidityInvalidated && !policy.AllowHistorical {
 		return false, nil
 	}
@@ -1622,6 +1675,7 @@ func normalizeRetrievalPolicy(policy RetrievalPolicy) RetrievalPolicy {
 	if policy.SensitivityPermission == "" {
 		policy.SensitivityPermission = string(core.SensitivityNormal)
 	}
+	policy.ExcludedPredicates = uniqueSortedStrings(policy.ExcludedPredicates)
 	if policy.FinalMemoryCount <= 0 {
 		policy.FinalMemoryCount = 8
 	}
@@ -1696,9 +1750,23 @@ func isZeroRetrievalPolicy(policy RetrievalPolicy) bool {
 		policy.ContextBudgetTokens == 1200 &&
 		!policy.UseFTS &&
 		!policy.UseMirror &&
+		len(policy.ExcludedPredicates) == 0 &&
 		policy.MinFinalScore == 0 &&
 		!policy.MinFinalScoreSet &&
 		strings.TrimSpace(policy.Scoring.Profile) == ""
+}
+
+func policyExcludesPredicate(policy RetrievalPolicy, predicate string) bool {
+	predicate = strings.TrimSpace(predicate)
+	if predicate == "" {
+		return false
+	}
+	for _, excluded := range policy.ExcludedPredicates {
+		if strings.TrimSpace(excluded) == predicate {
+			return true
+		}
+	}
+	return false
 }
 
 func textMatchScore(query QueryAnalysis, searchText string) float64 {

@@ -28,6 +28,9 @@ func evaluateFactAdmission(ctx gateContext, fact ExtractedFactCandidate) Admissi
 	if fact.QualityDecision == "reject" {
 		addReject(ReasonModelRejected)
 	}
+	if extractionPolicyDisallowsPredicate(ctx.req.Policy, fact.Predicate) {
+		addReject(ReasonUserAddressConfigBoundary)
+	}
 
 	sources := factSourceEpisodes(ctx, fact.SourceEpisodeIDs)
 	sourceText := sourceEpisodeText(sources)
@@ -82,6 +85,19 @@ func evaluateFactAdmission(ctx gateContext, fact ExtractedFactCandidate) Admissi
 		decision.Notes = "fact requires admission review"
 	}
 	return decision
+}
+
+func extractionPolicyDisallowsPredicate(policy ExtractionPolicy, predicate string) bool {
+	predicate = strings.TrimSpace(predicate)
+	if predicate == "" {
+		return false
+	}
+	for _, disallowed := range policy.DisallowedPredicates {
+		if strings.TrimSpace(disallowed) == predicate {
+			return true
+		}
+	}
+	return false
 }
 
 func factAdmissionText(fact ExtractedFactCandidate) string {

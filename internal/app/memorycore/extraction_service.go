@@ -249,6 +249,7 @@ func (s *service) resolveExtractionRequest(ctx context.Context, req RunExtractio
 		ManualForget:             boolValue(req.Policy.ManualForget),
 		MaxFacts:                 cfg.Defaults.MaxFacts,
 		MaxLinks:                 cfg.Defaults.MaxLinks,
+		DisallowedPredicates:     cfg.Defaults.DisallowedPredicates,
 		Now:                      s.now(),
 	})
 	if err != nil {

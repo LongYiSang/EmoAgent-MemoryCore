@@ -357,6 +357,78 @@ func TestExtractionGateKeepsHighSensitiveFactsInReviewByDefault(t *testing.T) {
 	requireDecisionForTest(t, gate.FactDecisions, "f_sensitive", "needs_review", "highly_sensitive_requires_review")
 }
 
+func TestExtractionGateRejectsDisallowedPredicate(t *testing.T) {
+	req := ExtractionRequest{
+		SchemaVersion: ExtractionRequestSchemaVersion,
+		RequestID:     "req_disallowed_predicate",
+		PersonaID:     "default",
+		Trigger:       ExtractionTriggerSessionEnd,
+		Episodes: []ExtractionEpisode{{
+			EpisodeID:        "ep_name",
+			Role:             RoleUser,
+			Content:          "以后叫我 Long。",
+			VisibilityStatus: VisibilityVisible,
+			SensitivityLevel: SensitivityNormal,
+		}},
+		PredicateSchemas: []ExtractionPredicateSchema{{
+			Predicate:        "prefers_name",
+			Cardinality:      "one",
+			ConflictPolicy:   "replace",
+			TemporalBehavior: "static",
+			ObjectKind:       "literal",
+			AllowInference:   false,
+		}},
+		Policy: ExtractionPolicy{AllowInference: true, DisallowedPredicates: []string{"prefers_name"}},
+	}
+	resp := ExtractionResponse{
+		SchemaVersion: ExtractionResponseSchemaVersion,
+		RequestID:     req.RequestID,
+		PersonaID:     req.PersonaID,
+		Trigger:       req.Trigger,
+		SourceWindow:  ExtractionSourceWindow{EpisodeIDs: []string{"ep_name"}},
+		Facts: []ExtractedFactCandidate{{
+			CandidateID:               "f_name",
+			SubjectEntityCandidateID:  "user",
+			Predicate:                 "prefers_name",
+			ObjectLiteral:             stringPtrValue("Long"),
+			ContentSummary:            "用户偏好被称呼为 Long。",
+			FactType:                  FactTypeCoreIdentity,
+			ExtractionConfidence:      ConfidenceExplicit,
+			ExtractionConfidenceScore: 0.95,
+			Importance:                0.7,
+			SensitivityLevel:          SensitivityNormal,
+			SourceEpisodeIDs:          []string{"ep_name"},
+			QualityDecision:           "accept_for_consolidation",
+		}},
+	}
+
+	gate := ValidateExtraction(req, resp)
+	requireDecisionForTest(t, gate.FactDecisions, "f_name", "reject", ReasonUserAddressConfigBoundary)
+}
+
+func TestBuildRequestCarriesDisallowedPredicates(t *testing.T) {
+	ctx := context.Background()
+	svc := openExtractionTestService(t, ctx, ExtractionOptions{})
+	defer svc.Close()
+	coreSvc := svc.(*service)
+	seedExtractionSession(t, ctx, svc, "session_name", "ep_name", "以后叫我 Long。")
+	sessionID := "session_name"
+
+	req, err := BuildRequest(ctx, coreSvc.sqlDB, BuildRequestOptions{
+		PersonaID:            "default",
+		SessionID:            &sessionID,
+		Trigger:              ExtractionTriggerSessionEnd,
+		Limit:                10,
+		DisallowedPredicates: []string{" prefers_name ", "prefers_name"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if strings.Join(req.Policy.DisallowedPredicates, ",") != "prefers_name" {
+		t.Fatalf("DisallowedPredicates = %#v, want prefers_name", req.Policy.DisallowedPredicates)
+	}
+}
+
 func TestPreviewExtractionDeletionIntentsBroadTopicUsesSafeTargets(t *testing.T) {
 	ctx := context.Background()
 	svc := openExtractionTestService(t, ctx, ExtractionOptions{})

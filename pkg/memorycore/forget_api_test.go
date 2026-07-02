@@ -291,6 +291,40 @@ func TestServiceForgetResolverBroadTopicPreviewIsSafeAndRequiresExactSelection(t
 	}
 }
 
+func TestServiceForgetPreviewPredicateScopeReturnsLegacyNameFacts(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openConsolidationService(t, ctx)
+	defer svc.Close()
+
+	sessionID, userID := seedConsolidationSubject(t, ctx, svc)
+	episode := appendConsolidationEpisode(t, ctx, svc, sessionID, "以后叫我 Long。我喜欢咖啡。", time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC))
+	visible := consolidateLiteral(t, ctx, svc, userID, "prefers_name", "Long", "用户偏好被称呼为 Long。", episode.ID).Fact
+	other := consolidateLiteral(t, ctx, svc, userID, "likes", "咖啡", "用户喜欢咖啡。", episode.ID).Fact
+
+	preview, err := svc.Forget().PreviewForget(ctx, memorycore.ForgetPreviewRequest{
+		PersonaID:           "default",
+		ScopeMode:           memorycore.ForgetScopePredicate,
+		Predicate:           "prefers_name",
+		RequestedLevel:      memorycore.ForgetLevelSoft,
+		RequireConfirmation: true,
+	})
+	if err != nil {
+		t.Fatalf("PreviewForget predicate: %v", err)
+	}
+	if !preview.RequiresConfirmation || len(preview.Targets) != 1 {
+		t.Fatalf("preview = %#v, want one confirmation target", preview)
+	}
+	if preview.Targets[0].NodeType != memorycore.ForgetNodeFact || preview.Targets[0].NodeID != visible.ID {
+		t.Fatalf("targets = %#v, want visible prefers_name fact", preview.Targets)
+	}
+	if preview.Targets[0].ObjectLiteral != "Long" {
+		t.Fatalf("target object literal = %q, want Long", preview.Targets[0].ObjectLiteral)
+	}
+	if preview.Targets[0].NodeID == other.ID {
+		t.Fatalf("predicate preview included wrong fact: %#v", preview.Targets)
+	}
+}
+
 func TestServiceForgetExecuteRejectsForgedPreviewTargets(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := openConsolidationService(t, ctx)

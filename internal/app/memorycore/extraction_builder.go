@@ -26,6 +26,7 @@ type BuildRequestOptions struct {
 	ManualForget             bool
 	MaxFacts                 int
 	MaxLinks                 int
+	DisallowedPredicates     []string
 	Now                      time.Time
 }
 
@@ -87,6 +88,7 @@ func BuildRequest(ctx context.Context, db *sql.DB, opts BuildRequestOptions) (Ex
 			ManualForget:             opts.ManualForget || trigger == ExtractionTriggerManualForget,
 			MaxFacts:                 maxFacts,
 			MaxLinks:                 maxLinks,
+			DisallowedPredicates:     uniqueStrings(opts.DisallowedPredicates),
 		},
 	}, nil
 }

@@ -102,6 +102,14 @@ func (s *service) resolveForgetPreview(ctx context.Context, req ForgetPreviewReq
 		result.SidecarStatus = sidecarStatus
 		result.RequiresConfirmation = true
 		result.Reason = "semantic_query_requires_confirmation"
+	case ForgetScopePredicate:
+		targets, err := s.previewPredicateScope(ctx, personaID, req.Predicate, req.Limit)
+		if err != nil {
+			return nil, err
+		}
+		result.Targets = targets
+		result.RequiresConfirmation = true
+		result.Reason = "predicate_scope_requires_confirmation"
 	default:
 		return nil, fmt.Errorf("%w: unsupported forget scope %s", ErrInvalidRequest, scope)
 	}
@@ -447,6 +455,33 @@ LIMIT ?`, personaID, entityID, entityID, limit)
 	return scanForgetTargetIDs(rows, ForgetNodeFact)
 }
 
+func (s *service) previewPredicateScope(ctx context.Context, personaID string, predicate string, limit int) ([]ForgetResolvedTarget, error) {
+	predicate = strings.TrimSpace(predicate)
+	if predicate == "" {
+		return nil, fmt.Errorf("%w: predicate scope requires predicate", ErrInvalidRequest)
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.sqlDB.QueryContext(ctx, `
+SELECT id, content_summary, object_literal
+FROM facts
+WHERE persona_id = ?
+  AND predicate = ?
+  AND visibility_status = 'visible'
+  AND validity_status IN ('valid', 'uncertain')
+  AND (searchable = 1 OR pinned = 1)
+  AND object_literal IS NOT NULL
+  AND TRIM(object_literal) != ''
+ORDER BY pinned DESC, COALESCE(updated_at, '') DESC, ingested_at DESC, id ASC
+LIMIT ?`, personaID, predicate, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanForgetFactSummaryObjectRows(rows)
+}
+
 func (s *service) previewSemanticForgetQuery(ctx context.Context, personaID string, req ForgetPreviewRequest) ([]ForgetResolvedTarget, string, error) {
 	query := strings.TrimSpace(derefString(req.SemanticQuery))
 	if query == "" {
@@ -695,6 +730,27 @@ func scanForgetFactSummaryRows(rows *sql.Rows) ([]ForgetResolvedTarget, error) {
 			target.Summary = safeSummary
 			target.SafeSummary = safeSummary
 		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+func scanForgetFactSummaryObjectRows(rows *sql.Rows) ([]ForgetResolvedTarget, error) {
+	var targets []ForgetResolvedTarget
+	for rows.Next() {
+		var nodeID string
+		var safeSummary string
+		var objectLiteral string
+		if err := rows.Scan(&nodeID, &safeSummary, &objectLiteral); err != nil {
+			return nil, err
+		}
+		target := safeForgetTarget(ForgetNodeFact, nodeID)
+		safeSummary = strings.TrimSpace(safeSummary)
+		if safeSummary != "" {
+			target.Summary = safeSummary
+			target.SafeSummary = safeSummary
+		}
+		target.ObjectLiteral = strings.TrimSpace(objectLiteral)
 		targets = append(targets, target)
 	}
 	return targets, rows.Err()

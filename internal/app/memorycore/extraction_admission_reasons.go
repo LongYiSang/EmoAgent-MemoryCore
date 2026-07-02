@@ -32,6 +32,7 @@ const (
 	ReasonSourceEpisodeNotUserGrounded = "source_episode_not_user_grounded"
 	ReasonNoWriteHint                  = "no_write_hint"
 	ReasonModelRejected                = "model_rejected"
+	ReasonUserAddressConfigBoundary    = "user_address_config_boundary"
 )
 
 type AdmissionDecision struct {

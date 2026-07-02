@@ -39,15 +39,16 @@ type ExtractionBuildSelector struct {
 }
 
 type ExtractionPolicyOverride struct {
-	AllowSensitiveExtraction *bool `json:"allow_sensitive_extraction,omitempty"`
-	AllowInference           *bool `json:"allow_inference,omitempty"`
-	ManualPin                *bool `json:"manual_pin,omitempty"`
-	ManualForget             *bool `json:"manual_forget,omitempty"`
-	MaxFacts                 *int  `json:"max_facts,omitempty"`
-	MaxLinks                 *int  `json:"max_links,omitempty"`
-	RequireCleanGate         *bool `json:"require_clean_gate,omitempty"`
-	ApplyAcceptedFacts       *bool `json:"apply_accepted_facts,omitempty"`
-	ExecuteDeletionIntents   *bool `json:"execute_deletion_intents,omitempty"`
+	AllowSensitiveExtraction *bool    `json:"allow_sensitive_extraction,omitempty"`
+	AllowInference           *bool    `json:"allow_inference,omitempty"`
+	ManualPin                *bool    `json:"manual_pin,omitempty"`
+	ManualForget             *bool    `json:"manual_forget,omitempty"`
+	MaxFacts                 *int     `json:"max_facts,omitempty"`
+	MaxLinks                 *int     `json:"max_links,omitempty"`
+	DisallowedPredicates     []string `json:"disallowed_predicates,omitempty"`
+	RequireCleanGate         *bool    `json:"require_clean_gate,omitempty"`
+	ApplyAcceptedFacts       *bool    `json:"apply_accepted_facts,omitempty"`
+	ExecuteDeletionIntents   *bool    `json:"execute_deletion_intents,omitempty"`
 }
 
 type ExtractionRuntimeOverride struct {

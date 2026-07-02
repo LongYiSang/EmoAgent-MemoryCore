@@ -106,6 +106,7 @@ type ExtractionDefaults struct {
 	AllowInference           bool
 	MaxFacts                 int
 	MaxLinks                 int
+	DisallowedPredicates     []string
 	RequireCleanGate         bool
 	ApplyAcceptedFacts       bool
 	ExecuteDeletionIntents   bool
